@@ -12,7 +12,6 @@ import {
   ProductionDeploymentInputSchema,
   RollbackInputSchema,
 } from '../src/deployment.js';
-import { CommitShaSchema, EnvironmentIdSchema } from '../src/primitives.js';
 
 // Round-trips only: the vocabularies here (deployment state, domain status, artifact
 // kind) are v1 shapes, not PRD-fixed lists, so they are deliberately not pinned —
@@ -51,11 +50,13 @@ describe('deployment provider inputs', () => {
     expect(DeploymentArtifactSchema.parse(artifact)).toEqual(artifact);
   });
 
-  it('rejects a commit reference that is not a resolved sha', () => {
-    expect(CommitShaSchema.parse(commitSha)).toBe(commitSha);
-    expect(CommitShaSchema.safeParse('main').success).toBe(false);
-    expect(CommitShaSchema.safeParse(commitSha.toUpperCase()).success).toBe(false);
-    expect(EnvironmentIdSchema.safeParse('').success).toBe(false);
+  it('rejects an input carrying an unresolved commit reference', () => {
+    // The sha and environment id rules themselves live in `primitives.test.ts`; this
+    // pins that the deployment inputs are the schemas that apply them.
+    expect(
+      PreviewDeploymentInputSchema.safeParse({ projectId, commitSha: 'main', artifact, env: {} })
+        .success,
+    ).toBe(false);
   });
 });
 

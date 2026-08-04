@@ -1,10 +1,8 @@
 import { z } from 'zod';
 
-/**
- * Leaf schemas shared by more than one contract module. They live here so a rule
- * that applies everywhere — https only, secrets are strings, a sha is resolved —
- * has exactly one definition to read, test and change.
- */
+// Leaf schemas shared by more than one contract module. They live here so a rule
+// that applies everywhere — https only, secrets are strings, a sha is resolved —
+// has exactly one definition to read, test and change.
 
 /**
  * Provider-issued URL. https only: preview and deployed traffic is never plaintext.

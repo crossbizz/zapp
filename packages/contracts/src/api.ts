@@ -5,20 +5,25 @@ import { z } from 'zod';
  * Generated SDKs and the desktop client parse this and nothing else, so a service
  * that invents its own error shape is a breaking change, not a local decision.
  *
- * Strict at both levels: this envelope is the boundary an internal detail would have
- * to cross to reach a tenant, so an unexpected key (a stack, a SQL fragment, a
- * provider payload) fails the parse instead of riding along.
+ * Strict at both levels to pin the *shape*: a service cannot add a sibling field and
+ * call it part of the contract, and a client can rely on the key set it was generated
+ * against. `details` is the single open slot, and strictness says nothing about what
+ * goes in it — keeping its contents tenant-safe is the producing service's job.
  */
 export const ApiErrorSchema = z
   .object({
     error: z
       .object({
         /** Machine code the client branches on: `project_not_found`, `budget_exceeded`, … */
-        code: z.string(),
+        code: z.string().min(1),
         /** Human, tenant-safe: no secrets, no internals, no provider error text. */
-        message: z.string(),
-        /** Trace identifier for this request — a plain string, stamped at the edge, not a TypeID. */
-        requestId: z.string(),
+        message: z.string().min(1),
+        /**
+         * Trace identifier for this request — a plain string, stamped at the edge, not
+         * a TypeID. Trimmed and non-empty: it is copied out of a header, and a blank id
+         * is the one value that makes an error unlookupable in support and in tracing.
+         */
+        requestId: z.string().trim().min(1),
         /** Structured, tenant-safe context a client can render: which field, which limit. */
         details: z.record(z.unknown()).optional(),
       })

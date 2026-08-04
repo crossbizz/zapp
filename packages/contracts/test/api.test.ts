@@ -39,11 +39,9 @@ describe('ApiErrorSchema', () => {
   });
 
   it('rejects an unknown key at either level', () => {
-    // Strict at the top level: the envelope has one key, so a sibling field is a
-    // second, undocumented error shape.
+    // Strict pins the shape, at both levels: a service that wants to say more says it
+    // in `details`, not in a sibling field the generated clients have never seen.
     expect(ApiErrorSchema.safeParse({ ...envelope, status: 404 }).success).toBe(false);
-    // Strict inside `error`: this is the one place an internal detail could ride out
-    // to a tenant, so anything not in the contract is a parse failure, not a passenger.
     expect(
       ApiErrorSchema.safeParse({ error: { ...envelope.error, stack: 'at db.query (pg.js:1)' } })
         .success,
@@ -62,6 +60,24 @@ describe('ApiErrorSchema', () => {
     // Untraceable errors are the ones support cannot act on, so the id is required.
     expect(
       ApiErrorSchema.safeParse({ error: { code: 'project_not_found', message: 'x' } }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a blank code, message or request id', () => {
+    // Present-but-empty is the failure mode a required-key check misses: an empty
+    // code cannot be branched on, and an empty or whitespace-only request id cannot
+    // be looked up, so both are contract violations rather than degraded errors.
+    expect(ApiErrorSchema.safeParse({ error: { ...envelope.error, code: '' } }).success).toBe(
+      false,
+    );
+    expect(ApiErrorSchema.safeParse({ error: { ...envelope.error, message: '' } }).success).toBe(
+      false,
+    );
+    expect(ApiErrorSchema.safeParse({ error: { ...envelope.error, requestId: '' } }).success).toBe(
+      false,
+    );
+    expect(
+      ApiErrorSchema.safeParse({ error: { ...envelope.error, requestId: '   ' } }).success,
     ).toBe(false);
   });
 });
@@ -106,6 +122,18 @@ describe('PageSchema', () => {
     // Absent must never stand in for null: a client that dropped the field would
     // otherwise be indistinguishable from the last page and stop paging early.
     expect(PageSchema(idSchema('proj')).safeParse({ items: [] }).success).toBe(false);
+  });
+
+  it('strips an unknown key instead of rejecting the page', () => {
+    // Deliberately NOT strict, unlike the error envelope: a list response is expected
+    // to grow additive fields (a `total`, a facet block) and an older client must keep
+    // paging through a newer server. Tightening this later would be the regression.
+    const parsed = PageSchema(idSchema('proj')).parse({
+      items: [projectId],
+      nextCursor: null,
+      total: 1,
+    });
+    expect(parsed).toEqual({ items: [projectId], nextCursor: null });
   });
 
   it('rejects an item the item schema rejects', () => {
