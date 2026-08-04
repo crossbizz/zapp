@@ -1,6 +1,20 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": ["tsconfig.base.json", "eslint.config.mjs", ".prettierrc.json"],
+  // `.env.example` is a global input because two suites parse the shipped
+  // template itself rather than a fixture — services/control-api/test/env.test.ts
+  // (does it still boot every loader server.ts calls?) and credentials.test.ts
+  // (is what it ships still recognised as unconfigured?). Both exist to catch a
+  // template edit, and a template edit is exactly what left every task's hash
+  // untouched: turbo reported a cache hit and the guards never ran, so CI went
+  // green on a template that could not start the control plane. The cost is one
+  // full invalidation whenever the template changes, which is rare and is the
+  // trade this buys.
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "eslint.config.mjs",
+    ".prettierrc.json",
+    ".env.example"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
