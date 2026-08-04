@@ -232,10 +232,10 @@ export const memberships = pgTable("memberships", {
 **Files:** Create: `infra/docker/docker-compose.dev.yml`, `infra/docker/forgejo/app.ini`, `.env.example`, `docs/dev-setup.md`, `scripts/dev-up.sh`
 **Effort:** M
 
-- [ ] **Step 1:** Compose services: `postgres:16` (port 5432, db `zapp`), `redis:7` (6379), `codeberg.org/forgejo/forgejo:9` (3300 HTTP, 2222 SSH, pre-configured admin via app.ini + init script), `temporalio/auto-setup` dev stack or documented `temporal server start-dev` (7233 + UI 8233), `minio/minio` (9000/9001, bucket `zapp-artifacts` auto-created), `localstack/localstack` (4566, services SQS/SNS/SES; init script creates queues `zapp-usage-events`, `zapp-github-webhooks`, `zapp-notifications` each with DLQ, and verifies SES sender `dev@zapp.local`).
-- [ ] **Step 2:** `.env.example` with every variable services will need (DATABASE_URL, REDIS_URL, ARTIFACT_ENDPOINT/KEY/SECRET/BUCKET, FORGEJO_URL/ADMIN_TOKEN, TEMPORAL_ADDRESS, STYTCH_PROJECT_ID/SECRET/PUBLIC_TOKEN, FLEXPRICE_API_KEY/BASE_URL, GRAFANA_OTLP_ENDPOINT/TOKEN, POSTHOG_KEY/HOST, AWS_REGION/AWS_ENDPOINT_URL/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (LocalStack test values locally), MODAL_*, provider keys) — placeholder values, real keys never committed.
-- [ ] **Step 3:** `scripts/dev-up.sh`: compose up, wait-for healthchecks, run `pnpm db:migrate`, create Forgejo admin token if absent, create MinIO bucket. Verify: script exits 0 from clean state.
-- [ ] **Step 4:** `docs/dev-setup.md`: prerequisites (Node 22, pnpm, Docker, temporal CLI), one-command bootstrap, service URLs table. Commit: `chore(infra): docker-compose dev environment + bootstrap script`
+- [x] **Step 1:** Compose services: `postgres:16` (port 5432, db `zapp`), `redis:7` (6379), `codeberg.org/forgejo/forgejo:9` (3300 HTTP, 2222 SSH, pre-configured admin via app.ini + init script), `temporalio/auto-setup` dev stack or documented `temporal server start-dev` (7233 + UI 8233), `minio/minio` (9000/9001, bucket `zapp-artifacts` auto-created), `localstack/localstack` (4566, services SQS/SNS/SES; init script creates queues `zapp-usage-events`, `zapp-github-webhooks`, `zapp-notifications` each with DLQ, and verifies SES sender `dev@zapp.local`).
+- [x] **Step 2:** `.env.example` with every variable services will need (DATABASE_URL, REDIS_URL, ARTIFACT_ENDPOINT/KEY/SECRET/BUCKET, FORGEJO_URL/ADMIN_TOKEN, TEMPORAL_ADDRESS, STYTCH_PROJECT_ID/SECRET/PUBLIC_TOKEN, FLEXPRICE_API_KEY/BASE_URL, GRAFANA_OTLP_ENDPOINT/TOKEN, POSTHOG_KEY/HOST, AWS_REGION/AWS_ENDPOINT_URL/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (LocalStack test values locally), MODAL_*, provider keys) — placeholder values, real keys never committed.
+- [x] **Step 3:** `scripts/dev-up.sh`: compose up, wait-for healthchecks, run `pnpm db:migrate`, create Forgejo admin token if absent, create MinIO bucket. Verify: script exits 0 from clean state.
+- [x] **Step 4:** `docs/dev-setup.md`: prerequisites (Node 22, pnpm, Docker, temporal CLI), one-command bootstrap, service URLs table. Commit: `chore(infra): docker-compose dev environment + bootstrap script`
 
 ### Task FND-8: CI pipeline
 
@@ -303,3 +303,4 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-3 done (13b5a4a + fix c0f4f25, review clean; 25 tests, full membership pins). phaseId/agentId plain strings (not in prefix list) — revisit if FND-6 mints phase ids.
 - 2026-08-03: FND-4 done (f38e808 + fix cc08adf, review clean; 86 tests). ADR-0003 filed (workspace-binding + preview revocation for plan 03). Deferred to FND-10: hoist httpsUrlSchema+shared primitives to src/primitives.ts; start block loses timeout_seconds.
 - 2026-08-03: FND-7 done pending amendment round (5e5fe17, Approved; Important: preserve admin password on re-mint).
+- 2026-08-03: FND-7 done (5e5fe17 + fix 0a5eb86, review clean; 7 services, LocalStack queues+DLQs, password-preserving re-mint). LocalStack host port 4566 default; this machine tested on 4567 (unrelated squatter).
