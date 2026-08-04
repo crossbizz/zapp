@@ -2,13 +2,15 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import fastify, { type FastifyInstance } from 'fastify';
 import { z, ZodError } from 'zod';
 import { PathViolationError } from '@zapp/workspace-runtime';
 import {
   ExecManager,
+  ExecPreflightError,
   ExecRequestSchema,
   ExecResultSchema,
+  type ExecStreamRecord,
   ExecStreamRecordSchema,
 } from './exec.js';
 import {
@@ -21,13 +23,29 @@ import {
   writeWorkspaceFile,
 } from './fs.js';
 import { GitRequestSchema, GitResultSchema, runGit } from './git.js';
-import { HealthResponseSchema, MetricsResponseSchema, getHealth, getMetrics } from './health.js';
+import {
+  HealthResponseSchema,
+  MetricsResponseSchema,
+  getHealth,
+  getMetrics,
+  type MetricsSource,
+} from './health.js';
+
+const MetricsSourceSchema = z.custom<MetricsSource>(
+  (value) => {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    return typeof (value as { sample?: unknown }).sample === 'function';
+  },
+);
 
 const BuildOptionsSchema = z
   .object({
     workspaceRoot: z.string().min(1),
     token: z.string().min(1),
     devServerPort: z.number().int().min(1).max(65_535).optional(),
+    metricsSource: MetricsSourceSchema.optional(),
   })
   .strict();
 export type BuildOptions = z.infer<typeof BuildOptionsSchema>;
@@ -48,9 +66,53 @@ function hasValidToken(header: string | string[] | undefined, expectedDigest: Bu
   return timingSafeEqual(tokenDigest(value), expectedDigest);
 }
 
-function sendNdjson(reply: FastifyReply, record: unknown): void {
+function hasHttpBody(headers: Record<string, string | string[] | undefined>): boolean {
+  const contentLength = headers['content-length'];
+  return (
+    headers['transfer-encoding'] !== undefined ||
+    (contentLength !== undefined && contentLength !== '0')
+  );
+}
+
+export interface NdjsonWriter {
+  readonly destroyed?: boolean;
+  readonly writableEnded?: boolean;
+  write(value: string): boolean;
+  once(event: 'close' | 'drain' | 'error', listener: (...args: unknown[]) => void): unknown;
+  off(event: 'close' | 'drain' | 'error', listener: (...args: unknown[]) => void): unknown;
+}
+
+export async function writeNdjsonRecord(writer: NdjsonWriter, record: unknown): Promise<void> {
   const validated = ExecStreamRecordSchema.parse(record);
-  reply.raw.write(`${JSON.stringify(validated)}\n`);
+  if (writer.destroyed === true || writer.writableEnded === true) {
+    throw new Error('Streaming client closed');
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      writer.off('drain', onDrain);
+      writer.off('close', onClose);
+      writer.off('error', onError);
+    };
+    const onDrain = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onClose = (): void => {
+      cleanup();
+      reject(new Error('Streaming client closed'));
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error('Streaming client failed'));
+    };
+    writer.once('drain', onDrain);
+    writer.once('close', onClose);
+    writer.once('error', onError);
+    if (writer.write(`${JSON.stringify(validated)}\n`)) {
+      cleanup();
+      resolve();
+    }
+  });
 }
 
 export async function buildWorkspaceAgent(options: BuildOptions): Promise<FastifyInstance> {
@@ -75,6 +137,10 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   app.addHook('onRequest', async (request, reply) => {
     if (!hasValidToken(request.headers.authorization, expectedDigest)) {
       await reply.code(401).send(ErrorResponseSchema.parse({ error: 'unauthorized' }));
+      return;
+    }
+    if (request.method === 'GET' && hasHttpBody(request.headers)) {
+      await reply.code(400).send(ErrorResponseSchema.parse({ error: 'bad_request' }));
     }
   });
   app.addHook('preClose', async () => {
@@ -84,6 +150,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     if (
       error instanceof ZodError ||
       error instanceof PathViolationError ||
+      error instanceof ExecPreflightError ||
       (error instanceof Error && error.message.startsWith('Unsafe git'))
     ) {
       await reply.code(400).send(ErrorResponseSchema.parse({ error: 'bad_request' }));
@@ -99,10 +166,38 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       return ExecResultSchema.parse(await execManager.run(input));
     }
 
+    const pendingRecords: Array<{
+      record: ExecStreamRecord;
+      resolve: () => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    let streamReady = false;
+    let activePid: number | undefined;
+    let resolveStarted: () => void = () => undefined;
+    let rejectStarted: (error: unknown) => void = () => undefined;
+    const started = new Promise<void>((resolve, reject) => {
+      resolveStarted = resolve;
+      rejectStarted = reject;
+    });
+    const completion = execManager.run(input, async (record) => {
+      if (record.type === 'started') {
+        activePid = record.pid;
+        resolveStarted();
+      }
+      if (streamReady) {
+        await writeNdjsonRecord(reply.raw, record);
+        return;
+      }
+      await new Promise<void>((resolve, reject) => {
+        pendingRecords.push({ record, resolve, reject });
+      });
+    });
+    void completion.catch(rejectStarted);
+    await started;
+
     reply.hijack();
     reply.raw.statusCode = 200;
     reply.raw.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
-    let activePid: number | undefined;
     const onClose = (): void => {
       if (!reply.raw.writableEnded && activePid !== undefined) {
         execManager.kill(activePid);
@@ -110,13 +205,32 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     };
     reply.raw.once('close', onClose);
     try {
-      await execManager.run(input, (record) => {
-        if (record.type === 'started') {
-          activePid = record.pid;
+      while (pendingRecords.length > 0) {
+        const pending = pendingRecords.shift();
+        if (pending !== undefined) {
+          try {
+            await writeNdjsonRecord(reply.raw, pending.record);
+            pending.resolve();
+          } catch (error) {
+            pending.reject(error);
+            throw error;
+          }
         }
-        sendNdjson(reply, record);
-      });
+      }
+      streamReady = true;
+      await completion;
       reply.raw.end();
+    } catch (error) {
+      for (const pending of pendingRecords.splice(0)) {
+        pending.reject(error);
+      }
+      if (activePid !== undefined) {
+        execManager.kill(activePid);
+      }
+      await completion.catch(() => undefined);
+      if (!reply.raw.destroyed) {
+        reply.raw.destroy();
+      }
     } finally {
       reply.raw.off('close', onClose);
     }
@@ -130,11 +244,13 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   });
 
   app.get('/files/list', async (request) => {
+    EmptyBodySchema.parse(request.body);
     const query = ListQuerySchema.parse(request.query);
     return FileListSchema.parse(await listWorkspaceFiles(workspaceRoot, query));
   });
 
   app.get('/files', async (request, reply) => {
+    EmptyBodySchema.parse(request.body);
     const { path } = FileQuerySchema.parse(request.query);
     const body = BinaryBodySchema.parse(await readWorkspaceFile(workspaceRoot, path));
     return reply.type('application/octet-stream').send(body);
@@ -155,12 +271,16 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
 
   app.get('/healthz', async (request) => {
     EmptyQuerySchema.parse(request.query);
+    EmptyBodySchema.parse(request.body);
     return HealthResponseSchema.parse(await getHealth(parsed.devServerPort));
   });
 
-  app.get('/metrics', (request) => {
+  app.get('/metrics', async (request) => {
     EmptyQuerySchema.parse(request.query);
-    return MetricsResponseSchema.parse(getMetrics());
+    EmptyBodySchema.parse(request.body);
+    return MetricsResponseSchema.parse(
+      await getMetrics(execManager.activePids(), parsed.metricsSource),
+    );
   });
 
   await app.ready();

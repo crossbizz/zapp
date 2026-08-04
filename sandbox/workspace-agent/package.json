@@ -13,17 +13,18 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node scripts/ensure-node-pty-helper.mjs"
   },
   "dependencies": {
     "@zapp/workspace-runtime": "workspace:*",
-    "execa": "^8.0.1",
-    "fastify": "^5.11.2",
-    "node-pty": "^1.1.0",
-    "zod": "^3.23.8"
+    "execa": "8.0.1",
+    "fastify": "5.11.2",
+    "node-pty": "1.1.0",
+    "zod": "3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^22.9.0",
-    "vitest": "^3.2.7"
+    "@types/node": "22.20.1",
+    "vitest": "3.2.7"
   }
 }

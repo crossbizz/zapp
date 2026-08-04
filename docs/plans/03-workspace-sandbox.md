@@ -91,7 +91,7 @@ All paths resolved under workspace root; `..`/symlink escape → `PathViolationE
 **Interfaces produced:** HTTP API on :8877 (bearer = `ZAPP_AGENT_TOKEN`, constant-time compare): `POST /exec` (+ `?stream=1` chunked NDJSON), `POST /exec/:pid/kill`, `GET/PUT /files?path=`, `GET /files/list`, `POST /git`, `GET /healthz` (also reports dev-server port probe), `GET /metrics` (cpu/mem snapshot for cost sampling). Implements the WS-1 semantics server-side (path guard at agent level too — defense in depth).
 **Effort:** L
 
-- [x] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
+- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
 
@@ -213,3 +213,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
 - 2026-08-04 WS-3 done — authenticated workspace-agent RPC daemon added with strict schemas, path and git guards, real PTY execution, bounded streaming, and child reaping.
+- 2026-08-04 WS-3 BLOCKED — round-1 TOCTOU containment requires descriptor-relative native filesystem/exec support; ADR-0006 is proposed but not accepted, so the safe review fixes are committed separately while WS-3 remains unchecked.

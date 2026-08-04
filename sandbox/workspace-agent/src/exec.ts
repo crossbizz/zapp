@@ -1,21 +1,63 @@
 import process from 'node:process';
+import { StringDecoder } from 'node:string_decoder';
 import { execa } from 'execa';
 import * as nodePty from 'node-pty';
 import { z } from 'zod';
 import { MAX_EXEC_OUTPUT_BYTES, resolveInRoot } from '@zapp/workspace-runtime';
+
+const SAFE_INHERITED_ENV_NAMES = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'SHELL',
+  'USER',
+  'LOGNAME',
+] as const;
+
+function isProtectedEnvName(name: string): boolean {
+  const normalized = name.toUpperCase();
+  return (
+    /^(?:ZAPP_|AWS_|MODAL_|STYTCH_|DATABASE_URL$|REDIS_URL$|NODE_OPTIONS$|NODE_PATH$|LD_|DYLD_|BASH_ENV$|ENV$)/u.test(
+      normalized,
+    ) || /(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE_KEY|API_KEY)(?:_|$)/u.test(normalized)
+  );
+}
+
+const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
+  for (const name of Object.keys(env)) {
+    if (isProtectedEnvName(name)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Protected environment name' });
+    }
+  }
+});
 
 export const ExecRequestSchema = z
   .object({
     cmd: z.string().min(1),
     args: z.array(z.string()),
     cwd: z.string().optional(),
-    env: z.record(z.string()).optional(),
+    env: RequestEnvSchema.optional(),
     timeoutMs: z.number().int().positive(),
     pty: z.boolean().optional(),
   })
   .strict();
 
 export type ExecRequest = z.infer<typeof ExecRequestSchema>;
+
+function buildChildEnv(requestEnv: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {};
+  for (const name of SAFE_INHERITED_ENV_NAMES) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      childEnv[name] = value;
+    }
+  }
+  return { ...childEnv, ...requestEnv };
+}
 
 export const ExecResultSchema = z
   .object({
@@ -57,49 +99,109 @@ export const ExecStreamRecordSchema = z.discriminatedUnion('type', [
 
 export type ExecStreamRecord = z.infer<typeof ExecStreamRecordSchema>;
 
+export class ExecPreflightError extends Error {
+  constructor() {
+    super('Command could not be started');
+    this.name = 'ExecPreflightError';
+  }
+}
+
 interface ActiveProcess {
-  readonly kill: () => void;
+  readonly kill: (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout') => void;
   readonly done: Promise<void>;
 }
 
+type ExecStreamEmitter = (record: ExecStreamRecord) => Promise<void> | void;
+
 interface OutputCollector {
-  readonly append: (stream: 'stdout' | 'stderr', data: Buffer) => void;
-  readonly result: () => Pick<ExecResult, 'stdout' | 'stderr' | 'truncated'>;
+  readonly append: (stream: 'stdout' | 'stderr', data: Buffer) => Promise<void>;
+  readonly result: () => Promise<Pick<ExecResult, 'stdout' | 'stderr' | 'truncated'>>;
 }
 
-function createOutputCollector(emit?: (record: ExecStreamRecord) => void): OutputCollector {
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
+export async function consumeOutputChunks(
+  source: AsyncIterable<Buffer | string>,
+  append: (chunk: Buffer) => Promise<void>,
+): Promise<void> {
+  for await (const chunk of source) {
+    await append(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+}
+
+function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
   let outputBytes = 0;
   let truncated = false;
+  let finalized = false;
+  let appendChain = Promise.resolve();
+
+  const validUtf8Prefix = (text: string, maxBytes: number): string => {
+    const encoded = Buffer.from(text, 'utf8');
+    if (encoded.length <= maxBytes) {
+      return text;
+    }
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let end = maxBytes;
+    while (end > 0) {
+      try {
+        return decoder.decode(encoded.subarray(0, end));
+      } catch {
+        end -= 1;
+      }
+    }
+    return '';
+  };
+
+  const appendText = async (stream: 'stdout' | 'stderr', text: string): Promise<void> => {
+    if (text.length === 0) {
+      return;
+    }
+    const remaining = MAX_EXEC_OUTPUT_BYTES - outputBytes;
+    if (remaining <= 0) {
+      truncated = true;
+      return;
+    }
+    const accepted = validUtf8Prefix(text, remaining);
+    if (accepted !== text) {
+      truncated = true;
+    }
+    outputBytes += Buffer.byteLength(accepted);
+    if (accepted.length === 0) {
+      return;
+    }
+    (stream === 'stdout' ? stdout : stderr).push(accepted);
+    await emit?.(
+      ExecStreamRecordSchema.parse({
+        type: stream,
+        data: accepted,
+        at: new Date().toISOString(),
+      }),
+    );
+  };
+
+  const finalize = async (): Promise<void> => {
+    if (finalized) {
+      return;
+    }
+    finalized = true;
+    await appendText('stdout', decoders.stdout.end());
+    await appendText('stderr', decoders.stderr.end());
+  };
 
   return {
     append(stream, data) {
-      const remaining = MAX_EXEC_OUTPUT_BYTES - outputBytes;
-      if (remaining <= 0) {
-        truncated = true;
-        return;
-      }
-      const accepted = data.subarray(0, remaining);
-      if (accepted.length < data.length) {
-        truncated = true;
-      }
-      outputBytes += accepted.length;
-      (stream === 'stdout' ? stdout : stderr).push(accepted);
-      if (accepted.length > 0) {
-        emit?.(
-          ExecStreamRecordSchema.parse({
-            type: stream,
-            data: accepted.toString('utf8'),
-            at: new Date().toISOString(),
-          }),
-        );
-      }
+      appendChain = appendChain.then(async () =>
+        appendText(stream, decoders[stream].write(data)),
+      );
+      return appendChain;
     },
-    result() {
+    async result() {
+      await appendChain;
+      await finalize();
       return {
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: stdout.join(''),
+        stderr: stderr.join(''),
         truncated,
       };
     },
@@ -124,7 +226,11 @@ export class ExecManager {
 
   constructor(private readonly workspaceRoot: string) {}
 
-  async run(input: ExecRequest, emit?: (record: ExecStreamRecord) => void): Promise<ExecResult> {
+  activePids(): readonly number[] {
+    return [...this.active.keys()];
+  }
+
+  async run(input: ExecRequest, emit?: ExecStreamEmitter): Promise<ExecResult> {
     const cwd = await resolveInRoot(this.workspaceRoot, input.cwd ?? '.');
     return input.pty === true ? this.runPty(input, cwd, emit) : this.runProcess(input, cwd, emit);
   }
@@ -134,14 +240,14 @@ export class ExecManager {
     if (active === undefined) {
       return false;
     }
-    active.kill();
+    active.kill('explicit');
     return true;
   }
 
   async killAll(): Promise<void> {
     const active = [...this.active.values()];
     for (const child of active) {
-      child.kill();
+      child.kill('shutdown');
     }
     await Promise.allSettled(active.map(async (child) => child.done));
   }
@@ -149,14 +255,14 @@ export class ExecManager {
   private async runProcess(
     input: ExecRequest,
     cwd: string,
-    emit?: (record: ExecStreamRecord) => void,
+    emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
     const subprocess = execa(input.cmd, input.args, {
       cwd,
-      ...(input.env === undefined ? {} : { env: input.env }),
-      extendEnv: true,
+      env: buildChildEnv(input.env),
+      extendEnv: false,
       reject: false,
       buffer: false,
       cleanup: false,
@@ -166,43 +272,54 @@ export class ExecManager {
       stderr: 'pipe',
     });
     const pid = subprocess.pid;
+    const stdout = subprocess.stdout;
+    const stderr = subprocess.stderr;
     if (pid === undefined) {
-      throw new Error('Command did not start');
+      void subprocess.catch(() => undefined);
+      throw new ExecPreflightError();
+    }
+    if (stdout === null || stderr === null) {
+      subprocess.kill('SIGKILL');
+      throw new ExecPreflightError();
     }
 
     let resolveDone: () => void = () => undefined;
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
     });
-    const kill = (): void => {
+    const state = {
+      termination: undefined as 'disconnect' | 'explicit' | 'shutdown' | 'timeout' | undefined,
+    };
+    const kill = (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout'): void => {
+      state.termination ??= reason;
       killProcessGroup(pid, () => subprocess.kill('SIGKILL'));
     };
     this.active.set(pid, { kill, done });
-    emit?.(
-      ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
-    );
-
-    subprocess.stdout?.on('data', (data: Buffer) => {
-      output.append('stdout', data);
-    });
-    subprocess.stderr?.on('data', (data: Buffer) => {
-      output.append('stderr', data);
-    });
-    const state = { timedOut: false };
     const timeout = setTimeout(() => {
-      state.timedOut = true;
-      kill();
+      kill('timeout');
     }, input.timeoutMs);
 
     try {
-      const completed = await subprocess;
+      await emit?.(
+        ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
+      );
+      const [completed] = await Promise.all([
+        subprocess,
+        consumeOutputChunks(stdout, async (data) => output.append('stdout', data)),
+        consumeOutputChunks(stderr, async (data) => output.append('stderr', data)),
+      ]);
       const completedExitCode = (completed as { exitCode?: number }).exitCode;
       const result = ExecResultSchema.parse({
-        exitCode: state.timedOut ? 124 : (completedExitCode ?? 137),
+        exitCode:
+          state.termination === 'timeout'
+            ? 124
+            : state.termination === undefined
+              ? (completedExitCode ?? 137)
+              : 137,
         durationMs: performance.now() - startedAt,
-        ...output.result(),
+        ...(await output.result()),
       });
-      emit?.(
+      await emit?.(
         ExecStreamRecordSchema.parse({
           type: 'exit',
           exitCode: result.exitCode,
@@ -212,6 +329,10 @@ export class ExecManager {
         }),
       );
       return result;
+    } catch (error) {
+      kill('disconnect');
+      await Promise.allSettled([subprocess]);
+      throw error;
     } finally {
       clearTimeout(timeout);
       this.active.delete(pid);
@@ -219,63 +340,106 @@ export class ExecManager {
     }
   }
 
-  private runPty(
+  private async runPty(
     input: ExecRequest,
     cwd: string,
-    emit?: (record: ExecStreamRecord) => void,
+    emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
-    const terminal = nodePty.spawn(input.cmd, input.args, {
-      cwd,
-      env: { ...process.env, ...input.env },
-      cols: 80,
-      rows: 24,
-    });
+    let terminal: nodePty.IPty;
+    try {
+      terminal = nodePty.spawn(input.cmd, input.args, {
+        cwd,
+        env: buildChildEnv(input.env),
+        cols: 80,
+        rows: 24,
+      });
+    } catch {
+      throw new ExecPreflightError();
+    }
     const pid = terminal.pid;
-    emit?.(
-      ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
-    );
-
-    return new Promise<ExecResult>((resolve) => {
-      let resolveDone: () => void = () => undefined;
-      const done = new Promise<void>((resolveActive) => {
-        resolveDone = resolveActive;
+    terminal.pause();
+    let resolveDone: () => void = () => undefined;
+    const done = new Promise<void>((resolveActive) => {
+      resolveDone = resolveActive;
+    });
+    const state = {
+      termination: undefined as 'disconnect' | 'explicit' | 'shutdown' | 'timeout' | undefined,
+    };
+    const kill = (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout'): void => {
+      state.termination ??= reason;
+      killProcessGroup(pid, () => {
+        terminal.kill('SIGKILL');
       });
-      const kill = (): void => {
-        killProcessGroup(pid, () => {
-          terminal.kill('SIGKILL');
+    };
+    this.active.set(pid, { kill, done });
+    const timeout = setTimeout(() => {
+      kill('timeout');
+    }, input.timeoutMs);
+    let outputChain = Promise.resolve();
+    let outputError: Error | undefined;
+    terminal.onData((data) => {
+      terminal.pause();
+      outputChain = outputChain
+        .then(async () => output.append('stdout', Buffer.from(data)))
+        .then(() => {
+          terminal.resume();
+        })
+        .catch((error: unknown) => {
+          outputError = error instanceof Error ? error : new Error('Output streaming failed');
+          kill('disconnect');
         });
-      };
-      this.active.set(pid, { kill, done });
-      const state = { timedOut: false };
-      const timeout = setTimeout(() => {
-        state.timedOut = true;
-        kill();
-      }, input.timeoutMs);
-      terminal.onData((data) => {
-        output.append('stdout', Buffer.from(data));
-      });
+    });
+    const completion = new Promise<ExecResult>((resolve, reject) => {
       terminal.onExit(({ exitCode }) => {
-        clearTimeout(timeout);
-        this.active.delete(pid);
-        const result = ExecResultSchema.parse({
-          exitCode: state.timedOut ? 124 : exitCode,
-          durationMs: performance.now() - startedAt,
-          ...output.result(),
+        void (async () => {
+          await outputChain;
+          if (outputError !== undefined) {
+            throw outputError;
+          }
+          clearTimeout(timeout);
+          this.active.delete(pid);
+          const result = ExecResultSchema.parse({
+            exitCode:
+              state.termination === 'timeout'
+                ? 124
+                : state.termination === undefined
+                  ? exitCode
+                  : 137,
+            durationMs: performance.now() - startedAt,
+            ...(await output.result()),
+          });
+          await emit?.(
+            ExecStreamRecordSchema.parse({
+              type: 'exit',
+              exitCode: result.exitCode,
+              durationMs: result.durationMs,
+              truncated: result.truncated,
+              at: new Date().toISOString(),
+            }),
+          );
+          resolveDone();
+          resolve(result);
+        })().catch((error: unknown) => {
+          clearTimeout(timeout);
+          this.active.delete(pid);
+          resolveDone();
+          reject(error instanceof Error ? error : new Error('PTY execution failed'));
         });
-        emit?.(
-          ExecStreamRecordSchema.parse({
-            type: 'exit',
-            exitCode: result.exitCode,
-            durationMs: result.durationMs,
-            truncated: result.truncated,
-            at: new Date().toISOString(),
-          }),
-        );
-        resolveDone();
-        resolve(result);
       });
     });
+
+    try {
+      await emit?.(
+        ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
+      );
+      terminal.resume();
+      return await completion;
+    } catch (error) {
+      kill('disconnect');
+      await Promise.allSettled([completion]);
+      throw error;
+    }
   }
 }
