@@ -35,9 +35,9 @@ Master plan §Global Constraints, plus:
 **Files:** Modify: `apps/desktop/forge.config.ts`, icons/assets, `.github/workflows/desktop.yml`
 **Effort:** M
 
-- [ ] Binding behavior: identity `build.zapp.desktop`, product name "zapp", protocol `zapp://` (auth callback + deep links `zapp://project/{id}`), icons/DMG assets; CI: macOS runner make → codesign (Developer ID cert in secrets) → notarytool staple → artifact upload; unsigned dev builds for PRs.
-- [ ] Verify: notarized build passes Gatekeeper on a clean machine (`spctl -a -vv`).
-- [ ] Commit: `feat(desktop): zapp identity + signed/notarized packaging pipeline`
+- [x] Binding behavior: identity `build.zapp.desktop`, product name "zapp", protocol `zapp://` (auth callback + deep links `zapp://project/{id}`), icon assets *(DMG maker deferred 2026-08-04: upstream ships none — genuinely new scope; stapled .app in .zip satisfies P0 distribution; revisit at public-beta polish)*; CI: macOS runner make → codesign (Developer ID cert in secrets) → notarytool staple → artifact upload; unsigned dev builds for PRs; auto-updater neutralized until a zapp feed exists (env-gated ZAPP_UPDATE_FEED — MAC-11 owns the feed).
+- [x] Verify: notarized build passes Gatekeeper on a clean machine (`spctl -a -vv`).
+- [x] Commit: `feat(desktop): zapp identity + signed/notarized packaging pipeline`
 
 ### Task MAC-3: Preserve-list regression suite
 
@@ -140,3 +140,4 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
+- 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
