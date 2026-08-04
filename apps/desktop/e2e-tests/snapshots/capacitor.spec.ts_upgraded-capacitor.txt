@@ -2364,7 +2364,7 @@ Allow: /
 
 
 === README.md ===
-# Welcome to your Dyad app
+# Welcome to your Zapp app
 
 
 === src/App.css ===
