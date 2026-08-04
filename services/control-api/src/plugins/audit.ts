@@ -67,12 +67,25 @@ export const AUDIT_ACTIONS = [
    * hole in exactly the period people ask about.
    */
   'project.scan_requested',
+  'secret.created',
+  'secret.rotated',
+  'secret.deleted',
+  /**
+   * A secret value was decrypted (plan 02 CP-7). The one action in this list
+   * that records a *read*, and the reason the internal decrypt route exists in
+   * this shape at all: PRD §18.12 makes plaintext available to the sandbox
+   * service at injection time, and an availability nobody can audit afterwards
+   * is indistinguishable from an exfiltration. Written in the same transaction
+   * as the read, so a decrypt that returned a value and left no row is not a
+   * state this service can reach.
+   */
+  'secret.decrypted',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export type AuditTargetType = 'organization' | 'membership' | 'invite' | 'project';
+export type AuditTargetType = 'organization' | 'membership' | 'invite' | 'project' | 'secret';
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
 export type AuditActorType = 'user' | 'service' | 'agent' | 'support';
@@ -230,6 +243,21 @@ declare module 'fastify' {
      * that does not touch PostgreSQL — see {@link AuditSink.recordDetached}.
      */
     auditDetached(entry: AuditEntry): Promise<void>;
+    /**
+     * The same, for a request authenticated as a service rather than as a person
+     * (`src/internal/service-auth.ts`).
+     *
+     * A separate decorator rather than an `actor` field on {@link AuditEntry},
+     * and the distinction is the point: the actor still comes from a verified
+     * credential on the request, never from an argument. A handler cannot claim
+     * a row was some other service's doing any more than it can claim a row was
+     * some other user's — which is the property that makes `secret.decrypted`
+     * worth reading.
+     *
+     * Requires `requireService`; a request with a session and no service
+     * identity throws rather than silently filing the row under `user`.
+     */
+    auditService(tx: AuditExecutor, entry: AuditEntry): Promise<void>;
   }
 }
 
@@ -263,22 +291,17 @@ export const auditLog = fp<AuditLogOptions>(
   (app, options, done) => {
     const { sink, now } = options;
 
-    function toRecord(request: FastifyRequest, entry: AuditEntry): AuditRecord {
-      const auth = request.auth;
-      if (auth === undefined) {
-        // Not reachable from a route with `requireSession`, which is all of
-        // them. Reaching it means a mutating route was registered without one,
-        // and a 500 is the honest outcome: the alternative is an audit row that
-        // names no actor.
-        throw new Error('audit requires an authenticated request');
-      }
+    function toRecord(
+      actor: { readonly type: AuditActorType; readonly id: string },
+      entry: AuditEntry,
+    ): AuditRecord {
       const metadata = entry.metadata ?? {};
       assertScalars(metadata);
 
       return {
         organizationId: entry.organizationId,
-        actorType: 'user',
-        actorId: auth.userId,
+        actorType: actor.type,
+        actorId: actor.id,
         action: entry.action,
         targetType: entry.target.type,
         targetId: entry.target.id,
@@ -287,17 +310,51 @@ export const auditLog = fp<AuditLogOptions>(
       };
     }
 
+    function userActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+      const auth = request.auth;
+      if (auth === undefined) {
+        // Not reachable from a route with `requireSession`, which is all of
+        // them. Reaching it means a mutating route was registered without one,
+        // and a 500 is the honest outcome: the alternative is an audit row that
+        // names no actor.
+        throw new Error('audit requires an authenticated request');
+      }
+      return { type: 'user', id: auth.userId };
+    }
+
+    function serviceActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+      const service = request.service;
+      if (service === undefined) {
+        // Same argument, and the reverse mistake: a route that called this
+        // without `requireService` would file a service action under whatever
+        // credential happened to be present.
+        throw new Error('auditService requires a service-authenticated request');
+      }
+      return { type: 'service', id: service.service };
+    }
+
     app.decorateRequest(
       'audit',
       function audit(this: FastifyRequest, tx: AuditExecutor, entry: AuditEntry): Promise<void> {
-        return sink.record(tx, toRecord(this, entry));
+        return sink.record(tx, toRecord(userActor(this), entry));
       },
     );
 
     app.decorateRequest(
       'auditDetached',
       function auditDetached(this: FastifyRequest, entry: AuditEntry): Promise<void> {
-        return sink.recordDetached(toRecord(this, entry));
+        return sink.recordDetached(toRecord(userActor(this), entry));
+      },
+    );
+
+    app.decorateRequest(
+      'auditService',
+      function auditService(
+        this: FastifyRequest,
+        tx: AuditExecutor,
+        entry: AuditEntry,
+      ): Promise<void> {
+        return sink.record(tx, toRecord(serviceActor(this), entry));
       },
     );
 

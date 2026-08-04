@@ -13,14 +13,30 @@ import {
   type IdempotencyStore,
 } from '../../src/plugins/idempotency.js';
 import type { GitServicePort } from '../../src/git/port.js';
+import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
+import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from './fake-auth-port.js';
+import { FakeServiceTokens } from './fake-service-tokens.js';
 import { InMemoryOrganizationStore } from './org-store.js';
 
 /** 32 bytes of nothing, in the shape the config demands. Never a real key. */
 export const TEST_SECRET = 'a'.repeat(64);
 export const TEST_PREVIOUS_SECRET = 'b'.repeat(64);
+
+/**
+ * The vault's master key for tests: a fixed byte pattern, and the *shipping*
+ * `createEnvMasterKey` around it rather than a stub.
+ *
+ * Which means every secrets suite exercises real AES-256-GCM — real nonces, real
+ * tags, a real wrap and unwrap. A fake cipher would let a test pass while the
+ * envelope was subtly wrong, and the envelope is the whole task.
+ */
+export const TEST_MASTER_KEY: MasterKeyPort = createEnvMasterKey({
+  key: Buffer.alloc(KEY_BYTES, 0x2a),
+  version: 1,
+});
 
 export const TEST_AUTH_CONFIG: AuthConfig = {
   sessionSecret: TEST_SECRET,
@@ -88,6 +104,12 @@ export interface Harness {
   /** The shipping in-memory implementation, not a double — CP-5 replaces it. */
   readonly invites: InviteStore;
   readonly audit: InMemoryAuditSink;
+  /**
+   * The service tokens `/internal/*` will accept. Empty until a test issues
+   * one, so an internal route in a suite that never mentions services behaves
+   * exactly as the deployed deny-all one does.
+   */
+  readonly serviceTokens: FakeServiceTokens;
   /** Test-controlled clock, so expiry is asserted rather than waited for. */
   advance: (milliseconds: number) => void;
   now: () => Date;
@@ -117,6 +139,12 @@ export interface HarnessOptions {
    * the shipping record-only implementation.
    */
   readonly git?: GitServicePort;
+  /**
+   * Which services may call `/internal/secrets/decrypt`. Defaults to the
+   * shipping list; the suite that proves an unallowlisted caller is refused
+   * narrows it.
+   */
+  readonly decryptCallers?: readonly string[];
 }
 
 /**
@@ -133,6 +161,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
   const now = (): Date => new Date(Date.now() + offset);
   const invites = createInMemoryInviteStore(now);
   const audit = createInMemoryAuditSink();
+  const serviceTokens: ServiceTokenVerifier & FakeServiceTokens = new FakeServiceTokens();
 
   const app = buildApp({
     logger: false,
@@ -153,6 +182,17 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             tenantDb: options.tenantDb,
             ...(options.git === undefined ? {} : { git: options.git }),
           },
+          // Wired whenever the tenant surface is, so every route suite runs
+          // against an app that has the vault registered — a secrets route that
+          // only existed in the suite testing it would be a route the rest of
+          // the pipeline was never exercised against.
+          secrets: {
+            masterKey: TEST_MASTER_KEY,
+            serviceTokens,
+            ...(options.decryptCallers === undefined
+              ? {}
+              : { decryptCallers: options.decryptCallers }),
+          },
         }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
@@ -169,6 +209,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     organizations,
     invites,
     audit,
+    serviceTokens,
     now,
     advance: (milliseconds: number) => {
       offset += milliseconds;

@@ -248,6 +248,16 @@ function bucketKey(
     if (organizationId !== undefined) {
       return `rl:${routeClass}:org:${organizationId}`;
     }
+    // An internal caller has no tenant and no user, but it does have a verified
+    // identity (`src/internal/service-auth.ts`) — so it gets its own bucket
+    // rather than falling through to the address one, where every internal
+    // service in the cluster would share a single budget with whatever else
+    // egresses from that address. A busy sandbox fleet must not be able to
+    // rate-limit the release service.
+    const service = request.service?.service;
+    if (service !== undefined) {
+      return `rl:${routeClass}:service:${service}`;
+    }
     // A mutation with no tenant context is still somebody's: creating an
     // organization mints a Stytch organization per success (plan 02 CP-3
     // review), so it is counted against the caller rather than left unlimited.

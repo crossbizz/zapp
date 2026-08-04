@@ -13,11 +13,19 @@ import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createDbUserStore } from '../../src/auth/users.js';
 import { createDbOrganizationStore, type OrganizationStore } from '../../src/orgs/store.js';
-import { createInMemoryAuditSink } from '../../src/plugins/audit.js';
+import { SERVICE_TOKEN_HEADER } from '../../src/internal/service-auth.js';
+import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { TEST_AUTH_CONFIG, TEST_RATE_LIMITS, cookieJar, cookiesOf } from '../support/harness.js';
+import { FakeServiceTokens } from '../support/fake-service-tokens.js';
+import {
+  TEST_AUTH_CONFIG,
+  TEST_MASTER_KEY,
+  TEST_RATE_LIMITS,
+  cookieJar,
+  cookiesOf,
+} from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
@@ -53,6 +61,21 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
  */
 const EVENT_TIME = new Date('2026-08-15T12:00:00.000Z');
 
+/**
+ * The value each tenant's secret holds, prefixed with the tenant's slug so a
+ * leak names which tenant leaked. Distinctive enough that a whole response body
+ * can be searched for it.
+ */
+const SECRET_VALUE = 'hunter2-do-not-leak';
+
+/**
+ * The service the internal decrypt route is exercised as. Real allowlist, real
+ * gate; only the token store is a test's (`test/support/fake-service-tokens.ts`).
+ */
+const SANDBOX = 'sandbox-service';
+const serviceTokens = new FakeServiceTokens();
+const SERVICE_TOKEN = serviceTokens.issue(SANDBOX);
+
 /** Seeding is not what this suite is about; the audit trail has its own suite. */
 const noAudit = (): Promise<void> => Promise.resolve();
 
@@ -77,6 +100,8 @@ interface Tenant {
   readonly projectIds: string[];
   readonly runIds: string[];
   readonly eventIds: string[];
+  /** One secret per project, set through the API so the vault path is the real one. */
+  readonly secretIds: string[];
 }
 
 function errorOf(response: Response): string {
@@ -149,7 +174,7 @@ describe('the isolation suite itself', () => {
  * exactly that, silently and with a green tick. See the guard at the end of the
  * file.
  */
-const NEGATIVE_CONTROLS = 7;
+const NEGATIVE_CONTROLS = 8;
 let negativeControlsRun = 0;
 
 describe.skipIf(!hasDatabase)('tenant isolation', () => {
@@ -157,6 +182,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
   let store: OrganizationStore;
   let app: AppInstance;
   let port: FakeAuthPort;
+  let audit: InMemoryAuditSink;
   let a: Tenant;
   let b: Tenant;
   /** Signed in, real session, member of nothing. */
@@ -304,7 +330,33 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       }
     }
 
-    return { organizationId, owner, builder, viewer, pending, projectIds, runIds, eventIds };
+    // Through the API rather than by insert, deliberately: the ciphertext, the
+    // envelope and the `secret_metadata` row all have to be the ones the
+    // shipping write path produces, or the cross-tenant reads below would be
+    // reading a fixture rather than a secret.
+    const secretIds: string[] = [];
+    for (const projectId of projectIds) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/secrets`,
+        headers: as(owner, organizationId),
+        payload: { name: 'DATABASE_URL', value: `${slug}-${SECRET_VALUE}` },
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      secretIds.push(response.json<{ secret: { id: string } }>().secret.id);
+    }
+
+    return {
+      organizationId,
+      owner,
+      builder,
+      viewer,
+      pending,
+      projectIds,
+      runIds,
+      eventIds,
+      secretIds,
+    };
   }
 
   beforeAll(async () => {
@@ -312,11 +364,15 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     await database.truncateIdentity();
     store = createDbOrganizationStore(database.db);
     port = new FakeAuthPort();
+    audit = createInMemoryAuditSink();
     app = buildApp({
       logger: false,
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
-      orgs: { organizations: store, audit: createInMemoryAuditSink() },
+      orgs: { organizations: store, audit },
       tenant: { tenantDb: createTenantDbFactory(database.db) },
+      // The vault, wired exactly as `composeApp` wires it but with a token
+      // verifier a test can issue from — CP-8 ships the real one.
+      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens },
       // Rate limiting is registered exactly as it is in production — this suite
       // just needs the numbers out of the way, since eleven sign-ins from one
       // address is more than the shipped ten-a-minute auth ceiling. The limits
@@ -392,6 +448,85 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(a.owner, a.organizationId),
       });
       expectRefusal(response, 404, 'project_not_found');
+    });
+
+    it('does not list the secrets of B’s project', async () => {
+      // Names alone are information about how somebody else's project is
+      // deployed (PRD §18.12), which is why this is a refusal and not a
+      // filtered list.
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${b.projectIds[0] ?? ''}/secrets`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'project_not_found');
+      expect(response.body).not.toContain(SECRET_VALUE);
+    });
+
+    it('cannot write, rotate or delete a secret in B’s project', async () => {
+      const projectId = b.projectIds[0] ?? '';
+      const secretId = b.secretIds[0] ?? '';
+
+      const written = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/secrets`,
+        headers: as(a.owner, a.organizationId),
+        payload: { name: 'PLANTED', value: 'planted-by-a' },
+      });
+      expectRefusal(written, 404, 'project_not_found');
+
+      const rotated = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/secrets/${secretId}/rotate`,
+        headers: as(a.owner, a.organizationId),
+        payload: { value: 'rotated-by-a' },
+      });
+      expectRefusal(rotated, 404, 'secret_not_found');
+
+      const deleted = await app.inject({
+        method: 'DELETE',
+        url: `/v1/projects/${projectId}/secrets/${secretId}`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(deleted, 404, 'secret_not_found');
+
+      // Confirmed in the tables rather than in the answers: nothing planted
+      // under either tenant, and B's secret still holds B's value.
+      const planted = await database.sql<{ id: string }[]>`
+        select id from secret_metadata where name = 'PLANTED'
+      `;
+      expect(planted).toEqual([]);
+      const rows = await database.sql<{ organization_id: string; rotated_at: Date | null }[]>`
+        select organization_id, rotated_at from secret_metadata where id = ${secretId}
+      `;
+      expect(rows[0]?.organization_id).toBe(b.organizationId);
+      expect(rows[0]?.rotated_at).toBe(null);
+      const vault = await database.sql<{ secret_id: string }[]>`
+        select secret_id from secret_ciphertexts where secret_id = ${secretId}
+      `;
+      expect(vault).toHaveLength(1);
+    });
+
+    it('cannot decrypt B’s secret by naming its own organization', async () => {
+      // The internal route has no session to scope it, so the organization is a
+      // field of the body — which makes "can a caller point it at the wrong
+      // one" the question this asserts. The handle is bound to the organization
+      // named, so B's secret is simply not in it.
+      const before = audit.events.length;
+      const response = await app.inject({
+        method: 'POST',
+        url: '/internal/secrets/decrypt',
+        headers: { [SERVICE_TOKEN_HEADER]: SERVICE_TOKEN },
+        payload: {
+          organizationId: a.organizationId,
+          secretId: b.secretIds[0] ?? '',
+          reason: 'reaching across a tenant boundary',
+        },
+      });
+
+      expectRefusal(response, 404, 'secret_not_found');
+      expect(response.body).not.toContain(SECRET_VALUE);
+      expect(audit.events).toHaveLength(before);
     });
 
     it('cannot edit B’s project', async () => {
@@ -722,6 +857,28 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       expect(row?.name).toBe('acme alpha');
     });
 
+    it('refuses a Viewer the secret metadata of a project they can read', async () => {
+      // PRD §22.2 grants a Viewer `view_project` and denies them
+      // `view_secret_metadata` — the one capability where the two diverge.
+      const projectId = a.projectIds[0] ?? '';
+      const readable = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expect(readable.statusCode, readable.body).toBe(200);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/secrets`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expectRefusal(response, 403, 'permission_denied');
+      expect(ApiErrorSchema.parse(response.json()).error.details).toEqual({
+        action: 'view_secret_metadata',
+      });
+    });
+
     it('refuses a Builder on an Owner-only route', async () => {
       const response = await app.inject({
         method: 'PATCH',
@@ -878,17 +1035,27 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     });
 
     it('lets a Builder create a project, in their own organization only', async () => {
+      // Smuggling B's id in the body is now *refused* rather than ignored: the
+      // create schema is `.strict()` (plan 02 CP-6 review), so a client that
+      // believes it is choosing the organization is told it is not, instead of
+      // being quietly overruled. Both halves are asserted — the refusal, and
+      // then the plain create that must still succeed.
+      const smuggled = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: as(a.builder, a.organizationId),
+        payload: { name: 'Smuggled Project', organizationId: b.organizationId },
+      });
+      expectRefusal(smuggled, 400, 'validation_failed');
+      expect(await database.sql`select id from projects where name = 'Smuggled Project'`).toEqual(
+        [],
+      );
+
       const response = await app.inject({
         method: 'POST',
         url: '/v1/projects',
         headers: as(a.builder, a.organizationId),
-        payload: {
-          name: 'Builder Project',
-          // Smuggled: the body names B. The organization a row lands in comes
-          // from the tenant handle, never from the request, so this is ignored
-          // rather than honoured.
-          organizationId: b.organizationId,
-        },
+        payload: { name: 'Builder Project' },
       });
 
       expect(response.statusCode, response.body).toBe(201);
@@ -967,6 +1134,64 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { email: 'newcomer@beta.test', role: 'viewer' },
       });
       expect(invited.statusCode, invited.body).toBe(201);
+      negativeControlsRun += 1;
+    });
+
+    it('reads A’s own secret metadata — and never a value, on any route', async () => {
+      const projectId = a.projectIds[0] ?? '';
+      const secretId = a.secretIds[0] ?? '';
+
+      const listed = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/secrets`,
+        headers: as(a.builder, a.organizationId),
+      });
+      expectOnlyTenantRows(listed, a, [secretId]);
+      // The metadata is there; the value is not — and neither is the other
+      // tenant's, which is what makes this a control rather than a smoke test.
+      expect(listed.json<{ items: { name: string }[] }>().items[0]?.name).toBe('DATABASE_URL');
+      expect(listed.body).not.toContain(SECRET_VALUE);
+
+      // The one path that does produce a plaintext, correctly addressed: an
+      // allowlisted service, the right organization, a reason — and exactly one
+      // audit row for it.
+      const before = audit.events.length;
+      const decrypted = await app.inject({
+        method: 'POST',
+        url: '/internal/secrets/decrypt',
+        headers: { [SERVICE_TOKEN_HEADER]: SERVICE_TOKEN },
+        payload: {
+          organizationId: a.organizationId,
+          secretId,
+          reason: 'negative control for the isolation suite',
+        },
+      });
+      expect(decrypted.statusCode, decrypted.body).toBe(200);
+      expect(decrypted.json<{ value: string }>().value).toBe(`acme-${SECRET_VALUE}`);
+
+      const written = audit.events.slice(before);
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({
+        action: 'secret.decrypted',
+        actorType: 'service',
+        actorId: SANDBOX,
+        organizationId: a.organizationId,
+        targetId: secretId,
+      });
+
+      // And the same route refuses the same request from a user session.
+      const asUser = await app.inject({
+        method: 'POST',
+        url: '/internal/secrets/decrypt',
+        headers: as(a.owner, a.organizationId),
+        payload: {
+          organizationId: a.organizationId,
+          secretId,
+          reason: 'a person asking for their own organization’s secret',
+        },
+      });
+      expectRefusal(asUser, 401, 'service_unauthenticated');
+      expect(asUser.body).not.toContain(SECRET_VALUE);
       negativeControlsRun += 1;
     });
 

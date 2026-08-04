@@ -7,6 +7,7 @@ import { GitServiceError, type GitServicePort } from '../git/port.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { DEFAULT_PAGE_SIZE } from '../pagination.js';
+import { redactCredentials } from '../secrets/redaction.js';
 import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
 import { SOURCE_TYPES } from '../tenant/vocabulary.js';
 import {
@@ -61,22 +62,32 @@ const ProjectParams = z.object({ projectId: idSchema('proj') });
 const NameSchema = z.string().trim().min(1).max(80);
 const DescriptionSchema = z.string().trim().max(2000);
 
-const CreateProjectBody = z.object({
-  name: NameSchema,
-  /** Optional: derived from the name when absent, which is the common path. */
-  slug: SlugSchema.optional(),
-  description: DescriptionSchema.optional(),
+const CreateProjectBody = z
+  .object({
+    name: NameSchema,
+    /** Optional: derived from the name when absent, which is the common path. */
+    slug: SlugSchema.optional(),
+    description: DescriptionSchema.optional(),
+    /**
+     * How the project entered zapp (PRD §10.1–10.2, §8.1). `prompt` is the home
+     * flow and therefore the default.
+     *
+     * `supportLevel` is deliberately *not* a field: PRD §7.1's tiers are what the
+     * capability scan concludes about a project (plan 05 VF-3), so a client that
+     * could declare its own project `verified` would be declaring which
+     * verification gates it is exempt from. Every project starts `compatible`.
+     */
+    sourceType: z.enum(SOURCE_TYPES).default('prompt'),
+  })
   /**
-   * How the project entered zapp (PRD §10.1–10.2, §8.1). `prompt` is the home
-   * flow and therefore the default.
-   *
-   * `supportLevel` is deliberately *not* a field: PRD §7.1's tiers are what the
-   * capability scan concludes about a project (plan 05 VF-3), so a client that
-   * could declare its own project `verified` would be declaring which
-   * verification gates it is exempt from. Every project starts `compatible`.
+   * Strict, and it is the field above that makes it matter: a body carrying
+   * `supportLevel: 'verified'` is a client that believes it is setting the
+   * project's verification tier, and stripping the field in silence lets it go
+   * on believing that. The same goes for a misspelled `sourcetype` quietly
+   * defaulting to `prompt`. A 400 naming the unrecognised key is the answer to
+   * both (plan 02 CP-6 review).
    */
-  sourceType: z.enum(SOURCE_TYPES).default('prompt'),
-});
+  .strict();
 
 const UpdateProjectBody = z
   .object({
@@ -138,7 +149,13 @@ const ProjectResourcesSchema = z.object({
 const ScanSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  status: z.literal('queued'),
+  /**
+   * `accepted`, not `queued`: nothing is enqueued, and a status that says
+   * otherwise is a client waiting for a worker that does not exist (plan 02 CP-6
+   * review). It matches the 202 the route answers with, and VF-3 is free to add
+   * `queued` when there is a queue to be in.
+   */
+  status: z.literal('accepted'),
   requestedAt: z.string().datetime(),
 });
 
@@ -206,7 +223,24 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
               });
             } catch (error) {
               request.log.warn(
-                { errorKind: error instanceof GitServiceError ? 'git_service' : 'unknown' },
+                {
+                  errorKind: error instanceof GitServiceError ? 'git_service' : 'unknown',
+                  /**
+                   * The cause, server-side only, and passed through the
+                   * credential redactor first.
+                   *
+                   * Logging nothing left an operator with `errorKind:
+                   * 'git_service'` and no way to tell a bad token from a full
+                   * disk (plan 02 CP-6 review). Logging it verbatim is the
+                   * reason it was omitted: a git client's error quotes the
+                   * request that failed, and that request carries our service
+                   * credentials. `redactCredentials` keeps the sentence and
+                   * removes the credential-shaped parts of it. It still never
+                   * reaches the client — the 502 below says only that the
+                   * repository could not be created.
+                   */
+                  cause: redactCredentials(error instanceof Error ? error.message : 'unknown'),
+                },
                 'the git service refused the repository',
               );
               throw new ApiError(
@@ -434,7 +468,7 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
         scan: {
           id: request.id,
           projectId: project.id,
-          status: 'queued',
+          status: 'accepted',
           requestedAt: requestedAt.toISOString(),
         },
       });

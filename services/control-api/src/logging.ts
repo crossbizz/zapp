@@ -65,9 +65,11 @@ export const logSerializers = {
 export const REDACTED_LOG_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
+  'req.headers["x-zapp-service-token"]',
   'req.body',
   'headers.authorization',
   'headers.cookie',
+  'headers["x-zapp-service-token"]',
   'body',
 ];
 

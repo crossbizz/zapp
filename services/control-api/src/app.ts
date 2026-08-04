@@ -26,6 +26,8 @@ import {
 } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
+import { registerInternalSecretRoutes } from './internal/secrets.js';
+import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -43,6 +45,9 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerSecretRoutes } from './routes/secrets.js';
+import type { MasterKeyPort } from './secrets/crypto.js';
+import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
@@ -125,6 +130,30 @@ export interface LimitDeps {
 }
 
 /**
+ * What the secrets vault needs (CP-7). Both are ports, and both are required
+ * together: the surface is registered only when the service can actually
+ * encrypt, so a deployment missing `SECRETS_MASTER_KEY` has no secrets routes
+ * rather than routes that fail at the first write — and no internal decrypt
+ * route that might answer before it can decrypt anything.
+ */
+export interface SecretsDeps {
+  /**
+   * Wraps and unwraps per-secret data keys. `loadMasterKey` builds the
+   * environment-backed one (`src/env.ts`); a KMS implementation satisfies the
+   * same port.
+   */
+  readonly masterKey: MasterKeyPort;
+  /**
+   * Verifies the service tokens `/internal/*` requires. CP-8 ships the HMAC
+   * implementation; `composeApp` binds the deny-all one until it does, so the
+   * route exists and admits nobody rather than not existing at all.
+   */
+  readonly serviceTokens: ServiceTokenVerifier;
+  /** Which services may decrypt. Defaults to PRD §18.12's two; overridden by tests. */
+  readonly decryptCallers?: readonly string[];
+}
+
+/**
  * Collaborators handed to the app rather than reached for. Only the logger exists at
  * CP-1; the database, Redis and `AuthPort` join it as their plugins land, and each
  * arrives here so a test can substitute it.
@@ -147,6 +176,11 @@ export interface AppDeps {
    * {@link buildApp}.
    */
   readonly tenant?: TenantDeps;
+  /**
+   * CP-7. Requires {@link AppDeps.tenant} — the vault reads through the same
+   * organization-bound handle every other tenant-scoped route does.
+   */
+  readonly secrets?: SecretsDeps;
   /** CP-5. Optional everywhere; the fallbacks are refused outside development. */
   readonly limits?: LimitDeps;
   /** Injected in tests so expiry and refill are asserted rather than waited for. */
@@ -244,6 +278,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     throw new Error('refusing to start: orgs routes require auth (AppDeps.auth)');
   }
 
+  if (deps.secrets !== undefined && deps.tenant === undefined) {
+    // The vault reads and writes through the tenant handle, and the internal
+    // decrypt route turns an organization id into one. Without the factory
+    // there is nothing to scope either against.
+    throw new Error('refusing to start: secrets routes require tenant (AppDeps.tenant)');
+  }
+
   if (deps.tenant !== undefined && deps.orgs === undefined) {
     // The tenant plugin's whole job is "is this caller an active member of this
     // organization", and only the organization store can answer it. Without one
@@ -329,6 +370,11 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         });
       }
 
+      const secrets = deps.secrets;
+      if (secrets !== undefined) {
+        void app.register(serviceAuth, { verifier: secrets.serviceTokens });
+      }
+
       app.after((error) => {
         // Truthiness rather than `!== null`: avvio hands the first `after`
         // callback `null` and the ones that follow `undefined`, and both mean
@@ -349,6 +395,22 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         if (tenant !== undefined) {
           registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
           registerRunRoutes(app);
+
+          if (secrets !== undefined) {
+            // One vault for both surfaces, so the key that encrypted a value on
+            // the way in is by construction the key that unwraps it on the way
+            // out — two constructions could disagree, and would do so silently
+            // until the first decrypt.
+            const vault = createSecretVault({
+              tenantDb: tenant.tenantDb,
+              masterKey: secrets.masterKey,
+            });
+            registerSecretRoutes(app, { now, vault });
+            registerInternalSecretRoutes(app, {
+              vault,
+              ...(secrets.decryptCallers === undefined ? {} : { callers: secrets.decryptCallers }),
+            });
+          }
         }
       });
     }

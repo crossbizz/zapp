@@ -1,4 +1,5 @@
-import { index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 import { organizationId } from './columns.js';
 import { users } from './identity.js';
@@ -12,6 +13,11 @@ import { environments, projectTenantForeignKey, projects } from './projects.js';
  * Nothing here stores a secret value: `secret_metadata` holds a *reference* to
  * ciphertext held elsewhere (PRD §18.12), and `integration_connections` holds a
  * credential reference, never the credential.
+ *
+ * "Elsewhere" is {@link secretCiphertexts}, and the split is the point: a
+ * `select * from secret_metadata` cannot return ciphertext, so the read path the
+ * API exposes (`GET /v1/projects/:projectId/secrets`, plan 02 CP-7) is
+ * *structurally* metadata-only rather than metadata-only by review.
  */
 
 export const secretMetadata = pgTable(
@@ -35,12 +41,92 @@ export const secretMetadata = pgTable(
       .references(() => users.id),
     /** Null until the secret has been rotated at least once. */
     rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+    /**
+     * Which master-key generation wrapped this secret's DEK (plan 02 CP-7).
+     *
+     * Metadata, not key material: it names *which* key to unwrap with, which is
+     * what an operator plans a re-encrypt sweep from and what makes rotating the
+     * master key a background job rather than a schema change. Kept here rather
+     * than on {@link secretCiphertexts} so the metadata read stays single-table
+     * — see the module comment.
+     *
+     * Not a PRD §23.6 column; declared with its reason in
+     * `packages/db/test/prd-schema-conformance.test.ts`, and last in the list
+     * because that is where `ALTER TABLE ... ADD COLUMN` puts it.
+     */
+    keyVersion: integer('key_version').notNull(),
+    /**
+     * Also not a PRD §23.6 column: §23.6 lists `rotated_at` but no creation
+     * time, and "when was this secret first set" is the other half of every
+     * question the trail gets asked.
+     */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('secret_metadata_org_project_idx').on(t.organizationId, t.projectId),
+    /**
+     * A name identifies a secret within one scope, so setting the same name
+     * twice is a conflict rather than a second row nobody can tell apart.
+     *
+     * Two partial indexes rather than one, because Postgres treats NULLs as
+     * distinct: a null `environment_id` means "every environment of this
+     * project" (see the column), and under a single four-column unique index two
+     * such rows would both be allowed. `NULLS NOT DISTINCT` would say it in one
+     * index, and Drizzle cannot express it at this version — so it is said in
+     * two, which the schema and the migration can both state.
+     *
+     * Both carry `project_id`, which is likewise nullable. Nothing in P0 creates
+     * an organization-wide secret — every route is under
+     * `/v1/projects/:projectId` — so that gap is unreachable rather than
+     * unguarded; whoever adds one adds the third index with it.
+     */
+    uniqueIndex('secret_metadata_env_name_idx')
+      .on(t.organizationId, t.projectId, t.environmentId, t.name)
+      .where(sql`environment_id is not null`),
+    uniqueIndex('secret_metadata_project_name_idx')
+      .on(t.organizationId, t.projectId, t.name)
+      .where(sql`environment_id is null`),
     projectTenantForeignKey('secret_metadata', t.projectId, t.organizationId),
   ],
 );
+
+/**
+ * The vault: one row of envelope-encrypted key material per secret (PRD §18.12,
+ * plan 02 CP-7).
+ *
+ * Separate from `secret_metadata` for the reason the module comment gives — the
+ * metadata read cannot reach a ciphertext column that is not on the table it
+ * selects from — and reached only through a `secret_metadata` row the caller's
+ * organization already owns, exactly as `run_event_counters` is reached only
+ * through a run. That is why it carries no `organization_id` of its own: a
+ * denormalized tenant column here would be a second thing to keep in agreement
+ * with the first, on a table whose only key is a secret id that was already
+ * scoped.
+ *
+ * Every column is base64 of raw bytes, and the plaintext appears in none of
+ * them:
+ *
+ *   - `ciphertext` — the value under AES-256-GCM with a per-secret data key.
+ *   - `iv`, `auth_tag` — that encryption's 12-byte nonce and 16-byte tag.
+ *   - `wrapped_dek` — the data key itself, encrypted under the master key named
+ *     by `secret_metadata.key_version`. Self-framed (`iv || tag || ciphertext`)
+ *     rather than three more columns: nothing but the unwrap ever reads it, so
+ *     its framing is that function's business and not the schema's.
+ *
+ * P0 keeps no version history: a rotation overwrites this row in the same
+ * transaction that bumps `secret_metadata.rotated_at`. Recovering a previous
+ * value is deliberately impossible — a vault that can hand back the secret
+ * somebody rotated *away from* has not really rotated it.
+ */
+export const secretCiphertexts = pgTable('secret_ciphertexts', {
+  secretId: text('secret_id')
+    .primaryKey()
+    .references(() => secretMetadata.id, { onDelete: 'cascade' }),
+  ciphertext: text('ciphertext').notNull(),
+  iv: text('iv').notNull(),
+  authTag: text('auth_tag').notNull(),
+  wrappedDek: text('wrapped_dek').notNull(),
+});
 
 export const integrationConnections = pgTable(
   'integration_connections',
@@ -93,6 +179,8 @@ export const auditEvents = pgTable(
 
 export type SecretMetadata = typeof secretMetadata.$inferSelect;
 export type NewSecretMetadata = typeof secretMetadata.$inferInsert;
+export type SecretCiphertext = typeof secretCiphertexts.$inferSelect;
+export type NewSecretCiphertext = typeof secretCiphertexts.$inferInsert;
 export type IntegrationConnection = typeof integrationConnections.$inferSelect;
 export type NewIntegrationConnection = typeof integrationConnections.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;

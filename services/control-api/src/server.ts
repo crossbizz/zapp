@@ -3,7 +3,7 @@ import { createDb } from '@zapp/db';
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
-import { loadEnv, loadRedisUrl } from './env.js';
+import { loadEnv, loadMasterKey, loadRedisUrl } from './env.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
 
@@ -20,6 +20,10 @@ const env = loadEnv();
 const auth = loadAuthEnv();
 const redisUrl = loadRedisUrl();
 const rateLimits = loadRateLimitSettings();
+// And cannot open its own vault. A service that came up without the master key
+// would serve every secrets route as a 500 at the first write, which is a worse
+// way to learn the key is missing than not starting.
+const masterKey = loadMasterKey();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -37,6 +41,7 @@ const app = composeApp({
   database: database.db,
   redis,
   auth,
+  masterKey,
   rateLimits,
 });
 

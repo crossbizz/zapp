@@ -137,7 +137,13 @@ async function join(
 }
 
 interface CreatedProject {
-  readonly project: { id: string; slug: string; name: string; supportLevel: string };
+  readonly project: {
+    id: string;
+    organizationId: string;
+    slug: string;
+    name: string;
+    supportLevel: string;
+  };
   readonly repository: { id: string; internalRepoRef: string; defaultBranch: string };
   readonly branches: { name: string; status: string }[];
   readonly environments: { name: string; type: string }[];
@@ -178,7 +184,12 @@ describe('creating a project', () => {
       supportLevel: 'compatible',
     });
     expect(created.repository.defaultBranch).toBe('main');
-    expect(created.repository.internalRepoRef).toContain('checkout-service');
+    // The project *id*, not the slug: the slug is mutable, and a ref derived
+    // from it desynchronizes on the first rename (see the rename test below).
+    expect(created.repository.internalRepoRef).toBe(
+      `${created.project.organizationId.toLowerCase()}/${created.project.id.toLowerCase()}`,
+    );
+    expect(created.repository.internalRepoRef).not.toContain('checkout-service');
     expect(created.branches.map((branch) => branch.name)).toEqual(['main']);
     expect(created.branches[0]?.status).toBe('active');
     expect(created.environments.map((environment) => environment.name)).toEqual([
@@ -354,6 +365,24 @@ describe('creating a project', () => {
     expect(wired.data.projects).toEqual([]);
   });
 
+  it('refuses a field it does not recognise rather than ignoring it', async () => {
+    // `.strict()` (plan 02 CP-6 review). A client sending `supportLevel` is a
+    // client that believes it is setting the project's verification tier, and
+    // stripping it in silence lets it go on believing that.
+    const wired = await wire();
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { name: 'Presumptuous', supportLevel: 'verified' },
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(errorOf(response)).toBe('validation_failed');
+    expect(wired.data.projects).toEqual([]);
+  });
+
   it('accepts only the source types plan 02 owns', async () => {
     const wired = await wire();
 
@@ -511,6 +540,52 @@ describe('updating a project', () => {
     );
   });
 
+  it('leaves the repository ref alone across a rename, and frees the slug safely', async () => {
+    /**
+     * The defect this pins (plan 02 CP-6 review), in the order it happened:
+     *
+     *   1. `internal_repo_ref` was derived from the slug, and `PATCH` changes
+     *      the slug without touching the `repositories` row — so the ref named a
+     *      repository the project was no longer called, and every later clone,
+     *      push and release followed it.
+     *   2. The freed slug could then be taken by a second project in the same
+     *      organization, which minted a second row with the **same** ref. Two
+     *      projects, one Git repository. Nothing refused it.
+     *
+     * Both halves are asserted, because fixing only the first leaves the second.
+     */
+    const wired = await wire();
+    const first = await create(wired, { name: 'Checkout', slug: 'checkout' });
+    const refBefore = first.repository.internalRepoRef;
+
+    const renamed = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${first.project.id}`,
+      headers: wired.as(wired.owner),
+      payload: { slug: 'checkout-legacy' },
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect(renamed.json<{ project: { slug: string } }>().project.slug).toBe('checkout-legacy');
+
+    // Read back through the API, not from the create response: the question is
+    // what the stored row says now.
+    const after = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${first.project.id}`,
+      headers: wired.as(wired.owner),
+    });
+    expect(
+      after.json<{ repository: { internalRepoRef: string } }>().repository.internalRepoRef,
+    ).toBe(refBefore);
+
+    // The slug is free, and taking it must not mint the same ref twice.
+    const second = await create(wired, { name: 'Checkout', slug: 'checkout' });
+    expect(second.repository.internalRepoRef).not.toBe(refBefore);
+    expect(new Set(wired.data.repositories.map((row) => row.internalRepoRef)).size).toBe(
+      wired.data.repositories.length,
+    );
+  });
+
   it('hides an archived project from the list until it is asked for', async () => {
     const wired = await wire();
     const kept = await create(wired, { name: 'Kept' });
@@ -647,7 +722,9 @@ describe('requesting a capability scan', () => {
 
     expect(response.statusCode, response.body).toBe(202);
     const scan = response.json<{ scan: { id: string; projectId: string; status: string } }>().scan;
-    expect(scan).toMatchObject({ projectId: created.project.id, status: 'queued' });
+    // `accepted`, not `queued`: nothing is enqueued, and a client polling for a
+    // worker that does not exist is a promise this route must not make.
+    expect(scan).toMatchObject({ projectId: created.project.id, status: 'accepted' });
     expect(scan.id).not.toBe('');
 
     expect(

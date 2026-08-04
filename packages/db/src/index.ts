@@ -115,11 +115,14 @@ export {
 export {
   auditEvents,
   integrationConnections,
+  secretCiphertexts,
   secretMetadata,
   type AuditEvent,
   type IntegrationConnection,
   type NewAuditEvent,
   type NewIntegrationConnection,
+  type NewSecretCiphertext,
   type NewSecretMetadata,
+  type SecretCiphertext,
   type SecretMetadata,
 } from './schema/security.js';

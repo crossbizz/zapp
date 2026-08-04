@@ -481,7 +481,9 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     });
 
     expect(response.statusCode, response.body).toBe(202);
-    expect(response.json<{ scan: { status: string } }>().scan.status).toBe('queued');
+    // `accepted`: the request was taken, nothing was enqueued (plan 02 CP-6
+    // review). A `queued` a worker will never dequeue is a promise, not a status.
+    expect(response.json<{ scan: { status: string } }>().scan.status).toBe('accepted');
 
     const audit = await database.sql<{ action: string }[]>`
       select action from audit_events

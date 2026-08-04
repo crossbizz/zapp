@@ -55,6 +55,11 @@ export const projects = pgTable(
     // point: a composite foreign key needs a unique index on exactly the columns
     // it targets. This is what makes `projectTenantForeignKey` below possible.
     uniqueIndex('projects_id_org_idx').on(t.id, t.organizationId),
+    // The keyset order the project list actually pages in (plan 02 CP-6):
+    // `where organization_id = $1 [and id < $cursor] order by id desc`. Without
+    // the descending `id` the planner sorts every one of a tenant's projects to
+    // return twenty, and the cursor's whole promise is that it does not.
+    index('projects_org_id_idx').on(t.organizationId, t.id.desc()),
     check('projects_support_level_check', oneOf('support_level', SUPPORT_LEVELS)),
   ],
 );
@@ -103,9 +108,37 @@ export const repositories = pgTable(
     defaultBranch: text('default_branch').notNull().default('main'),
     /** PRD §19.3 sync rules; plan 06 (GIT-6) fixes the vocabulary. */
     syncPolicy: text('sync_policy').notNull(),
+    /**
+     * When the repository was actually created in the internal Git instance —
+     * null while only the *record* exists.
+     *
+     * Not a PRD §23.2 column (declared with its reason in
+     * `packages/db/test/prd-schema-conformance.test.ts`), and it exists because
+     * the two states are genuinely different and nothing else distinguishes
+     * them: plan 02 CP-6 ships a record-only git service that names the
+     * repository and contacts nothing, so every row it writes leaves this null.
+     * Plan 06's GIT-2 sets it when Forgejo confirms, and can then tell a row it
+     * still has to provision from one it must not create twice — which without
+     * this column it would have to guess at by cloning and seeing what happens.
+     */
+    provisionedAt: timestamp('provisioned_at', { withTimezone: true }),
   },
   (t) => [
     index('repositories_project_idx').on(t.projectId),
+    /**
+     * One repository per ref, per tenant.
+     *
+     * `internal_repo_ref` is where a clone, a push and a release all point, so
+     * two rows sharing one is two projects writing to the same Git repository —
+     * one project's code landing in another's history. That was reachable while
+     * the ref was derived from the mutable slug: renaming `checkout` freed the
+     * name, and the next project to take it minted a second row with the same
+     * ref (plan 02 CP-6 review). The derivation now uses the immutable project
+     * id (`services/control-api/src/git/port.ts`), and this index is what makes
+     * the property hold for refs this service did not derive — an import, a
+     * migration, a hand-written row.
+     */
+    uniqueIndex('repositories_org_internal_ref_idx').on(t.organizationId, t.internalRepoRef),
     projectTenantForeignKey('repositories', t.projectId, t.organizationId),
   ],
 );

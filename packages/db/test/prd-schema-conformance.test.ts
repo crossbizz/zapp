@@ -37,6 +37,10 @@ const NON_PRD_TABLES = new Map([
     'run_event_counters',
     'the gapless allocator behind agent_events.sequence (plan 01 FND-6); no PRD row of its own',
   ],
+  [
+    'secret_ciphertexts',
+    'the vault behind secret_metadata.encrypted_value_ref (PRD §18.12, plan 02 CP-7): §23.6 says the ciphertext is held elsewhere, and this is elsewhere — kept off secret_metadata so the metadata read has no value column to leak',
+  ],
 ]);
 
 /**
@@ -53,6 +57,18 @@ const NON_PRD_COLUMNS = new Map([
   [
     'users.external_id',
     'platform identity link (Stytch member id); PRD §23.1 predates the identity-provider decision (ADR-0001)',
+  ],
+  [
+    'secret_metadata.key_version',
+    'which master-key generation wrapped this secret’s data key (PRD §18.12, plan 02 CP-7); metadata rather than key material, and what a re-encrypt sweep is planned from',
+  ],
+  [
+    'secret_metadata.created_at',
+    'when the secret was first set; PRD §23.6 lists rotated_at but no creation time, and the metadata read (PRD §32.5) answers both halves of the question',
+  ],
+  [
+    'repositories.provisioned_at',
+    'null while only the repository *record* exists, set when the internal Git instance confirms; lets plan 06 GIT-2 tell a row it must still provision from one it must not create twice (plan 02 CP-6 review)',
   ],
 ]);
 

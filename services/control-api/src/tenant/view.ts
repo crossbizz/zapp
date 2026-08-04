@@ -7,6 +7,7 @@ import type {
   Project,
   ProjectContract,
   Repository,
+  SecretMetadata,
 } from '@zapp/db';
 import { z } from 'zod';
 
@@ -95,6 +96,37 @@ export const ProjectContractSchema = z.object({
    */
   contract: z.unknown(),
   createdAt: z.string().datetime(),
+});
+
+/**
+ * A secret, as every API response is allowed to describe one: its name, its
+ * scope, who set it and when, and which master key generation wrapped it
+ * (PRD §32.5, plan 02 CP-7).
+ *
+ * There is no `value` field, and that is not an omission to be re-checked at
+ * review time — it is unrepresentable twice over. The schema does not declare
+ * one, so the serializer would strip it; and {@link toSecretMetadata} takes a
+ * `SecretMetadata` row, which has no ciphertext column to map from because the
+ * ciphertext lives on a different table (`packages/db/src/schema/security.ts`).
+ * A future edit that wanted to leak a value would have to add a column, a query
+ * and a field, in three files, on purpose.
+ *
+ * `encryptedValueRef` is likewise absent: it is an internal locator, it tells a
+ * client nothing it can act on, and a pointer into the vault is not a thing to
+ * publish even when following it needs a key nobody has.
+ */
+export const SecretMetadataSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string().nullable(),
+  /** Null means the secret applies to every environment of its project. */
+  environmentId: z.string().nullable(),
+  name: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string().datetime(),
+  /** Null until the secret has been rotated at least once. */
+  rotatedAt: z.string().datetime().nullable(),
+  keyVersion: z.number().int(),
 });
 
 export const RunSchema = z.object({
@@ -190,6 +222,20 @@ export function toProjectContract(
     detectedFramework: contract.detectedFramework,
     contract: contract.contractJson,
     createdAt: contract.createdAt.toISOString(),
+  };
+}
+
+export function toSecretMetadata(secret: SecretMetadata): z.infer<typeof SecretMetadataSchema> {
+  return {
+    id: secret.id,
+    organizationId: secret.organizationId,
+    projectId: secret.projectId,
+    environmentId: secret.environmentId,
+    name: secret.name,
+    createdBy: secret.createdBy,
+    createdAt: secret.createdAt.toISOString(),
+    rotatedAt: secret.rotatedAt?.toISOString() ?? null,
+    keyVersion: secret.keyVersion,
   };
 }
 

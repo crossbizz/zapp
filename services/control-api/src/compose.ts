@@ -15,6 +15,8 @@ import { createDbAuditSink } from './plugins/audit.js';
 import { createRedisIdempotencyStore } from './plugins/idempotency.js';
 import { createRedisRateLimiter } from './plugins/rate-limit.js';
 import type { RedisCommands } from './redis/client.js';
+import { createDenyAllServiceTokenVerifier } from './internal/service-auth.js';
+import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
 
 /**
@@ -37,6 +39,13 @@ export interface ServiceRuntime {
   readonly database: Database;
   readonly redis: RedisCommands;
   readonly auth: AuthEnv;
+  /**
+   * The vault's master key, from `loadMasterKey` (`src/env.ts`). Required rather
+   * than optional: a control plane deployed without one has no secrets surface
+   * at all, and discovering that from a 404 in staging is worse than refusing to
+   * boot.
+   */
+  readonly masterKey: MasterKeyPort;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
@@ -73,6 +82,18 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       // `internal_repo_ref` and contacts nothing. Plan 06's GIT-2 swaps in the
       // Forgejo client on this line and nothing else moves.
       git: createRecordOnlyGitService(),
+    },
+    secrets: {
+      masterKey: runtime.masterKey,
+      /**
+       * Deny-all until CP-8 lands the HMAC verifier, and named here rather than
+       * defaulted for the same reason the git port is: this file is where a
+       * port's shipping binding is supposed to be legible. `/internal/*` is
+       * therefore deployed, documented and reachable — and answers 401 to
+       * everything, which is the right posture for a surface whose credentials
+       * do not exist yet. Swapping this line is the whole of CP-8's wiring.
+       */
+      serviceTokens: createDenyAllServiceTokenVerifier(),
     },
     limits: {
       config: runtime.rateLimits.classes,

@@ -7,17 +7,27 @@ import type {
   Project,
   ProjectContract,
   Repository,
+  SecretMetadata,
 } from '@zapp/db';
 
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
 import type { StorePage } from '../../src/pagination.js';
-import type {
-  CreatedProject,
-  NewProjectInput,
-  TenantDatabase,
-  TenantDbFactory,
-  UpdateProjectInput,
-  UpdatedProject,
+import type { SecretEnvelope } from '../../src/secrets/crypto.js';
+import {
+  vaultRef,
+  type CreatedProject,
+  type CreatedSecret,
+  type DeleteSecretInput,
+  type NewProjectInput,
+  type NewSecretInput,
+  type ReadSecretInput,
+  type RotateSecretInput,
+  type SecretListRequest,
+  type StoredSecret,
+  type TenantDatabase,
+  type TenantDbFactory,
+  type UpdateProjectInput,
+  type UpdatedProject,
 } from '../../src/tenant/db.js';
 import {
   BRANCH_ACTIVE,
@@ -58,6 +68,16 @@ export class InMemoryTenantData {
   readonly contracts: ProjectContract[] = [];
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
+  readonly secrets: SecretMetadata[] = [];
+  /**
+   * The vault, as a second store keyed by secret id — modelling the *table*
+   * split, not just the field split.
+   *
+   * That matters: the property under test is that a metadata read cannot reach
+   * ciphertext, and a double that kept the envelope on the metadata object would
+   * let a route return it by spreading the row. Here there is nothing to spread.
+   */
+  readonly ciphertexts = new Map<string, SecretEnvelope>();
 
   /** Every handle reads and writes the same rows — see the class comment. */
   readonly factory: TenantDbFactory = (organizationId: string): TenantDatabase =>
@@ -152,6 +172,9 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           externalRepoRef: null,
           defaultBranch: DEFAULT_BRANCH,
           syncPolicy: NO_SYNC,
+          // Null, like the shipping record-only path: the row exists, the
+          // repository on disk does not (plan 06 GIT-2 sets this).
+          provisionedAt: null,
         };
         const branch: Branch = {
           id: newId('br'),
@@ -236,6 +259,102 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         return Promise.resolve(
           mine(orgId, data.environments).filter((row) => row.projectId === projectId),
         );
+      },
+    },
+
+    secrets: {
+      list(request: SecretListRequest): Promise<StorePage<SecretMetadata>> {
+        const rows = mine(orgId, data.secrets)
+          .filter((secret) => secret.projectId === request.projectId)
+          .filter((secret) => request.cursor === undefined || secret.id < request.cursor)
+          .sort((left, right) => (left.id < right.id ? 1 : -1));
+        const items = rows.slice(0, request.limit);
+        return Promise.resolve({
+          items,
+          nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
+        });
+      },
+
+      getById(secretId): Promise<SecretMetadata | undefined> {
+        return Promise.resolve(mine(orgId, data.secrets).find((row) => row.id === secretId));
+      },
+
+      async create(input: NewSecretInput): Promise<CreatedSecret> {
+        // The two partial unique indexes of `packages/db/drizzle/0007`, in the
+        // one form that matters here: a null environment is a scope of its own,
+        // not a wildcard that collides with every other row.
+        const taken = mine(orgId, data.secrets).some(
+          (secret) =>
+            secret.projectId === input.projectId &&
+            secret.environmentId === input.environmentId &&
+            secret.name === input.name,
+        );
+        if (taken) {
+          return 'name_taken';
+        }
+
+        const id = newId('sec');
+        const secret: SecretMetadata = {
+          id,
+          organizationId: orgId,
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          name: input.name,
+          encryptedValueRef: vaultRef(id),
+          createdBy: input.createdBy,
+          rotatedAt: null,
+          keyVersion: input.envelope.keyVersion,
+          createdAt: input.now,
+        };
+
+        // Outside the store until the audit hook returns: the transaction
+        // boundary, modelled, exactly as project creation models it.
+        await input.audit(NO_TRANSACTION, secret);
+        data.secrets.push(secret);
+        data.ciphertexts.set(secret.id, input.envelope);
+        return secret;
+      },
+
+      async rotate(input: RotateSecretInput): Promise<SecretMetadata | undefined> {
+        const existing = mine(orgId, data.secrets).find((row) => row.id === input.secretId);
+        if (existing === undefined) {
+          return undefined;
+        }
+        const rotated: SecretMetadata = {
+          ...existing,
+          rotatedAt: input.now,
+          keyVersion: input.envelope.keyVersion,
+        };
+        await input.audit(NO_TRANSACTION, rotated);
+        data.secrets.splice(data.secrets.indexOf(existing), 1, rotated);
+        // Overwritten, not appended: P0 keeps no version history, and a double
+        // that kept one would let a test pass that the real store fails.
+        data.ciphertexts.set(rotated.id, input.envelope);
+        return rotated;
+      },
+
+      async delete(input: DeleteSecretInput): Promise<SecretMetadata | undefined> {
+        const existing = mine(orgId, data.secrets).find((row) => row.id === input.secretId);
+        if (existing === undefined) {
+          return undefined;
+        }
+        await input.audit(NO_TRANSACTION, existing);
+        data.secrets.splice(data.secrets.indexOf(existing), 1);
+        // The ON DELETE CASCADE, modelled.
+        data.ciphertexts.delete(existing.id);
+        return existing;
+      },
+
+      async readEnvelope(input: ReadSecretInput): Promise<StoredSecret | undefined> {
+        const secret = mine(orgId, data.secrets).find((row) => row.id === input.secretId);
+        const envelope = secret === undefined ? undefined : data.ciphertexts.get(secret.id);
+        if (secret === undefined || envelope === undefined) {
+          return undefined;
+        }
+        // Before the return, like the real one: an audit hook that throws must
+        // take the read with it, which is what `test/secrets.test.ts` asserts.
+        await input.audit(NO_TRANSACTION, secret);
+        return { secret, envelope };
       },
     },
 

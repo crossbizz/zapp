@@ -6,6 +6,8 @@ import {
   projectContracts,
   projects,
   repositories,
+  secretCiphertexts,
+  secretMetadata,
   type Branch,
   type Database,
   type Environment,
@@ -13,6 +15,7 @@ import {
   type ProjectContract,
   type ProjectRepository,
   type Repository,
+  type SecretMetadata,
   type TenantDb,
 } from '@zapp/db';
 import { and, asc, desc, eq, isNull, lt, type Column, type SQL } from 'drizzle-orm';
@@ -20,6 +23,7 @@ import { and, asc, desc, eq, isNull, lt, type Column, type SQL } from 'drizzle-o
 import { isUniqueViolation } from '../db/errors.js';
 import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
+import type { SecretEnvelope } from '../secrets/crypto.js';
 import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
@@ -179,6 +183,85 @@ export interface TenantContractRepository {
   latestForProject(projectId: string): Promise<ProjectContract | undefined>;
 }
 
+/**
+ * The vault (plan 02 CP-7).
+ *
+ * Two tables, and the split is load-bearing: `secret_metadata` carries the name,
+ * the scope and the key version, and `secret_ciphertexts` carries the encrypted
+ * value. {@link TenantSecretRepository.list} and `.getById` select from the
+ * first only, so a metadata read has no ciphertext column in reach — the API's
+ * "never values" promise (PRD §32.5) is a property of the query rather than of
+ * the mapping that follows it. {@link TenantSecretRepository.readEnvelope} is
+ * the *only* method that touches the second, it is called from exactly one place
+ * (`src/secrets/vault.ts`, for the audited internal decrypt), and it will not
+ * return a row without writing the audit entry for it.
+ */
+export interface NewSecretInput {
+  readonly projectId: string;
+  /** Null means every environment of the project (PRD §23.6). */
+  readonly environmentId: string | null;
+  readonly name: string;
+  /** Already encrypted: this module never sees a plaintext value. */
+  readonly envelope: SecretEnvelope;
+  readonly createdBy: string;
+  readonly now: Date;
+  readonly audit: AuditHook<SecretMetadata>;
+}
+
+export interface RotateSecretInput {
+  readonly secretId: string;
+  readonly envelope: SecretEnvelope;
+  readonly now: Date;
+  readonly audit: AuditHook<SecretMetadata>;
+}
+
+export interface DeleteSecretInput {
+  readonly secretId: string;
+  readonly audit: AuditHook<SecretMetadata>;
+}
+
+export interface SecretListRequest extends PageRequest {
+  readonly projectId: string;
+}
+
+/** What the audited read hands back, and the one shape carrying key material. */
+export interface StoredSecret {
+  readonly secret: SecretMetadata;
+  readonly envelope: SecretEnvelope;
+}
+
+export interface ReadSecretInput {
+  readonly secretId: string;
+  /**
+   * Runs inside the reading transaction, before it commits. Not optional, and
+   * not a callback the caller may leave empty: a decrypt that returned key
+   * material and left no row is the one outcome this table exists to prevent.
+   */
+  readonly audit: AuditHook<SecretMetadata>;
+}
+
+/** The one outcome of a write that is not an error — see {@link CreatedProject}. */
+export type CreatedSecret = SecretMetadata | 'name_taken';
+
+export interface TenantSecretRepository {
+  /** Metadata only, keyset-paginated. Selects no ciphertext column. */
+  list(request: SecretListRequest): Promise<StorePage<SecretMetadata>>;
+  /** Metadata only; `undefined` for another tenant's secret, or one that does not exist. */
+  getById(secretId: string): Promise<SecretMetadata | undefined>;
+  create(input: NewSecretInput): Promise<CreatedSecret>;
+  /** Overwrites the stored value and bumps `rotated_at`; `undefined` when not found. */
+  rotate(input: RotateSecretInput): Promise<SecretMetadata | undefined>;
+  /** Removes the metadata row; the ciphertext goes with it (ON DELETE CASCADE). */
+  delete(input: DeleteSecretInput): Promise<SecretMetadata | undefined>;
+  /**
+   * The audited read of encrypted key material. `undefined` for another
+   * tenant's secret — the handle is bound to one organization, so an internal
+   * caller naming the wrong one gets the same answer as for a secret that never
+   * existed.
+   */
+  readEnvelope(input: ReadSecretInput): Promise<StoredSecret | undefined>;
+}
+
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
 export interface TenantDatabase extends Omit<TenantDb, 'projects'> {
   readonly projects: TenantProjectRepository;
@@ -186,6 +269,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects'> {
   readonly branches: TenantBranchRepository;
   readonly environments: TenantEnvironmentRepository;
   readonly contracts: TenantContractRepository;
+  readonly secrets: TenantSecretRepository;
 }
 
 /**
@@ -193,6 +277,33 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects'> {
  * request, with an id it has already checked an active membership for.
  */
 export type TenantDbFactory = (organizationId: string) => TenantDatabase;
+
+/**
+ * The index that makes a project slug unique per organization
+ * (`packages/db/drizzle/0000`). See `src/db/errors.ts` for why the name matters.
+ */
+const PROJECT_SLUG_CONSTRAINT = ['projects_org_slug_idx'];
+
+/**
+ * The two indexes that make a secret's name unique within its scope
+ * (`packages/db/drizzle/0007`). Named so a conflict on one of them is reported
+ * as `name_taken` and a conflict on anything else is not — see fold (d) of the
+ * CP-6 review and `src/db/errors.ts`.
+ */
+const SECRET_NAME_CONSTRAINTS = [
+  'secret_metadata_env_name_idx',
+  'secret_metadata_project_name_idx',
+];
+
+/**
+ * `secret_metadata.encrypted_value_ref`: which vault holds the ciphertext, and
+ * where in it. `pg:` is the P0 backend — the `secret_ciphertexts` row with this
+ * secret's id — and a later row pointing at a KMS-fronted store says so with a
+ * different scheme rather than by being absent from this table.
+ */
+export function vaultRef(secretId: string): string {
+  return `pg:secret_ciphertexts/${secretId}`;
+}
 
 export function createTenantDbFactory(db: Database): TenantDbFactory {
   return (organizationId: string): TenantDatabase => {
@@ -343,7 +454,12 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               return resources;
             });
           } catch (error) {
-            if (isUniqueViolation(error)) {
+            // The slug index, and nothing else. Creating a project also writes a
+            // repository, a branch and two environments, each with unique
+            // indexes of its own; reporting any of those as `slug_taken` sends
+            // the retry loop above off to suffix a slug that was never the
+            // problem (plan 02 CP-6 review).
+            if (isUniqueViolation(error, PROJECT_SLUG_CONSTRAINT)) {
               return 'slug_taken';
             }
             throw error;
@@ -376,7 +492,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               return row;
             });
           } catch (error) {
-            if (isUniqueViolation(error)) {
+            if (isUniqueViolation(error, PROJECT_SLUG_CONSTRAINT)) {
               return 'slug_taken';
             }
             throw error;
@@ -414,6 +530,185 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             // Ascending: `preview` then `production`, in the order they were
             // created, which is the order a client renders them in.
             .orderBy(asc(environments.id));
+        },
+      },
+
+      secrets: {
+        async list(request: SecretListRequest): Promise<StorePage<SecretMetadata>> {
+          // Column by column rather than `select()`, and that is the whole
+          // metadata-only guarantee in one place: the ciphertext lives on
+          // another table, and this statement names neither it nor a join to
+          // it. There is no `select *` here for a later schema change to widen.
+          const rows = await db
+            .select()
+            .from(secretMetadata)
+            .where(
+              scoped(
+                secretMetadata.organizationId,
+                eq(secretMetadata.projectId, request.projectId),
+                ...(request.cursor === undefined ? [] : [lt(secretMetadata.id, request.cursor)]),
+              ),
+            )
+            .orderBy(desc(secretMetadata.id))
+            .limit(request.limit + 1);
+
+          const items = rows.slice(0, request.limit);
+          return {
+            items,
+            nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
+          };
+        },
+
+        async getById(secretId: string): Promise<SecretMetadata | undefined> {
+          const [row] = await db
+            .select()
+            .from(secretMetadata)
+            .where(scoped(secretMetadata.organizationId, eq(secretMetadata.id, secretId)))
+            .limit(1);
+          return row;
+        },
+
+        async create(input: NewSecretInput): Promise<CreatedSecret> {
+          const id = newId('sec');
+          try {
+            return await db.transaction(async (tx) => {
+              const [secret] = await tx
+                .insert(secretMetadata)
+                .values({
+                  id,
+                  // The handle's organization, like every other write here.
+                  organizationId: orgId,
+                  projectId: input.projectId,
+                  environmentId: input.environmentId,
+                  name: input.name,
+                  /**
+                   * Where the ciphertext is, in a form that says which vault:
+                   * PostgreSQL today, a KMS-fronted store later. Derivable from
+                   * the id, and written down anyway — the day some rows move,
+                   * this column is what says which ones have.
+                   */
+                  encryptedValueRef: vaultRef(id),
+                  createdBy: input.createdBy,
+                  rotatedAt: null,
+                  keyVersion: input.envelope.keyVersion,
+                  createdAt: input.now,
+                })
+                .returning();
+              if (secret === undefined) {
+                throw new Error('secret insert returned no row');
+              }
+
+              await tx.insert(secretCiphertexts).values({
+                secretId: secret.id,
+                ciphertext: input.envelope.ciphertext,
+                iv: input.envelope.iv,
+                authTag: input.envelope.authTag,
+                wrappedDek: input.envelope.wrappedDek,
+              });
+
+              await input.audit(tx, secret);
+              return secret;
+            });
+          } catch (error) {
+            // Only the name indexes: a violation of anything else here is a bug
+            // to surface, not a conflict to report as one (see `db/errors.ts`).
+            if (isUniqueViolation(error, SECRET_NAME_CONSTRAINTS)) {
+              return 'name_taken';
+            }
+            throw error;
+          }
+        },
+
+        async rotate(input: RotateSecretInput): Promise<SecretMetadata | undefined> {
+          return await db.transaction(async (tx) => {
+            const [secret] = await tx
+              .update(secretMetadata)
+              .set({ rotatedAt: input.now, keyVersion: input.envelope.keyVersion })
+              // The tenant predicate is part of the write's own WHERE, so
+              // another tenant's secret matches nothing.
+              .where(scoped(secretMetadata.organizationId, eq(secretMetadata.id, input.secretId)))
+              .returning();
+            if (secret === undefined) {
+              return undefined;
+            }
+
+            /**
+             * Overwritten, not versioned. P0 keeps no history (plan 02 CP-7):
+             * the previous value is unrecoverable the moment this commits, which
+             * is what "rotated" has to mean — a vault that can still produce the
+             * credential you rotated away from has not rotated anything. A
+             * future task that wants history adds rows to
+             * `secret_ciphertexts` with a version column; nothing here assumes
+             * one row per secret except this statement.
+             */
+            await tx
+              .update(secretCiphertexts)
+              .set({
+                ciphertext: input.envelope.ciphertext,
+                iv: input.envelope.iv,
+                authTag: input.envelope.authTag,
+                wrappedDek: input.envelope.wrappedDek,
+              })
+              .where(eq(secretCiphertexts.secretId, secret.id));
+
+            await input.audit(tx, secret);
+            return secret;
+          });
+        },
+
+        async delete(input: DeleteSecretInput): Promise<SecretMetadata | undefined> {
+          return await db.transaction(async (tx) => {
+            // The ciphertext goes with it: `secret_ciphertexts.secret_id` is
+            // ON DELETE CASCADE, so there is no order of statements here that
+            // leaves an orphaned encrypted value behind.
+            const [secret] = await tx
+              .delete(secretMetadata)
+              .where(scoped(secretMetadata.organizationId, eq(secretMetadata.id, input.secretId)))
+              .returning();
+            if (secret === undefined) {
+              return undefined;
+            }
+            await input.audit(tx, secret);
+            return secret;
+          });
+        },
+
+        async readEnvelope(input: ReadSecretInput): Promise<StoredSecret | undefined> {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .select({ secret: secretMetadata, ciphertext: secretCiphertexts })
+              .from(secretMetadata)
+              .innerJoin(secretCiphertexts, eq(secretCiphertexts.secretId, secretMetadata.id))
+              // The join is reached *from* the tenant-scoped side and the
+              // predicate is on this table's own column, so a secret that is
+              // not this handle's organization's matches nothing — the vault
+              // row is never the entry point.
+              .where(scoped(secretMetadata.organizationId, eq(secretMetadata.id, input.secretId)))
+              .limit(1);
+            if (row === undefined) {
+              return undefined;
+            }
+
+            /**
+             * Before the return, inside the transaction that read it: the row
+             * saying key material was released and the release itself commit
+             * together or not at all. An audit hook that throws takes the read
+             * with it, and the caller gets an error rather than a value nobody
+             * recorded.
+             */
+            await input.audit(tx, row.secret);
+
+            return {
+              secret: row.secret,
+              envelope: {
+                ciphertext: row.ciphertext.ciphertext,
+                iv: row.ciphertext.iv,
+                authTag: row.ciphertext.authTag,
+                wrappedDek: row.ciphertext.wrappedDek,
+                keyVersion: row.secret.keyVersion,
+              },
+            };
+          });
         },
       },
 

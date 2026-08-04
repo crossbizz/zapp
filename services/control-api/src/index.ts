@@ -5,6 +5,7 @@ export {
   type AuthDeps,
   type LimitDeps,
   type OrgDeps,
+  type SecretsDeps,
   type TenantDeps,
 } from './app.js';
 export { ApiError } from './errors.js';
@@ -134,11 +135,68 @@ export {
 // GIT-2 binds the Forgejo implementation in `composeApp`.
 export {
   createRecordOnlyGitService,
+  GIT_CREATE_DEADLINE_MS,
   GitServiceError,
   type CreatedRepository,
   type CreateRepositoryInput,
   type GitServicePort,
 } from './git/port.js';
+
+// CP-7 — the secrets vault. Three seams leave this package:
+//
+//   - `MasterKeyPort`, so plan 09's KMS binding replaces `createEnvMasterKey`
+//     without a caller changing.
+//   - `ServiceTokenVerifier`, which CP-8 implements and `composeApp` binds.
+//   - `redactSecrets`, because PRD §18.12's redaction requirement belongs to
+//     plans 03, 04 and 05 as much as to this one, and three implementations of
+//     it is three chances to write a subtly wrong one.
+//
+// `decryptSecret` is deliberately *not* exported. The only decryption in the
+// system happens behind the audited `SecretVault`, and a package export would be
+// a second way to do it that writes no audit row.
+export {
+  KEY_BYTES,
+  SecretDecryptionError,
+  createEnvMasterKey,
+  encryptSecret,
+  type EnvMasterKeyConfig,
+  type MasterKeyPort,
+  type SecretEnvelope,
+  type WrappedDataKey,
+} from './secrets/crypto.js';
+export {
+  redactCredentials,
+  redactSecrets,
+  secretMarker,
+  type SecretRegistry,
+} from './secrets/redaction.js';
+export {
+  createSecretVault,
+  type DecryptRequest,
+  type DecryptedSecret,
+  type SecretRead,
+  type SecretVault,
+  type SecretVaultDeps,
+} from './secrets/vault.js';
+export {
+  SERVICE_TOKEN_HEADER,
+  createDenyAllServiceTokenVerifier,
+  serviceOf,
+  type ServiceIdentity,
+  type ServiceTokenVerifier,
+} from './internal/service-auth.js';
+export { SECRET_DECRYPT_CALLERS } from './internal/secrets.js';
+export { loadMasterKey } from './env.js';
+export type {
+  CreatedSecret,
+  DeleteSecretInput,
+  NewSecretInput,
+  ReadSecretInput,
+  RotateSecretInput,
+  SecretListRequest,
+  StoredSecret,
+  TenantSecretRepository,
+} from './tenant/db.js';
 export {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,

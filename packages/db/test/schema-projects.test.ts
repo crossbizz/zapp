@@ -50,6 +50,10 @@ describe('project state (PRD §23.2)', () => {
       'external_repo_ref',
       'default_branch',
       'sync_policy',
+      // Not a PRD column: null while only the record exists, set when the
+      // internal Git instance confirms (plan 02 CP-7 fold, plan 06 GIT-2).
+      // Declared with its reason in prd-schema-conformance.test.ts.
+      'provisioned_at',
     ]);
   });
 
@@ -122,12 +126,23 @@ describe('project state (PRD §23.2)', () => {
     // Slugs and branch/environment names appear in URLs and in git; they are
     // unique per owner, never globally — two tenants may both own "checkout".
     // projects_id_org_idx is the target of every composite tenant key.
-    expect(indexNames(projects)).toEqual(['projects_org_slug_idx', 'projects_id_org_idx']);
+    expect(indexNames(projects)).toEqual([
+      'projects_org_slug_idx',
+      'projects_id_org_idx',
+      // The keyset order the list endpoint pages in (plan 02 CP-6).
+      'projects_org_id_idx',
+    ]);
     expect(indexNames(branches)).toEqual(['branches_project_name_idx']);
     expect(indexNames(environments)).toEqual(['environments_project_name_idx']);
     // Detection re-runs append a version rather than overwriting one (PRD §17.2).
     expect(indexNames(projectContracts)).toEqual(['project_contracts_project_version_idx']);
-    expect(indexNames(repositories)).toEqual(['repositories_project_idx']);
+    expect(indexNames(repositories)).toEqual([
+      'repositories_project_idx',
+      // One repository per ref per tenant: two rows sharing an
+      // `internal_repo_ref` are two projects pushing to one Git repository
+      // (plan 02 CP-6 review).
+      'repositories_org_internal_ref_idx',
+    ]);
   });
 
   it('constrains the support level to the PRD §7.1 tiers, in the database', () => {

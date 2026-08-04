@@ -329,6 +329,28 @@ function inProgress(): ApiError {
 /** Read-only methods carry nothing to replay, so they are never enrolled. */
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+declare module 'fastify' {
+  interface FastifyContextConfig {
+    /**
+     * Opts a route out of idempotent replay.
+     *
+     * Enrolment is automatic (`onRoute`, below) so a mutating route cannot be
+     * added without replay protection — the failure mode of an opt-*in* is the
+     * one endpoint somebody forgot. This is the opt-out for the case where
+     * storing the response is itself the hazard: **a response body that is a
+     * credential the caller may read but the store must not keep**.
+     *
+     * One route uses it today — `POST /internal/secrets/decrypt`, whose body is
+     * a decrypted secret (plan 02 CP-7) — and it is declared at that route,
+     * beside the reason. Note the contrast with the invite token discussed in
+     * the file header: that one is stored deliberately, because a replayed
+     * invitation is better than a duplicated one. Here the request is a *read*,
+     * so replay protects nothing and the stored copy is pure exposure.
+     */
+    idempotency?: 'exempt';
+  }
+}
+
 export const idempotency = fp<IdempotencyOptions>(
   (app, options, done) => {
     const { store } = options;
@@ -395,6 +417,9 @@ export const idempotency = fp<IdempotencyOptions>(
     app.addHook('onRoute', (route: RouteOptions) => {
       const methods = Array.isArray(route.method) ? route.method : [route.method];
       if (methods.every((method) => READ_METHODS.has(method.toUpperCase()))) {
+        return;
+      }
+      if (route.config?.idempotency === 'exempt') {
         return;
       }
       const existing = route.preHandler;

@@ -8,7 +8,7 @@ import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
-import { InMemoryUserStore, TEST_AUTH_CONFIG } from './support/harness.js';
+import { InMemoryUserStore, TEST_AUTH_CONFIG, TEST_MASTER_KEY } from './support/harness.js';
 import { InMemoryOrganizationStore } from './support/org-store.js';
 
 /**
@@ -62,6 +62,7 @@ function composed(): AppInstance {
         publicToken: 'public-token-test-abc',
       },
     },
+    masterKey: TEST_MASTER_KEY,
     rateLimits: loadRateLimitSettings(),
   });
   apps.push(app);
@@ -103,6 +104,14 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['PATCH', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/contract'],
   ['POST', '/v1/projects/:projectId/scan'],
+  // CP-7's vault (PRD §32.5), including the internal decrypt — deployed with a
+  // deny-all verifier until CP-8, which is a route that admits nobody rather
+  // than a route that does not exist.
+  ['POST', '/v1/projects/:projectId/secrets'],
+  ['GET', '/v1/projects/:projectId/secrets'],
+  ['POST', '/v1/projects/:projectId/secrets/:secretId/rotate'],
+  ['DELETE', '/v1/projects/:projectId/secrets/:secretId'],
+  ['POST', '/internal/secrets/decrypt'],
 ];
 
 describe('the composition server.ts performs', () => {
@@ -192,6 +201,25 @@ describe('the startup guards', () => {
         build({ orgs });
       }),
     ).toThrow(/tenantDb/);
+  });
+
+  it('refuses a secrets surface with no tenant handle to scope it', () => {
+    // The vault reads and writes through the tenant handle, and the internal
+    // decrypt route turns an organization id into one (plan 02 CP-7). Without
+    // the factory there is nothing for either to be scoped against, and a
+    // secrets route that improvised its own scope is the one thing this service
+    // must never ship.
+    expect(
+      withNodeEnv('development', () => {
+        build({
+          orgs,
+          secrets: {
+            masterKey: TEST_MASTER_KEY,
+            serviceTokens: { verify: () => Promise.resolve(undefined) },
+          },
+        });
+      }),
+    ).toThrow(/secrets routes require tenant/);
   });
 
   it('refuses to boot with process-local stores outside development', () => {
