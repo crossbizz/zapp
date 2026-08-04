@@ -246,3 +246,4 @@ be built:
 ## Execution log
 
 - (empty)
+- 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.
