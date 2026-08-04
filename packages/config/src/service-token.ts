@@ -105,13 +105,20 @@ const ALGORITHM = 'HS256';
 export const DEFAULT_SERVICE_TOKEN_TTL_SECONDS = 300;
 
 /**
- * The ceiling, enforced when signing **and** when verifying.
+ * The ceiling, enforced when signing and **twice** when verifying.
  *
  * Signing, so a caller cannot mint itself a long-lived credential; verifying,
  * because every service shares one secret and therefore a patched or
- * compromised minter could otherwise issue a token good for a month. The second
- * check costs two claims and a subtraction, and is what makes the bound a
- * property of the system rather than of the honesty of the signer.
+ * compromised minter could otherwise issue a token good for a month — and it is
+ * that caller, not the honest one, the verify-side checks exist for.
+ *
+ * Twice, because the obvious check is only half of it. `exp - iat` bounds the
+ * *width* of the validity window and nothing bounds where the window sits: jose
+ * reads `iat` only when `maxTokenAge` is set, so a minter that dates both claims
+ * a year forward produces a ten-minute token that verifies for a year (CP-8
+ * review). So `exp` is bounded against *now* as well, which is what makes the
+ * ceiling a property of the system rather than of the signer's honesty — and
+ * what keeps the denylist entry a spent token writes measured in minutes.
  */
 export const MAX_SERVICE_TOKEN_TTL_SECONDS = 600;
 
@@ -161,7 +168,9 @@ export type ServiceTokenRejection =
   /** A required claim (`exp`, `iat`, `jti`, `sub`) is missing. */
   | 'incomplete'
   | 'expired'
-  /** Minted for something else — the whole point of pinning `aud`. */
+  /** `nbf` puts the token's validity in the future. Nothing here mints one. */
+  | 'not_yet_valid'
+  /** Minted for something else, or for several things at once — see the `aud` check. */
   | 'audience'
   | 'issuer'
   /** `sub` is not one of {@link SERVICE_NAMES}. */
@@ -213,14 +222,19 @@ function classify(error: unknown): ServiceTokenRejection {
     case 'ERR_JWT_EXPIRED':
       return 'expired';
     case 'ERR_JWT_CLAIM_VALIDATION_FAILED': {
-      const claim = (error as { claim?: unknown }).claim;
-      if (claim === 'aud') {
-        return 'audience';
+      switch ((error as { claim?: unknown }).claim) {
+        case 'aud':
+          return 'audience';
+        case 'iss':
+          return 'issuer';
+        case 'nbf':
+          // Not a missing claim: a token dated to start working later. Nothing
+          // here mints one, so seeing it in the log means a minter that is not
+          // this module — which is worth being able to read as its own word.
+          return 'not_yet_valid';
+        default:
+          return 'incomplete';
       }
-      if (claim === 'iss') {
-        return 'issuer';
-      }
-      return 'incomplete';
     }
     default:
       // ERR_JWS_INVALID, ERR_JWT_INVALID, a JSON payload that is not an object,
@@ -286,6 +300,11 @@ export function createServiceTokenSigner(config: ServiceTokenConfig): ServiceTok
     },
 
     async verifyServiceToken(token, expectedAud, now) {
+      // Resolved once: `jwtVerify` and the ceiling below must judge the token
+      // against the same instant, or a token can be unexpired for one and
+      // over-long for the other on either side of a second boundary.
+      const currentDate = now ?? new Date();
+
       for (const key of verificationKeys) {
         let payload: JWTPayload;
         try {
@@ -296,7 +315,7 @@ export function createServiceTokenSigner(config: ServiceTokenConfig): ServiceTok
               issuer: SERVICE_TOKEN_ISSUER,
               audience: expectedAud,
               requiredClaims: ['exp', 'iat', 'jti', 'sub'],
-              currentDate: now ?? new Date(),
+              currentDate,
               // Zero: every one of these tokens is minted inside the cluster
               // that verifies it, so hosts that disagree about the time is a
               // fault to fix rather than a tolerance to widen. A window here
@@ -322,10 +341,35 @@ export function createServiceTokenSigner(config: ServiceTokenConfig): ServiceTok
           // types the rest of this function reads them as.
           return rejected('incomplete');
         }
+        if (payload.aud !== expectedAud) {
+          // jose is satisfied by an `aud` *array* that contains the expected
+          // value. Only a minter that has been changed can produce one, which
+          // is exactly the caller this check exists for: a token addressed to
+          // four audiences at once is not a token addressed to this route.
+          return rejected('audience');
+        }
         if (!isServiceName(sub)) {
           return rejected('service');
         }
         if (exp - iat > MAX_SERVICE_TOKEN_TTL_SECONDS) {
+          // The window the token claims for itself is wider than the ceiling.
+          // Catches a back-dated `iat` — a lie about the token's age, which is
+          // a claim the returned `issuedAt` carries into whatever records it.
+          return rejected('lifetime');
+        }
+        if (exp * 1000 - currentDate.getTime() > MAX_SERVICE_TOKEN_TTL_SECONDS * 1000) {
+          // …and the same ceiling measured from *now*, which is the half that
+          // actually bounds anything. `exp - iat` bounds the width of the
+          // window; nothing bounds where the window sits, because jose reads
+          // `iat` only when `maxTokenAge` is set. A minter that dates both
+          // claims a year forward therefore produces a ten-minute token that is
+          // valid for a year — and, spent on a single-use route, a denylist
+          // entry with a year-long TTL (`internal/service-auth.ts`). Two
+          // comparisons, and the bound stops being a bound on the signer's
+          // honesty.
+          //
+          // No new dependence on the clock: `exp` is already compared against
+          // it by `jwtVerify` above.
           return rejected('lifetime');
         }
 

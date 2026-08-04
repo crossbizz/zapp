@@ -279,6 +279,17 @@ describe('what the route will not accept as a token', () => {
           }),
         ),
       ],
+      [
+        // The other half of the ceiling (CP-8 review): a legal ten-minute
+        // window, dated a year forward. `exp - iat` is within bounds; where the
+        // window *sits* is not, and left unchecked this reaches the route with
+        // a year of validity and writes a year-long denylist key.
+        'a short window dated into the future',
+        craft(
+          { alg: 'HS256', typ: 'JWT' },
+          claimsAt(new Date(now.getTime() + 365 * 86_400_000)),
+        ),
+      ],
       ['not a JWT at all', 'forged-or-expired'],
     ];
 

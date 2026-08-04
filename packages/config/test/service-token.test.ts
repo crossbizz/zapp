@@ -224,6 +224,99 @@ describe('verification', () => {
 
     expect(outcome(await signer.verifyServiceToken(forged, AUD, NOW))).toBe('lifetime');
   });
+
+  it('refuses a short window dated into the future, which is the same attack', async () => {
+    /**
+     * The half `exp - iat` misses (CP-8 review). This token's window is a
+     * perfectly legal ten minutes wide — it is *where the window sits* that is
+     * wrong, and nothing else looks: `jwtVerify` compares `exp` against now, so
+     * a future `exp` passes, and it reads `iat` only when `maxTokenAge` is set,
+     * so a future `iat` is never questioned.
+     *
+     * Left unchecked this is a year-long credential, and — spent on the
+     * single-use decrypt route — a denylist key with a year-long TTL chosen by
+     * whoever minted it.
+     */
+    const aYearOn = seconds(NOW, 365 * 24 * 60 * 60);
+    const forged = await new SignJWT({})
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setIssuer(SERVICE_TOKEN_ISSUER)
+      .setAudience(AUD)
+      .setSubject(CALLER)
+      .setJti('post-dated')
+      .setIssuedAt(aYearOn)
+      .setExpirationTime(seconds(aYearOn, MAX_SERVICE_TOKEN_TTL_SECONDS))
+      .sign(new TextEncoder().encode(SECRET));
+
+    // Not in a year's time, and not today.
+    expect(outcome(await signer.verifyServiceToken(forged, AUD, NOW))).toBe('lifetime');
+    expect(outcome(await signer.verifyServiceToken(forged, AUD, seconds(NOW, 180 * 86_400)))).toBe(
+      'lifetime',
+    );
+    // The honest token of the same width, verified at the same instant, is fine
+    // — so the refusal is about where the window sits, not how wide it is.
+    const honest = await signer.signServiceToken({
+      service: CALLER,
+      aud: AUD,
+      ttlSec: MAX_SERVICE_TOKEN_TTL_SECONDS,
+      now: NOW,
+    });
+    expect(outcome(await signer.verifyServiceToken(honest.token, AUD, NOW))).toBe('ok');
+  });
+
+  it('refuses a back-dated token whose remaining validity is short', async () => {
+    // The other side of the pair, and the case that keeps *both* checks
+    // falsifiable: this token expires five minutes from now, so the bound
+    // measured from now is satisfied — it is the claimed *width*, a year, that
+    // is not. `iat` is a claim about the token's age that a trail may record,
+    // and one that lies about it by a year is not a token this system minted.
+    const forged = await new SignJWT({})
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setIssuer(SERVICE_TOKEN_ISSUER)
+      .setAudience(AUD)
+      .setSubject(CALLER)
+      .setJti('back-dated')
+      .setIssuedAt(seconds(NOW, -365 * 86_400))
+      .setExpirationTime(seconds(NOW, 300))
+      .sign(new TextEncoder().encode(SECRET));
+
+    expect(outcome(await signer.verifyServiceToken(forged, AUD, NOW))).toBe('lifetime');
+  });
+
+  it('refuses an aud array, even one that contains the expected audience', async () => {
+    // jose is satisfied by membership. A token addressed to four audiences at
+    // once is not a token addressed to this route, and only a changed minter
+    // produces one — which is the caller the audience check exists for.
+    const forged = await new SignJWT({})
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setIssuer(SERVICE_TOKEN_ISSUER)
+      .setAudience([AUD, 'model-gateway', 'git-service'])
+      .setSubject(CALLER)
+      .setJti('multi-addressed')
+      .setIssuedAt(NOW)
+      .setExpirationTime(seconds(NOW, 300))
+      .sign(new TextEncoder().encode(SECRET));
+
+    expect(outcome(await signer.verifyServiceToken(forged, AUD, NOW))).toBe('audience');
+  });
+
+  it('names a not-yet-valid token for what it is, rather than as a missing claim', async () => {
+    // Nothing here mints an `nbf`, so seeing one means a minter that is not this
+    // module — and an operator reading `incomplete` would go looking for the
+    // wrong bug.
+    const forged = await new SignJWT({})
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setIssuer(SERVICE_TOKEN_ISSUER)
+      .setAudience(AUD)
+      .setSubject(CALLER)
+      .setJti('early')
+      .setIssuedAt(NOW)
+      .setNotBefore(seconds(NOW, 60))
+      .setExpirationTime(seconds(NOW, 300))
+      .sign(new TextEncoder().encode(SECRET));
+
+    expect(outcome(await signer.verifyServiceToken(forged, AUD, NOW))).toBe('not_yet_valid');
+  });
 });
 
 describe('algorithm confusion', () => {
