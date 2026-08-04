@@ -4,6 +4,7 @@ import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from './env.js';
+import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl } from './git/client.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
@@ -62,9 +63,36 @@ logRedisError = (error) => {
   app.log.error({ err: error }, 'redis connection error');
 };
 
+const eventPublisher = createEventPublisher(
+  {
+    async listen(channel, onNotification) {
+      return await database.sql.listen(channel, onNotification);
+    },
+    async readLatestSequence(runId) {
+      const [row] = await database.sql<{ sequence: string }[]>`
+        select sequence::text as sequence
+          from agent_events
+         where run_id = ${runId}
+         order by sequence desc
+         limit 1
+      `;
+      return row;
+    },
+    async publish(channel, body) {
+      await redis.publish(channel, body);
+    },
+  },
+  {
+    onError: (error) => {
+      app.log.error({ err: error }, 'event publisher error');
+    },
+  },
+);
+
 // The handles are opened here, so they are closed here — `close()` runs every
 // `onClose` hook, and these are the hooks for the handles this file created.
 app.addHook('onClose', async () => {
+  await eventPublisher.close();
   await database.close();
   await redis.close();
 });
@@ -94,6 +122,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
+  eventPublisher.start();
+  await eventPublisher.ready();
   await app.listen({ host: env.HOST, port: env.PORT });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');

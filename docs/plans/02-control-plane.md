@@ -175,9 +175,9 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 **Files:** Create: `src/events/publisher.ts`, `test/integration/publisher.test.ts`
 **Effort:** M
 
-- [ ] **Step 1:** Failing test: insert event via CP-13 → within 500 ms a Redis subscriber on channel `run:{runId}` receives `{ sequence }` ping.
-- [ ] **Step 2:** Implement: dedicated pg LISTEN connection with reconnect/backoff; on notify, publish lightweight ping (subscribers re-read from DB — guarantees order/no-loss); on Redis outage, SSE degrades to 2 s DB polling (documented behavior, test simulates).
-- [ ] **Step 3:** Commit: `feat(control-api): LISTEN/NOTIFY → Redis event fanout`
+- [x] **Step 1:** Failing test: insert event via CP-13 → within 500 ms a Redis subscriber on channel `run:{runId}` receives `{ sequence }` ping.
+- [x] **Step 2:** Implement: dedicated pg LISTEN connection with reconnect/backoff; on notify, publish lightweight ping (subscribers re-read from DB — guarantees order/no-loss); on Redis outage, SSE degrades to 2 s DB polling (documented behavior, test simulates).
+- [x] **Step 3:** Commit: `feat(control-api): LISTEN/NOTIFY → Redis event fanout`
 
 ### Task CP-15: SSE stream endpoint
 
@@ -265,3 +265,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-12 BLOCKED: the required durable organization settings have no PRD §23.1/Drizzle storage, while schema conformance rejects undocumented columns/tables. Proposed ADR-0004 adds `organizations.settings_json`; human approval is required before plan/schema/code changes. Task and tracker remain unchecked.
 - 2026-08-04 CP-13 execution assumption: choose the FND-6 note's additive migration path and retain all PRD §14.4 top-level replay context absent from the conceptual `agent_events` row (`project_id`, `phase_id`, `task_id`, `agent_id`), documented in the schema-conformance allowlist. The internal route uses a route-specific orchestrator token, required idempotency key, tenant/run/project validation before sequence allocation, and one transactional batch audit + NOTIFY.
 - 2026-08-04 CP-13 done — sequenced service-only event ingest persists full replay context, audits each committed batch, and sends transactional PostgreSQL NOTIFY.
+- 2026-08-04 CP-14 done — committed event notifications now publish Zod-validated high-water pings through Redis, with bounded LISTEN retry and a 2-second database polling fallback.

@@ -46,7 +46,12 @@ export interface RedisCommands {
   ): Promise<unknown>;
 }
 
-export interface RedisConnection extends RedisCommands {
+/** The pub/sub write kept separate from the request-store command surface. */
+export interface RedisPublisher {
+  publish(channel: string, body: string): Promise<number>;
+}
+
+export interface RedisConnection extends RedisCommands, RedisPublisher {
   close(): Promise<void>;
 }
 
@@ -130,6 +135,9 @@ export function createRedisConnection(
     },
     async eval(script, keys, args) {
       return await client.eval(script, keys.length, ...keys, ...args);
+    },
+    async publish(channel, body) {
+      return await client.publish(channel, body);
     },
     async close() {
       // `quit` drains; `disconnect` is the fallback for a client that never
