@@ -16,6 +16,7 @@ import {
   repositories,
   secretCiphertexts,
   secretMetadata,
+  specifications,
   workspaces,
   type Branch,
   type AgentRun,
@@ -26,6 +27,7 @@ import {
   type ProjectRepository,
   type Repository,
   type SecretMetadata,
+  type Specification,
   type TenantDb,
   type Workspace,
 } from '@zapp/db';
@@ -203,6 +205,40 @@ export interface TenantContractRepository {
    * one rather than overwriting (PRD §17.2), so "latest" is "highest version".
    */
   latestForProject(projectId: string): Promise<ProjectContract | undefined>;
+}
+
+export interface NewSpecificationInput {
+  readonly id: string;
+  readonly projectId: string;
+  readonly content: unknown;
+  readonly createdBy: string;
+  readonly now: Date;
+  readonly audit: AuditHook<Specification>;
+}
+
+export interface UpdateSpecificationInput {
+  readonly projectId: string;
+  readonly version: number;
+  readonly content: unknown;
+  readonly audit: AuditHook<Specification>;
+}
+
+export interface ApproveSpecificationInput {
+  readonly projectId: string;
+  readonly version: number;
+  readonly approvedBy: string;
+  readonly approvedAt: Date;
+  readonly audit: AuditHook<Specification>;
+}
+
+export type UpdatedSpecification = Specification | 'immutable' | undefined;
+
+/** All specification writes lock their tenant project before reading the next version. */
+export interface TenantSpecificationRepository {
+  getByProjectVersion(projectId: string, version: number): Promise<Specification | undefined>;
+  create(input: NewSpecificationInput): Promise<Specification>;
+  update(input: UpdateSpecificationInput): Promise<UpdatedSpecification>;
+  approve(input: ApproveSpecificationInput): Promise<Specification | undefined>;
 }
 
 /** The one run write CP-9 owns: persist then start its durable workflow atomically. */
@@ -407,6 +443,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs'> {
   readonly branches: TenantBranchRepository;
   readonly environments: TenantEnvironmentRepository;
   readonly contracts: TenantContractRepository;
+  readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
 }
 
@@ -645,6 +682,125 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             }
             throw error;
           }
+        },
+      },
+
+      specifications: {
+        async getByProjectVersion(projectId, version) {
+          const [row] = await db
+            .select()
+            .from(specifications)
+            .where(
+              scoped(
+                specifications.organizationId,
+                eq(specifications.projectId, projectId),
+                eq(specifications.version, version),
+              ),
+            )
+            .limit(1);
+          return row;
+        },
+
+        async create(input) {
+          return await db.transaction(async (tx) => {
+            // A no-op update is the row lock. It serializes distinct creates for
+            // this project, so MAX(version) + 1 cannot race the unique index.
+            const [project] = await tx
+              .update(projects)
+              .set({ archivedAt: sql`${projects.archivedAt}` })
+              .where(scoped(projects.organizationId, eq(projects.id, input.projectId)))
+              .returning({ id: projects.id });
+            if (project === undefined) throw new Error('specification project disappeared during create');
+
+            // The id is deterministic from the request's scoped idempotency
+            // operation. Redis can lose its completed response after commit;
+            // the durable row is the recovery record in that case.
+            const [existing] = await tx
+              .select()
+              .from(specifications)
+              .where(scoped(specifications.organizationId, eq(specifications.id, input.id)))
+              .limit(1);
+            if (existing !== undefined) return existing;
+
+            const [latest] = await tx
+              .select({ version: specifications.version })
+              .from(specifications)
+              .where(scoped(specifications.organizationId, eq(specifications.projectId, input.projectId)))
+              .orderBy(desc(specifications.version))
+              .limit(1);
+            const [created] = await tx
+              .insert(specifications)
+              .values({
+                id: input.id,
+                organizationId: orgId,
+                projectId: input.projectId,
+                version: (latest?.version ?? 0) + 1,
+                status: 'draft',
+                contentJson: input.content,
+                createdBy: input.createdBy,
+                approvedBy: null,
+                approvedAt: null,
+              })
+              .returning();
+            if (created === undefined) throw new Error('specification insert returned no row');
+            await input.audit(tx, created);
+            return created;
+          });
+        },
+
+        async update(input) {
+          return await db.transaction(async (tx) => {
+            // Lock before deciding mutability: an approval concurrent with this
+            // request wins deterministically, and a post-approval PATCH never
+            // writes over its immutable content.
+            const [locked] = await tx
+              .update(specifications)
+              .set({ status: sql`${specifications.status}` })
+              .where(
+                scoped(
+                  specifications.organizationId,
+                  eq(specifications.projectId, input.projectId),
+                  eq(specifications.version, input.version),
+                ),
+              )
+              .returning();
+            if (locked === undefined) return undefined;
+            if (locked.status !== 'draft') return 'immutable';
+            const [updated] = await tx
+              .update(specifications)
+              .set({ contentJson: input.content })
+              .where(scoped(specifications.organizationId, eq(specifications.id, locked.id)))
+              .returning();
+            if (updated === undefined) throw new Error('locked specification disappeared during update');
+            await input.audit(tx, updated);
+            return updated;
+          });
+        },
+
+        async approve(input) {
+          return await db.transaction(async (tx) => {
+            const [locked] = await tx
+              .update(specifications)
+              .set({ status: sql`${specifications.status}` })
+              .where(
+                scoped(
+                  specifications.organizationId,
+                  eq(specifications.projectId, input.projectId),
+                  eq(specifications.version, input.version),
+                ),
+              )
+              .returning();
+            if (locked === undefined) return undefined;
+            if (locked.status === 'approved') return locked;
+            const [approved] = await tx
+              .update(specifications)
+              .set({ status: 'approved', approvedBy: input.approvedBy, approvedAt: input.approvedAt })
+              .where(scoped(specifications.organizationId, eq(specifications.id, locked.id)))
+              .returning();
+            if (approved === undefined) throw new Error('locked specification disappeared during approval');
+            await input.audit(tx, approved);
+            return approved;
+          });
         },
       },
 

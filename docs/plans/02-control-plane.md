@@ -144,7 +144,7 @@ Routes (PRD §32.2/§32.3): `POST /v1/projects/:projectId/runs` (mode, prompt, b
 Routes (PRD §32.2): `POST /v1/projects/:projectId/specifications` (content per `SpecificationSchema` from AR-21; status `draft`), `GET .../specifications/:version`, `POST .../specifications/:version/approve` (immutable after: PATCH attempts → 409 `specification_immutable`; approval stamps approved_by/at, bumps status).
 **Effort:** S
 
-- [ ] Steps: failing tests (versions auto-increment per project; approve locks; edit-after-approve creates v+1 draft copy) → implement → commit: `feat(control-api): versioned specifications with immutable approval`
+- [x] Steps: failing tests (versions auto-increment per project; approve locks; edit-after-approve creates v+1 draft copy) → implement → commit: `feat(control-api): versioned specifications with immutable approval`
 
 ### Task CP-11: Release + integration routes (shells)
 
@@ -258,3 +258,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04: CP-8 done (a78e7c1 + fix 23b3ff1, review fully Approved — "strongest credential work in the plan"). 21/21 mutations caught. Absolute lifetime bound + window-width bound BOTH falsifiable (each catches a forgery the other cannot). FakeServiceTokens deleted, so the M0 isolation gate runs on real HS256. **M0 CONTROL PLANE COMPLETE (CP-1..CP-8).**
 - 2026-08-04 CP-9 done — added tenant-scoped run/workspace lifecycle ports and routes, plus the fail-closed real control-api → git-service → Forgejo GATE-5 harness; local credential-gated integration suites remain explicitly skipped where credentials are absent.
 - 2026-08-04 CP-9 fix round 2 — completed route-wide Owner/Builder/Viewer and foreign-ID mutation coverage; GATE-5 tracker checked after the controller's real Forgejo 1/1 rerun.
+- 2026-08-04 CP-10 done — versioned tenant-scoped specifications with stable create recovery, atomic audits, and immutable approval. Temporary documented assumption: CP-10 defines a strict local PRD §12.2 schema because AR-16 (not AR-21) owns the shared SpecificationSchema; AR-16 should replace this local schema when it lands.

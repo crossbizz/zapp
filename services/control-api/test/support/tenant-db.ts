@@ -8,6 +8,7 @@ import type {
   ProjectContract,
   Repository,
   SecretMetadata,
+  Specification,
   Workspace,
 } from '@zapp/db';
 
@@ -25,8 +26,11 @@ import {
   type RotateSecretInput,
   type SecretListRequest,
   type StoredSecret,
+  type ApproveSpecificationInput,
+  type NewSpecificationInput,
   type TenantDatabase,
   type TenantDbFactory,
+  type UpdateSpecificationInput,
   type UpdateProjectInput,
   type UpdatedProject,
 } from '../../src/tenant/db.js';
@@ -67,6 +71,10 @@ export class InMemoryTenantData {
   readonly branches: Branch[] = [];
   readonly environments: Environment[] = [];
   readonly contracts: ProjectContract[] = [];
+  readonly specifications: Specification[] = [];
+  /** Makes the concurrent-create test expose a MAX(version) race in this double. */
+  yieldSpecificationCreates = false;
+  readonly specificationLocks = new Map<string, Promise<void>>();
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
   readonly workspaces: Workspace[] = [];
@@ -114,6 +122,27 @@ export class InMemoryTenantData {
  */
 function mine<T extends { organizationId: string }>(organizationId: string, rows: T[]): T[] {
   return rows.filter((row) => row.organizationId === organizationId);
+}
+
+/** The in-memory counterpart to CP-10's tenant-project row lock. */
+async function withSpecificationLock<T>(
+  data: InMemoryTenantData,
+  projectId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = data.specificationLocks.get(projectId) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.specificationLocks.set(projectId, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.specificationLocks.get(projectId) === current) data.specificationLocks.delete(projectId);
+  }
 }
 
 /** One organization's view of `data`. A free function, so nothing aliases `this`. */
@@ -241,6 +270,73 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         await input.audit(NO_TRANSACTION, updated);
         data.projects.splice(data.projects.indexOf(existing), 1, updated);
         return updated;
+      },
+    },
+
+    specifications: {
+      getByProjectVersion(projectId, version): Promise<Specification | undefined> {
+        return Promise.resolve(
+          mine(orgId, data.specifications).find(
+            (row) => row.projectId === projectId && row.version === version,
+          ),
+        );
+      },
+      async create(input: NewSpecificationInput): Promise<Specification> {
+        return await withSpecificationLock(data, `${orgId}:${input.projectId}`, async () => {
+          const existing = mine(orgId, data.specifications).find((row) => row.id === input.id);
+          if (existing !== undefined) return existing;
+          const version =
+            Math.max(
+              0,
+              ...mine(orgId, data.specifications)
+                .filter((row) => row.projectId === input.projectId)
+                .map((row) => row.version),
+            ) + 1;
+          // Without the lock above both concurrent requests stop here with the
+          // same candidate version. The test switch turns that scheduling point
+          // into an actual interleaving instead of relying on timing luck.
+          if (data.yieldSpecificationCreates) await Promise.resolve();
+          const created: Specification = {
+            id: input.id,
+            organizationId: orgId,
+            projectId: input.projectId,
+            version,
+            status: 'draft',
+            contentJson: input.content,
+            createdBy: input.createdBy,
+            approvedBy: null,
+            approvedAt: null,
+          };
+          await input.audit(NO_TRANSACTION, created);
+          data.specifications.push(created);
+          return created;
+        });
+      },
+      async update(input: UpdateSpecificationInput) {
+        const existing = mine(orgId, data.specifications).find(
+          (row) => row.projectId === input.projectId && row.version === input.version,
+        );
+        if (existing === undefined) return undefined;
+        if (existing.status !== 'draft') return 'immutable' as const;
+        const updated: Specification = { ...existing, contentJson: input.content };
+        await input.audit(NO_TRANSACTION, updated);
+        data.specifications.splice(data.specifications.indexOf(existing), 1, updated);
+        return updated;
+      },
+      async approve(input: ApproveSpecificationInput): Promise<Specification | undefined> {
+        const existing = mine(orgId, data.specifications).find(
+          (row) => row.projectId === input.projectId && row.version === input.version,
+        );
+        if (existing === undefined || existing.status === 'approved') return existing;
+        const approved: Specification = {
+          ...existing,
+          status: 'approved',
+          approvedBy: input.approvedBy,
+          approvedAt: input.approvedAt,
+        };
+        await input.audit(NO_TRANSACTION, approved);
+        data.specifications.splice(data.specifications.indexOf(existing), 1, approved);
+        return approved;
       },
     },
 

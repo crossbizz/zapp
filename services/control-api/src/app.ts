@@ -50,6 +50,7 @@ import { registerProjectRoutes } from './routes/projects.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { registerSecretRoutes } from './routes/secrets.js';
+import { registerSpecificationRoutes } from './routes/specifications.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
@@ -402,6 +403,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // never ship.
         if (tenant !== undefined) {
           registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
+          registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,
             orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),

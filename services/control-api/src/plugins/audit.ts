@@ -67,6 +67,9 @@ export const AUDIT_ACTIONS = [
    * hole in exactly the period people ask about.
    */
   'project.scan_requested',
+  'specification.created',
+  'specification.updated',
+  'specification.approved',
   'run.created',
   'run.pause_requested',
   'run.paused',
@@ -113,7 +116,14 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** PRD §23.6 `target_type`: the entity kind an action landed on. */
 export type AuditTargetType =
-  'organization' | 'membership' | 'invite' | 'project' | 'run' | 'workspace' | 'secret';
+  | 'organization'
+  | 'membership'
+  | 'invite'
+  | 'project'
+  | 'specification'
+  | 'run'
+  | 'workspace'
+  | 'secret';
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
 export type AuditActorType = 'user' | 'service' | 'agent' | 'support';
