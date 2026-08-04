@@ -357,12 +357,6 @@ function durableOperation(metadata: unknown): DurableOperation | undefined {
   return { key: value['operationKey'], state: value['operationState'], metadata };
 }
 
-function specificationOperationKey(metadata: unknown): string | undefined {
-  if (typeof metadata !== 'object' || metadata === null) return undefined;
-  const key = (metadata as Record<string, unknown>)['operationKey'];
-  return typeof key === 'string' ? key : undefined;
-}
-
 /**
  * The vault (plan 02 CP-7).
  *
@@ -773,13 +767,24 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               )
               .returning();
             if (locked === undefined) return undefined;
-            const [latestAudit] = await tx
-              .select({ metadata: auditEvents.metadataJson })
+            // An idempotency completion can fail after this transaction has
+            // committed. Look up the operation's durable audit record across
+            // this specification's complete history, not just the newest
+            // event: another completed PATCH must not let a stale retry write
+            // older content back over it.
+            const [completedOperation] = await tx
+              .select({ id: auditEvents.id })
               .from(auditEvents)
-              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, locked.id)))
-              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .where(
+                scoped(
+                  auditEvents.organizationId,
+                  eq(auditEvents.targetType, 'specification'),
+                  eq(auditEvents.targetId, locked.id),
+                  sql`${auditEvents.metadataJson} ->> 'operationKey' = ${input.operationKey}`,
+                ),
+              )
               .limit(1);
-            if (specificationOperationKey(latestAudit?.metadata) === input.operationKey) return locked;
+            if (completedOperation !== undefined) return locked;
             if (locked.status !== 'draft') return 'immutable';
             const [updated] = await tx
               .update(specifications)

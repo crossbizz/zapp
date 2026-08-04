@@ -271,6 +271,85 @@ describe('specification routes', () => {
     ).toHaveLength(1);
   });
 
+  it('does not roll back a newer draft edit when an older lost PATCH response retries', async () => {
+    const unavailableAfterCommit: IdempotencyStore = {
+      reserve: () => Promise.resolve(undefined),
+      complete: () => Promise.reject(new Error('redis unavailable after commit')),
+      release: () => Promise.resolve(),
+    };
+    const wired = await wire({ idempotency: unavailableAfterCommit });
+    const created = await createSpecification(wired, 'spec-stale-retry-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const version = created.json<SpecificationResponse>().specification.version;
+    const contentA = { ...CONTENT, goals: ['Draft edit A must not be replayed over B.'] };
+    const contentB = { ...CONTENT, goals: ['Draft edit B is the current content.'] };
+
+    const first = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-stale-retry-a-01' },
+      payload: contentA,
+    });
+    expect(first.statusCode, first.body).toBe(200);
+    const intervening = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-stale-retry-b-01' },
+      payload: contentB,
+    });
+    expect(intervening.statusCode, intervening.body).toBe(200);
+
+    const replay = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-stale-retry-a-01' },
+      payload: contentA,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json<SpecificationResponse>().specification.content).toEqual(contentB);
+    expect(
+      wired.built.audit.events.filter((event) => event.action === 'specification.updated'),
+    ).toHaveLength(2);
+  });
+
+  it('records distinct same-content PATCH operations while recognizing a stale retry', async () => {
+    const unavailableAfterCommit: IdempotencyStore = {
+      reserve: () => Promise.resolve(undefined),
+      complete: () => Promise.reject(new Error('redis unavailable after commit')),
+      release: () => Promise.resolve(),
+    };
+    const wired = await wire({ idempotency: unavailableAfterCommit });
+    const created = await createSpecification(wired, 'spec-same-content-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const version = created.json<SpecificationResponse>().specification.version;
+    const content = { ...CONTENT, goals: ['This content belongs to two distinct operations.'] };
+
+    for (const key of ['spec-same-content-a-01', 'spec-same-content-b-01']) {
+      const response = await wired.built.app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': key },
+        payload: content,
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    }
+    expect(
+      wired.built.audit.events.filter((event) => event.action === 'specification.updated'),
+    ).toHaveLength(2);
+
+    const replay = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-same-content-a-01' },
+      payload: content,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json<SpecificationResponse>().specification.content).toEqual(content);
+    expect(
+      wired.built.audit.events.filter((event) => event.action === 'specification.updated'),
+    ).toHaveLength(2);
+  });
+
   it('serializes distinct concurrent creates into adjacent project-local versions', async () => {
     const wired = await wire();
     wired.data.yieldSpecificationCreates = true;

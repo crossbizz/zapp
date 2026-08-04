@@ -75,7 +75,8 @@ export class InMemoryTenantData {
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
   yieldSpecificationCreates = false;
   readonly specificationLocks = new Map<string, Promise<void>>();
-  readonly specificationOperations = new Map<string, string>();
+  /** Completed PATCH operation keys per tenant-scoped specification. */
+  readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
   readonly workspaces: Workspace[] = [];
@@ -320,12 +321,14 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           );
           if (existing === undefined) return undefined;
           const operationId = `${orgId}:${input.projectId}:${String(input.version)}`;
-          if (data.specificationOperations.get(operationId) === input.operationKey) return existing;
+          if (data.specificationOperations.get(operationId)?.has(input.operationKey)) return existing;
           if (existing.status !== 'draft') return 'immutable' as const;
           const updated: Specification = { ...existing, contentJson: input.content };
           await input.audit(NO_TRANSACTION, updated);
           data.specifications.splice(data.specifications.indexOf(existing), 1, updated);
-          data.specificationOperations.set(operationId, input.operationKey);
+          const completedOperations = data.specificationOperations.get(operationId) ?? new Set<string>();
+          completedOperations.add(input.operationKey);
+          data.specificationOperations.set(operationId, completedOperations);
           return updated;
         });
       },
