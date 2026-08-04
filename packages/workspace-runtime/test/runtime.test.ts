@@ -51,6 +51,42 @@ function executionContract(command: string, port: number): ExecutionContract {
   };
 }
 
+async function processIsGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    if (performance.now() >= deadline) {
+      return false;
+    }
+    await new Promise<void>((resolveWait) => {
+      setTimeout(resolveWait, 25);
+    });
+  }
+}
+
+async function initializeGitRepository(runtime: MemoryWorkspaceRuntime): Promise<void> {
+  for (const args of [
+    ['init'],
+    ['config', 'user.email', 'runtime@example.test'],
+    ['config', 'user.name', 'Runtime Test'],
+  ]) {
+    await expect(runtime.exec({ cmd: 'git', args, timeoutMs: 5_000 })).resolves.toMatchObject({
+      exitCode: 0,
+    });
+  }
+  await runtime.writeFile('entry.txt', new TextEncoder().encode('workspace data'));
+  await expect(
+    runtime.exec({ cmd: 'git', args: ['add', 'entry.txt'], timeoutMs: 5_000 }),
+  ).resolves.toMatchObject({ exitCode: 0 });
+  await expect(
+    runtime.exec({ cmd: 'git', args: ['commit', '-m', 'initial'], timeoutMs: 5_000 }),
+  ).resolves.toMatchObject({ exitCode: 0 });
+}
+
 describe('MemoryWorkspaceRuntime path safety', () => {
   it('lists files whose paths stay within the workspace root', async () => {
     await withWorkspace(async (_root, runtime) => {
@@ -93,13 +129,27 @@ describe('MemoryWorkspaceRuntime path safety', () => {
 });
 
 describe('MemoryWorkspaceRuntime git safety', () => {
-  it('rejects git options and paths that can escape the workspace', async () => {
+  it('allows normal operation flags while rejecting escape options and paths', async () => {
     await withWorkspace(async (_root, runtime) => {
+      await initializeGitRepository(runtime);
+
+      for (const op of [
+        { operation: 'diff' as const, args: ['--cached'] },
+        { operation: 'log' as const, args: ['--oneline'] },
+        { operation: 'show' as const, args: ['--stat'] },
+        { operation: 'checkout' as const, args: ['--detach'] },
+      ]) {
+        await expect(runtime.git(op)).resolves.toMatchObject({ exitCode: 0 });
+      }
+
       await expect(
         runtime.git({ operation: 'status', args: ['-C', '/outside'] }),
       ).rejects.toBeInstanceOf(PathViolationError);
       await expect(
         runtime.git({ operation: 'diff', args: ['--no-index', '/outside', '/outside'] }),
+      ).rejects.toBeInstanceOf(PathViolationError);
+      await expect(
+        runtime.git({ operation: 'checkout', args: ['--', '../outside'] }),
       ).rejects.toBeInstanceOf(PathViolationError);
       await expect(
         runtime.git({ operation: 'add_commit', paths: ['../outside'], message: 'escape' }),
@@ -118,6 +168,42 @@ describe('MemoryWorkspaceRuntime development server', () => {
       ).rejects.toThrow('Development server exited before readiness');
     });
   });
+
+  it('kills a dev command that never opens its contract port', async () => {
+    await withWorkspace(async (root, runtime) => {
+      const port = await availablePort();
+      const pidFile = join(root, 'unready-dev-server.pid');
+      let pid: number | undefined;
+
+      try {
+        const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+        )}`;
+        await expect(runtime.startDevServer(executionContract(command, port))).rejects.toThrow(
+          'Development server did not become ready',
+        );
+
+        pid = Number(await readFile(pidFile, 'utf8'));
+        const capturedPid = pid;
+        await expect(processIsGone(capturedPid, 500)).resolves.toBe(true);
+      } finally {
+        if (pid === undefined) {
+          try {
+            pid = Number(await readFile(pidFile, 'utf8'));
+          } catch {
+            // The process may fail before writing its pid.
+          }
+        }
+        if (pid !== undefined) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // A terminated child does not require cleanup.
+          }
+        }
+      }
+    });
+  }, 8_000);
 });
 
 describe('MemoryWorkspaceRuntime exec safety', () => {

@@ -132,12 +132,44 @@ export async function resolveInRoot(root: string, path: string): Promise<string>
   return resolved;
 }
 
+const SAFE_GIT_FLAGS: Readonly<Record<Exclude<GitOperation, 'add_commit'>, ReadonlySet<string>>> = {
+  status: new Set(['--short', '--porcelain', '--branch']),
+  diff: new Set(['--cached', '--staged', '--stat', '--name-only', '--name-status', '--patch']),
+  log: new Set(['--oneline', '--stat', '--name-only', '--name-status']),
+  show: new Set(['--stat', '--name-only', '--name-status', '--patch']),
+  push: new Set(['--force-with-lease', '--set-upstream']),
+  checkout: new Set(['--detach', '--force']),
+  branch: new Set(['--show-current', '--list']),
+  restore: new Set(['--staged', '--worktree']),
+};
+
 async function validateGitPaths(root: string, paths: readonly string[]): Promise<void> {
   for (const path of paths) {
-    if (path.startsWith('-')) {
+    if (path.startsWith('-') || path === '--') {
       throw new PathViolationError(path);
     }
     await resolveInRoot(root, path);
+  }
+}
+
+async function validateGitArgs(
+  root: string,
+  operation: Exclude<GitOperation, 'add_commit'>,
+  args: readonly string[],
+): Promise<void> {
+  let pathsFollow = false;
+  for (const arg of args) {
+    if (arg === '--') {
+      pathsFollow = true;
+      continue;
+    }
+    if (!pathsFollow && arg.startsWith('-')) {
+      if (!SAFE_GIT_FLAGS[operation].has(arg)) {
+        throw new PathViolationError(arg);
+      }
+      continue;
+    }
+    await resolveInRoot(root, arg);
   }
 }
 
@@ -408,7 +440,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       });
     }
 
-    await validateGitPaths(this.root, op.args ?? []);
+    await validateGitArgs(this.root, op.operation, op.args ?? []);
     return this.exec({
       cmd: 'git',
       args: [op.operation, ...(op.args ?? [])],
@@ -421,6 +453,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       cwd: await resolveInRoot(this.root, contract.workspace_root),
       shell: true,
       stdio: 'ignore',
+      detached: process.platform !== 'win32',
     });
     if (child.pid === undefined) {
       throw new Error('Could not start development server');
@@ -448,11 +481,13 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         });
       };
       const onError = (error: Error): void => {
+        terminateProcessGroup(child);
         complete(() => {
           rejectReady(error);
         });
       };
       const onClose = (): void => {
+        terminateProcessGroup(child);
         complete(() => {
           rejectReady(new Error('Development server exited before readiness'));
         });
@@ -460,6 +495,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       const interval = setInterval(checkReadiness, 50);
       const timeout = setTimeout(
         () => {
+          terminateProcessGroup(child);
           complete(() => {
             rejectReady(new Error('Development server did not become ready'));
           });
