@@ -206,33 +206,48 @@ export type CompleteRequest = z.infer<typeof CompleteRequestSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type NeutralTool = z.infer<typeof NeutralToolSchema>;
 
-export const GatewayStreamEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('text-delta'), text: z.string() }).strict(),
-  z
-    .object({
-      type: z.literal('tool-call'),
-      toolCallId: z.string(),
-      toolName: z.string(),
-      input: JsonObjectValueSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal('usage'),
-      inputTokens: z.number().int().nonnegative().optional(),
-      outputTokens: z.number().int().nonnegative().optional(),
-      totalTokens: z.number().int().nonnegative().optional(),
-      cachedInputTokens: z.number().int().nonnegative().optional(),
-    })
-    .strict(),
-  z.object({ type: z.literal('done') }).strict(),
-  z
-    .object({
-      type: z.literal('error'),
-      code: z.literal('provider_error'),
-      message: z.string(),
-    })
-    .strict(),
+const TextDeltaStreamEventSchema = z
+  .object({ type: z.literal('text-delta'), text: z.string() })
+  .strict();
+const ToolCallStreamEventSchema = z
+  .object({
+    type: z.literal('tool-call'),
+    toolCallId: z.string(),
+    toolName: z.string(),
+    input: JsonObjectValueSchema,
+  })
+  .strict();
+const UsageStreamEventSchema = z
+  .object({
+    type: z.literal('usage'),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+const DoneStreamEventSchema = z.object({ type: z.literal('done') }).strict();
+const ProviderErrorStreamEventSchema = z
+  .object({
+    type: z.literal('error'),
+    code: z.literal('provider_error'),
+    message: z.string(),
+  })
+  .strict();
+
+export const BackendStreamEventSchema = z.discriminatedUnion('type', [
+  TextDeltaStreamEventSchema,
+  ToolCallStreamEventSchema,
+  UsageStreamEventSchema,
 ]);
 
+export const GatewayStreamEventSchema = z.discriminatedUnion('type', [
+  TextDeltaStreamEventSchema,
+  ToolCallStreamEventSchema,
+  UsageStreamEventSchema,
+  DoneStreamEventSchema,
+  ProviderErrorStreamEventSchema,
+]);
+
+export type BackendStreamEvent = z.infer<typeof BackendStreamEventSchema>;
 export type GatewayStreamEvent = z.infer<typeof GatewayStreamEventSchema>;

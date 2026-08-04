@@ -265,4 +265,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 ## Execution log
 
 - 2026-08-04 AR-1 done — Added the authenticated provider-neutral streaming gateway and four AI SDK adapters with primary-only role selection; fallback execution remains AR-2.
-- 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, so controller/human architectural resolution is required.
+- 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, with controller/human resolution tracked in external ADR-0005.

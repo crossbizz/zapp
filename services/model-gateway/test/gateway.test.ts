@@ -11,7 +11,7 @@ import {
   type CompletionBackend,
   type GatewayStreamEvent,
 } from '../src/app.js';
-import { GatewayStreamEventSchema } from '../src/schemas.js';
+import { GatewayStreamEventSchema, type BackendStreamEvent } from '../src/schemas.js';
 import { loadModelsConfig } from '../src/models.js';
 import { createAnthropicAdapter } from '../src/providers/anthropic.js';
 import { createCompatibleAdapter } from '../src/providers/compatible.js';
@@ -52,15 +52,54 @@ const validRequest = {
   budget: { remainingCredits: 125.5 },
 } satisfies CompleteRequest;
 
-function asyncEvents(events: readonly GatewayStreamEvent[]): AsyncIterable<GatewayStreamEvent> {
+function asyncEvents(events: readonly BackendStreamEvent[]): AsyncIterable<BackendStreamEvent> {
   return (async function* () {
     await Promise.resolve();
     yield* events;
   })();
 }
 
-function backend(events: readonly GatewayStreamEvent[] = []): CompletionBackend {
+function backend(events: readonly BackendStreamEvent[] = []): CompletionBackend {
   return { stream: vi.fn(() => asyncEvents(events)) };
+}
+
+function adversarialBackend(events: readonly unknown[]) {
+  let nextCalls = 0;
+  let returnCalls = 0;
+  let backendSignal: AbortSignal | undefined;
+  const completion: CompletionBackend = {
+    stream: (_request, signal) => {
+      backendSignal = signal;
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next() {
+              const value = events[nextCalls];
+              nextCalls += 1;
+              return Promise.resolve(
+                value === undefined
+                  ? { done: true as const, value: undefined }
+                  : { done: false as const, value },
+              );
+            },
+            return() {
+              returnCalls += 1;
+              return Promise.resolve({ done: true as const, value: undefined });
+            },
+          };
+        },
+      } as AsyncIterable<never>;
+    },
+  };
+
+  return {
+    completion,
+    state: () => ({
+      nextCalls,
+      returnCalls,
+      signalAborted: backendSignal?.aborted ?? false,
+    }),
+  };
 }
 
 function appFor(completion: CompletionBackend, logger: Parameters<typeof buildApp>[0]['logger'] = false) {
@@ -396,6 +435,68 @@ describe('neutral SSE stream', () => {
     expect(response.payload).not.toContain('provider raw response');
   });
 
+  it('rejects a backend-owned done and does not consume the following event', async () => {
+    const postTerminalMarker = 'post-terminal-done-marker';
+    const adversarial = adversarialBackend([
+      { type: 'done' },
+      { type: 'text-delta', text: postTerminalMarker },
+    ]);
+    const response = await appFor(adversarial.completion).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+
+    expect(parseSse(response.payload)).toEqual([
+      {
+        type: 'error',
+        code: 'provider_error',
+        message: 'The model provider request failed.',
+      },
+    ]);
+    expect(response.payload).not.toContain(postTerminalMarker);
+    expect(adversarial.state()).toEqual({
+      nextCalls: 1,
+      returnCalls: 1,
+      signalAborted: true,
+    });
+  });
+
+  it('sanitizes a backend-owned error and does not consume the following event', async () => {
+    const rawProviderMarker = 'raw-provider-secret-marker';
+    const postTerminalMarker = 'post-terminal-error-marker';
+    const adversarial = adversarialBackend([
+      {
+        type: 'error',
+        code: 'provider_error',
+        message: rawProviderMarker,
+      },
+      { type: 'text-delta', text: postTerminalMarker },
+    ]);
+    const response = await appFor(adversarial.completion).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+
+    expect(parseSse(response.payload)).toEqual([
+      {
+        type: 'error',
+        code: 'provider_error',
+        message: 'The model provider request failed.',
+      },
+    ]);
+    expect(response.payload).not.toContain(rawProviderMarker);
+    expect(response.payload).not.toContain(postTerminalMarker);
+    expect(adversarial.state()).toEqual({
+      nextCalls: 1,
+      returnCalls: 1,
+      signalAborted: true,
+    });
+  });
+
   it('does not log provider errors, request messages, tool inputs, or service tokens', async () => {
     let logs = '';
     const destination = new Writable({
@@ -522,7 +623,7 @@ describe('neutral SSE stream', () => {
     const events = [
       { type: 'text-delta', text: 'first' },
       { type: 'text-delta', text: 'second' },
-    ] as const satisfies readonly GatewayStreamEvent[];
+    ] as const satisfies readonly BackendStreamEvent[];
     let nextCalls = 0;
     const completion: CompletionBackend = {
       stream: () => ({
@@ -574,7 +675,7 @@ describe('neutral SSE stream', () => {
                   value: { type: 'text-delta', text: 'first' } as const,
                 });
               }
-              return new Promise<IteratorResult<GatewayStreamEvent>>((resolve) => {
+              return new Promise<IteratorResult<BackendStreamEvent>>((resolve) => {
                 signal.addEventListener(
                   'abort',
                   () => {
@@ -926,7 +1027,7 @@ describe('AI SDK provider adapters', () => {
       },
     });
 
-    const events: GatewayStreamEvent[] = [];
+    const events: BackendStreamEvent[] = [];
     for await (const event of adapter.stream(providerInput)) events.push(event);
 
     expect(events).toEqual([

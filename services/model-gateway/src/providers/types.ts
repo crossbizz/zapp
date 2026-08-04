@@ -1,6 +1,6 @@
 import type { LanguageModel, ModelMessage, Schema, TextStreamPart, ToolSet } from 'ai';
 
-import type { CompleteRequest, GatewayStreamEvent } from '../schemas.js';
+import type { BackendStreamEvent, CompleteRequest } from '../schemas.js';
 import type { ProviderId } from '../models.js';
 
 export interface ProviderInput {
@@ -11,7 +11,7 @@ export interface ProviderInput {
 
 export interface ProviderAdapter {
   readonly provider: ProviderId;
-  readonly stream: (input: ProviderInput) => AsyncIterable<GatewayStreamEvent>;
+  readonly stream: (input: ProviderInput) => AsyncIterable<BackendStreamEvent>;
 }
 
 export interface AiSdkTool {

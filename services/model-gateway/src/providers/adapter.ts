@@ -8,8 +8,8 @@ import {
 
 import {
   JsonValueSchema,
+  type BackendStreamEvent,
   type ChatMessage,
-  type GatewayStreamEvent,
   type JsonValue,
 } from '../schemas.js';
 import type {
@@ -34,7 +34,7 @@ function convertTools(input: ProviderInput): Record<string, AiSdkTool> | undefin
   );
 }
 
-function usageEvent(usage: LanguageModelUsage): GatewayStreamEvent {
+function usageEvent(usage: LanguageModelUsage): BackendStreamEvent {
   const cachedInputTokens = usage.inputTokenDetails.cacheReadTokens;
   return {
     type: 'usage',

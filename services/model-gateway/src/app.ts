@@ -8,8 +8,10 @@ import {
 import { z } from 'zod';
 
 import {
+  BackendStreamEventSchema,
   CompleteRequestSchema,
   GatewayStreamEventSchema,
+  type BackendStreamEvent,
   type CompleteRequest,
   type GatewayStreamEvent,
 } from './schemas.js';
@@ -61,7 +63,7 @@ export interface CompletionBackend {
   readonly stream: (
     request: CompleteRequest,
     signal: AbortSignal,
-  ) => AsyncIterable<GatewayStreamEvent>;
+  ) => AsyncIterable<BackendStreamEvent>;
 }
 
 export interface BuildAppOptions {
@@ -223,7 +225,8 @@ export function buildApp(options: BuildAppOptions) {
         const stream = options.completion.stream(request.body, abortController.signal);
         for await (const event of stream) {
           if (abortController.signal.aborted || reply.raw.destroyed) return;
-          if (!(await writeSse(reply.raw, event, abortController.signal))) return;
+          const parsed = BackendStreamEventSchema.parse(event);
+          if (!(await writeSse(reply.raw, parsed, abortController.signal))) return;
         }
         if (!abortController.signal.aborted && !reply.raw.destroyed) {
           if (await writeSse(reply.raw, { type: 'done' }, abortController.signal)) {
@@ -231,11 +234,15 @@ export function buildApp(options: BuildAppOptions) {
           }
         }
       } catch {
-        if (!abortController.signal.aborted && !reply.raw.destroyed) {
-          request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
-          if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, abortController.signal)) {
-            reply.raw.end();
+        try {
+          if (!abortController.signal.aborted && !reply.raw.destroyed) {
+            request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
+            if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, abortController.signal)) {
+              reply.raw.end();
+            }
           }
+        } finally {
+          abortController.abort();
         }
       } finally {
         reply.raw.off('close', abortOnDisconnect);
