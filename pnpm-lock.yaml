@@ -560,6 +560,19 @@ importers:
         specifier: ^3.2.7
         version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
 
+  packages/workspace-runtime:
+    dependencies:
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
+
   services/control-api:
     dependencies:
       '@zapp/config':

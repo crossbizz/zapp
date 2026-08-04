@@ -48,7 +48,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] CP-15 Resumable SSE stream
 - [ ] CP-16 OpenAPI + generated SDK
 ### Plan 03 — Workspace/sandbox core
-- [ ] WS-1 workspace-runtime interface + path safety
+- [x] WS-1 workspace-runtime interface + path safety
 - [ ] WS-2 Modal images (forge-node-base, forge-web-test)
 - [ ] WS-3 workspace-agent daemon
 - [ ] WS-4 Modal provider create/exec/terminate/attach

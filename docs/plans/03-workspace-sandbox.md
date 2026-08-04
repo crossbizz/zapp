@@ -73,7 +73,7 @@ export interface WorkspaceRuntime {
 All paths resolved under workspace root; `..`/symlink escape → `PathViolationError` (PRD §16.3).
 **Effort:** M
 
-- [ ] Steps: failing tests for a `MemoryWorkspaceRuntime` test double (path traversal rejected: `../etc/passwd`, `a/../../x`, symlink target outside root; exec timeout kills process; truncation at 1 MiB output with `truncated: true`) → implement double + path guard util `resolveInRoot(root, p)` → commit: `feat(workspace-runtime): shared runtime interface + path safety`
+- [x] Steps: failing tests for a `MemoryWorkspaceRuntime` test double (path traversal rejected: `../etc/passwd`, `a/../../x`, symlink target outside root; exec timeout kills process; truncation at 1 MiB output with `truncated: true`) → implement double + path guard util `resolveInRoot(root, p)` → commit: `feat(workspace-runtime): shared runtime interface + path safety`
 
 ### Task WS-2: Modal images `forge-node-base` + `forge-web-test`
 
@@ -210,4 +210,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 
 ## Execution log
 
-- (empty)
+- 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
