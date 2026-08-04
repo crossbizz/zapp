@@ -35,6 +35,15 @@ import fp from 'fastify-plugin';
  *     time and again at runtime. This table is read years later; a nested object
  *     is how a token, a secret value or a whole request body ends up in it by
  *     accident.
+ *
+ * **What is deliberately not here:** the session lifecycle — sign-in, sign-out,
+ * refresh, device approval. PRD §23.6 makes `audit_events.organization_id` not
+ * null, and none of those events belongs to an organization: a person signs in
+ * to zapp, not to a tenant, and at that moment may be a member of none or of
+ * six. Filing them under a guessed organization would put one tenant's trail in
+ * another's, and that is a worse answer than an honest gap. They are logged
+ * (`src/routes/auth.ts`) and belong in an account-level trail whenever the PRD
+ * grows one.
  */
 
 /**

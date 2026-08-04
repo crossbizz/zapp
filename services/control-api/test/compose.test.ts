@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApp, type AppDeps, type AppInstance } from '../src/app.js';
 import { composeApp } from '../src/compose.js';
-import { loadRateLimits } from '../src/config/rate-limits.js';
+import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
@@ -62,7 +62,7 @@ function composed(): AppInstance {
         publicToken: 'public-token-test-abc',
       },
     },
-    rateLimits: loadRateLimits(),
+    rateLimits: loadRateLimitSettings(),
   });
   apps.push(app);
   return app;

@@ -159,17 +159,19 @@ export class InMemoryOrganizationStore implements OrganizationStore {
     const key = this.key(input.organizationId, input.userId);
     const existing = this.memberships.get(key);
     // An active membership is never rewritten: an invite must not be a way to
-    // change — least of all lower — the role someone already holds.
-    const membership: MembershipRecord =
-      existing?.status === 'active'
-        ? existing
-        : {
-            organizationId: input.organizationId,
-            userId: input.userId,
-            role: input.role,
-            status: 'active',
-          };
+    // change — least of all lower — the role someone already holds. And nothing
+    // changing means nothing to record: the Drizzle store audits only what its
+    // `RETURNING` gave back, so this must too.
+    if (existing?.status === 'active') {
+      return existing;
+    }
 
+    const membership: MembershipRecord = {
+      organizationId: input.organizationId,
+      userId: input.userId,
+      role: input.role,
+      status: 'active',
+    };
     await input.audit(NO_TRANSACTION, membership);
     this.memberships.set(key, membership);
     return membership;

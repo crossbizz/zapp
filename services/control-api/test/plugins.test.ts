@@ -1,9 +1,18 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { ApiErrorSchema, IdempotencyHeader } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { DEVICE_GRANT_TTL_MS, DEVICE_POLL_INTERVAL_SECONDS } from '../src/auth/device.js';
 import type { AuthIdentity } from '../src/auth/port.js';
-import { loadRateLimits, RATE_LIMITS_PATH } from '../src/config/rate-limits.js';
+import {
+  loadRateLimitSettings,
+  RATE_LIMITS_PATH,
+  trustProxyOption,
+} from '../src/config/rate-limits.js';
 import { NO_TRANSACTION } from '../src/plugins/audit.js';
 import {
   createInMemoryIdempotencyStore,
@@ -18,8 +27,9 @@ import {
   type RateLimiter,
 } from '../src/plugins/rate-limit.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
-import type { TenantDatabase, TenantDbFactory } from '../src/tenant/db.js';
+import type { TenantDbFactory } from '../src/tenant/db.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
+import { InMemoryTenantData } from './support/tenant-db.js';
 
 /**
  * CP-5's three plugins, through the real HTTP pipeline.
@@ -60,16 +70,14 @@ function errorOf(response: { json: () => unknown }): string {
 }
 
 /**
- * A tenant handle that answers "nothing here" — enough to register the
- * tenant-scoped routes, which is all this file needs from them. What those
- * routes *return* is `test/integration/tenant-isolation.test.ts`'s subject, and
- * that suite runs against a real database.
+ * The tenant surface, on the in-memory rows CP-6 built for the project suite —
+ * enough that a tenant-scoped route can be registered *and* answered here. What
+ * those routes return is `test/projects.test.ts`'s subject; this file only
+ * needs a request that reaches one.
  */
-const emptyTenantDb: TenantDbFactory = (organizationId) =>
-  ({
-    organizationId,
-    projects: { list: () => Promise.resolve({ items: [], nextCursor: null }) },
-  }) as unknown as TenantDatabase;
+function tenantDb(): TenantDbFactory {
+  return new InMemoryTenantData().factory;
+}
 
 /** One rule, spelled for a test that wants a specific class tightened. */
 function rule(
@@ -125,32 +133,84 @@ async function createOrganization(
 
 describe('the rate limit configuration file', () => {
   it('is the shipped defaults, read from disk rather than compiled in', () => {
-    const limits = loadRateLimits();
+    const { classes } = loadRateLimitSettings();
 
     // Plan 02 CP-5 verbatim: mutations 60/min/org, reads 600/min/org,
     // auth 10/min/ip.
-    expect(limits.mutations).toMatchObject({ perMinute: 60, scope: 'organization' });
-    expect(limits.reads).toMatchObject({ perMinute: 600, scope: 'organization' });
-    expect(limits.auth).toMatchObject({ perMinute: 10, scope: 'ip' });
+    expect(classes.mutations).toMatchObject({ perMinute: 60, scope: 'organization' });
+    expect(classes.reads).toMatchObject({ perMinute: 600, scope: 'organization' });
+    expect(classes.auth).toMatchObject({ perMinute: 10, scope: 'ip' });
     // The documented split: the API stays up, the credential endpoints stay
     // protected.
-    expect(limits.reads.whenUnavailable).toBe('allow');
-    expect(limits.mutations.whenUnavailable).toBe('allow');
-    expect(limits.auth.whenUnavailable).toBe('deny');
+    expect(classes.reads.whenUnavailable).toBe('allow');
+    expect(classes.mutations.whenUnavailable).toBe('allow');
+    expect(classes.auth.whenUnavailable).toBe('deny');
     expect(RATE_LIMITS_PATH.endsWith('config/rate-limits.json')).toBe(true);
+  });
+
+  it('trusts no forwarded address until somebody says to', () => {
+    // The default has to be the safe one: a deployment that says nothing counts
+    // socket addresses (wrong behind a proxy, never attacker-chosen) rather
+    // than believing a header anyone can set.
+    const { proxy } = loadRateLimitSettings();
+
+    expect(proxy).toMatchObject({ trustedHops: 0, trustedProxies: [] });
+    expect(trustProxyOption(proxy)).toBe(false);
+    expect(trustProxyOption({ trustedHops: 2, trustedProxies: [] })).toBe(2);
+    expect(trustProxyOption({ trustedHops: 0, trustedProxies: ['10.0.0.0/8'] })).toEqual([
+      '10.0.0.0/8',
+    ]);
   });
 
   it('refuses a file it cannot validate rather than falling back to a default', () => {
     // A service that quietly substituted its own numbers for an unreadable file
     // would be running limits nobody chose.
-    expect(() => loadRateLimits('/nonexistent/rate-limits.json')).toThrow();
+    expect(() => loadRateLimitSettings('/nonexistent/rate-limits.json')).toThrow();
+  });
+
+  it('refuses a proxy stanza that states trust two ways', () => {
+    const both = join(mkdtempSync(join(tmpdir(), 'zapp-limits-')), 'rate-limits.json');
+    const shipped: unknown = JSON.parse(readFileSync(RATE_LIMITS_PATH, 'utf8'));
+    writeFileSync(
+      both,
+      JSON.stringify({
+        ...(shipped as Record<string, unknown>),
+        proxy: { trustedHops: 1, trustedProxies: ['10.0.0.1'] },
+      }),
+    );
+
+    // proxy-addr takes a hop count or an allowlist, not both, and a file that
+    // sets both is asking for a resolution nobody chose.
+    expect(() => loadRateLimitSettings(both)).toThrow(/trustedHops or trustedProxies/);
+  });
+
+  it('keeps the device budget above the poll rate it advertises', () => {
+    // The two numbers live in different files and drift silently: the device
+    // class is in `config/rate-limits.json`, the poll interval and the grant
+    // window are constants in `src/auth/device.ts`. Before this class existed a
+    // device polling every five seconds exhausted the ten-a-minute auth bucket
+    // five minutes into its own ten-minute grant — and took the browser leg of
+    // the same sign-in down with it.
+    const { device } = loadRateLimitSettings().classes;
+    const pollsPerMinute = 60 / DEVICE_POLL_INTERVAL_SECONDS;
+    const grantMinutes = DEVICE_GRANT_TTL_MS / 60_000;
+    const pollsPerGrant = Math.ceil(DEVICE_GRANT_TTL_MS / 1_000 / DEVICE_POLL_INTERVAL_SECONDS);
+
+    // Sustained: the bucket refills at least as fast as the client is told to
+    // poll, so a poll can never be the thing that empties it.
+    expect(device.perMinute).toBeGreaterThanOrEqual(pollsPerMinute);
+    // And a whole grant window's worth of polling fits inside the budget.
+    expect(device.burst + device.perMinute * grantMinutes).toBeGreaterThanOrEqual(pollsPerGrant);
   });
 });
 
 describe('route classification', () => {
   it('reads /v1/auth as auth, GETs as reads and everything else as mutations', () => {
     expect(classifyRoute('/v1/auth/login', 'GET')).toBe('auth');
-    expect(classifyRoute('/v1/auth/device/token', 'POST')).toBe('auth');
+    expect(classifyRoute('/v1/auth/device', 'GET')).toBe('auth');
+    expect(classifyRoute('/v1/auth/device/approve', 'POST')).toBe('auth');
+    // The poll, and only the poll, has its own budget.
+    expect(classifyRoute('/v1/auth/device/token', 'POST')).toBe('device');
     expect(classifyRoute('/v1/organizations', 'GET')).toBe('reads');
     expect(classifyRoute('/v1/organizations', 'POST')).toBe('mutations');
     expect(classifyRoute('/v1/organizations/:orgId/members/:userId', 'DELETE')).toBe('mutations');
@@ -259,6 +319,79 @@ describe('rate limiting', () => {
     expect(errorOf(limited)).toBe('rate_limited');
   });
 
+  it('keeps the device poll out of the credential bucket', async () => {
+    // The two surfaces share a path prefix and nothing else. A device polling
+    // its grant must not be able to lock its owner out of signing in, and a
+    // credential search must not be able to hide inside the poll's budget.
+    const built = harness({
+      rateLimits: { auth: rule(1, 'ip'), device: rule(5, 'ip') },
+    });
+
+    expect((await built.app.inject({ method: 'GET', url: '/v1/auth/login' })).statusCode).toBe(302);
+    // The auth bucket is now empty…
+    expect((await built.app.inject({ method: 'GET', url: '/v1/auth/login' })).statusCode).toBe(429);
+
+    // …and the poll is unaffected by that, because it is not in it.
+    const polled = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/token',
+      payload: { deviceCode: 'a'.repeat(64) },
+    });
+    expect(polled.statusCode, polled.body).toBe(400);
+    expect(errorOf(polled)).toBe('invalid_device_code');
+  });
+
+  describe('the address an ip-scoped class counts', () => {
+    /** What one client at `address` sees, given a harness's proxy trust. */
+    async function signInFrom(built: Harness, address: string): Promise<number> {
+      const response = await built.app.inject({
+        method: 'GET',
+        url: '/v1/auth/login',
+        headers: { 'x-forwarded-for': address },
+      });
+      return response.statusCode;
+    }
+
+    it('ignores X-Forwarded-For when nothing has vouched for it', async () => {
+      // The default. Anything else would let a caller pick their own bucket by
+      // setting a header — a complete bypass of every ip-scoped limit, which is
+      // why `trustProxy: true` is not the fix for the proxy problem.
+      const built = harness({ rateLimits: { auth: rule(1, 'ip') } });
+
+      expect(await signInFrom(built, '203.0.113.1')).toBe(302);
+      // A different forwarded address, the same bucket: the header was not
+      // believed, so both requests are the one socket they arrived on.
+      expect(await signInFrom(built, '203.0.113.2')).toBe(429);
+    });
+
+    it('gives two forwarded clients their own buckets once a hop is trusted', async () => {
+      // Behind a proxy this is the whole point: without it every /v1/auth
+      // request in the world shares one ten-a-minute bucket, so any single
+      // caller 429s everybody's sign-in and no attacker is limited at all.
+      const built = harness({
+        rateLimits: { auth: rule(1, 'ip') },
+        proxy: { trustedHops: 1, trustedProxies: [] },
+      });
+
+      expect(await signInFrom(built, '203.0.113.1')).toBe(302);
+      expect(await signInFrom(built, '203.0.113.2')).toBe(302);
+      // Each spent their own token, and only their own.
+      expect(await signInFrom(built, '203.0.113.1')).toBe(429);
+      expect(await signInFrom(built, '203.0.113.2')).toBe(429);
+    });
+
+    it('accepts an address allowlist for a topology with no fixed hop count', async () => {
+      const built = harness({
+        rateLimits: { auth: rule(1, 'ip') },
+        proxy: { trustedHops: 0, trustedProxies: ['127.0.0.1'] },
+      });
+
+      expect(await signInFrom(built, '203.0.113.1')).toBe(302);
+      expect(await signInFrom(built, '203.0.113.2')).toBe(302);
+      expect(await signInFrom(built, '203.0.113.1')).toBe(429);
+    });
+  });
+
   it('counts each class against what it is protecting', async () => {
     const keys: string[] = [];
     const recording: RateLimiter = {
@@ -271,7 +404,7 @@ describe('rate limiting', () => {
         });
       },
     };
-    const built = harness({ limiter: recording, tenantDb: emptyTenantDb });
+    const built = harness({ limiter: recording, tenantDb: tenantDb() });
     const alice = await signIn(built, ALICE);
     const created = await createOrganization(built, alice, 'Acme');
     const organizationId = created.json<{ organization: { id: string } }>().organization.id;
@@ -494,6 +627,66 @@ describe('idempotency', () => {
     // Neither a collision nor a 422: Bob's key is not Alice's key.
     expect(theirs.statusCode, theirs.body).toBe(201);
     expect(built.organizations.organizations.size).toBe(2);
+  });
+
+  it('scopes keys to the caller inside one organization too', async () => {
+    // Two members of the same organization both retrying with `retry-1` is not
+    // a conflict either of them can act on — and a replay is served from
+    // `preHandler`, before `authorize()` runs, so an organization-only scope
+    // would hand one member the response another member's permissions earned.
+    const built = harness({ tenantDb: tenantDb() });
+    const alice = await signIn(built, ALICE);
+    const bob = await signIn(built, BOB);
+    const created = await createOrganization(built, alice, 'Acme');
+    const organizationId = created.json<{ organization: { id: string } }>().organization.id;
+    await built.organizations.addMember({
+      organizationId,
+      userId: bob.userId,
+      role: 'builder',
+      now: built.now(),
+      audit: () => Promise.resolve(),
+    });
+
+    const tenant = { [ORGANIZATION_HEADER]: organizationId, [IdempotencyHeader]: KEY };
+    const mine = await built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: { ...alice.headers, ...tenant },
+      payload: { name: 'Alice Project' },
+    });
+    const theirs = await built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: { ...bob.headers, ...tenant },
+      payload: { name: 'Bob Project' },
+    });
+
+    // Same organization, same key, different bodies — and neither a 422 nor a
+    // replay of the other's answer.
+    expect(mine.statusCode, mine.body).toBe(201);
+    expect(theirs.statusCode, theirs.body).toBe(201);
+    expect(theirs.headers[IDEMPOTENT_REPLAY_HEADER]).toBeUndefined();
+  });
+
+  it('does not fail a mutation that succeeded when the record cannot be written', async () => {
+    // The reservation is taken before the handler runs, where refusing costs
+    // nothing; this is after, where refusing costs the whole mutation and
+    // protects nothing. An unguarded await here turns a successful create into
+    // a 500 whose retry — 409 for a minute, then a second run — produces
+    // exactly the duplicate the plugin exists to prevent.
+    const store = createInMemoryIdempotencyStore();
+    const brittle: IdempotencyStore = {
+      reserve: (key, fingerprint, ttl) => store.reserve(key, fingerprint, ttl),
+      complete: () => Promise.reject(new Error('redis went away')),
+      release: () => Promise.reject(new Error('redis went away')),
+    };
+    const built = harness({ idempotency: brittle });
+    const alice = await signIn(built, ALICE);
+
+    const created = await createOrganization(built, alice, 'Acme', { [IdempotencyHeader]: KEY });
+
+    expect(created.statusCode, created.body).toBe(201);
+    expect(built.organizations.organizations.size).toBe(1);
   });
 
   it('refuses a key that is not one', async () => {

@@ -2,7 +2,7 @@ import { createDb } from '@zapp/db';
 
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
-import { loadRateLimits } from './config/rate-limits.js';
+import { loadRateLimitSettings } from './config/rate-limits.js';
 import { loadEnv, loadRedisUrl } from './env.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
@@ -19,7 +19,7 @@ const env = loadEnv();
 // sessions, or has no limits configured must not accept the first request.
 const auth = loadAuthEnv();
 const redisUrl = loadRedisUrl();
-const rateLimits = loadRateLimits();
+const rateLimits = loadRateLimitSettings();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time

@@ -18,7 +18,12 @@ import { createInMemoryDeviceStore, type DeviceStore } from './auth/device.js';
 import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
-import { loadRateLimits, type RateLimitConfig } from './config/rate-limits.js';
+import {
+  loadRateLimitSettings,
+  trustProxyOption,
+  type ProxyTrust,
+  type RateLimitConfig,
+} from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
@@ -109,6 +114,11 @@ export interface TenantDeps {
 export interface LimitDeps {
   /** Defaults to `config/rate-limits.json`. */
   readonly config?: RateLimitConfig;
+  /**
+   * How far `request.ip` may follow `X-Forwarded-For`. Defaults to the same
+   * file, which defaults to trusting nothing — see {@link ProxyTrust}.
+   */
+  readonly proxy?: ProxyTrust;
   /** Defaults to the process-local bucket. Production supplies the Redis one. */
   readonly limiter?: RateLimiter;
   readonly idempotency?: IdempotencyStore;
@@ -189,12 +199,28 @@ const SINGLE_INSTANCE = 'the in-memory fallback is single-instance only';
  * inherit the compilers and handlers set here.
  */
 export function buildApp(deps: AppDeps = {}): AppInstance {
+  // Read (and cached) only where a caller did not supply one, so a test that
+  // states both never depends on the file at all.
+  const proxy = deps.limits?.proxy ?? loadRateLimitSettings().proxy;
+
   const app = Fastify({
     logger: deps.logger ?? defaultLoggerOptions,
     // Fastify's own header lookup would take an inbound id verbatim, bypassing the
     // validation in `genRequestId`. Turning it off leaves exactly one way in.
     requestIdHeader: false,
     genReqId: genRequestId,
+    /**
+     * How far `request.ip` follows `X-Forwarded-For`, and never `true`.
+     *
+     * Every address-scoped rate limit reads `request.ip`. Behind a proxy the
+     * socket peer is the proxy, so without this the whole `auth` class is one
+     * global bucket; with `true` the header is client-controlled, so it is a
+     * complete bypass instead. The only safe answer is a stated one, and it is
+     * stated in `config/rate-limits.json` next to the limits that depend on it.
+     * Absent, it trusts nothing — wrong behind a proxy, never exploitable, and
+     * the rate-limit plugin logs it at boot.
+     */
+    trustProxy: trustProxyOption(proxy),
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
@@ -250,7 +276,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   // route-enrolling plugins see everything that follows and nothing that came
   // before. A liveness probe a cache outage can fail is not a liveness probe.
   void app.register(rateLimit, {
-    config: deps.limits?.config ?? loadRateLimits(),
+    config: deps.limits?.config ?? loadRateLimitSettings().classes,
+    proxy,
     limiter:
       deps.limits?.limiter ??
       inDevelopmentOnly('rate limiter', SINGLE_INSTANCE, () => createInMemoryRateLimiter(now)),

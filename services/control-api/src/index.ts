@@ -83,12 +83,15 @@ export { createRedisTokenDenylist } from './auth/denylist.js';
 export { createRedisDeviceStore } from './auth/device.js';
 export { createRedisConnection, type RedisCommands, type RedisConnection } from './redis/client.js';
 export {
-  loadRateLimits,
+  loadRateLimitSettings,
   RATE_LIMIT_CLASSES,
   RATE_LIMITS_PATH,
+  trustProxyOption,
+  type ProxyTrust,
   type RateLimitClass,
   type RateLimitConfig,
   type RateLimitRule,
+  type RateLimitSettings,
 } from './config/rate-limits.js';
 export {
   createInMemoryRateLimiter,

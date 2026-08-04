@@ -6,7 +6,7 @@ import { createRedisTokenDenylist } from './auth/denylist.js';
 import { createRedisDeviceStore } from './auth/device.js';
 import { createStytchAuthPort } from './auth/stytch.js';
 import { createDbUserStore } from './auth/users.js';
-import type { RateLimitConfig } from './config/rate-limits.js';
+import type { RateLimitSettings } from './config/rate-limits.js';
 import { createRecordOnlyGitService } from './git/port.js';
 import type { LoggerConfig } from './logging.js';
 import { createRedisInviteStore } from './orgs/invites.js';
@@ -37,7 +37,8 @@ export interface ServiceRuntime {
   readonly database: Database;
   readonly redis: RedisCommands;
   readonly auth: AuthEnv;
-  readonly rateLimits: RateLimitConfig;
+  /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
+  readonly rateLimits: RateLimitSettings;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -74,7 +75,8 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       git: createRecordOnlyGitService(),
     },
     limits: {
-      config: runtime.rateLimits,
+      config: runtime.rateLimits.classes,
+      proxy: runtime.rateLimits.proxy,
       limiter: createRedisRateLimiter(redis),
       idempotency: createRedisIdempotencyStore(redis),
     },

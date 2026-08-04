@@ -1,10 +1,11 @@
 import type { FastifyReply, FastifyRequest, RouteOptions } from 'fastify';
 import fp from 'fastify-plugin';
 
-import {
-  type RateLimitClass,
-  type RateLimitConfig,
-  type RateLimitRule,
+import type {
+  ProxyTrust,
+  RateLimitClass,
+  RateLimitConfig,
+  RateLimitRule,
 } from '../config/rate-limits.js';
 import { ApiError } from '../errors.js';
 import type { RedisCommands } from '../redis/client.js';
@@ -12,7 +13,7 @@ import type { RedisCommands } from '../redis/client.js';
 /**
  * Per-organization rate limiting, as a token bucket in Redis.
  *
- * Three decisions are worth the reader's time.
+ * Four decisions are worth the reader's time.
  *
  * **1. Routes are enrolled at registration, not by hand.** The plugin adds a
  * `preHandler` to every route registered after it (`onRoute`), so a route cannot
@@ -36,6 +37,15 @@ import type { RedisCommands } from '../redis/client.js';
  * `/v1/auth/*` **fails closed**, because brute-force protection that evaporates
  * exactly when the infrastructure is unhealthy is not protection. Both halves
  * are configuration, so an operator can change either without a deploy.
+ *
+ * **4. An `ip`-scoped class is only as good as the address it counts.** Behind a
+ * proxy every request arrives from the proxy, so a class keyed by address
+ * collapses into one global bucket — one caller exhausting sign-in for everyone
+ * and no per-attacker limiting at all. `request.ip` resolves `X-Forwarded-For`
+ * only as far as `proxy` in `config/rate-limits.json` says to; the default is
+ * to trust nothing, and this plugin says so in the log at boot rather than
+ * letting a misconfigured deployment be quietly ineffective. Trusting the
+ * header unconditionally is not the alternative — it is the bypass.
  */
 
 /** What a bucket said. `unavailable` is not a failure to handle here — it is an answer. */
@@ -193,6 +203,21 @@ export function createInMemoryRateLimiter(now: () => Date = () => new Date()): R
 const EXEMPT_ROUTES = new Set(['/healthz']);
 
 /**
+ * Routes whose class is not the one their path would imply.
+ *
+ * One entry, and it is a budget rather than an exception: the desktop app polls
+ * `POST /v1/auth/device/token` at the interval `GET /v1/auth/device` hands it,
+ * for as long as the grant lives. Counted against the `auth` class that traffic
+ * is indistinguishable from a credential search, so the poll would exhaust the
+ * bucket partway through its own grant window — and take the browser leg of the
+ * same sign-in down with it, since `/login`, `/callback` and `/device/approve`
+ * share the class. Its own class is sized for the poll (`config/rate-limits.json`,
+ * pinned against `DEVICE_POLL_INTERVAL_SECONDS` by `test/plugins.test.ts`), and
+ * the credential surface keeps its tight one.
+ */
+const CLASS_BY_PATH = new Map<string, RateLimitClass>([['/v1/auth/device/token', 'device']]);
+
+/**
  * Which limit a route answers to.
  *
  * By path and method rather than by a per-route declaration, so the answer is
@@ -200,6 +225,10 @@ const EXEMPT_ROUTES = new Set(['/healthz']);
  * a read and a write method takes the stricter of the two.
  */
 export function classifyRoute(url: string, method: string | string[]): RateLimitClass {
+  const named = CLASS_BY_PATH.get(url);
+  if (named !== undefined) {
+    return named;
+  }
   if (url === '/v1/auth' || url.startsWith('/v1/auth/')) {
     return 'auth';
   }
@@ -233,6 +262,13 @@ function bucketKey(
 export interface RateLimitOptions {
   readonly config: RateLimitConfig;
   readonly limiter: RateLimiter;
+  /**
+   * Reported, not applied: `request.ip` is resolved by Fastify, which was built
+   * with this same setting (`src/app.ts`). The plugin takes it because the
+   * plugin is what silently stops working when it is wrong — so the plugin is
+   * what should say so.
+   */
+  readonly proxy: ProxyTrust;
 }
 
 function limited(retryAfterSeconds: number): ApiError {
@@ -251,7 +287,22 @@ function unavailable(): ApiError {
 
 export const rateLimit = fp<RateLimitOptions>(
   (app, options, done) => {
-    const { config, limiter } = options;
+    const { config, limiter, proxy } = options;
+
+    const byAddress = Object.entries(config)
+      .filter(([, rule]) => rule.scope === 'ip')
+      .map(([name]) => name);
+    if (byAddress.length > 0 && proxy.trustedHops === 0 && proxy.trustedProxies.length === 0) {
+      // Correct for a process nothing sits in front of, and wrong the moment one
+      // does — at which point every one of these classes becomes a single shared
+      // bucket for the whole internet. Loud rather than silent, because the
+      // failure has no other symptom until somebody is locked out.
+      app.log.warn(
+        { classes: byAddress },
+        'no proxy trust configured: address-scoped rate limits count the socket peer, ' +
+          'which is the proxy if one is in front of this service (config/rate-limits.json → proxy)',
+      );
+    }
 
     function guardFor(routeClass: RateLimitClass) {
       const rule = config[routeClass];

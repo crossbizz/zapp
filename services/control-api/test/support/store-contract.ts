@@ -238,19 +238,26 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
       expect((await store.listForUser(bob)).items).toHaveLength(1);
     });
 
-    it('never rewrites an active membership', async () => {
+    it('never rewrites an active membership, and records nothing when it does not', async () => {
       const organizationId = await found();
+      let audited = 0;
+      const count = (): Promise<void> => {
+        audited += 1;
+        return Promise.resolve();
+      };
 
       // The Owner "accepts" a viewer invitation to their own organization.
-      await store.addMember({
-        organizationId,
-        userId: alice,
-        role: 'viewer',
-        now,
-        audit: noAudit,
-      });
+      await store.addMember({ organizationId, userId: alice, role: 'viewer', now, audit: count });
 
       expect(await store.membership(organizationId, alice)).toMatchObject({ role: 'owner' });
+      // Nothing changed, so nothing happened, so nothing is recorded. A
+      // `member.joined` row for a join that did not occur is permanent —
+      // `audit_events` is append-only, so it could never be taken back.
+      expect(audited).toBe(0);
+
+      // …and a membership that really is written still records itself.
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: count });
+      expect(audited).toBe(1);
     });
 
     it('refuses to demote the last Owner, and says which rule stopped it', async () => {

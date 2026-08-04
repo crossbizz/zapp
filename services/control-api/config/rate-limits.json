@@ -17,13 +17,34 @@
     "            that takes the control plane down is worse than one that misses a",
     "            window. Auth fails closed because password-adjacent brute-force",
     "            protection that evaporates the moment a cache blips is not",
-    "            protection at all."
+    "            protection at all.",
+    "",
+    "proxy     — how far to believe X-Forwarded-For. An ip-scoped limit only limits",
+    "            a client if the address it counts is the client's, and this service",
+    "            runs in a container behind a proxy. Set trustedHops to the number of",
+    "            proxies in front of it (1 for a single load balancer), OR list their",
+    "            addresses in trustedProxies — never both. Both default to trusting",
+    "            nothing, which counts socket addresses: wrong behind a proxy, but",
+    "            never attacker-chosen. Trusting the header unconditionally would let",
+    "            any caller pick their own bucket and bypass every ip-scoped limit."
   ],
+  "proxy": {
+    "note": "Set trustedHops to 1 once this service is deployed behind the edge proxy.",
+    "trustedHops": 0,
+    "trustedProxies": []
+  },
   "classes": {
     "auth": {
-      "note": "/v1/auth/* — sign-in, refresh, device grants. Counted per client address.",
+      "note": "The credential surface: /v1/auth/* except the device poll. Per client address.",
       "perMinute": 10,
       "burst": 10,
+      "scope": "ip",
+      "whenUnavailable": "deny"
+    },
+    "device": {
+      "note": "POST /v1/auth/device/token only — a machine polling at the interval GET /v1/auth/device told it to. Must stay above 60 / DEVICE_POLL_INTERVAL_SECONDS a minute and above the polls one grant window produces; test/plugins.test.ts pins both against the source constants. Guessing is not the threat here (a device code is 32 bytes of CSPRNG), so this is sized for the poll rather than against a search.",
+      "perMinute": 60,
+      "burst": 60,
       "scope": "ip",
       "whenUnavailable": "deny"
     },

@@ -268,16 +268,27 @@ function fingerprintOf(request: FastifyRequest): string {
 }
 
 /**
- * The scope a key lives in: one tenant's keys can neither collide with nor be
- * probed by another's.
+ * The scope a key lives in: **organization and caller**, not either alone.
+ *
+ * The organization keeps one tenant's keys from colliding with or being probed
+ * by another's. The caller keeps two members of the *same* organization from
+ * colliding — a key is a string a client chose, and two clients choosing
+ * `retry-1` is not a conflict either of them can act on.
+ *
+ * It also closes a smaller door. A replay is served from `preHandler`, before
+ * the handler runs and therefore before `authorize()`: with an
+ * organization-only scope, a Viewer presenting a key an Owner had used would be
+ * handed the Owner's stored response rather than the 403 the same request
+ * would earn today. Keyed by both, a stored response can only ever be replayed
+ * to the person who caused it.
  */
 function scopeOf(request: FastifyRequest): string {
   const organizationId = request.tenant?.organizationId;
-  if (organizationId !== undefined) {
-    return `org:${organizationId}`;
-  }
   const userId = request.auth?.userId;
-  return userId === undefined ? `ip:${request.ip}` : `user:${userId}`;
+  if (userId === undefined) {
+    return `ip:${request.ip}`;
+  }
+  return organizationId === undefined ? `user:${userId}` : `org:${organizationId}|user:${userId}`;
 }
 
 /** The plugin's own bookkeeping for the request in flight. */
@@ -400,28 +411,57 @@ export const idempotency = fp<IdempotencyOptions>(
       }
 
       const body = typeof payload === 'string' ? payload : '';
-      const storable =
+      const succeeded =
         reply.statusCode >= 200 &&
         reply.statusCode < 300 &&
-        (payload === undefined || payload === null || typeof payload === 'string') &&
-        Buffer.byteLength(body) <= MAX_STORED_BODY_BYTES;
-
-      if (storable) {
-        const contentType = reply.getHeader('content-type');
-        await store.complete(
-          state.key,
-          state.fingerprint,
-          {
-            statusCode: reply.statusCode,
-            body,
-            contentType: typeof contentType === 'string' ? contentType : undefined,
-          },
-          RECORD_TTL_MS,
+        (payload === undefined || payload === null || typeof payload === 'string');
+      const oversized = Buffer.byteLength(body) > MAX_STORED_BODY_BYTES;
+      if (succeeded && oversized) {
+        // Not silent: the client asked for exactly-once and is about to get
+        // at-least-once, and the number that decided it is in this file.
+        request.log.warn(
+          { bytes: Buffer.byteLength(body), limit: MAX_STORED_BODY_BYTES },
+          'response too large to store for idempotent replay; key released',
         );
-      } else {
-        // A failure, a stream, or something too large to keep: the key goes
-        // back so the client can retry with it.
-        await store.release(state.key);
+      }
+
+      /**
+       * The mutation has already happened. Everything below this line is
+       * bookkeeping about a request that succeeded, so a Redis blip here must
+       * not turn a successful create into a 500 — which is exactly what an
+       * unguarded `await` in `onSend` does, and worse: the reservation is left
+       * pending, so the client's retry gets 409 for a minute and then runs the
+       * handler a second time, creating the duplicate this plugin exists to
+       * prevent.
+       *
+       * So a failure here degrades to at-least-once and says so. That is the
+       * inverse of the posture in `reserve` above, deliberately: *before* the
+       * handler runs, refusing costs nothing and protects the guarantee; after
+       * it has run, refusing costs the whole mutation and protects nothing.
+       */
+      try {
+        if (succeeded && !oversized) {
+          const contentType = reply.getHeader('content-type');
+          await store.complete(
+            state.key,
+            state.fingerprint,
+            {
+              statusCode: reply.statusCode,
+              body,
+              contentType: typeof contentType === 'string' ? contentType : undefined,
+            },
+            RECORD_TTL_MS,
+          );
+        } else {
+          // A failure, a stream, or something too large to keep: the key goes
+          // back so the client can retry with it.
+          await store.release(state.key);
+        }
+      } catch (error) {
+        request.log.error(
+          { err: error, statusCode: reply.statusCode },
+          'idempotency record could not be written; this response is not replayable',
+        );
       }
       return payload;
     });

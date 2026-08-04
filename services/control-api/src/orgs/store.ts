@@ -147,6 +147,10 @@ export interface OrganizationStore {
    * Adds a membership, or reactivates a removed one. An **active** membership is
    * left exactly as it is: accepting an invite must never be a way to change —
    * least of all lower — a role someone already holds.
+   *
+   * The audit hook runs only when something changed. Re-accepting an invitation
+   * you have already accepted is a no-op, and a `member.joined` row for it would
+   * be a permanent record of an event that did not occur.
    */
   addMember(input: {
     organizationId: string;
@@ -386,7 +390,12 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
 
     async addMember(input) {
       return await db.transaction(async (tx) => {
-        await tx
+        // `RETURNING` yields a row only when one was actually inserted or
+        // updated, which is what tells a join from a re-join: `setWhere` makes
+        // the second a no-op, and an audit row for a membership nothing changed
+        // would be a `member.joined` for a join that did not happen — in an
+        // append-only table, so it could never be taken back.
+        const [written] = await tx
           .insert(memberships)
           .values({
             organizationId: input.organizationId,
@@ -401,7 +410,13 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
             // The existing row, not the proposed one: an active membership is
             // never rewritten.
             setWhere: ne(memberships.status, 'active'),
-          });
+          })
+          .returning(MEMBERSHIP_COLUMNS);
+
+        if (written !== undefined) {
+          await input.audit(tx, written);
+          return written;
+        }
 
         const [row] = await tx
           .select(MEMBERSHIP_COLUMNS)
@@ -416,7 +431,6 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
         if (row === undefined) {
           throw new Error('membership upsert returned no row');
         }
-        await input.audit(tx, row);
         return row;
       });
     },

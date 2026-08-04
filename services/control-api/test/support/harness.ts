@@ -5,7 +5,7 @@ import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
-import type { RateLimitConfig } from '../../src/config/rate-limits.js';
+import type { ProxyTrust, RateLimitConfig } from '../../src/config/rate-limits.js';
 import { createInMemoryInviteStore, type InviteStore } from '../../src/orgs/invites.js';
 import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
 import {
@@ -36,20 +36,20 @@ export const TEST_AUTH_CONFIG: AuthConfig = {
  * Deliberately explicit rather than a switch inside the plugin: a suite that
  * silently ran with rate limiting *off* would not be exercising the pipeline
  * the service ships, so the plugin is always registered and always consulted;
- * only the numbers move. `test/plugins.test.ts` is where they are tightened,
- * and `test/rate-limits.config.test.ts` is what pins the shipped file's own
- * values.
+ * only the numbers move. `test/plugins.test.ts` both tightens them, for the
+ * assertions that are about limiting, and pins the shipped file's own values.
  */
+const OUT_OF_THE_WAY = { perMinute: 100_000, burst: 100_000 } as const;
+
 export const TEST_RATE_LIMITS: RateLimitConfig = {
-  auth: { perMinute: 100_000, burst: 100_000, scope: 'ip', whenUnavailable: 'deny' },
-  reads: { perMinute: 100_000, burst: 100_000, scope: 'organization', whenUnavailable: 'allow' },
-  mutations: {
-    perMinute: 100_000,
-    burst: 100_000,
-    scope: 'organization',
-    whenUnavailable: 'allow',
-  },
+  auth: { ...OUT_OF_THE_WAY, scope: 'ip', whenUnavailable: 'deny' },
+  device: { ...OUT_OF_THE_WAY, scope: 'ip', whenUnavailable: 'deny' },
+  reads: { ...OUT_OF_THE_WAY, scope: 'organization', whenUnavailable: 'allow' },
+  mutations: { ...OUT_OF_THE_WAY, scope: 'organization', whenUnavailable: 'allow' },
 };
+
+/** Trust nothing, like the shipped file — the suites that care set their own. */
+export const TEST_PROXY_TRUST: ProxyTrust = { trustedHops: 0, trustedProxies: [] };
 
 /** A `UserStore` with a Map behind it, so route tests need no database. */
 export class InMemoryUserStore implements UserStore {
@@ -99,6 +99,8 @@ export interface HarnessOptions {
   readonly organizations?: InMemoryOrganizationStore;
   /** Tightens one or more classes; the rest stay out of the way. */
   readonly rateLimits?: Partial<RateLimitConfig>;
+  /** For the suites that assert how far a forwarded address is believed. */
+  readonly proxy?: ProxyTrust;
   /** For the suites that need a limiter which cannot answer. */
   readonly limiter?: RateLimiter;
   readonly idempotency?: IdempotencyStore;
@@ -154,6 +156,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
         }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
+      proxy: options.proxy ?? TEST_PROXY_TRUST,
       limiter: options.limiter ?? createInMemoryRateLimiter(now),
       idempotency: options.idempotency ?? createInMemoryIdempotencyStore(now),
     },
