@@ -9,6 +9,7 @@ import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl } from './git/client.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
+import { bootstrapControlApiServer } from './server-bootstrap.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -99,12 +100,6 @@ const eventPublisherLifecycle = createEventPublisherLifecycle({
   redis,
 });
 
-// The handles are opened here, so they are closed here — `close()` runs every
-// `onClose` hook, and these are the hooks for the handles this file created.
-app.addHook('onClose', async () => {
-  await eventPublisherLifecycle.close();
-});
-
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
  * `onClose` hook — which is where a plugin releases the handle it opened (the database
@@ -130,7 +125,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
-  await eventPublisherLifecycle.start();
+  await bootstrapControlApiServer({ app, eventPublisherLifecycle });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
   process.exit(1);

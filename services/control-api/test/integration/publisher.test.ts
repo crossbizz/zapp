@@ -228,6 +228,108 @@ describe('event publisher failure and recovery', () => {
     await expect(publisher.close()).resolves.toBeUndefined();
   });
 
+  it('delivers a later notification while its diagnostic promise is still pending', async () => {
+    // Break caught: a slow diagnostic sink becomes part of the serialized
+    // delivery chain and blocks unrelated Redis wakeups.
+    const currentRunId = runId();
+    const reporter = deferred<undefined>();
+    const delivered = deferred<undefined>();
+    let notify: ((payload: string) => void) | undefined;
+    let sequence = 1;
+    let publishAttempt = 0;
+    let reports = 0;
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence: () => Promise.resolve({ sequence }),
+        publish() {
+          publishAttempt += 1;
+          if (publishAttempt === 1) return Promise.reject(new Error('redis unavailable'));
+          delivered.resolve(undefined);
+          return Promise.resolve();
+        },
+      },
+      {
+        onError() {
+          reports += 1;
+          return reporter.promise;
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(reports).toBe(1);
+    });
+
+    sequence = 2;
+    notify?.(currentRunId);
+    const deliveryState = await Promise.race([
+      delivered.promise.then(() => 'delivered' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+
+    reporter.resolve(undefined);
+    await delivered.promise;
+    await publisher.close();
+    expect(deliveryState).toBe('delivered');
+  });
+
+  it('closes while a diagnostic promise remains pending', async () => {
+    // Break caught: shutdown waits forever for an observability sink after a
+    // publish failure even though the publisher owns no work in that sink.
+    const currentRunId = runId();
+    const reporter = deferred<undefined>();
+    let notify: ((payload: string) => void) | undefined;
+    let reports = 0;
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence: () => Promise.resolve({ sequence: 1 }),
+        publish: () => Promise.reject(new Error('redis unavailable')),
+      },
+      {
+        onError() {
+          reports += 1;
+          return reporter.promise;
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(reports).toBe(1);
+    });
+
+    const closing = publisher.close();
+    const closeState = await Promise.race([
+      closing.then(() => 'closed' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+
+    reporter.resolve(undefined);
+    await closing;
+    expect(closeState).toBe('closed');
+  });
+
   it('ignores malformed notifications and valid runs with no committed event', async () => {
     // Break caught: unvalidated input creates a Redis channel, or a missing row
     // is turned into an invented sequence ping.
@@ -297,6 +399,152 @@ describe('event publisher failure and recovery', () => {
     await publisher.close();
   });
 
+  it('coalesces 5,000 duplicate wakeups behind one blocked publish', async () => {
+    // Break caught: every duplicate notification allocates another promise
+    // closure and repeats the same high-water read after the blockage clears.
+    const currentRunId = runId();
+    const firstPublish = deferred<undefined>();
+    const publishStarted = deferred<undefined>();
+    let notify: ((payload: string) => void) | undefined;
+    let sequence = 1;
+    const delivered: string[] = [];
+    const publisher = createEventPublisher({
+      listen(_channel, onNotification) {
+        notify = onNotification;
+        return Promise.resolve({ unlisten: () => Promise.resolve() });
+      },
+      readLatestSequence: () => Promise.resolve({ sequence }),
+      publish(_channel, body) {
+        delivered.push(body);
+        if (delivered.length === 1) {
+          publishStarted.resolve(undefined);
+          return firstPublish.promise;
+        }
+        return Promise.resolve();
+      },
+    });
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(currentRunId);
+    await publishStarted.promise;
+
+    sequence = 2;
+    for (let index = 0; index < 5_000; index += 1) notify?.(currentRunId);
+    firstPublish.resolve(undefined);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await publisher.close();
+
+    expect(delivered).toEqual(['{"sequence":1}', '{"sequence":2}']);
+  });
+
+  it('publishes another run while the first run publish is blocked', async () => {
+    // Break caught: one slow Redis command globally starves wakeups for every
+    // other run even though their monotonic ordering is independent.
+    const blockedRunId = runId();
+    const progressingRunId = runId();
+    const blockedPublish = deferred<undefined>();
+    const publishStarted = deferred<undefined>();
+    const progressed = deferred<undefined>();
+    let notify: ((payload: string) => void) | undefined;
+    const publisher = createEventPublisher({
+      listen(_channel, onNotification) {
+        notify = onNotification;
+        return Promise.resolve({ unlisten: () => Promise.resolve() });
+      },
+      readLatestSequence: () => Promise.resolve({ sequence: 1 }),
+      publish(channel) {
+        if (channel === `run:${blockedRunId}`) {
+          publishStarted.resolve(undefined);
+          return blockedPublish.promise;
+        }
+        if (channel === `run:${progressingRunId}`) progressed.resolve(undefined);
+        return Promise.resolve();
+      },
+    });
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(blockedRunId);
+    await publishStarted.promise;
+    notify?.(progressingRunId);
+    const progressState = await Promise.race([
+      progressed.promise.then(() => 'progressed' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+
+    blockedPublish.resolve(undefined);
+    await publisher.close();
+    expect(progressState).toBe('progressed');
+  });
+
+  it('bounds 5,000 distinct wakeups and closes with one publish blocked', async () => {
+    // Break caught: a notification flood retains one work closure per run and
+    // shutdown waits for a blocked Redis command before dropping hint work.
+    const blockedRunId = runId();
+    const blockedPublish = deferred<undefined>();
+    const publishStarted = deferred<undefined>();
+    let notify: ((payload: string) => void) | undefined;
+    let reads = 0;
+    const reports: Error[] = [];
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence() {
+          reads += 1;
+          return Promise.resolve({ sequence: 1 });
+        },
+        publish(channel) {
+          if (channel === `run:${blockedRunId}`) {
+            publishStarted.resolve(undefined);
+            return blockedPublish.promise;
+          }
+          return Promise.resolve();
+        },
+      },
+      {
+        maximumPendingRuns: 32,
+        onError(error) {
+          reports.push(error);
+          return Promise.reject(new Error('diagnostic unavailable'));
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(blockedRunId);
+    await publishStarted.promise;
+    for (let index = 0; index < 4_999; index += 1) notify?.(runId());
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    const readsWhileBlocked = reads;
+    const closing = publisher.close();
+    const closeState = await Promise.race([
+      closing.then(() => 'closed' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+    blockedPublish.resolve(undefined);
+    await closing;
+
+    expect(readsWhileBlocked).toBe(32);
+    expect(reports).toHaveLength(1);
+    expect(closeState).toBe('closed');
+  });
+
   it('falls back to a database read after exactly 2,000 ms when the Redis wake-up fails', async () => {
     // Break caught: a failed subscription rejects the SSE loop or changes the
     // documented polling interval, leaving PostgreSQL replay unreachable.
@@ -363,6 +611,50 @@ describe('event publisher failure and recovery', () => {
 
     expect(retrySignal?.aborted).toBe(true);
     expect(attempts).toBe(1);
+  });
+
+  it('closes promptly while LISTEN is stalled and unlistens its late subscription', async () => {
+    // Break caught: shutdown waits for postgres.js connection acquisition to
+    // time out, or abandons a subscription that resolves after shutdown.
+    const listening = deferred<{ unlisten(): Promise<void> }>();
+    let attempts = 0;
+    let unlistens = 0;
+    const publisher = createEventPublisher({
+      listen() {
+        attempts += 1;
+        return listening.promise;
+      },
+      readLatestSequence: () => Promise.resolve(undefined),
+      publish: () => Promise.resolve(),
+    });
+
+    publisher.start();
+    await vi.waitFor(() => {
+      expect(attempts).toBe(1);
+    });
+
+    const closing = publisher.close();
+    const closeState = await Promise.race([
+      closing.then(() => 'closed' as const),
+      new Promise<'stalled'>((resolve) => {
+        setImmediate(() => {
+          resolve('stalled');
+        });
+      }),
+    ]);
+
+    listening.resolve({
+      unlisten() {
+        unlistens += 1;
+        return Promise.resolve();
+      },
+    });
+    await closing;
+
+    expect(closeState).toBe('closed');
+    await vi.waitFor(() => {
+      expect(unlistens).toBe(1);
+    });
   });
 
   it('removes each default retry abort listener after its delay completes', async () => {

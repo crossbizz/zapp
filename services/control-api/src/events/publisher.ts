@@ -4,6 +4,7 @@ import { z } from 'zod';
 const LISTEN_CHANNEL = 'agent_events';
 const DEFAULT_RETRY_DELAY_MS = 100;
 const MAXIMUM_RETRY_DELAY_MS = 5_000;
+const DEFAULT_MAXIMUM_PENDING_RUNS = 256;
 
 const NotificationSchema = idSchema('run');
 const SequenceRowSchema = z
@@ -31,6 +32,7 @@ interface RetryOptions {
 
 export interface EventPublisherOptions {
   readonly onError?: (error: Error) => unknown;
+  readonly maximumPendingRuns?: number;
   readonly retry?: RetryOptions;
 }
 
@@ -94,62 +96,145 @@ export function createEventPublisher(
     initialDelay,
     options.retry?.maximumDelayMs ?? MAXIMUM_RETRY_DELAY_MS,
   );
+  const configuredPendingRuns = options.maximumPendingRuns;
+  const maximumPendingRuns =
+    configuredPendingRuns === undefined || !Number.isFinite(configuredPendingRuns)
+      ? DEFAULT_MAXIMUM_PENDING_RUNS
+      : Math.min(
+          DEFAULT_MAXIMUM_PENDING_RUNS,
+          Math.max(1, Math.floor(configuredPendingRuns)),
+        );
   let started = false;
   let closed = false;
   let subscription: EventSubscription | undefined;
   let listenerLoop: Promise<void> | undefined;
-  let processing = Promise.resolve();
+  const pendingRuns = new Map<string, { pending: boolean }>();
+  let overloadReported = false;
   let markReady!: () => void;
   const isClosed = (): boolean => closed;
   const readySignal = new Promise<void>((resolve) => {
     markReady = resolve;
   });
 
-  const report = async (error: unknown): Promise<void> => {
+  const report = (error: unknown): void => {
     try {
-      await options.onError?.(asError(error));
+      void Promise.resolve(options.onError?.(asError(error))).catch(() => {});
     } catch {
       // Diagnostics must not become another publisher failure.
     }
   };
 
-  const processNotification = async (payload: string): Promise<void> => {
-    const parsedRunId = NotificationSchema.safeParse(payload);
-    if (!parsedRunId.success) {
-      await report(parsedRunId.error);
-      return;
+  const releaseSubscription = async (candidate: EventSubscription): Promise<void> => {
+    try {
+      await candidate.unlisten();
+    } catch (error) {
+      report(error);
     }
+  };
 
+  const acquireSubscription = (): Promise<EventSubscription | undefined> =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (): void => {
+        settled = true;
+        retryController.signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        finish();
+        resolve(undefined);
+      };
+      let attempt: Promise<EventSubscription>;
+      try {
+        attempt = dependencies.listen(LISTEN_CHANNEL, onNotification);
+      } catch (error) {
+        reject(asError(error));
+        return;
+      }
+      retryController.signal.addEventListener('abort', onAbort, { once: true });
+      attempt.then(
+        (candidate) => {
+          if (settled) {
+            void releaseSubscription(candidate);
+            return;
+          }
+          finish();
+          resolve(candidate);
+        },
+        (error: unknown) => {
+          if (settled) return;
+          finish();
+          reject(asError(error));
+        },
+      );
+      if (retryController.signal.aborted) onAbort();
+    });
+
+  const processNotification = async (runId: string): Promise<void> => {
     const row = SequenceRowSchema.safeParse(
-      await dependencies.readLatestSequence(parsedRunId.data),
+      await dependencies.readLatestSequence(runId),
     );
+    if (isClosed()) return;
     if (!row.success) {
-      await report(row.error);
+      report(row.error);
       return;
     }
 
     const ping = PingSchema.parse({ sequence: row.data.sequence });
-    await dependencies.publish(`run:${parsedRunId.data}`, JSON.stringify(ping));
+    await dependencies.publish(`run:${runId}`, JSON.stringify(ping));
+  };
+
+  const processPendingRun = async (
+    runId: string,
+    state: { pending: boolean },
+  ): Promise<void> => {
+    try {
+      while (state.pending && !isClosed()) {
+        state.pending = false;
+        try {
+          await processNotification(runId);
+        } catch (error) {
+          report(error);
+        }
+      }
+    } finally {
+      if (pendingRuns.get(runId) === state) pendingRuns.delete(runId);
+      if (pendingRuns.size < maximumPendingRuns) overloadReported = false;
+    }
   };
 
   const onNotification = (payload: string): void => {
     if (closed) return;
-    processing = processing
-      .then(async () => {
-        if (!closed) await processNotification(payload);
-      })
-      .catch(async (error: unknown) => {
-        await report(error);
-      });
+    const parsedRunId = NotificationSchema.safeParse(payload);
+    if (!parsedRunId.success) {
+      report(parsedRunId.error);
+      return;
+    }
+    const existing = pendingRuns.get(parsedRunId.data);
+    if (existing !== undefined) {
+      existing.pending = true;
+      return;
+    }
+    if (pendingRuns.size >= maximumPendingRuns) {
+      if (!overloadReported) {
+        overloadReported = true;
+        report(new Error('event publisher wakeup capacity reached; wakeup dropped'));
+      }
+      return;
+    }
+    const state = { pending: true };
+    pendingRuns.set(parsedRunId.data, state);
+    void processPendingRun(parsedRunId.data, state);
   };
 
   const listenUntilReady = async (): Promise<void> => {
     let delay = initialDelay;
     while (!isClosed()) {
       try {
-        const candidate = await dependencies.listen(LISTEN_CHANNEL, onNotification);
+        const candidate = await acquireSubscription();
+        if (candidate === undefined) return;
         if (isClosed()) {
-          await candidate.unlisten();
+          await releaseSubscription(candidate);
           return;
         }
         subscription = candidate;
@@ -157,11 +242,11 @@ export function createEventPublisher(
         return;
       } catch (error) {
         if (isClosed()) return;
-        await report(error);
+        report(error);
         try {
           await sleep(delay, retryController.signal);
         } catch (sleepError) {
-          if (!isClosed()) await report(sleepError);
+          if (!isClosed()) report(sleepError);
         }
         delay = Math.min(maximumDelay, delay * 2);
       }
@@ -184,17 +269,11 @@ export function createEventPublisher(
       closed = true;
       retryController.abort();
       markReady();
+      pendingRuns.clear();
       const active = subscription;
       subscription = undefined;
-      if (active !== undefined) {
-        try {
-          await active.unlisten();
-        } catch (error) {
-          await report(error);
-        }
-      }
+      if (active !== undefined) await releaseSubscription(active);
       await listenerLoop;
-      await processing;
     },
   };
 }
