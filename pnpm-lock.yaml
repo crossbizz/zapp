@@ -573,6 +573,31 @@ importers:
         specifier: ^3.2.7
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
 
+  sandbox/workspace-agent:
+    dependencies:
+      '@zapp/workspace-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workspace-runtime
+      execa:
+        specifier: ^8.0.1
+        version: 8.0.1
+      fastify:
+        specifier: ^5.11.2
+        version: 5.11.2
+      node-pty:
+        specifier: ^1.1.0
+        version: 1.1.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
+
   services/control-api:
     dependencies:
       '@zapp/config':
