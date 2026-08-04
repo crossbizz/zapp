@@ -16,7 +16,7 @@ See master plan §Global Constraints. Specific to this plan:
 - Types are inferred from Zod schemas (`z.infer`) — never hand-written duplicates.
 - `packages/contracts` has zero runtime dependencies besides `zod` and `ulid`. *(Amended 2026-08-03: FND-3 mandates the ulid package; original "zod only" line contradicted it.)*
 - Table and column names match PRD §23 exactly (snake_case in SQL, camelCase in TS via Drizzle mapping).
-- All IDs are prefixed TypeIDs: `org_`, `user_`, `proj_`, `run_`, `task_`, `ws_`, `rel_`, `dep_`, `evt_`, `art_`, `spec_`, `sec_` (ULID suffix, sortable).
+- All IDs are prefixed TypeIDs (ULID suffix, sortable). Core 12: `org_`, `user_`, `proj_`, `run_`, `task_`, `ws_`, `rel_`, `dep_`, `evt_`, `art_`, `spec_`, `sec_`. *(Extended 2026-08-03 for full PRD §23 coverage, added in FND-6:)* `sub_` subscriptions, `repo_` repositories, `br_` branches, `env_` environments, `pc_` project_contracts, `dec_` decisions, `phase_` agent_phases, `appr_` approvals, `trun_` test_runs, `tcase_` test_cases, `vr_` verification_results, `syn_` synthetic_checks, `intc_` integration_connections, `aud_` audit_events — 26 total; contracts `IdPrefix` union + test pins updated accordingly (resolves the FND-3 phaseId open note; `agentId` remains a role-string, not a TypeID).
 
 ---
 
@@ -173,7 +173,7 @@ it("event type list matches PRD count", () => {
 **Interfaces produced:** `createDb(url): Db`; tables `users`, `organizations`, `memberships`, `subscriptions`, `usage_ledger` with columns exactly per PRD §23.1.
 **Effort:** M
 
-- [ ] **Step 1:** `src/schema/identity.ts` (complete):
+- [x] **Step 1:** `src/schema/identity.ts` (complete):
 
 ```ts
 import { pgTable, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
@@ -210,8 +210,8 @@ export const memberships = pgTable("memberships", {
 
 `billing.ts`: `subscriptions` (id, organization_id FK, stripe_subscription_id, plan_id, status, current_period_start/end timestamps) and `usage_ledger` (id, organization_id, project_id?, run_id?, task_id?, category enum: model_input_tokens|model_output_tokens|model_cached_tokens|sandbox_cpu_seconds|sandbox_mem_gib_seconds|storage_gib_hours|deploy_provider|artifact_storage, provider, quantity numeric, unit, cost_usd numeric(12,6), credits_charged numeric(12,4), occurred_at, index (organization_id, occurred_at)). **Append-only:** no update/delete helpers exported for this table.
 
-- [ ] **Step 2:** Integration test (needs FND-7 compose; use `DATABASE_URL`): insert org + user + membership; unique (org,user) violation on duplicate insert; `usage_ledger` insert works with numeric cost.
-- [ ] **Step 3:** `drizzle-kit generate` produces migration SQL; `db:migrate` applies. Commit: `feat(db): drizzle client, identity + billing schema (PRD §23.1)`
+- [x] **Step 2:** Integration test (needs FND-7 compose; use `DATABASE_URL`): insert org + user + membership; unique (org,user) violation on duplicate insert; `usage_ledger` insert works with numeric cost.
+- [x] **Step 3:** `drizzle-kit generate` produces migration SQL; `db:migrate` applies. Commit: `feat(db): drizzle client, identity + billing schema (PRD §23.1)`
 
 ### Task FND-6: `packages/db` — project/spec/run/event/release/security tables + tenant scoping
 
@@ -306,3 +306,4 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-7 done (5e5fe17 + fix 0a5eb86, review clean; 7 services, LocalStack queues+DLQs, password-preserving re-mint). LocalStack host port 4566 default; this machine tested on 4567 (unrelated squatter).
 - 2026-08-03: FND-8 done (fa910aa + 0e648a2 + 3d535b2; CI+Security live-green runs 2-4, v5 pins, dependabot, turbo cache job-scoped). Desktop-present guard branch proven on run 3.
 - 2026-08-03: FND-10 done (b20372e + close-out d980cf1, 106 tests; primitives module, min(1)+trim envelope).
+- 2026-08-03: FND-5 done (d1cb938, review Approved; 14 unit + 9 integration tests, CI-visible execution proven). Minors 1/2/5 folded into FND-6 dispatch; Minor 3 (stale ci.yml comment) fixed by controller; Minor 4 deferred. subscriptions sub_ prefix + memberships PK noted → sub_ lands in FND-6 IdPrefix extension.

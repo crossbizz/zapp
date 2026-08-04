@@ -181,8 +181,8 @@ jobs:
           echo "desktop=${filter}" >> "$GITHUB_OUTPUT"
           echo "desktop filter: [${filter}]"
 
-      # No package defines test:integration yet, so this is a green no-op until
-      # FND-5/FND-6 land their suites. test:integration is cache:false in
-      # turbo.json, so these never come back from cache.
+      # Executes @zapp/db's integration suites against the service containers
+      # (FND-5+). test:integration is cache:false in turbo.json, so these never
+      # come back from cache.
       - name: Integration tests
         run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }}
