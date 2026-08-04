@@ -7,6 +7,7 @@ import {
 } from '@zapp/contracts';
 import {
   agentRuns,
+  auditEvents,
   branches,
   environments,
   forOrg,
@@ -28,7 +29,7 @@ import {
   type TenantDb,
   type Workspace,
 } from '@zapp/db';
-import { and, asc, desc, eq, isNull, lt, type Column, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lt, sql, type Column, type SQL } from 'drizzle-orm';
 
 import { isUniqueViolation } from '../db/errors.js';
 import type { PageRequest, StorePage } from '../pagination.js';
@@ -206,19 +207,37 @@ export interface TenantContractRepository {
 
 /** The one run write CP-9 owns: persist then start its durable workflow atomically. */
 export interface NewRunInput {
+  readonly id: string;
+  readonly workflowId: string;
   readonly projectId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
   readonly budget: unknown;
   readonly startedBy: string;
   readonly now: Date;
-  /** Called before the transaction commits; a failure leaves no success row. */
-  readonly start: (run: AgentRun) => Promise<void>;
   readonly audit: AuditHook<AgentRun>;
 }
 
-export interface UpdateRunStatusInput {
+export type OperationOutcome = 'dispatch' | 'completed' | 'rejected' | 'blocked';
+
+export interface OperationClaim<T> {
+  readonly entity: T;
+  readonly outcome: OperationOutcome;
+  /** The durable audit metadata for a prior completed/rejected operation. */
+  readonly metadata?: unknown;
+}
+
+export interface ClaimRunOperationInput {
   readonly runId: string;
+  readonly operationKey: string;
+  readonly allowedStatuses: readonly string[];
+  readonly audit: AuditHook<AgentRun>;
+}
+
+export interface CompleteRunOperationInput {
+  readonly runId: string;
+  readonly operationKey: string;
+  readonly expectedStatus: string;
   readonly status: string;
   readonly completedAt: Date | null;
   readonly audit: AuditHook<AgentRun>;
@@ -227,21 +246,37 @@ export interface UpdateRunStatusInput {
 export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
   byProject(projectId: string): Promise<AgentRun[]>;
   create(input: NewRunInput): Promise<AgentRun>;
-  updateStatus(input: UpdateRunStatusInput): Promise<AgentRun | undefined>;
+  claimOperation(input: ClaimRunOperationInput): Promise<OperationClaim<AgentRun> | undefined>;
+  completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined>;
+  rejectOperation(
+    input: Omit<CompleteRunOperationInput, 'expectedStatus' | 'status' | 'completedAt'>,
+  ): Promise<AgentRun | undefined>;
 }
 
 export interface NewWorkspaceInput {
+  readonly id: string;
   readonly projectId: string;
   readonly branchId: string | null;
   readonly resourceProfile: ResourceProfile;
   readonly now: Date;
-  readonly create: (
-    workspace: Workspace,
-  ) => Promise<{ readonly providerWorkspaceId: string; readonly status: WorkspaceStatus }>;
   readonly audit: AuditHook<Workspace>;
 }
-export interface UpdateWorkspaceInput {
+export interface CompleteWorkspaceCreateInput {
   readonly workspaceId: string;
+  readonly providerWorkspaceId: string;
+  readonly status: WorkspaceStatus;
+  readonly audit: AuditHook<Workspace>;
+}
+export interface ClaimWorkspaceOperationInput {
+  readonly workspaceId: string;
+  readonly operationKey: string;
+  readonly allowedStatuses: readonly WorkspaceStatus[];
+  readonly audit: AuditHook<Workspace>;
+}
+export interface CompleteWorkspaceOperationInput {
+  readonly workspaceId: string;
+  readonly operationKey: string;
+  readonly expectedStatus: WorkspaceStatus;
   readonly status?: WorkspaceStatus;
   readonly snapshotRef?: string | null;
   readonly terminatedAt?: Date | null;
@@ -251,7 +286,37 @@ export interface UpdateWorkspaceInput {
 export interface TenantWorkspaceRepository {
   getById(workspaceId: string): Promise<Workspace | undefined>;
   create(input: NewWorkspaceInput): Promise<Workspace>;
-  update(input: UpdateWorkspaceInput): Promise<Workspace | undefined>;
+  completeCreate(input: CompleteWorkspaceCreateInput): Promise<Workspace | undefined>;
+  claimOperation(
+    input: ClaimWorkspaceOperationInput,
+  ): Promise<OperationClaim<Workspace> | undefined>;
+  completeOperation(input: CompleteWorkspaceOperationInput): Promise<Workspace | undefined>;
+  rejectOperation(
+    input: Omit<
+      CompleteWorkspaceOperationInput,
+      'expectedStatus' | 'status' | 'snapshotRef' | 'terminatedAt' | 'now'
+    >,
+  ): Promise<Workspace | undefined>;
+}
+
+interface DurableOperation {
+  readonly key: string;
+  readonly state: 'requested' | 'completed' | 'rejected';
+  readonly metadata: unknown;
+}
+
+function durableOperation(metadata: unknown): DurableOperation | undefined {
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const value = metadata as Record<string, unknown>;
+  if (
+    typeof value['operationKey'] !== 'string' ||
+    (value['operationState'] !== 'requested' &&
+      value['operationState'] !== 'completed' &&
+      value['operationState'] !== 'rejected')
+  ) {
+    return undefined;
+  }
+  return { key: value['operationKey'], state: value['operationState'], metadata };
 }
 
 /**
@@ -588,45 +653,131 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
         async create(input: NewRunInput): Promise<AgentRun> {
           return await db.transaction(async (tx) => {
-            const [run] = await tx
+            const [inserted] = await tx
               .insert(agentRuns)
               .values({
-                id: newId('run'),
+                id: input.id,
                 organizationId: orgId,
                 projectId: input.projectId,
                 branchId: input.branchId,
                 mode: input.mode,
                 status: 'queued',
                 specificationId: null,
-                // The workflow identity is intentionally the row identity. It
-                // makes a retry after a rolled-back transaction safe at
-                // Temporal, which deduplicates workflow ids.
-                temporalWorkflowId: null,
+                // The stable workflow identity is durable before dispatch. A
+                // failed response can therefore resume the exact same intent.
+                temporalWorkflowId: input.workflowId,
                 startedBy: input.startedBy,
                 budgetJson: input.budget,
                 startedAt: input.now,
                 completedAt: null,
               })
+              .onConflictDoNothing()
               .returning();
-            if (run === undefined) {
-              throw new Error('run insert returned no row');
+            if (inserted !== undefined) {
+              await input.audit(tx, inserted);
+              return inserted;
             }
-            await input.start(run);
-            await input.audit(tx, run);
+            const [run] = await tx
+              .select()
+              .from(agentRuns)
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
+              .limit(1);
+            if (run === undefined)
+              throw new Error('run intent was not found after insert conflict');
             return run;
           });
         },
 
-        async updateStatus(input: UpdateRunStatusInput): Promise<AgentRun | undefined> {
+        async claimOperation(
+          input: ClaimRunOperationInput,
+        ): Promise<OperationClaim<AgentRun> | undefined> {
           return await db.transaction(async (tx) => {
+            // A no-op write locks the row. It serializes the legal-state check
+            // and the append-only requested audit intent without inventing a
+            // state not approved by PRD §23.
+            const [run] = await tx
+              .update(agentRuns)
+              .set({ status: sql`${agentRuns.status}` })
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .returning();
+            if (run === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, run.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.state === 'requested') {
+              return {
+                entity: run,
+                outcome: operation.key === input.operationKey ? 'dispatch' : 'blocked',
+              };
+            }
+            if (operation?.key === input.operationKey) {
+              return { entity: run, outcome: operation.state, metadata: operation.metadata };
+            }
+            if (!input.allowedStatuses.includes(run.status)) {
+              return { entity: run, outcome: 'blocked' };
+            }
+            await input.audit(tx, run);
+            return { entity: run, outcome: 'dispatch' };
+          });
+        },
+
+        async completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined> {
+          return await db.transaction(async (tx) => {
+            const [locked] = await tx
+              .update(agentRuns)
+              .set({ status: sql`${agentRuns.status}` })
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .returning();
+            if (locked === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, locked.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.key !== input.operationKey || operation.state !== 'requested')
+              return undefined;
             const [run] = await tx
               .update(agentRuns)
               .set({ status: input.status, completedAt: input.completedAt })
-              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .where(
+                scoped(
+                  agentRuns.organizationId,
+                  eq(agentRuns.id, input.runId),
+                  eq(agentRuns.status, input.expectedStatus),
+                ),
+              )
               .returning();
             if (run !== undefined) {
               await input.audit(tx, run);
             }
+            return run;
+          });
+        },
+
+        async rejectOperation(input): Promise<AgentRun | undefined> {
+          return await db.transaction(async (tx) => {
+            const [run] = await tx
+              .update(agentRuns)
+              .set({ status: sql`${agentRuns.status}` })
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .returning();
+            if (run === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, run.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.key !== input.operationKey || operation.state !== 'requested')
+              return undefined;
+            await input.audit(tx, run);
             return run;
           });
         },
@@ -644,7 +795,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         async create(input) {
           return await db.transaction(async (tx) => {
             const provisional: Workspace = {
-              id: newId('ws'),
+              id: input.id,
               organizationId: orgId,
               projectId: input.projectId,
               branchId: input.branchId,
@@ -657,18 +808,94 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               lastActiveAt: null,
               terminatedAt: null,
             };
-            const provider = await input.create(provisional);
-            const [row] = await tx
+            const [inserted] = await tx
               .insert(workspaces)
-              .values({ ...provisional, ...provider })
+              .values(provisional)
+              .onConflictDoNothing()
               .returning();
-            if (row === undefined) throw new Error('workspace insert returned no row');
-            await input.audit(tx, row);
+            if (inserted !== undefined) {
+              await input.audit(tx, inserted);
+              return inserted;
+            }
+            const [row] = await tx
+              .select()
+              .from(workspaces)
+              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.id)))
+              .limit(1);
+            if (row === undefined)
+              throw new Error('workspace intent was not found after insert conflict');
             return row;
           });
         },
-        async update(input) {
+        async completeCreate(input) {
           return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(workspaces)
+              .set({
+                providerWorkspaceId: input.providerWorkspaceId,
+                status: input.status,
+              })
+              .where(
+                scoped(
+                  workspaces.organizationId,
+                  eq(workspaces.id, input.workspaceId),
+                  isNull(workspaces.providerWorkspaceId),
+                  eq(workspaces.status, 'requested'),
+                ),
+              )
+              .returning();
+            if (row !== undefined) await input.audit(tx, row);
+            return row;
+          });
+        },
+        async claimOperation(input) {
+          return await db.transaction(async (tx) => {
+            const [workspace] = await tx
+              .update(workspaces)
+              .set({ lastActiveAt: sql`${workspaces.lastActiveAt}` })
+              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.workspaceId)))
+              .returning();
+            if (workspace === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, workspace.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.state === 'requested') {
+              return {
+                entity: workspace,
+                outcome: operation.key === input.operationKey ? 'dispatch' : 'blocked',
+              };
+            }
+            if (operation?.key === input.operationKey) {
+              return { entity: workspace, outcome: operation.state, metadata: operation.metadata };
+            }
+            if (!input.allowedStatuses.includes(workspace.status)) {
+              return { entity: workspace, outcome: 'blocked' };
+            }
+            await input.audit(tx, workspace);
+            return { entity: workspace, outcome: 'dispatch' };
+          });
+        },
+        async completeOperation(input) {
+          return await db.transaction(async (tx) => {
+            const [locked] = await tx
+              .update(workspaces)
+              .set({ lastActiveAt: sql`${workspaces.lastActiveAt}` })
+              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.workspaceId)))
+              .returning();
+            if (locked === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, locked.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.key !== input.operationKey || operation.state !== 'requested')
+              return undefined;
             const [row] = await tx
               .update(workspaces)
               .set({
@@ -677,10 +904,37 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 ...(input.terminatedAt === undefined ? {} : { terminatedAt: input.terminatedAt }),
                 lastActiveAt: input.now,
               })
-              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.workspaceId)))
+              .where(
+                scoped(
+                  workspaces.organizationId,
+                  eq(workspaces.id, input.workspaceId),
+                  eq(workspaces.status, input.expectedStatus),
+                ),
+              )
               .returning();
             if (row !== undefined) await input.audit(tx, row);
             return row;
+          });
+        },
+        async rejectOperation(input) {
+          return await db.transaction(async (tx) => {
+            const [workspace] = await tx
+              .update(workspaces)
+              .set({ lastActiveAt: sql`${workspaces.lastActiveAt}` })
+              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.workspaceId)))
+              .returning();
+            if (workspace === undefined) return undefined;
+            const [latest] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, workspace.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            const operation = durableOperation(latest?.metadata);
+            if (operation?.key !== input.operationKey || operation.state !== 'requested')
+              return undefined;
+            await input.audit(tx, workspace);
+            return workspace;
           });
         },
       },

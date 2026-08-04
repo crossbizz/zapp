@@ -70,6 +70,10 @@ export class InMemoryTenantData {
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
   readonly workspaces: Workspace[] = [];
+  readonly operations = new Map<
+    string,
+    { readonly key: string; state: 'requested' | 'completed' | 'rejected' }
+  >();
   readonly secrets: SecretMetadata[] = [];
   /**
    * The vault, as a second store keyed by secret id — modelling the *table*
@@ -384,30 +388,50 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         return Promise.resolve(mine(orgId, data.runs).find((row) => row.id === runId));
       },
       async create(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
+        if (existing !== undefined) return existing;
         const run: AgentRun = {
-          id: newId('run'),
+          id: input.id,
           organizationId: orgId,
           projectId: input.projectId,
           branchId: input.branchId,
           mode: input.mode,
           status: 'queued',
           specificationId: null,
-          temporalWorkflowId: null,
+          temporalWorkflowId: input.workflowId,
           startedBy: input.startedBy,
           budgetJson: input.budget,
           startedAt: input.now,
           completedAt: null,
         };
-        await input.start(run);
         await input.audit(NO_TRANSACTION, run);
         data.runs.push(run);
         return run;
       },
-      async updateStatus(input) {
+      async claimOperation(input) {
         const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
-        if (existing === undefined) {
-          return undefined;
+        if (existing === undefined) return undefined;
+        const operation = data.operations.get(`run:${existing.id}`);
+        if (operation?.state === 'requested') {
+          return {
+            entity: existing,
+            outcome: operation.key === input.operationKey ? 'dispatch' : 'blocked',
+          } as const;
         }
+        if (operation?.key === input.operationKey)
+          return { entity: existing, outcome: operation.state } as const;
+        if (!input.allowedStatuses.includes(existing.status))
+          return { entity: existing, outcome: 'blocked' } as const;
+        await input.audit(NO_TRANSACTION, existing);
+        data.operations.set(`run:${existing.id}`, { key: input.operationKey, state: 'requested' });
+        return { entity: existing, outcome: 'dispatch' } as const;
+      },
+      async completeOperation(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+        if (existing === undefined || existing.status !== input.expectedStatus) return undefined;
+        const operation = data.operations.get(`run:${existing.id}`);
+        if (operation?.key !== input.operationKey || operation.state !== 'requested')
+          return undefined;
         const updated: AgentRun = {
           ...existing,
           status: input.status,
@@ -415,7 +439,22 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         };
         await input.audit(NO_TRANSACTION, updated);
         data.runs.splice(data.runs.indexOf(existing), 1, updated);
+        data.operations.set(`run:${updated.id}`, { key: input.operationKey, state: 'completed' });
         return updated;
+      },
+      async rejectOperation(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+        const operation =
+          existing === undefined ? undefined : data.operations.get(`run:${existing.id}`);
+        if (
+          existing === undefined ||
+          operation?.key !== input.operationKey ||
+          operation.state !== 'requested'
+        )
+          return undefined;
+        await input.audit(NO_TRANSACTION, existing);
+        data.operations.set(`run:${existing.id}`, { key: input.operationKey, state: 'rejected' });
+        return existing;
       },
     },
 
@@ -425,7 +464,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
       async create(input) {
         const base: Workspace = {
-          id: newId('ws'),
+          id: input.id,
           organizationId: orgId,
           projectId: input.projectId,
           branchId: input.branchId,
@@ -438,14 +477,60 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           lastActiveAt: null,
           terminatedAt: null,
         };
-        const workspace = { ...base, ...(await input.create(base)) };
-        await input.audit(NO_TRANSACTION, workspace);
-        data.workspaces.push(workspace);
-        return workspace;
+        const existing = mine(orgId, data.workspaces).find((row) => row.id === base.id);
+        if (existing !== undefined) return existing;
+        await input.audit(NO_TRANSACTION, base);
+        data.workspaces.push(base);
+        return base;
       },
-      async update(input) {
+      async completeCreate(input) {
+        const existing = mine(orgId, data.workspaces).find((row) => row.id === input.workspaceId);
+        if (
+          existing === undefined ||
+          existing.providerWorkspaceId !== null ||
+          existing.status !== 'requested'
+        )
+          return undefined;
+        const updated: Workspace = {
+          ...existing,
+          providerWorkspaceId: input.providerWorkspaceId,
+          status: input.status,
+        };
+        await input.audit(NO_TRANSACTION, updated);
+        data.workspaces.splice(data.workspaces.indexOf(existing), 1, updated);
+        return updated;
+      },
+      async claimOperation(input) {
         const existing = mine(orgId, data.workspaces).find((row) => row.id === input.workspaceId);
         if (existing === undefined) return undefined;
+        const operation = data.operations.get(`workspace:${existing.id}`);
+        if (operation?.state === 'requested')
+          return {
+            entity: existing,
+            outcome: operation.key === input.operationKey ? 'dispatch' : 'blocked',
+          } as const;
+        if (operation?.key === input.operationKey)
+          return { entity: existing, outcome: operation.state } as const;
+        if (!input.allowedStatuses.includes(existing.status))
+          return { entity: existing, outcome: 'blocked' } as const;
+        await input.audit(NO_TRANSACTION, existing);
+        data.operations.set(`workspace:${existing.id}`, {
+          key: input.operationKey,
+          state: 'requested',
+        });
+        return { entity: existing, outcome: 'dispatch' } as const;
+      },
+      async completeOperation(input) {
+        const existing = mine(orgId, data.workspaces).find((row) => row.id === input.workspaceId);
+        const operation =
+          existing === undefined ? undefined : data.operations.get(`workspace:${existing.id}`);
+        if (
+          existing === undefined ||
+          existing.status !== input.expectedStatus ||
+          operation?.key !== input.operationKey ||
+          operation.state !== 'requested'
+        )
+          return undefined;
         const updated: Workspace = {
           ...existing,
           ...(input.status === undefined ? {} : { status: input.status }),
@@ -455,7 +540,28 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         };
         await input.audit(NO_TRANSACTION, updated);
         data.workspaces.splice(data.workspaces.indexOf(existing), 1, updated);
+        data.operations.set(`workspace:${updated.id}`, {
+          key: input.operationKey,
+          state: 'completed',
+        });
         return updated;
+      },
+      async rejectOperation(input) {
+        const existing = mine(orgId, data.workspaces).find((row) => row.id === input.workspaceId);
+        const operation =
+          existing === undefined ? undefined : data.operations.get(`workspace:${existing.id}`);
+        if (
+          existing === undefined ||
+          operation?.key !== input.operationKey ||
+          operation.state !== 'requested'
+        )
+          return undefined;
+        await input.audit(NO_TRANSACTION, existing);
+        data.operations.set(`workspace:${existing.id}`, {
+          key: input.operationKey,
+          state: 'rejected',
+        });
+        return existing;
       },
     },
 

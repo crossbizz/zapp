@@ -1,26 +1,45 @@
-import type { RunMode } from '@zapp/contracts';
-import type { AgentRun } from '@zapp/db';
+import { idSchema, RunModeSchema } from '@zapp/contracts';
+import { z } from 'zod';
+
+export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/);
+
+export const StartRunInputSchema = z
+  .object({
+    runId: idSchema('run'),
+    workflowId: z.string().min(1).max(255),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    branchId: idSchema('br').nullable(),
+    mode: RunModeSchema,
+    prompt: z.string().min(1).max(20_000),
+    budget: z
+      .object({ maxCredits: z.number().int().positive().max(1_000_000) })
+      .strict()
+      .nullable(),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export type StartRunInput = z.infer<typeof StartRunInputSchema>;
+
+export const SignalRunInputSchema = z
+  .object({
+    runId: idSchema('run'),
+    workflowId: z.string().min(1).max(255),
+    signal: z.enum(['pause', 'resume', 'cancel', 'redirect']),
+    prompt: z.string().min(1).max(20_000).optional(),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
+
+export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();
 
 /** The durable-workflow boundary for the public run lifecycle. */
 export interface OrchestratorPort {
-  /** Starts exactly one workflow for a persisted run. */
-  startRun(input: {
-    readonly runId: string;
-    readonly organizationId: string;
-    readonly projectId: string;
-    readonly branchId: string | null;
-    readonly mode: RunMode;
-    readonly prompt: string;
-    readonly budget: unknown;
-    /** The run id is the Temporal workflow idempotency key. */
-    readonly idempotencyKey: string;
-  }): Promise<void>;
-  /** False means the durable workflow cannot accept this signal in its current state. */
-  signalRun(input: {
-    readonly run: AgentRun;
-    readonly signal: 'pause' | 'resume' | 'cancel' | 'redirect';
-    readonly prompt?: string;
-  }): Promise<boolean>;
+  /** Starts exactly one workflow for a durably recorded run intent. */
+  startRun(input: StartRunInput): Promise<unknown>;
+  /** An operation key makes retried signals equivalent at the durable workflow. */
+  signalRun(input: SignalRunInput): Promise<unknown>;
 }
 
 /** A port failure whose text is safe to turn into a generic public failure. */
@@ -31,10 +50,7 @@ export class OrchestratorError extends Error {
   }
 }
 
-/**
- * A deployment without the Temporal binding must fail the mutation instead of
- * returning a queued run whose workflow was never started.
- */
+/** A deployment without the Temporal binding must fail closed. */
 export function createUnavailableOrchestrator(): OrchestratorPort {
   const unavailable = (): Promise<never> => Promise.reject(new OrchestratorError());
   return { startRun: unavailable, signalRun: unavailable };

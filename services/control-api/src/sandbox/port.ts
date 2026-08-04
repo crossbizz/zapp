@@ -1,25 +1,77 @@
-import type { WorkspaceStatus } from '@zapp/contracts';
-import type { Workspace } from '@zapp/db';
+import { CheckpointKindSchema, WorkspaceStatusSchema, idSchema } from '@zapp/contracts';
+import { z } from 'zod';
+
+import { OperationKeySchema } from '../orchestrator/port.js';
+
+export const WorkspacePortSchema = z
+  .object({
+    id: idSchema('ws'),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    branchId: idSchema('br').nullable(),
+    provider: z.string().min(1),
+    providerWorkspaceId: z.string().nullable(),
+    status: WorkspaceStatusSchema,
+    resourceProfile: z.enum(['small', 'standard', 'large']),
+    snapshotRef: z.string().nullable(),
+    createdAt: z.date(),
+    lastActiveAt: z.date().nullable(),
+    terminatedAt: z.date().nullable(),
+  })
+  .strict();
+export type SandboxWorkspace = z.infer<typeof WorkspacePortSchema>;
+
+export const CreateWorkspaceInputSchema = z
+  .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
+  .strict();
+export const CreateWorkspaceResultSchema = z
+  .object({ providerWorkspaceId: z.string().min(1), status: WorkspaceStatusSchema })
+  .strict();
+export const StartWorkspaceInputSchema = z
+  .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
+  .strict();
+export const StartWorkspaceResultSchema = z.object({ status: WorkspaceStatusSchema }).strict();
+export const CheckpointWorkspaceInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    kind: CheckpointKindSchema,
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export const CheckpointWorkspaceResultSchema = z
+  .object({ snapshotRef: z.string().min(1) })
+  .strict();
+export const TerminateWorkspaceInputSchema = z
+  .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
+  .strict();
+export const PreviewWorkspaceInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    port: z.number().int().min(1).max(65_535),
+    ttlSeconds: z.number().int().positive(),
+    userId: idSchema('user'),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export const PreviewWorkspaceResultSchema = z
+  .object({ url: z.string().url(), expiresAt: z.string().datetime() })
+  .strict();
 
 /** Public workspace lifecycle only; raw filesystem and command access stay internal. */
 export interface SandboxServicePort {
-  createWorkspace(input: {
-    readonly workspace: Workspace;
-  }): Promise<{ readonly providerWorkspaceId: string; readonly status: WorkspaceStatus }>;
-  startWorkspace(input: {
-    readonly workspace: Workspace;
-  }): Promise<{ readonly status: WorkspaceStatus }>;
-  checkpointWorkspace(input: {
-    readonly workspace: Workspace;
-    readonly kind: 'active' | 'diagnostic' | 'release_evidence';
-  }): Promise<{ readonly snapshotRef: string }>;
-  terminateWorkspace(input: { readonly workspace: Workspace }): Promise<void>;
-  previewWorkspace(input: {
-    readonly workspace: Workspace;
-    readonly port: number;
-    readonly ttlSeconds: number;
-    readonly userId: string;
-  }): Promise<{ readonly url: string; readonly expiresAt: string }>;
+  createWorkspace(
+    input: z.infer<typeof CreateWorkspaceInputSchema>,
+  ): Promise<unknown>;
+  startWorkspace(
+    input: z.infer<typeof StartWorkspaceInputSchema>,
+  ): Promise<unknown>;
+  checkpointWorkspace(
+    input: z.infer<typeof CheckpointWorkspaceInputSchema>,
+  ): Promise<unknown>;
+  terminateWorkspace(input: z.infer<typeof TerminateWorkspaceInputSchema>): Promise<unknown>;
+  previewWorkspace(
+    input: z.infer<typeof PreviewWorkspaceInputSchema>,
+  ): Promise<unknown>;
 }
 
 export class SandboxServiceError extends Error {

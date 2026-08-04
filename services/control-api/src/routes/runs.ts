@@ -1,51 +1,71 @@
+import { createHash } from 'node:crypto';
+
 import { PageSchema, idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
-import { OrchestratorError, type OrchestratorPort } from '../orchestrator/port.js';
+import {
+  OperationKeySchema,
+  OrchestratorError,
+  SignalRunInputSchema,
+  SignalRunResultSchema,
+  StartRunInputSchema,
+  type OrchestratorPort,
+} from '../orchestrator/port.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { EventSchema, RunSchema, toEvent, toRun } from '../tenant/view.js';
 
-/**
- * PRD §32 agent runs and the events they produced.
- *
- * Same convention as `./projects.ts`, and it matters most here: `agent_events`
- * is the largest table in the system and the one a cross-tenant read would be
- * most valuable against — it carries prompts, tool output and file paths. The
- * only handle these two routes have is `tenantOf(request).db`, so every query
- * below is `organization_id`-scoped before it is written, not after.
- *
- * The live stream (`GET /v1/events`, `Last-Event-ID` resume) is CP-15's, in
- * `src/routes/events.ts`. What is here is the replayable read the stream resumes
- * from.
- */
-
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
-
+const RunBudgetSchema = z
+  .object({ maxCredits: z.number().int().positive().max(1_000_000) })
+  .strict();
 const CreateRunBody = z
   .object({
     mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']),
     prompt: z.string().trim().min(1).max(20_000),
     branchId: idSchema('br').optional(),
-    budget: z.unknown().optional(),
+    budget: RunBudgetSchema.optional(),
   })
   .strict();
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
-const SIGNAL_AUDIT_ACTION = {
-  pause: 'run.paused',
-  resume: 'run.resumed',
-  cancel: 'run.cancelled',
-  redirect: 'run.redirected',
-} as const;
-
 const EventQuery = z.object({
-  /** Resume point: the first sequence to return, inclusive (PRD §14.4). */
   fromSequence: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(500).default(100),
 });
+
+const SIGNALS = {
+  pause: {
+    allowed: ['queued', 'running'],
+    status: 'paused',
+    requested: 'run.pause_requested',
+    completed: 'run.paused',
+    rejected: 'run.pause_rejected',
+  },
+  resume: {
+    allowed: ['paused'],
+    status: 'queued',
+    requested: 'run.resume_requested',
+    completed: 'run.resumed',
+    rejected: 'run.resume_rejected',
+  },
+  cancel: {
+    allowed: ['queued', 'running', 'paused'],
+    status: 'cancelled',
+    requested: 'run.cancel_requested',
+    completed: 'run.cancelled',
+    rejected: 'run.cancel_rejected',
+  },
+  redirect: {
+    allowed: ['queued', 'running', 'paused'],
+    status: 'queued',
+    requested: 'run.redirect_requested',
+    completed: 'run.redirected',
+    rejected: 'run.redirect_rejected',
+  },
+} as const;
 
 export interface RunRoutesDeps {
   readonly now: () => Date;
@@ -65,121 +85,147 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
     },
     async (request, reply) => {
       const ctx = tenantOf(request);
-      authorize(ctx, 'start_run');
       const project = await ctx.db.projects.getById(request.params.projectId);
-      if (project === undefined) {
-        throw projectNotFound();
-      }
+      if (project === undefined) throw projectNotFound();
       if (
         request.body.branchId !== undefined &&
         (await ctx.db.branches.getForProject(project.id, request.body.branchId)) === undefined
-      ) {
+      )
         throw branchNotFound();
-      }
-
+      authorize(ctx, 'start_run');
+      const operationKey = operationOf(request);
+      const runId = stableId('run', operationKey);
+      const run = await ctx.db.runs.create({
+        id: runId,
+        workflowId: runId,
+        projectId: project.id,
+        branchId: request.body.branchId ?? null,
+        mode: request.body.mode,
+        budget: request.body.budget ?? null,
+        startedBy: actorOf(request),
+        now: deps.now(),
+        audit: async (tx, created) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.created',
+            target: { type: 'run', id: created.id },
+            metadata: { projectId: created.projectId, mode: created.mode },
+          });
+        },
+      });
       try {
-        const run = await ctx.db.runs.create({
-          projectId: project.id,
-          branchId: request.body.branchId ?? null,
-          mode: request.body.mode,
-          budget: request.body.budget ?? null,
-          startedBy: actorOf(request),
-          now: deps.now(),
-          start: async (created) => {
-            await deps.orchestrator.startRun({
-              runId: created.id,
-              organizationId: created.organizationId,
-              projectId: created.projectId,
-              branchId: created.branchId,
-              mode: created.mode,
-              prompt: request.body.prompt,
-              budget: request.body.budget ?? null,
-              idempotencyKey: created.id,
-            });
-          },
-          audit: async (tx, created) => {
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'run.created',
-              target: { type: 'run', id: created.id },
-              metadata: { projectId: created.projectId, mode: created.mode },
-            });
-          },
-        });
-        return await reply.status(201).send({ run: toRun(run) });
+        const started = await deps.orchestrator.startRun(
+          StartRunInputSchema.parse({
+            runId: run.id,
+            workflowId: run.temporalWorkflowId ?? run.id,
+            organizationId: run.organizationId,
+            projectId: run.projectId,
+            branchId: run.branchId,
+            mode: run.mode,
+            prompt: request.body.prompt,
+            budget: request.body.budget ?? null,
+            operationKey,
+          }),
+        );
+        z.void().parse(started);
       } catch (error) {
-        if (error instanceof OrchestratorError) {
-          throw new ApiError(
-            'workflow_start_failed',
-            502,
-            'The run workflow could not be started. Please try again.',
-          );
-        }
+        if (error instanceof OrchestratorError || error instanceof z.ZodError)
+          throw workflowFailed();
         throw error;
       }
+      return await reply.status(201).send({ run: toRun(run) });
     },
   );
 
-  const signal = (
-    action: 'pause' | 'resume' | 'cancel' | 'redirect',
-    status: string,
-    body?: typeof RedirectRunBody,
-  ): void => {
+  for (const action of Object.keys(SIGNALS) as (keyof typeof SIGNALS)[]) {
+    const config = SIGNALS[action];
     app.post(
       `/v1/runs/:runId/${action}`,
       {
         preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
         schema: {
           params: RunParams,
-          ...(body === undefined ? {} : { body }),
+          ...(action === 'redirect' ? { body: RedirectRunBody } : {}),
           response: { 200: z.object({ run: RunSchema }) },
         },
       },
       async (request) => {
         const ctx = tenantOf(request);
-        authorize(ctx, 'start_run');
         const run = await ctx.db.runs.getById(request.params.runId);
-        if (run === undefined) {
-          throw runNotFound();
-        }
-        if (isTerminal(run.status)) {
-          throw invalidRunState();
-        }
+        if (run === undefined) throw runNotFound();
+        authorize(ctx, 'start_run');
+        const operationKey = operationOf(request);
         const prompt =
           action === 'redirect' ? RedirectRunBody.parse(request.body).prompt : undefined;
-        const applied = await deps.orchestrator.signalRun({
-          run,
-          signal: action,
-          ...(prompt === undefined ? {} : { prompt }),
-        });
-        if (!applied) {
-          throw invalidRunState();
-        }
-        const updated = await ctx.db.runs.updateStatus({
+        const claim = await ctx.db.runs.claimOperation({
           runId: run.id,
-          status,
-          completedAt: action === 'cancel' ? deps.now() : null,
-          audit: async (tx, changed) => {
+          operationKey,
+          allowedStatuses: config.allowed,
+          audit: async (tx, row) => {
             await request.audit(tx, {
               organizationId: ctx.organizationId,
-              action: SIGNAL_AUDIT_ACTION[action],
-              target: { type: 'run', id: changed.id },
-              metadata: { status: changed.status },
+              action: config.requested,
+              target: { type: 'run', id: row.id },
+              metadata: { operationKey, operationState: 'requested', priorStatus: row.status },
             });
           },
         });
-        if (updated === undefined) {
-          throw runNotFound();
+        if (claim === undefined) throw runNotFound();
+        if (claim.outcome === 'blocked' || claim.outcome === 'rejected') throw invalidRunState();
+        if (claim.outcome === 'completed') return { run: toRun(claim.entity) };
+        let result: z.infer<typeof SignalRunResultSchema>;
+        try {
+          result = SignalRunResultSchema.parse(
+            await deps.orchestrator.signalRun(
+              SignalRunInputSchema.parse({
+                runId: claim.entity.id,
+                workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+                signal: action,
+                ...(prompt === undefined ? {} : { prompt }),
+                operationKey,
+              }),
+            ),
+          );
+        } catch (error) {
+          if (error instanceof OrchestratorError || error instanceof z.ZodError)
+            throw workflowFailed();
+          throw error;
         }
+        if (!result.applied) {
+          await ctx.db.runs.rejectOperation({
+            runId: claim.entity.id,
+            operationKey,
+            audit: async (tx, row) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: config.rejected,
+                target: { type: 'run', id: row.id },
+                metadata: { operationKey, operationState: 'rejected' },
+              });
+            },
+          });
+          throw invalidRunState();
+        }
+        const updated = await ctx.db.runs.completeOperation({
+          runId: claim.entity.id,
+          operationKey,
+          expectedStatus: claim.entity.status,
+          status: config.status,
+          completedAt: action === 'cancel' ? deps.now() : null,
+          audit: async (tx, row) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: config.completed,
+              target: { type: 'run', id: row.id },
+              metadata: { operationKey, operationState: 'completed', status: row.status },
+            });
+          },
+        });
+        if (updated === undefined) throw invalidRunState();
         return { run: toRun(updated) };
       },
     );
-  };
-
-  signal('pause', 'paused');
-  signal('resume', 'queued');
-  signal('cancel', 'cancelled');
-  signal('redirect', 'queued', RedirectRunBody);
+  }
 
   app.get(
     '/v1/runs/:runId',
@@ -189,15 +235,12 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
     },
     async (request) => {
       const ctx = tenantOf(request);
-      authorize(ctx, 'view_project');
       const run = await ctx.db.runs.getById(request.params.runId);
-      if (run === undefined) {
-        throw runNotFound();
-      }
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'view_project');
       return { run: toRun(run) };
     },
   );
-
   app.get(
     '/v1/runs/:runId/events',
     {
@@ -210,46 +253,63 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
     },
     async (request) => {
       const ctx = tenantOf(request);
-      authorize(ctx, 'view_project');
-      // The run is resolved first so another tenant's run answers 404 rather
-      // than an empty page: an empty page would say the run exists and is quiet.
       const run = await ctx.db.runs.getById(request.params.runId);
-      if (run === undefined) {
-        throw runNotFound();
-      }
-
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'view_project');
       const items = await ctx.db.events.byRun(run.id, {
         ...(request.query.fromSequence === undefined
           ? {}
           : { fromSequence: request.query.fromSequence }),
         limit: request.query.limit,
       });
-      // `nextCursor` is explicitly null rather than absent (FND-10). CP-15 fills
-      // it in when the stream owns pagination.
       return { items: items.map(toEvent), nextCursor: null };
     },
   );
 }
 
-/** A run that is not this tenant's is a run that does not exist. */
+function operationOf(request: {
+  idempotency?: { key: string; fingerprint: string };
+}): z.infer<typeof OperationKeySchema> {
+  if (request.idempotency === undefined)
+    throw new ApiError('idempotency_key_required', 400, 'An Idempotency-Key header is required.');
+  return OperationKeySchema.parse(
+    `op_${createHash('sha256').update(`${request.idempotency.key}\n${request.idempotency.fingerprint}`).digest('hex')}`,
+  );
+}
+function stableId(prefix: 'run' | 'ws', operationKey: string): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const bytes = createHash('sha256').update(operationKey).digest();
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && output.length < 26) {
+      bits -= 5;
+      output += alphabet[(value >>> bits) & 31] ?? '';
+    }
+    if (output.length === 26) break;
+  }
+  return `${prefix}_${output}`;
+}
 function runNotFound(): ApiError {
   return new ApiError('run_not_found', 404, 'That run does not exist.');
 }
-
-/** A project outside this tenant is indistinguishable from one that does not exist. */
 function projectNotFound(): ApiError {
   return new ApiError('project_not_found', 404, 'That project does not exist.');
 }
-
-/** A branch outside the tenant or project is indistinguishable from an absent branch. */
 function branchNotFound(): ApiError {
   return new ApiError('branch_not_found', 404, 'That branch does not exist.');
 }
-
 function invalidRunState(): ApiError {
   return new ApiError('invalid_run_state', 409, 'That run cannot accept this action.');
 }
-
-function isTerminal(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+function workflowFailed(): ApiError {
+  return new ApiError(
+    'workflow_start_failed',
+    502,
+    'The run workflow could not be started. Please try again.',
+  );
 }
+export { operationOf, stableId };
