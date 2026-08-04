@@ -18,6 +18,27 @@ const ALL_PREFIXES: readonly IdPrefix[] = [
   'sec',
 ];
 
+describe('ALL_PREFIXES', () => {
+  it('is exactly the master plan prefix list, in order', () => {
+    // This literal is deliberately untyped: a prefix deleted from both the
+    // IdPrefix union and the typed list above still has to fail here.
+    expect(ALL_PREFIXES).toEqual([
+      'org',
+      'user',
+      'proj',
+      'run',
+      'task',
+      'ws',
+      'rel',
+      'dep',
+      'evt',
+      'art',
+      'spec',
+      'sec',
+    ]);
+  });
+});
+
 describe('newId', () => {
   it('mints an id its own prefix schema accepts', () => {
     for (const prefix of ALL_PREFIXES) {
@@ -26,7 +47,7 @@ describe('newId', () => {
       expect(idSchema(prefix).safeParse(id).success).toBe(true);
     }
   });
-  it('stays unique and lexicographically ascending inside a single millisecond', () => {
+  it('generates ids back-to-back that sort ascending and are unique', () => {
     const ids = Array.from({ length: 500 }, () => newId('evt'));
     expect(new Set(ids).size).toBe(ids.length);
     // Unique plus already-sorted means strictly ascending.
@@ -66,11 +87,13 @@ describe('idSchema', () => {
       expect(schema.safeParse(candidate).success).toBe(false);
     }
   });
-  it('never repeats the rejected value in its error', () => {
+  it('names the expected prefix without repeating the rejected value', () => {
     // Ids reach logs and error responses; the value that failed must not ride
     // along, since callers pass user-supplied strings straight in.
-    const result = idSchema('org').safeParse('org_leaked-secret-value');
+    const result = idSchema('run').safeParse('run_leaked-secret-value');
     expect(result.success).toBe(false);
-    expect(result.success ? '' : result.error.message).not.toContain('leaked-secret-value');
+    const message = result.success ? '' : result.error.message;
+    expect(message).toMatch(/Invalid run id/);
+    expect(message).not.toContain('leaked-secret-value');
   });
 });

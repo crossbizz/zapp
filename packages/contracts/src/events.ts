@@ -39,6 +39,16 @@ export const AGENT_EVENT_TYPES = [
   'usage.recorded',
 ] as const;
 
+export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
+
+/**
+ * Who an event is for: the end user's timeline, internal machinery, or support
+ * staff debugging someone else's run.
+ */
+export const AgentEventVisibilitySchema = z.enum(['user', 'internal', 'support']);
+
+export type AgentEventVisibility = z.infer<typeof AgentEventVisibilitySchema>;
+
 /**
  * PRD §14.4. Events are immutable, ordered per run by `sequence`, replayable,
  * and idempotently consumable — Mission Control reads these, never chat text.
@@ -56,7 +66,7 @@ export const AgentEventSchema = z.object({
   taskId: idSchema('task').optional(),
   agentId: z.string().min(1).optional(),
   type: z.enum(AGENT_EVENT_TYPES),
-  visibility: z.enum(['user', 'internal', 'support']),
+  visibility: AgentEventVisibilitySchema,
   payload: z.record(z.unknown()),
 });
 

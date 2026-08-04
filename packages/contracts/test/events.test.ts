@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_EVENT_TYPES, AgentEventSchema } from '../src/events.js';
+import { AGENT_EVENT_TYPES, AgentEventSchema, AgentEventVisibilitySchema } from '../src/events.js';
 
 // The accepted-event test below intentionally keeps its own literal: it is the
 // PRD §14.4 example verbatim and must not drift with the fixture the rejection
@@ -76,12 +76,58 @@ describe('AgentEventSchema', () => {
 });
 
 describe('AGENT_EVENT_TYPES', () => {
+  it('is exactly the PRD §14.4 list, in order', () => {
+    // Written out rather than derived: this literal is the contract, so adding,
+    // dropping, renaming or reordering a type has to fail here first.
+    expect(AGENT_EVENT_TYPES).toEqual([
+      'run.created',
+      'run.started',
+      'run.paused',
+      'run.resumed',
+      'run.cancelled',
+      'run.completed',
+      'phase.created',
+      'phase.started',
+      'phase.completed',
+      'task.created',
+      'task.started',
+      'task.blocked',
+      'task.updated',
+      'task.completed',
+      'task.failed',
+      'agent.started',
+      'agent.completed',
+      'tool.started',
+      'tool.output',
+      'tool.completed',
+      'tool.failed',
+      'approval.requested',
+      'approval.resolved',
+      'artifact.created',
+      'commit.created',
+      'test.started',
+      'test.completed',
+      'verification.completed',
+      'preview.starting',
+      'preview.ready',
+      'preview.failed',
+      'release.created',
+      'deployment.updated',
+      'usage.recorded',
+    ]);
+    // Catches a duplicate pasted into both the source list and the pin above.
+    expect(new Set(AGENT_EVENT_TYPES).size).toBe(AGENT_EVENT_TYPES.length);
+  });
   it('event type list matches PRD count', () => {
     expect(AGENT_EVENT_TYPES).toHaveLength(34);
   });
-  it('runs from run.created to usage.recorded with no duplicates', () => {
-    expect(AGENT_EVENT_TYPES[0]).toBe('run.created');
-    expect(AGENT_EVENT_TYPES.at(-1)).toBe('usage.recorded');
-    expect(new Set(AGENT_EVENT_TYPES).size).toBe(AGENT_EVENT_TYPES.length);
+});
+
+describe('AgentEventVisibilitySchema', () => {
+  it('is exactly user, internal and support', () => {
+    expect(AgentEventVisibilitySchema.options).toEqual(['user', 'internal', 'support']);
+  });
+  it('rejects a visibility outside the list', () => {
+    expect(AgentEventVisibilitySchema.safeParse('public').success).toBe(false);
   });
 });
