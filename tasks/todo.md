@@ -8,7 +8,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] FND-0 Repository initialization
 - [x] FND-1 Monorepo scaffold (pnpm/turbo/tsconfig/eslint/vitest)
 - [x] FND-2 packages/config env validation
-- [ ] FND-3 contracts: ids, agent events, run/task enums
+- [x] FND-3 contracts: ids, agent events, run/task enums
 - [ ] FND-4 contracts: sandbox/adapter/deployment/tool interfaces
 - [ ] FND-5 db: identity + billing schema
 - [ ] FND-6 db: full PRD §23 schema + event partitioning + tenant repos

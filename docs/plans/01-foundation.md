@@ -110,7 +110,7 @@ describe("defineEnv", () => {
 
 ### Task FND-3: `packages/contracts` — identifiers, events, task states
 
-**Files:** Create: `packages/contracts/package.json`, `src/ids.ts`, `src/events.ts`, `src/run.ts`, `src/index.ts`, `test/ids.test.ts`, `test/events.test.ts`
+**Files:** Create: `packages/contracts/package.json`, `src/ids.ts`, `src/events.ts`, `src/run.ts`, `src/index.ts`, `test/ids.test.ts`, `test/events.test.ts`, `test/run.test.ts` *(added 2026-08-03: the run enums are binding constraints and need direct coverage)*
 **Interfaces produced (binding for all plans):**
 - `newId(prefix: IdPrefix): string`, `idSchema(prefix)` — TypeID (prefix + ULID)
 - `AgentEventSchema`, `type AgentEvent` — exactly PRD §14.4 fields
@@ -120,7 +120,7 @@ describe("defineEnv", () => {
 - `SupportLevelSchema`: compatible | verified | managed
 **Effort:** M
 
-- [ ] **Step 1:** Failing tests:
+- [x] **Step 1:** Failing tests:
 
 ```ts
 // test/events.test.ts
@@ -146,8 +146,8 @@ it("event type list matches PRD count", () => {
 });
 ```
 
-- [ ] **Step 2:** Run → FAIL. Implement `ids.ts` (ULID via `ulid` package pinned; `newId`, `idSchema` regex `^{prefix}_[0-9A-HJKMNP-TV-Z]{26}$`), `events.ts` (schema fields: id, runId, sequence `z.number().int().nonneg()`, occurredAt ISO string, organizationId, projectId, phaseId?, taskId?, agentId?, type `z.enum(AGENT_EVENT_TYPES)`, visibility `z.enum(["user","internal","support"])`, payload `z.record(z.unknown())`), `run.ts` (TaskState, RunMode, SupportLevel enums).
-- [ ] **Step 3:** Tests pass. Commit: `feat(contracts): ids, agent events, run/task state enums`
+- [x] **Step 2:** Run → FAIL. Implement `ids.ts` (ULID via `ulid` package pinned; `newId`, `idSchema` regex `^{prefix}_[0-9A-HJKMNP-TV-Z]{26}$`), `events.ts` (schema fields: id, runId, sequence `z.number().int().nonneg()`, occurredAt ISO string, organizationId, projectId, phaseId?, taskId?, agentId?, type `z.enum(AGENT_EVENT_TYPES)`, visibility `z.enum(["user","internal","support"])`, payload `z.record(z.unknown())`), `run.ts` (TaskState, RunMode, SupportLevel enums).
+- [x] **Step 3:** Tests pass. Commit: `feat(contracts): ids, agent events, run/task state enums`
 
 ### Task FND-4: `packages/contracts` — provider & tool interfaces
 
@@ -300,3 +300,4 @@ export const IdempotencyHeader = "idempotency-key";
 - (empty — plan not yet executed)
 - 2026-08-03: FND-0 done (repo init, 8edc125). FND-1 done (b1de22a, review approved; Important fix applied in follow-up commit: turbo globalDependencies + .prettierignore). Minors deferred to final review: test:integration dependsOn (resolve FND-8), lib ES2023 note, decorative @ts-check.
 - 2026-08-03: FND-2 done (49e5ebe + fix ab0362c, review clean; error-formula deviation approved). Plan amendments: AGENT_EVENT_TYPES count corrected 30→34 vs PRD §14.4; contracts dep constraint now zod+ulid.
+- 2026-08-03: FND-3 done (13b5a4a + fix c0f4f25, review clean; 25 tests, full membership pins). phaseId/agentId plain strings (not in prefix list) — revisit if FND-6 mints phase ids.
