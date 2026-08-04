@@ -1,5 +1,12 @@
-import { newId, type SupportLevel } from '@zapp/contracts';
 import {
+  newId,
+  type ResourceProfile,
+  type RunMode,
+  type SupportLevel,
+  type WorkspaceStatus,
+} from '@zapp/contracts';
+import {
+  agentRuns,
   branches,
   environments,
   forOrg,
@@ -8,7 +15,9 @@ import {
   repositories,
   secretCiphertexts,
   secretMetadata,
+  workspaces,
   type Branch,
+  type AgentRun,
   type Database,
   type Environment,
   type Project,
@@ -17,6 +26,7 @@ import {
   type Repository,
   type SecretMetadata,
   type TenantDb,
+  type Workspace,
 } from '@zapp/db';
 import { and, asc, desc, eq, isNull, lt, type Column, type SQL } from 'drizzle-orm';
 
@@ -176,6 +186,8 @@ export interface TenantRepositoryRepository {
 export interface TenantBranchRepository {
   /** The project's branches, newest first; empty for another tenant's project. */
   byProject(projectId: string): Promise<Branch[]>;
+  /** One branch only when both it and its project belong to this tenant. */
+  getForProject(projectId: string, branchId: string): Promise<Branch | undefined>;
 }
 
 export interface TenantEnvironmentRepository {
@@ -190,6 +202,56 @@ export interface TenantContractRepository {
    * one rather than overwriting (PRD §17.2), so "latest" is "highest version".
    */
   latestForProject(projectId: string): Promise<ProjectContract | undefined>;
+}
+
+/** The one run write CP-9 owns: persist then start its durable workflow atomically. */
+export interface NewRunInput {
+  readonly projectId: string;
+  readonly branchId: string | null;
+  readonly mode: RunMode;
+  readonly budget: unknown;
+  readonly startedBy: string;
+  readonly now: Date;
+  /** Called before the transaction commits; a failure leaves no success row. */
+  readonly start: (run: AgentRun) => Promise<void>;
+  readonly audit: AuditHook<AgentRun>;
+}
+
+export interface UpdateRunStatusInput {
+  readonly runId: string;
+  readonly status: string;
+  readonly completedAt: Date | null;
+  readonly audit: AuditHook<AgentRun>;
+}
+
+export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
+  byProject(projectId: string): Promise<AgentRun[]>;
+  create(input: NewRunInput): Promise<AgentRun>;
+  updateStatus(input: UpdateRunStatusInput): Promise<AgentRun | undefined>;
+}
+
+export interface NewWorkspaceInput {
+  readonly projectId: string;
+  readonly branchId: string | null;
+  readonly resourceProfile: ResourceProfile;
+  readonly now: Date;
+  readonly create: (
+    workspace: Workspace,
+  ) => Promise<{ readonly providerWorkspaceId: string; readonly status: WorkspaceStatus }>;
+  readonly audit: AuditHook<Workspace>;
+}
+export interface UpdateWorkspaceInput {
+  readonly workspaceId: string;
+  readonly status?: WorkspaceStatus;
+  readonly snapshotRef?: string | null;
+  readonly terminatedAt?: Date | null;
+  readonly now: Date;
+  readonly audit: AuditHook<Workspace>;
+}
+export interface TenantWorkspaceRepository {
+  getById(workspaceId: string): Promise<Workspace | undefined>;
+  create(input: NewWorkspaceInput): Promise<Workspace>;
+  update(input: UpdateWorkspaceInput): Promise<Workspace | undefined>;
 }
 
 /**
@@ -272,8 +334,10 @@ export interface TenantSecretRepository {
 }
 
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
-export interface TenantDatabase extends Omit<TenantDb, 'projects'> {
+export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs'> {
   readonly projects: TenantProjectRepository;
+  readonly runs: TenantRunRepository;
+  readonly workspaces: TenantWorkspaceRepository;
   readonly repositories: TenantRepositoryRepository;
   readonly branches: TenantBranchRepository;
   readonly environments: TenantEnvironmentRepository;
@@ -519,6 +583,108 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         },
       },
 
+      runs: {
+        ...base.runs,
+
+        async create(input: NewRunInput): Promise<AgentRun> {
+          return await db.transaction(async (tx) => {
+            const [run] = await tx
+              .insert(agentRuns)
+              .values({
+                id: newId('run'),
+                organizationId: orgId,
+                projectId: input.projectId,
+                branchId: input.branchId,
+                mode: input.mode,
+                status: 'queued',
+                specificationId: null,
+                // The workflow identity is intentionally the row identity. It
+                // makes a retry after a rolled-back transaction safe at
+                // Temporal, which deduplicates workflow ids.
+                temporalWorkflowId: null,
+                startedBy: input.startedBy,
+                budgetJson: input.budget,
+                startedAt: input.now,
+                completedAt: null,
+              })
+              .returning();
+            if (run === undefined) {
+              throw new Error('run insert returned no row');
+            }
+            await input.start(run);
+            await input.audit(tx, run);
+            return run;
+          });
+        },
+
+        async updateStatus(input: UpdateRunStatusInput): Promise<AgentRun | undefined> {
+          return await db.transaction(async (tx) => {
+            const [run] = await tx
+              .update(agentRuns)
+              .set({ status: input.status, completedAt: input.completedAt })
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .returning();
+            if (run !== undefined) {
+              await input.audit(tx, run);
+            }
+            return run;
+          });
+        },
+      },
+
+      workspaces: {
+        async getById(id) {
+          const [row] = await db
+            .select()
+            .from(workspaces)
+            .where(scoped(workspaces.organizationId, eq(workspaces.id, id)))
+            .limit(1);
+          return row;
+        },
+        async create(input) {
+          return await db.transaction(async (tx) => {
+            const provisional: Workspace = {
+              id: newId('ws'),
+              organizationId: orgId,
+              projectId: input.projectId,
+              branchId: input.branchId,
+              provider: 'modal',
+              providerWorkspaceId: null,
+              status: 'requested',
+              resourceProfile: input.resourceProfile,
+              snapshotRef: null,
+              createdAt: input.now,
+              lastActiveAt: null,
+              terminatedAt: null,
+            };
+            const provider = await input.create(provisional);
+            const [row] = await tx
+              .insert(workspaces)
+              .values({ ...provisional, ...provider })
+              .returning();
+            if (row === undefined) throw new Error('workspace insert returned no row');
+            await input.audit(tx, row);
+            return row;
+          });
+        },
+        async update(input) {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(workspaces)
+              .set({
+                ...(input.status === undefined ? {} : { status: input.status }),
+                ...(input.snapshotRef === undefined ? {} : { snapshotRef: input.snapshotRef }),
+                ...(input.terminatedAt === undefined ? {} : { terminatedAt: input.terminatedAt }),
+                lastActiveAt: input.now,
+              })
+              .where(scoped(workspaces.organizationId, eq(workspaces.id, input.workspaceId)))
+              .returning();
+            if (row !== undefined) await input.audit(tx, row);
+            return row;
+          });
+        },
+      },
+
       repositories: {
         async forProject(projectId: string): Promise<Repository | undefined> {
           const [row] = await db
@@ -537,6 +703,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .from(branches)
             .where(scoped(branches.organizationId, eq(branches.projectId, projectId)))
             .orderBy(desc(branches.id));
+        },
+        async getForProject(projectId: string, branchId: string): Promise<Branch | undefined> {
+          const [row] = await db
+            .select()
+            .from(branches)
+            .where(
+              scoped(
+                branches.organizationId,
+                eq(branches.projectId, projectId),
+                eq(branches.id, branchId),
+              ),
+            )
+            .limit(1);
+          return row;
         },
       },
 

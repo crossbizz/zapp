@@ -15,6 +15,8 @@ import {
   type IdempotencyStore,
 } from '../../src/plugins/idempotency.js';
 import type { GitServicePort } from '../../src/git/port.js';
+import type { OrchestratorPort } from '../../src/orchestrator/port.js';
+import type { SandboxServicePort } from '../../src/sandbox/port.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
@@ -142,6 +144,9 @@ export interface HarnessOptions {
    * the shipping record-only implementation.
    */
   readonly git?: GitServicePort;
+  /** CP-9's workflow boundary, normally a recording fake in route tests. */
+  readonly orchestrator?: OrchestratorPort;
+  readonly sandbox?: SandboxServicePort;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
    * shipping list; the suite that proves an unallowlisted caller is refused
@@ -194,6 +199,8 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
           tenant: {
             tenantDb: options.tenantDb,
             ...(options.git === undefined ? {} : { git: options.git }),
+            ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
+            ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that

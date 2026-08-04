@@ -247,13 +247,40 @@ export async function setUpTestDatabase(): Promise<TestDatabase> {
       // are still down — a harness that disarmed an append-only ledger and said
       // nothing would be worse than the reset it was trying to perform.
       const guards = await appendOnlyGuards(handle.sql);
+      const guardedTables = [...new Set(guards.map((guard) => guard.table))];
+      const truncatePrivileges = new Map<string, boolean>();
+      for (const table of guardedTables) {
+        const [row] = await handle.sql<{ allowed: boolean }[]>`
+          select has_table_privilege(current_user, ${`public.${table}`}, 'TRUNCATE') as allowed
+        `;
+        truncatePrivileges.set(table, row?.allowed ?? false);
+      }
+
       await handle.sql.begin(async (tx) => {
         for (const guard of guards) {
           await tx.unsafe(`alter table "${guard.table}" disable trigger "${guard.trigger}"`);
         }
+        // Migration 0004 revokes TRUNCATE from the configured app role, which
+        // is also the table owner in the local dev stack. Disabling the trigger
+        // is therefore necessary but not sufficient: PostgreSQL still checks
+        // the revoked table privilege first. Restore it only for the guarded
+        // tables that lacked it, inside this reset transaction, then put the
+        // exact privilege state back before commit. The owner can re-grant to
+        // itself; a non-owner capable of disabling these triggers is a
+        // superuser and already has the privilege.
+        for (const table of guardedTables) {
+          if (truncatePrivileges.get(table) === false) {
+            await tx.unsafe(`grant truncate on public."${table}" to current_user`);
+          }
+        }
         await tx.unsafe(
           'truncate table "memberships", "organizations", "users" restart identity cascade',
         );
+        for (const table of guardedTables) {
+          if (truncatePrivileges.get(table) === false) {
+            await tx.unsafe(`revoke truncate on public."${table}" from current_user`);
+          }
+        }
         for (const guard of guards) {
           await tx.unsafe(`alter table "${guard.table}" enable trigger "${guard.trigger}"`);
         }
@@ -267,6 +294,15 @@ export async function setUpTestDatabase(): Promise<TestDatabase> {
             .map((guard) => guard.trigger)
             .join(', ')}`,
         );
+      }
+
+      for (const table of guardedTables) {
+        const [row] = await handle.sql<{ allowed: boolean }[]>`
+          select has_table_privilege(current_user, ${`public.${table}`}, 'TRUNCATE') as allowed
+        `;
+        if ((row?.allowed ?? false) !== truncatePrivileges.get(table)) {
+          throw new Error(`TRUNCATE privilege changed after reset for ${table}`);
+        }
       }
     },
   };

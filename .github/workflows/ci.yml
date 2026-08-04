@@ -422,6 +422,9 @@ jobs:
           fi
           echo "::add-mask::$token"
           echo "token=$token" >> "$GITHUB_OUTPUT"
+          service_token_secret="$(openssl rand -hex 32)"
+          echo "::add-mask::$service_token_secret"
+          echo "SERVICE_TOKEN_SECRET=$service_token_secret" >> "$GITHUB_ENV"
 
       # The suites import their workspace dependencies through package entry
       # points (@zapp/db resolves to dist/), so a cold checkout has to build them
@@ -436,3 +439,11 @@ jobs:
         env:
           FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
         run: pnpm --filter @zapp/git-service run test:integration
+
+      # GATE-5: one real request must cross both service boundaries and leave a
+      # cloneable private repository in Forgejo. The suite throws instead of
+      # skipping whenever CI is set and any required configuration is absent.
+      - name: Control API to Forgejo integration gate
+        env:
+          FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
+        run: pnpm --filter @zapp/control-api run test:gate5

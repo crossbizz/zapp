@@ -27,6 +27,8 @@ import {
 } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
+import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
+import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
@@ -46,6 +48,7 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
@@ -109,6 +112,9 @@ export interface TenantDeps {
    * in `src/compose.ts`, and a test binds one that fails on demand.
    */
   readonly git?: GitServicePort;
+  /** CP-9's durable-workflow boundary. Omitted only where mutations must fail closed. */
+  readonly orchestrator?: OrchestratorPort;
+  readonly sandbox?: SandboxServicePort;
 }
 
 /**
@@ -396,7 +402,14 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // never ship.
         if (tenant !== undefined) {
           registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
-          registerRunRoutes(app);
+          registerRunRoutes(app, {
+            now,
+            orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+          });
+          registerWorkspaceRoutes(app, {
+            now,
+            sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
+          });
 
           if (secrets !== undefined) {
             // One vault for both surfaces, so the key that encrypted a value on

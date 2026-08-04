@@ -8,6 +8,6 @@ export default defineConfig({
     // would silently match nothing there. The exclude is what keeps the
     // credential-gated suite out of the default run.
     include: ['**/*.test.ts'],
-    exclude: [...configDefaults.exclude, 'test/integration/**'],
+    exclude: [...configDefaults.exclude, 'test/integration/**', 'test/gate5/**'],
   },
 });

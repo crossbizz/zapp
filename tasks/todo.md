@@ -39,7 +39,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M1 — Walking skeleton: prompt → preview (Weeks 3–8)
 
 ### Plan 02 — Control plane (part 2)
-- [ ] CP-9 Run + workspace routes
+- [x] CP-9 Run + workspace routes
 - [ ] CP-10 Specification routes
 - [ ] CP-11 Release/integration route shells + RBAC
 - [ ] CP-12 Audit reads + org settings

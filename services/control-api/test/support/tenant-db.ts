@@ -8,6 +8,7 @@ import type {
   ProjectContract,
   Repository,
   SecretMetadata,
+  Workspace,
 } from '@zapp/db';
 
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
@@ -68,6 +69,7 @@ export class InMemoryTenantData {
   readonly contracts: ProjectContract[] = [];
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
+  readonly workspaces: Workspace[] = [];
   readonly secrets: SecretMetadata[] = [];
   /**
    * The vault, as a second store keyed by secret id — modelling the *table*
@@ -252,6 +254,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           mine(orgId, data.branches).filter((row) => row.projectId === projectId),
         );
       },
+      getForProject(projectId, branchId): Promise<Branch | undefined> {
+        return Promise.resolve(
+          mine(orgId, data.branches).find(
+            (row) => row.projectId === projectId && row.id === branchId,
+          ),
+        );
+      },
     },
 
     environments: {
@@ -373,6 +382,80 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
       getById(runId): Promise<AgentRun | undefined> {
         return Promise.resolve(mine(orgId, data.runs).find((row) => row.id === runId));
+      },
+      async create(input) {
+        const run: AgentRun = {
+          id: newId('run'),
+          organizationId: orgId,
+          projectId: input.projectId,
+          branchId: input.branchId,
+          mode: input.mode,
+          status: 'queued',
+          specificationId: null,
+          temporalWorkflowId: null,
+          startedBy: input.startedBy,
+          budgetJson: input.budget,
+          startedAt: input.now,
+          completedAt: null,
+        };
+        await input.start(run);
+        await input.audit(NO_TRANSACTION, run);
+        data.runs.push(run);
+        return run;
+      },
+      async updateStatus(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+        if (existing === undefined) {
+          return undefined;
+        }
+        const updated: AgentRun = {
+          ...existing,
+          status: input.status,
+          completedAt: input.completedAt,
+        };
+        await input.audit(NO_TRANSACTION, updated);
+        data.runs.splice(data.runs.indexOf(existing), 1, updated);
+        return updated;
+      },
+    },
+
+    workspaces: {
+      getById(id) {
+        return Promise.resolve(mine(orgId, data.workspaces).find((row) => row.id === id));
+      },
+      async create(input) {
+        const base: Workspace = {
+          id: newId('ws'),
+          organizationId: orgId,
+          projectId: input.projectId,
+          branchId: input.branchId,
+          provider: 'modal',
+          providerWorkspaceId: null,
+          status: 'requested',
+          resourceProfile: input.resourceProfile,
+          snapshotRef: null,
+          createdAt: input.now,
+          lastActiveAt: null,
+          terminatedAt: null,
+        };
+        const workspace = { ...base, ...(await input.create(base)) };
+        await input.audit(NO_TRANSACTION, workspace);
+        data.workspaces.push(workspace);
+        return workspace;
+      },
+      async update(input) {
+        const existing = mine(orgId, data.workspaces).find((row) => row.id === input.workspaceId);
+        if (existing === undefined) return undefined;
+        const updated: Workspace = {
+          ...existing,
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.snapshotRef === undefined ? {} : { snapshotRef: input.snapshotRef }),
+          ...(input.terminatedAt === undefined ? {} : { terminatedAt: input.terminatedAt }),
+          lastActiveAt: input.now,
+        };
+        await input.audit(NO_TRANSACTION, updated);
+        data.workspaces.splice(data.workspaces.indexOf(existing), 1, updated);
+        return updated;
       },
     },
 

@@ -67,6 +67,16 @@ export const AUDIT_ACTIONS = [
    * hole in exactly the period people ask about.
    */
   'project.scan_requested',
+  'run.created',
+  'run.paused',
+  'run.resumed',
+  'run.cancelled',
+  'run.redirected',
+  'workspace.created',
+  'workspace.started',
+  'workspace.checkpointed',
+  'workspace.terminated',
+  'workspace.previewed',
   'secret.created',
   'secret.rotated',
   'secret.deleted',
@@ -85,7 +95,8 @@ export const AUDIT_ACTIONS = [
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export type AuditTargetType = 'organization' | 'membership' | 'invite' | 'project' | 'secret';
+export type AuditTargetType =
+  'organization' | 'membership' | 'invite' | 'project' | 'run' | 'workspace' | 'secret';
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
 export type AuditActorType = 'user' | 'service' | 'agent' | 'support';

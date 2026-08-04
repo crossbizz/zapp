@@ -1,4 +1,10 @@
-import { AgentEventVisibilitySchema, RunModeSchema, SupportLevelSchema } from '@zapp/contracts';
+import {
+  AgentEventVisibilitySchema,
+  ResourceProfileSchema,
+  RunModeSchema,
+  SupportLevelSchema,
+  WorkspaceStatusSchema,
+} from '@zapp/contracts';
 import type {
   AgentEventRow,
   AgentRun,
@@ -8,6 +14,7 @@ import type {
   ProjectContract,
   Repository,
   SecretMetadata,
+  Workspace,
 } from '@zapp/db';
 import { z } from 'zod';
 
@@ -141,6 +148,21 @@ export const RunSchema = z.object({
   completedAt: z.string().datetime().nullable(),
 });
 
+export const WorkspaceSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  branchId: z.string().nullable(),
+  provider: z.string(),
+  providerWorkspaceId: z.string().nullable(),
+  status: WorkspaceStatusSchema,
+  resourceProfile: ResourceProfileSchema,
+  snapshotRef: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  lastActiveAt: z.string().datetime().nullable(),
+  terminatedAt: z.string().datetime().nullable(),
+});
+
 export const EventSchema = z.object({
   id: z.string(),
   organizationId: z.string(),
@@ -250,6 +272,16 @@ export function toRun(run: AgentRun): z.infer<typeof RunSchema> {
     startedBy: run.startedBy,
     startedAt: run.startedAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
+  };
+}
+
+export function toWorkspace(workspace: Workspace): z.infer<typeof WorkspaceSchema> {
+  return {
+    ...workspace,
+    resourceProfile: ResourceProfileSchema.parse(workspace.resourceProfile),
+    createdAt: workspace.createdAt.toISOString(),
+    lastActiveAt: workspace.lastActiveAt?.toISOString() ?? null,
+    terminatedAt: workspace.terminatedAt?.toISOString() ?? null,
   };
 }
 
