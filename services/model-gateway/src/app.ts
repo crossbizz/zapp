@@ -87,6 +87,52 @@ function carriesUserCredential(headers: Record<string, string | string[] | undef
   return (headers.authorization ?? '') !== '' || (headers.cookie ?? '') !== '';
 }
 
+const CLIENT_DISCONNECTED = Symbol('client-disconnected');
+
+function nextWhileConnected<T>(
+  iterator: AsyncIterator<T>,
+  signal: AbortSignal,
+): Promise<IteratorResult<T> | typeof CLIENT_DISCONNECTED> {
+  if (signal.aborted) return Promise.resolve(CLIENT_DISCONNECTED);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    const resolveOnce = (result: IteratorResult<T> | typeof CLIENT_DISCONNECTED): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const rejectOnce = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error('completion iterator failed'));
+    };
+    const onAbort = (): void => {
+      resolveOnce(CLIENT_DISCONNECTED);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    void Promise.resolve()
+      .then(() => iterator.next())
+      .then(resolveOnce, rejectOnce);
+    if (signal.aborted) onAbort();
+  });
+}
+
+function closeIterator(iterator: AsyncIterator<unknown>): void {
+  try {
+    const result = iterator.return?.();
+    if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+  } catch {
+    return;
+  }
+}
+
 function waitForDrain(response: NodeJS.WritableStream, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false);
 
@@ -208,9 +254,23 @@ export function buildApp(options: BuildAppOptions) {
       },
     },
     async (request, reply) => {
-      const abortController = new AbortController();
+      const providerAbortController = new AbortController();
+      const responseAbortController = new AbortController();
+      let iterator: AsyncIterator<BackendStreamEvent> | undefined;
+      let iteratorClosed = false;
+      const closeBackendIterator = (): void => {
+        if (iterator === undefined || iteratorClosed) return;
+        iteratorClosed = true;
+        closeIterator(iterator);
+      };
+      const stopProvider = (): void => {
+        providerAbortController.abort();
+        closeBackendIterator();
+      };
       const abortOnDisconnect = (): void => {
-        if (!reply.raw.writableEnded) abortController.abort();
+        if (reply.raw.writableEnded) return;
+        stopProvider();
+        responseAbortController.abort();
       };
       reply.raw.once('close', abortOnDisconnect);
       reply.hijack();
@@ -222,27 +282,33 @@ export function buildApp(options: BuildAppOptions) {
       if ('flushHeaders' in reply.raw) reply.raw.flushHeaders();
 
       try {
-        const stream = options.completion.stream(request.body, abortController.signal);
-        for await (const event of stream) {
-          if (abortController.signal.aborted || reply.raw.destroyed) return;
-          const parsed = BackendStreamEventSchema.parse(event);
-          if (!(await writeSse(reply.raw, parsed, abortController.signal))) return;
+        const stream = options.completion.stream(request.body, providerAbortController.signal);
+        iterator = stream[Symbol.asyncIterator]();
+        for (;;) {
+          const result = await nextWhileConnected(iterator, responseAbortController.signal);
+          if (result === CLIENT_DISCONNECTED) {
+            stopProvider();
+            return;
+          }
+          if (result.done) break;
+          const parsed = BackendStreamEventSchema.parse(result.value);
+          if (!(await writeSse(reply.raw, parsed, responseAbortController.signal))) {
+            stopProvider();
+            return;
+          }
         }
-        if (!abortController.signal.aborted && !reply.raw.destroyed) {
-          if (await writeSse(reply.raw, { type: 'done' }, abortController.signal)) {
+        if (!responseAbortController.signal.aborted && !reply.raw.destroyed) {
+          if (await writeSse(reply.raw, { type: 'done' }, responseAbortController.signal)) {
             reply.raw.end();
           }
         }
       } catch {
-        try {
-          if (!abortController.signal.aborted && !reply.raw.destroyed) {
-            request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
-            if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, abortController.signal)) {
-              reply.raw.end();
-            }
+        stopProvider();
+        if (!responseAbortController.signal.aborted && !reply.raw.destroyed) {
+          request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
+          if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, responseAbortController.signal)) {
+            reply.raw.end();
           }
-        } finally {
-          abortController.abort();
         }
       } finally {
         reply.raw.off('close', abortOnDisconnect);

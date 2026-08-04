@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import { Writable } from 'node:stream';
 
@@ -153,6 +154,53 @@ function blockFirstResponseWrite(app: ReturnType<typeof buildApp>) {
     done();
   });
   return blocked.promise;
+}
+
+function captureResponse(app: ReturnType<typeof buildApp>) {
+  const captured = deferred<{ raw: ServerResponse; initialCloseListeners: number }>();
+  app.addHook('onRequest', (_request, reply, done) => {
+    captured.resolve({
+      raw: reply.raw,
+      initialCloseListeners: reply.raw.listenerCount('close'),
+    });
+    done();
+  });
+  return captured.promise;
+}
+
+function backpressureFirstResponseWrite(app: ReturnType<typeof buildApp>) {
+  let writeCount = 0;
+  const firstWrite = deferred();
+  const captured = deferred<{
+    raw: ServerResponse;
+    initialCloseListeners: number;
+    writeCount: () => number;
+  }>();
+  app.addHook('onRequest', (_request, reply, done) => {
+    const originalWrite = reply.raw.write.bind(reply.raw) as (...args: unknown[]) => boolean;
+    captured.resolve({
+      raw: reply.raw,
+      initialCloseListeners: reply.raw.listenerCount('close'),
+      writeCount: () => writeCount,
+    });
+    reply.raw.write = ((...args: unknown[]) => {
+      const accepted = originalWrite(...args);
+      writeCount += 1;
+      if (writeCount === 1) {
+        firstWrite.resolve();
+        return false;
+      }
+      return accepted;
+    }) as typeof reply.raw.write;
+    done();
+  });
+  return { captured: captured.promise, firstWrite: firstWrite.promise };
+}
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 afterEach(async () => {
@@ -337,7 +385,8 @@ describe('POST /internal/v1/complete authorization and validation', () => {
 
 describe('neutral SSE stream', () => {
   it('preserves provider order and emits exactly one terminal done event', async () => {
-    const completion = backend([
+    let providerSignal: AbortSignal | undefined;
+    const events = [
       { type: 'text-delta', text: 'Hello ' },
       {
         type: 'tool-call',
@@ -352,7 +401,13 @@ describe('neutral SSE stream', () => {
         totalTokens: 29,
         cachedInputTokens: 5,
       },
-    ]);
+    ] as const satisfies readonly BackendStreamEvent[];
+    const completion: CompletionBackend = {
+      stream: (_request, signal) => {
+        providerSignal = signal;
+        return asyncEvents(events);
+      },
+    };
     const response = await appFor(completion).inject({
       method: 'POST',
       url: '/internal/v1/complete',
@@ -379,6 +434,7 @@ describe('neutral SSE stream', () => {
       },
       { type: 'done' },
     ]);
+    expect(providerSignal?.aborted).toBe(false);
   });
 
   it('turns provider startup failure into one sanitized terminal error', async () => {
@@ -494,6 +550,260 @@ describe('neutral SSE stream', () => {
       nextCalls: 1,
       returnCalls: 1,
       signalAborted: true,
+    });
+  });
+
+  describe('provider lifecycle ordering', () => {
+    it('aborts before closing an invalid backend iterator whose return waits for abort', async () => {
+      const postTerminalMarker = 'post-terminal-return-wait-marker';
+      const returnEscape = deferred();
+      const returnStarted = deferred();
+      let providerSignal: AbortSignal | undefined;
+      let nextCalls = 0;
+      let returnCalls = 0;
+      let abortedAtReturn = false;
+      const completion: CompletionBackend = {
+        stream: (_request, signal) => {
+          providerSignal = signal;
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next() {
+                  const value = [
+                    { type: 'done' },
+                    { type: 'text-delta', text: postTerminalMarker },
+                  ][nextCalls];
+                  nextCalls += 1;
+                  return Promise.resolve(
+                    value === undefined
+                      ? { done: true as const, value: undefined }
+                      : { done: false as const, value },
+                  );
+                },
+                return() {
+                  returnCalls += 1;
+                  abortedAtReturn = signal.aborted;
+                  returnStarted.resolve();
+                  return new Promise<IteratorResult<never>>((resolve) => {
+                    const finish = (): void => {
+                      resolve({ done: true, value: undefined });
+                    };
+                    if (signal.aborted) {
+                      finish();
+                      return;
+                    }
+                    signal.addEventListener('abort', finish, { once: true });
+                    void returnEscape.promise.then(finish);
+                  });
+                },
+              };
+            },
+          } as AsyncIterable<never>;
+        },
+      };
+      const responsePromise = appFor(completion).inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: await authorizedHeaders(),
+        payload: validRequest,
+      });
+
+      await returnStarted.promise;
+      returnEscape.resolve();
+      const response = await responsePromise;
+
+      expect(abortedAtReturn).toBe(true);
+      expect(parseSse(response.payload)).toEqual([
+        {
+          type: 'error',
+          code: 'provider_error',
+          message: 'The model provider request failed.',
+        },
+      ]);
+      expect(response.payload).not.toContain(postTerminalMarker);
+      expect({ nextCalls, returnCalls }).toEqual({ nextCalls: 1, returnCalls: 1 });
+      expect(providerSignal?.aborted).toBe(true);
+      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
+        [],
+      );
+    });
+
+    it('aborts the provider before a safe error frame waits for drain', async () => {
+      const adversarial = adversarialBackend([
+        { type: 'done' },
+        { type: 'text-delta', text: 'post-terminal-drain-marker' },
+      ]);
+      const app = appFor(adversarial.completion);
+      const blockedResponse = blockFirstResponseWrite(app);
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: await authorizedHeaders(),
+        payload: validRequest,
+      });
+
+      const raw = await blockedResponse;
+      const stateWhileBlocked = adversarial.state();
+      raw.emit('drain');
+      const response = await responsePromise;
+
+      expect(stateWhileBlocked).toEqual({
+        nextCalls: 1,
+        returnCalls: 1,
+        signalAborted: true,
+      });
+      expect(parseSse(response.payload)).toEqual([
+        {
+          type: 'error',
+          code: 'provider_error',
+          message: 'The model provider request failed.',
+        },
+      ]);
+      expect(raw.listenerCount('drain')).toBe(0);
+    });
+
+    it('disconnects from a pending next without waiting or leaking iterator failures', async () => {
+      const nextStarted = deferred();
+      const releaseNext = deferred<IteratorResult<BackendStreamEvent>>();
+      let providerSignal: AbortSignal | undefined;
+      let returnCalls = 0;
+      const completion: CompletionBackend = {
+        stream: (_request, signal) => {
+          providerSignal = signal;
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next() {
+                  nextStarted.resolve();
+                  return releaseNext.promise;
+                },
+                return() {
+                  returnCalls += 1;
+                  return Promise.reject(new Error('iterator return cleanup failed'));
+                },
+              };
+            },
+          };
+        },
+      };
+      const app = appFor(completion);
+      const capturedResponse = captureResponse(app);
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: await authorizedHeaders(),
+        payload: validRequest,
+      });
+      const settledResponse = responsePromise.catch(() => undefined);
+      const { raw, initialCloseListeners } = await capturedResponse;
+      await nextStarted.promise;
+
+      raw.destroy();
+      await nextTurn();
+      const returnCallsBeforeNextSettled = returnCalls;
+      releaseNext.resolve({ done: true, value: undefined });
+      void settledResponse;
+      await nextTurn();
+
+      expect(providerSignal?.aborted).toBe(true);
+      expect(returnCallsBeforeNextSettled).toBe(1);
+      expect(returnCalls).toBe(1);
+      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
+        [],
+      );
+      expect(raw.listenerCount('drain')).toBe(0);
+      expect(raw.listenerCount('close')).toBeLessThanOrEqual(initialCloseListeners);
+    });
+
+    it('disconnects while non-cooperative iterator return cleanup is pending', async () => {
+      const returnStarted = deferred();
+      const rejectReturn = deferred<IteratorResult<never>>();
+      let providerSignal: AbortSignal | undefined;
+      let returnCalls = 0;
+      let abortedAtReturn = false;
+      const completion: CompletionBackend = {
+        stream: (_request, signal) => {
+          providerSignal = signal;
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next() {
+                  return Promise.resolve({
+                    done: false as const,
+                    value: { type: 'done' },
+                  });
+                },
+                return() {
+                  returnCalls += 1;
+                  abortedAtReturn = signal.aborted;
+                  returnStarted.resolve();
+                  return rejectReturn.promise;
+                },
+              };
+            },
+          } as AsyncIterable<never>;
+        },
+      };
+      const app = appFor(completion);
+      const observedWrite = backpressureFirstResponseWrite(app);
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: await authorizedHeaders(),
+        payload: validRequest,
+      });
+      const settledResponse = responsePromise.catch(() => undefined);
+      const { raw, initialCloseListeners, writeCount } = await observedWrite.captured;
+      await returnStarted.promise;
+      await nextTurn();
+      const writesBeforeDisconnect = writeCount();
+
+      raw.destroy();
+      rejectReturn.reject(new Error('non-cooperative iterator return failed'));
+      void settledResponse;
+      await nextTurn();
+
+      expect(abortedAtReturn).toBe(true);
+      expect(writesBeforeDisconnect).toBe(1);
+      expect(returnCalls).toBe(1);
+      expect(providerSignal?.aborted).toBe(true);
+      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
+        [],
+      );
+      expect(raw.listenerCount('drain')).toBe(0);
+      expect(raw.listenerCount('close')).toBeLessThanOrEqual(initialCloseListeners);
+    });
+
+    it('disconnects while the safe error frame is backpressured', async () => {
+      const adversarial = adversarialBackend([
+        { type: 'error', code: 'provider_error', message: 'disconnect-secret-marker' },
+        { type: 'text-delta', text: 'post-disconnect-marker' },
+      ]);
+      const app = appFor(adversarial.completion);
+      const observedWrite = backpressureFirstResponseWrite(app);
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: await authorizedHeaders(),
+        payload: validRequest,
+      });
+      const settledResponse = responsePromise.catch(() => undefined);
+      const { raw, initialCloseListeners } = await observedWrite.captured;
+      await observedWrite.firstWrite;
+      const stateWhileBlocked = adversarial.state();
+
+      raw.destroy();
+      void settledResponse;
+      await nextTurn();
+
+      expect(stateWhileBlocked).toEqual({
+        nextCalls: 1,
+        returnCalls: 1,
+        signalAborted: true,
+      });
+      expect(adversarial.state().signalAborted).toBe(true);
+      expect(raw.listenerCount('drain')).toBe(0);
+      expect(raw.listenerCount('close')).toBeLessThanOrEqual(initialCloseListeners);
     });
   });
 
