@@ -55,6 +55,11 @@ compose() {
 
 random_hex() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
+# First `NAME=` line in an env file, value only. Defined up here rather than beside
+# the Forgejo section that also uses it, because the .env seeding below reads .env
+# with it long before that section runs.
+env_file_value() { sed -n "s/^$1=//p" "$2" | head -1; }
+
 usage() {
   sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -72,35 +77,68 @@ esac
 command -v docker >/dev/null 2>&1 || die "docker is not installed — see docs/dev-setup.md"
 command -v curl >/dev/null 2>&1 || die "curl is not installed — see docs/dev-setup.md"
 command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed — run 'corepack enable && corepack prepare pnpm@9.15.0 --activate'"
+command -v openssl >/dev/null 2>&1 || die "openssl is not installed — it generates the local platform secrets in .env"
 docker info >/dev/null 2>&1 || die "the Docker daemon is not running — start Docker Desktop/OrbStack and retry"
 [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE"
 
 if [ ! -f "$REPO_ROOT/.env" ]; then
   cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
-  # The template ships `replace-me` placeholders for the platform secrets. They
-  # are below the services' length floors, so a copied-verbatim .env cannot boot
-  # the control plane -- the developer's first `pnpm dev` fails on a variable
-  # they were never told to change. Generate them here instead: local-only
-  # values, regenerated whenever .env is deleted, never committed.
-  #
-  # SECRETS_MASTER_KEY is the odd one out: the vault decodes it as base64 of
-  # exactly 32 bytes (`openssl rand -base64 32`), while the JWT secrets are hex.
-  seed_secret() {
-    # $1 = variable name, $2 = generated value. Portable in-place edit: BSD sed
-    # (macOS) and GNU sed disagree about `-i`, so write through a temp file.
-    local name="$1" value="$2" tmp
-    tmp="$(mktemp)"
-    awk -v n="$name" -v v="$value" \
-      'index($0, n "=") == 1 { print n "=" v; next } { print }' \
-      "$REPO_ROOT/.env" > "$tmp"
-    mv "$tmp" "$REPO_ROOT/.env"
-  }
-  seed_secret SESSION_JWT_SECRET "$(openssl rand -hex 32)"
-  seed_secret SERVICE_TOKEN_SECRET "$(openssl rand -hex 32)"
-  seed_secret SECRETS_MASTER_KEY "$(openssl rand -base64 32)"
   chmod 600 "$REPO_ROOT/.env"
-  log "created .env from .env.example with generated local secrets"
+  log "created .env from .env.example"
   log "  (add real provider keys — Stytch, Modal, model providers — as you need them)"
+fi
+
+# The template ships `replace-me` placeholders for the platform secrets. They are
+# below the services' length floors, so a copied-verbatim .env cannot boot the
+# control plane -- the developer's first `pnpm dev` fails on a variable they were
+# never told to change. Generate them here instead: local-only values, never
+# committed.
+#
+# This runs on every invocation rather than only when .env is created, for the
+# reason the Forgejo token below is re-minted once the stored one stops working:
+# an .env copied from an older template still carries the placeholder, and a
+# re-run is the only thing that can heal it. A value that is no longer a
+# placeholder is left alone -- regenerating a SECRETS_MASTER_KEY that has already
+# wrapped data keys would make every secret under it unreadable.
+#
+# SECRETS_MASTER_KEY is the odd one out: the vault decodes it as base64 of
+# exactly 32 bytes (`openssl rand -base64 32`), while the JWT secrets are hex.
+seeded=""
+seed_placeholder_secret() {
+  # $1 = variable name, $2 = generated value, used only if the current one is
+  # still the shipped placeholder.
+  local name="$1" value="$2" tmp
+  case "$(env_file_value "$name" "$REPO_ROOT/.env")" in
+    replace-me*) ;;
+    *) return 0 ;;
+  esac
+  # Portable in-place edit: BSD sed (macOS) and GNU sed disagree about `-i`, so
+  # write through a temp file. mktemp creates it 0600, which is what .env wants.
+  tmp="$(mktemp)"
+  awk -v n="$name" -v v="$value" \
+    'index($0, n "=") == 1 { print n "=" v; next } { print }' \
+    "$REPO_ROOT/.env" > "$tmp"
+  mv "$tmp" "$REPO_ROOT/.env"
+  seeded="$seeded $name"
+}
+seed_placeholder_secret SESSION_JWT_SECRET "$(openssl rand -hex 32)"
+seed_placeholder_secret SERVICE_TOKEN_SECRET "$(openssl rand -hex 32)"
+seed_placeholder_secret SECRETS_MASTER_KEY "$(openssl rand -base64 32)"
+if [ -n "$seeded" ]; then
+  chmod 600 "$REPO_ROOT/.env"
+  log "generated local values for placeholder secrets:$seeded"
+fi
+
+# Variables the template has gained since this .env was copied from it. Named
+# rather than filled in: .env.example is the catalogue, and appending values to a
+# file the developer may have hand-edited is worse than telling them what is
+# missing. Required-with-no-default variables are why an old .env stops booting.
+env_missing="$(comm -23 \
+  <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$REPO_ROOT/.env.example" | sort -u) \
+  <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$REPO_ROOT/.env" | sort -u) | tr '\n' ' ')"
+if [ -n "${env_missing// /}" ]; then
+  warn ".env is missing variables that .env.example now ships: ${env_missing% }"
+  warn "copy them across — a service that requires one of them will refuse to start"
 fi
 
 # ------------------------------------------------------------------ compose --
@@ -153,8 +191,6 @@ forgejo_user_exists() {
 forgejo_password_works() {
   curl -fs -o /dev/null -u "${FORGEJO_ADMIN_USER}:$1" "${FORGEJO_API}/api/v1/user"
 }
-
-env_file_value() { sed -n "s/^$1=//p" "$2" | head -1; }
 
 curl -fsS "${FORGEJO_API}/api/healthz" >/dev/null ||
   die "Forgejo /api/healthz is not returning 200 on port $FORGEJO_HTTP_PORT"

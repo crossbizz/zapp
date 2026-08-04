@@ -22,7 +22,13 @@ pnpm install
 
 `scripts/dev-up.sh` is idempotent — run it as often as you like. It:
 
-1. copies `.env.example` to `.env` if you don't have one yet;
+1. copies `.env.example` to `.env` if you don't have one yet, then fills the
+   platform secrets (`SESSION_JWT_SECRET`, `SERVICE_TOKEN_SECRET`,
+   `SECRETS_MASTER_KEY`) with generated local values wherever they are still
+   `replace-me` — in an `.env` you already had as well as a new one, which is how
+   an older copy gets healed. A value you set yourself is never overwritten, and
+   variables the template has gained since your `.env` was copied are named in a
+   warning rather than filled in;
 2. starts `infra/docker/docker-compose.dev.yml` and waits for every healthcheck;
 3. creates the MinIO bucket `zapp-artifacts`;
 4. verifies the six LocalStack queues exist;
@@ -121,9 +127,32 @@ placeholder values only. Copy it to `.env` and fill in real keys as each
 milestone needs them (see `AGENTS.md` §10). `.env`, `.env.local.forgejo`, and
 anything else matching `.env.*` are gitignored — never commit real credentials.
 
+Three variables are generated rather than obtained from a vendor:
+`SESSION_JWT_SECRET` and `SERVICE_TOKEN_SECRET` are `openssl rand -hex 32`, and
+the secrets-vault master key `SECRETS_MASTER_KEY` is `openssl rand -base64 32` —
+base64 of exactly 32 bytes, the one value in the file that is not hex. The
+control plane refuses to start on anything else, and it has no default: a vault
+that invented a key would encrypt secrets nothing else could read, and one that
+shared a committed default would encrypt them so that everybody could.
+`dev-up.sh` generates all three, so do this by hand only if you are not using it.
+
+`SECRETS_MASTER_KEY_VERSION` (defaults to 1) and `SECRETS_PREVIOUS_MASTER_KEY`
+(empty) are the master-key rotation pair — leave both as shipped locally. They
+exist so that rotating in staging/prod is a value change rather than a schema
+change; `.env.example` documents how a rotation uses them. Do not regenerate
+`SECRETS_MASTER_KEY` once you have stored secrets under it: their data keys are
+wrapped with it, so a new key leaves the rows undecryptable. Locally the clean
+way out is `down -v` and a fresh `.env`.
+
 ## Troubleshooting
 
 - **`the Docker daemon is not running`** — start Docker Desktop/OrbStack first.
+- **`pnpm dev` exits naming an environment variable** — `Invalid environment:
+  SESSION_JWT_SECRET`, or `SECRETS_MASTER_KEY must be base64 of exactly 32 bytes`.
+  Your `.env` predates that variable or still holds its `replace-me` placeholder;
+  copying `.env.example` happens once, so `.env` does not follow the template when
+  it gains one. Re-run `./scripts/dev-up.sh` — it generates the missing local
+  secrets in place and names anything else the template has added.
 - **A service never turns healthy** — `... logs <service>` shows why; Temporal
   can take ~30s on first boot while it creates its schema.
 - **Forgejo changes in `app.ini` don't apply** — `app.ini` is only *seeded* into
