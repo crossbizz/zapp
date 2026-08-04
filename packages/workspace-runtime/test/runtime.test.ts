@@ -1,7 +1,9 @@
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { ExecutionContract } from '@zapp/contracts';
 import { MemoryWorkspaceRuntime, PathViolationError } from '../src/runtime.js';
 
 async function withWorkspace(
@@ -15,6 +17,38 @@ async function withWorkspace(
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function availablePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('Expected a TCP address');
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    });
+  });
+  return address.port;
+}
+
+function executionContract(command: string, port: number): ExecutionContract {
+  return {
+    version: 1,
+    package_manager: 'pnpm',
+    workspace_root: '.',
+    install: { command: 'true' },
+    develop: { command, port },
+  };
 }
 
 describe('MemoryWorkspaceRuntime path safety', () => {
@@ -58,7 +92,61 @@ describe('MemoryWorkspaceRuntime path safety', () => {
   });
 });
 
+describe('MemoryWorkspaceRuntime git safety', () => {
+  it('rejects git options and paths that can escape the workspace', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await expect(
+        runtime.git({ operation: 'status', args: ['-C', '/outside'] }),
+      ).rejects.toBeInstanceOf(PathViolationError);
+      await expect(
+        runtime.git({ operation: 'diff', args: ['--no-index', '/outside', '/outside'] }),
+      ).rejects.toBeInstanceOf(PathViolationError);
+      await expect(
+        runtime.git({ operation: 'add_commit', paths: ['../outside'], message: 'escape' }),
+      ).rejects.toBeInstanceOf(PathViolationError);
+    });
+  });
+});
+
+describe('MemoryWorkspaceRuntime development server', () => {
+  it('rejects a dev command that exits before its contract port is ready', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const port = await availablePort();
+
+      await expect(
+        runtime.startDevServer(executionContract('zapp-command-that-does-not-exist', port)),
+      ).rejects.toThrow('Development server exited before readiness');
+    });
+  });
+});
+
 describe('MemoryWorkspaceRuntime exec safety', () => {
+  it('yields stdout before the streamed command completes', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const iterator = runtime
+        .execStream({
+          providerWorkspaceId: 'workspace',
+          command: process.execPath,
+          args: [
+            '-e',
+            "process.stdout.write('first'); setTimeout(() => process.stdout.write('second'), 650)",
+          ],
+          timeoutMs: 2_000,
+        })
+        [Symbol.asyncIterator]();
+      const startedAt = performance.now();
+
+      const first = await iterator.next();
+
+      expect(performance.now() - startedAt).toBeLessThan(400);
+      expect(first).toMatchObject({ done: false, value: { stream: 'stdout', data: 'first' } });
+      expect(await iterator.next()).toMatchObject({
+        done: false,
+        value: { stream: 'stdout', data: 'second' },
+      });
+    });
+  });
+
   it('kills a process when its execution timeout elapses', async () => {
     await withWorkspace(async (root, runtime) => {
       const pidFile = join(root, 'timed-out.pid');
@@ -78,6 +166,52 @@ describe('MemoryWorkspaceRuntime exec safety', () => {
     });
   });
 
+  it('kills descendant processes that keep inherited output pipes open after a timeout', async () => {
+    await withWorkspace(async (root, runtime) => {
+      const descendantPidFile = join(root, 'descendant.pid');
+      let descendantPid: number | undefined;
+
+      try {
+        const resultOrTimeout = await Promise.race([
+          runtime.exec({
+            cmd: process.execPath,
+            args: [
+              '-e',
+              `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' }); require('node:fs').writeFileSync(${JSON.stringify(descendantPidFile)}, String(child.pid)); setInterval(() => {}, 1000);`,
+            ],
+            timeoutMs: 500,
+          }),
+          new Promise<'timed out waiting for exec result'>((resolveTimeout) => {
+            setTimeout(() => {
+              resolveTimeout('timed out waiting for exec result');
+            }, 1_500);
+          }),
+        ]);
+
+        expect(resultOrTimeout).not.toBe('timed out waiting for exec result');
+        expect(resultOrTimeout).toMatchObject({ exitCode: 124 });
+        const capturedDescendantPid = Number(await readFile(descendantPidFile, 'utf8'));
+        descendantPid = capturedDescendantPid;
+        expect(() => process.kill(capturedDescendantPid, 0)).toThrow();
+      } finally {
+        if (descendantPid === undefined) {
+          try {
+            descendantPid = Number(await readFile(descendantPidFile, 'utf8'));
+          } catch {
+            // The child did not reach its pid write before a failed setup.
+          }
+        }
+        if (descendantPid !== undefined) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // A killed process has no pid to clean up.
+          }
+        }
+      }
+    });
+  });
+
   it('truncates command output at exactly one MiB', async () => {
     await withWorkspace(async (_root, runtime) => {
       const result = await runtime.exec({
@@ -88,6 +222,20 @@ describe('MemoryWorkspaceRuntime exec safety', () => {
 
       expect(Buffer.byteLength(result.stdout)).toBe(1_024 * 1_024);
       expect(result.stderr).toBe('');
+      expect(result.truncated).toBe(true);
+    });
+  });
+
+  it('keeps truncated UTF-8 output within one MiB without replacement characters', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const result = await runtime.exec({
+        cmd: process.execPath,
+        args: ['-e', "process.stdout.write('x'.repeat(1024 * 1024 - 1) + '€')"],
+        timeoutMs: 1_000,
+      });
+
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(1_024 * 1_024);
+      expect(result.stdout).not.toContain('\uFFFD');
       expect(result.truncated).toBe(true);
     });
   });
