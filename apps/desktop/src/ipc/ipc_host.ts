@@ -1,0 +1,117 @@
+import { registerAppHandlers } from "./handlers/app_handlers";
+import { registerChatHandlers } from "./handlers/chat_handlers";
+import { registerChatStreamHandlers } from "./handlers/chat_stream_handlers";
+import { registerSettingsHandlers } from "./handlers/settings_handlers";
+import { registerShellHandlers } from "./handlers/shell_handler";
+import { registerDependencyHandlers } from "./handlers/dependency_handlers";
+import { registerCustomAppsFolderHandlers } from "./handlers/custom_apps_folder_handlers";
+import { registerConnectionFlowHandlers } from "./handlers/connection_flow_handlers";
+import { registerGithubHandlers } from "./handlers/github_handlers";
+import { registerGithubBranchHandlers } from "./handlers/git_branch_handlers";
+import { registerVercelHandlers } from "./handlers/vercel_handlers";
+import { registerNodeHandlers } from "./handlers/node_handlers";
+import { registerProposalHandlers } from "./handlers/proposal_handlers";
+import { registerDebugHandlers } from "./handlers/debug_handlers";
+import { registerSupabaseHandlers } from "./handlers/supabase_handlers";
+import { registerNeonHandlers } from "./handlers/neon_handlers";
+import { registerLocalModelHandlers } from "./handlers/local_model_handlers";
+import { registerTokenCountHandlers } from "./handlers/token_count_handlers";
+import { registerWindowHandlers } from "./handlers/window_handlers";
+import { registerUploadHandlers } from "./handlers/upload_handlers";
+import { registerVersionHandlers } from "./handlers/version_handlers";
+import { registerLanguageModelHandlers } from "./handlers/language_model_handlers";
+import { registerReleaseNoteHandlers } from "./handlers/release_note_handlers";
+import { registerImportHandlers } from "./handlers/import_handlers";
+import { registerSessionHandlers } from "./handlers/session_handlers";
+import { registerProHandlers } from "./handlers/pro_handlers";
+import { registerContextPathsHandlers } from "./handlers/context_paths_handlers";
+import { registerAppUpgradeHandlers } from "./handlers/app_upgrade_handlers";
+import { registerCapacitorHandlers } from "./handlers/capacitor_handlers";
+import { registerProblemsHandlers } from "./handlers/problems_handlers";
+import { registerAppEnvVarsHandlers } from "./handlers/app_env_vars_handlers";
+import { registerTemplateHandlers } from "./handlers/template_handlers";
+// zapp: pro-removed — was "../pro/main/ipc/handlers/themes_handlers"
+import { registerThemesHandlers } from "@/zapp/pro_stubs/main";
+import { registerPortalHandlers } from "./handlers/portal_handlers";
+import { registerMigrationHandlers } from "./handlers/migration_handlers";
+import { registerPromptHandlers } from "./handlers/prompt_handlers";
+import { registerHelpBotHandlers } from "./handlers/help_bot_handlers";
+import { registerMcpHandlers } from "./handlers/mcp_handlers";
+import { registerSecurityHandlers } from "./handlers/security_handlers";
+// zapp: pro-removed — was "../pro/main/ipc/handlers/visual_editing_handlers"
+//                    and "../pro/main/ipc/handlers/local_agent/agent_tool_handlers"
+import {
+  registerAgentToolHandlers,
+  registerVisualEditingHandlers,
+} from "@/zapp/pro_stubs/main";
+import { registerFreeAgentQuotaHandlers } from "./handlers/free_agent_quota_handlers";
+import { registerFreeModelQuotaHandlers } from "./handlers/free_model_quota_handlers";
+import { registerPlanHandlers } from "./handlers/plan_handlers";
+import { registerMediaHandlers } from "./handlers/media_handlers";
+import { registerImageGenerationHandlers } from "./handlers/image_generation_handlers";
+import { registerMiscHandlers } from "./handlers/misc_handlers";
+import { registerAppBlueprintHandlers } from "./handlers/app_blueprint_handlers";
+import { registerAppCollectionHandlers } from "./handlers/app_collection_handlers";
+import { registerTerminalHandlers } from "./handlers/terminal_handlers";
+import { registerTestsHandlers } from "./handlers/tests_handlers";
+import { registerQueueHandlers } from "./handlers/queue_handlers";
+import { registerUserInputHandlers } from "./handlers/user_input_handlers";
+import { registerFirstPromptHandlers } from "./handlers/first_prompt_handlers";
+
+export function registerIpcHandlers() {
+  // Register all IPC handlers by category
+  registerAppHandlers();
+  registerChatHandlers();
+  registerChatStreamHandlers();
+  registerSettingsHandlers();
+  registerShellHandlers();
+  registerDependencyHandlers();
+  registerCustomAppsFolderHandlers();
+  registerConnectionFlowHandlers();
+  registerGithubHandlers();
+  registerGithubBranchHandlers();
+  registerVercelHandlers();
+  registerNodeHandlers();
+  registerProblemsHandlers();
+  registerProposalHandlers();
+  registerDebugHandlers();
+  registerSupabaseHandlers();
+  registerNeonHandlers();
+  registerLocalModelHandlers();
+  registerTokenCountHandlers();
+  registerWindowHandlers();
+  registerUploadHandlers();
+  registerVersionHandlers();
+  registerLanguageModelHandlers();
+  registerReleaseNoteHandlers();
+  registerImportHandlers();
+  registerSessionHandlers();
+  registerProHandlers();
+  registerContextPathsHandlers();
+  registerAppUpgradeHandlers();
+  registerCapacitorHandlers();
+  registerAppEnvVarsHandlers();
+  registerTemplateHandlers();
+  registerThemesHandlers();
+  registerPortalHandlers();
+  registerMigrationHandlers();
+  registerPromptHandlers();
+  registerHelpBotHandlers();
+  registerMcpHandlers();
+  registerSecurityHandlers();
+  registerVisualEditingHandlers();
+  registerAgentToolHandlers();
+  registerFreeAgentQuotaHandlers();
+  registerFreeModelQuotaHandlers();
+  registerPlanHandlers();
+  registerMediaHandlers();
+  registerImageGenerationHandlers();
+  registerMiscHandlers();
+  registerAppBlueprintHandlers();
+  registerAppCollectionHandlers();
+  registerTerminalHandlers();
+  registerTestsHandlers();
+  registerQueueHandlers();
+  registerUserInputHandlers();
+  registerFirstPromptHandlers();
+}

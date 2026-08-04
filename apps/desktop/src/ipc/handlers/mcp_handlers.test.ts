@@ -1,0 +1,393 @@
+// @vitest-environment node
+//
+// Handler-level tests for the MCP IPC surface. The handlers register
+// themselves via `ipcMain.handle(channel, fn)`. We mock electron so
+// `ipcMain.handle` captures the (channel -> fn) pairs into a map; the
+// tests then invoke captured handlers directly with a mock event +
+// payload, exercising the real handler logic without an Electron
+// process.
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isIpcInvokeEnvelope, unwrapIpcEnvelope } from "@/ipc/contracts/core";
+import { configureTrustedRenderer } from "@/ipc/utils/renderer_security";
+
+// --- ipcMain capture ----------------------------------------------------
+const handlers = new Map<string, (event: unknown, input: unknown) => unknown>();
+
+// --- DB mock (in-memory mcp_servers rows) ------------------------------
+type Row = {
+  id: number;
+  name: string;
+  transport: string;
+  command: string | null;
+  args: unknown;
+  envJson: unknown;
+  headersJson: unknown;
+  url: string | null;
+  enabled: boolean;
+  oauthEnabled: boolean;
+  oauthState: string | null;
+  catalogSlug: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+const dbStore = new Map<number, Row>();
+let lastUpdateTargetId = 0;
+let lastInsertPayload: Record<string, unknown> | null = null;
+
+vi.mock("electron", () => ({
+  ipcMain: {
+    handle: (
+      channel: string,
+      fn: (event: unknown, input: unknown) => unknown,
+    ) => {
+      handlers.set(channel, fn);
+    },
+  },
+  // The createServer client-secret tests call `encryptToString` (in
+  // mcp_oauth_provider), which needs safeStorage.
+  safeStorage: {
+    isEncryptionAvailable: vi.fn(() => true),
+    encryptString: vi.fn((s: string) => Buffer.from(`enc:${s}`, "utf8")),
+  },
+}));
+
+vi.mock("electron-log", () => ({
+  default: {
+    scope: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
+  },
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    update: vi.fn(() => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => ({
+          returning: () => {
+            const existing = dbStore.get(lastUpdateTargetId);
+            const merged = { ...existing, ...values } as Row;
+            if (existing) dbStore.set(existing.id, merged);
+            return Promise.resolve(existing ? [merged] : []);
+          },
+        }),
+      }),
+    })),
+    select: vi.fn(() => ({
+      from: () => {
+        const all = [...dbStore.values()];
+        return Object.assign(Promise.resolve(all), {
+          where: (cond: { value?: unknown; notNull?: boolean }) =>
+            Promise.resolve(
+              cond.notNull
+                ? all.filter((r) => r.catalogSlug !== null)
+                : all.filter((r) => r.catalogSlug === cond.value),
+            ),
+        });
+      },
+    })),
+    insert: vi.fn(() => ({
+      values: (values: Record<string, unknown>) => {
+        const build = () => ({
+          returning: () => {
+            lastInsertPayload = values;
+            // Hand back a synthetic row that looks like what drizzle
+            // would: input values + a numeric id + timestamps. The
+            // handler runs `toMcpServer` on this, so all schema-
+            // required fields must be present.
+            const synthetic: Row = {
+              id: 1000,
+              name: String(values.name ?? "synthetic"),
+              transport: String(values.transport ?? "http"),
+              command: (values.command as string | null) ?? null,
+              args: values.args ?? null,
+              envJson: values.envJson ?? null,
+              headersJson: values.headersJson ?? null,
+              url: (values.url as string | null) ?? null,
+              enabled: Boolean(values.enabled),
+              oauthEnabled: Boolean(values.oauthEnabled),
+              oauthState: (values.oauthState as string | null) ?? null,
+              catalogSlug: (values.catalogSlug as string | null) ?? null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            return Promise.resolve([synthetic]);
+          },
+        });
+        return { ...build(), onConflictDoNothing: () => build() };
+      },
+    })),
+  },
+}));
+
+vi.mock("@/db/schema", () => ({
+  mcpServers: { id: "id" },
+}));
+
+vi.mock("drizzle-orm", () => ({
+  eq: (_col: unknown, value: number) => {
+    lastUpdateTargetId = value;
+    return { _col, value };
+  },
+  isNotNull: (_col: unknown) => ({ notNull: true }),
+}));
+
+let catalogEntries: unknown[] = [];
+vi.mock("@/ipc/shared/remote_mcp_catalog", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getRemoteMcpCatalog: vi.fn(async () => catalogEntries),
+}));
+
+const getClientMock = vi.fn();
+const disposeMock = vi.fn(async () => {});
+vi.mock("@/ipc/utils/mcp_manager", () => ({
+  mcpManager: {
+    getClient: getClientMock,
+    dispose: disposeMock,
+  },
+}));
+
+// Import the module under test last -- the vi.mock factories close
+// over file-scope variables (handlers, getClientMock, ...) that must
+// exist first. A static import would load too early and crash them.
+const handlersModule = await import("@/ipc/handlers/mcp_handlers");
+configureTrustedRenderer({
+  devServerUrl: "http://localhost:5173",
+  packagedRendererUrl: "file:///app/renderer/main_window/index.html",
+});
+handlersModule.registerMcpHandlers();
+
+const rendererFrame = { url: "http://localhost:5173/" };
+const rendererEvent = {
+  sender: { mainFrame: rendererFrame },
+  senderFrame: rendererFrame,
+};
+
+function invoke<T>(channel: string, input: unknown): Promise<T> {
+  const fn = handlers.get(channel);
+  if (!fn) throw new Error(`No handler registered for channel ${channel}`);
+  return Promise.resolve(fn(rendererEvent, input)).then((result) =>
+    isIpcInvokeEnvelope(result) ? unwrapIpcEnvelope(result) : result,
+  ) as Promise<T>;
+}
+
+function seedRow(row: Partial<Row> & { id: number }): void {
+  const full: Row = {
+    id: row.id,
+    name: row.name ?? `srv${row.id}`,
+    transport: row.transport ?? "http",
+    command: row.command ?? null,
+    args: row.args ?? null,
+    envJson: row.envJson ?? null,
+    headersJson: row.headersJson ?? null,
+    url: row.url ?? "https://example.com/mcp",
+    enabled: row.enabled ?? true,
+    oauthEnabled: row.oauthEnabled ?? true,
+    oauthState: row.oauthState ?? null,
+    catalogSlug: row.catalogSlug ?? null,
+    createdAt: row.createdAt ?? new Date(),
+    updatedAt: row.updatedAt ?? new Date(),
+  };
+  dbStore.set(full.id, full);
+}
+
+describe("mcp updateServer handler", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    vi.clearAllMocks();
+  });
+
+  it("disposes the cached MCP client so the next use rebuilds with the new config", async () => {
+    seedRow({ id: 44 });
+    await invoke("mcp:update-server", { id: 44, name: "renamed" });
+    expect(disposeMock).toHaveBeenCalledWith(44);
+  });
+});
+
+describe("mcp createServer handler (client_secret handling)", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    lastInsertPayload = null;
+    vi.clearAllMocks();
+  });
+
+  it("encrypts oauthClientSecret before insert (never persists plaintext)", async () => {
+    await invoke("mcp:create-server", {
+      name: "confidential-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+      oauthClientSecret: "plaintext-secret",
+    });
+
+    expect(lastInsertPayload).not.toBeNull();
+    const stored = lastInsertPayload!.oauthClientSecret;
+    expect(typeof stored).toBe("string");
+    expect(stored).not.toBe("plaintext-secret");
+    expect(stored).not.toContain("plaintext-secret");
+  });
+
+  it("inserts NULL for oauthClientSecret when the user didn't supply one", async () => {
+    await invoke("mcp:create-server", {
+      name: "public-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+    });
+
+    expect(lastInsertPayload).not.toBeNull();
+    expect(lastInsertPayload!.oauthClientSecret).toBeNull();
+  });
+});
+
+describe("mcp createServer (toMcpServer secret-redaction)", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    lastInsertPayload = null;
+    vi.clearAllMocks();
+  });
+
+  it("does NOT include oauthClientSecret in the renderer-bound payload", async () => {
+    // Security boundary: the stored (encrypted) secret must never
+    // reach the renderer. toMcpServer returns only the fields the UI
+    // needs and leaves the secret out entirely.
+    const result = (await invoke("mcp:create-server", {
+      name: "confidential-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+      oauthClientSecret: "secret-value",
+    })) as Record<string, unknown>;
+
+    expect("oauthClientSecret" in result).toBe(false);
+  });
+});
+
+describe("mcp listTools handler", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    vi.clearAllMocks();
+  });
+
+  it("returns an empty list (not a crash) when getClient throws", async () => {
+    // What the user hits while an OAuth server isn't connected:
+    // `mcp_manager.getClient` throws because the provider won't open a
+    // browser without an explicit Connect click. The handler must
+    // catch the throw and return [] so the renderer shows "no tools"
+    // instead of crashing.
+    getClientMock.mockRejectedValueOnce(
+      new Error(
+        "OAuth not currently allowed (interactive consent required; click Connect on the server row).",
+      ),
+    );
+
+    const result = await invoke("mcp:list-tools", 1);
+    expect(result).toEqual({ tools: [], status: "error" });
+  });
+
+  it("returns an empty list when the underlying client.tools() throws", async () => {
+    // Slightly different failure path -- getClient resolves but the
+    // returned client's `tools()` blows up (e.g. transport 401 after
+    // tokens expired AND refresh failed). Same UI contract: no
+    // crash, empty list.
+    const failingTools = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("401 Unauthorized"));
+    getClientMock.mockResolvedValueOnce({ tools: failingTools });
+
+    const result = await invoke("mcp:list-tools", 2);
+    expect(result).toEqual({ tools: [], status: "unauthorized" });
+    expect(failingTools).toHaveBeenCalled();
+  });
+});
+
+describe("mcp catalog handlers", () => {
+  const FIGMA = {
+    slug: "figma",
+    name: "Figma",
+    transport: "http",
+    url: "https://mcp.figma.com/mcp",
+    oauth: { required: true },
+  };
+  const CONTEXT7 = {
+    slug: "context7",
+    name: "Context7",
+    transport: "http",
+    url: "https://mcp.context7.com/mcp",
+    headers: { "X-Test": "1" },
+  };
+
+  beforeEach(() => {
+    dbStore.clear();
+    lastInsertPayload = null;
+    catalogEntries = [FIGMA, CONTEXT7];
+    vi.clearAllMocks();
+  });
+
+  it("lists catalog entries with already-added slugs", async () => {
+    seedRow({ id: 1, catalogSlug: "figma" });
+    seedRow({ id: 2 }); // manual server, no slug
+    const result = await invoke<{ entries: unknown[]; addedSlugs: string[] }>(
+      "mcp:list-catalog",
+      undefined,
+    );
+    expect(result.entries).toHaveLength(2);
+    expect(result.addedSlugs).toEqual(["figma"]);
+  });
+
+  it("adds a catalog entry with oauth enabled and provenance slug", async () => {
+    const created = await invoke<{ catalogSlug: string | null }>(
+      "mcp:add-from-catalog",
+      { slug: "figma" },
+    );
+    expect(created.catalogSlug).toBe("figma");
+    expect(lastInsertPayload).toMatchObject({
+      name: "Figma",
+      transport: "http",
+      url: "https://mcp.figma.com/mcp",
+      enabled: true,
+      oauthEnabled: true,
+      catalogSlug: "figma",
+    });
+  });
+
+  it("maps oauth: none entries to oauthEnabled: false and keeps headers", async () => {
+    await invoke("mcp:add-from-catalog", { slug: "context7" });
+    expect(lastInsertPayload).toMatchObject({
+      oauthEnabled: false,
+      headersJson: { "X-Test": "1" },
+    });
+  });
+
+  it("returns the existing server when the slug was already added", async () => {
+    seedRow({ id: 7, catalogSlug: "figma" });
+    const result = await invoke<{ id: number }>("mcp:add-from-catalog", {
+      slug: "figma",
+    });
+    expect(result.id).toBe(7);
+    expect(lastInsertPayload).toBeNull();
+  });
+
+  it("rejects unknown slugs", async () => {
+    await expect(
+      invoke("mcp:add-from-catalog", { slug: "not-in-catalog" }),
+    ).rejects.toThrow(/Unknown catalog entry/);
+  });
+
+  it("reports a connectivity error when the catalog is unreachable", async () => {
+    // Transient failure after the user already saw a populated catalog:
+    // the fetch now returns []. The add should read as a connectivity
+    // problem, not an unknown slug.
+    catalogEntries = [];
+    await expect(
+      invoke("mcp:add-from-catalog", { slug: "figma" }),
+    ).rejects.toThrow(/Could not reach the plugin catalog/);
+  });
+});

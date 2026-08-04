@@ -1,0 +1,912 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { Loader2, MoreHorizontal, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { ChatSummary } from "@/lib/schemas";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useChats } from "@/hooks/useChats";
+import { useLoadApps } from "@/hooks/useLoadApps";
+import { useSelectChat } from "@/hooks/useSelectChat";
+import { useIsMac } from "@/hooks/useChatModeToggle";
+import {
+  isStreamingByIdAtom,
+  recentViewedChatIdsAtom,
+  selectedChatIdAtom,
+  setRecentViewedChatIdsAtom,
+  pushRecentViewedChatIdAtom,
+  closedChatIdsAtom,
+  pruneClosedChatIdsAtom,
+  sessionOpenedChatIdsAtom,
+  closeMultipleTabsAtom,
+  hydrateChatTabSessionAtom,
+  persistChatTabSessionAtom,
+  groupTabsByAppAtom,
+  type ClosedTabRecord,
+} from "@/atoms/chatAtoms";
+import { useReopenClosedTab } from "@/hooks/useReopenClosedTab";
+import { useStreamFinished } from "@/chat_stream/ChatStreamProvider";
+import { cn } from "@/lib/utils";
+import { AppAvatar } from "@/components/AppAvatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+const MIN_VISIBLE_TAB_WIDTH_PX = 160;
+const TAB_GAP_PX = 4;
+const OVERFLOW_TRIGGER_WIDTH_PX = 36;
+const DEFAULT_UNMEASURED_VISIBLE_TABS = 3;
+const MAX_OVERFLOW_MENU_ITEMS = 8;
+
+/**
+ * Returns an ordered list of chat IDs to display as tabs.
+ *
+ * @param recentViewedChatIds - IDs in the order they were recently viewed
+ * @param chats - All available chats
+ * @param closedChatIds - IDs of explicitly closed tabs
+ * @param sessionOpenedChatIds - IDs of chats opened in the current session.
+ *   If empty, no tabs will be shown (session-scoped behavior). This is intentional:
+ *   tabs only appear for chats explicitly opened during the current app session.
+ */
+export function getOrderedRecentChatIds(
+  recentViewedChatIds: number[],
+  chats: ChatSummary[],
+  closedChatIds: Set<number> = new Set(),
+  sessionOpenedChatIds: Set<number> = new Set(),
+): number[] {
+  if (chats.length === 0) return [];
+
+  const chatIds = new Set(chats.map((chat) => chat.id));
+  const ordered: number[] = [];
+  const seen = new Set<number>();
+
+  // Helper to check if a chat ID should be shown as a tab
+  const canShow = (id: number) =>
+    !seen.has(id) && !closedChatIds.has(id) && sessionOpenedChatIds.has(id);
+
+  for (const chatId of recentViewedChatIds) {
+    if (chatIds.has(chatId) && canShow(chatId)) {
+      ordered.push(chatId);
+      seen.add(chatId);
+    }
+  }
+
+  // Add remaining chats that were opened in this session but not in recentViewedChatIds
+  for (const chat of chats) {
+    if (canShow(chat.id)) {
+      ordered.push(chat.id);
+      seen.add(chat.id);
+    }
+  }
+
+  return ordered;
+}
+
+export function addFinishedChatNotification(
+  notifiedChatIds: Set<number>,
+  finishedChatId: number,
+  selectedChatId: number | null,
+): Set<number> {
+  if (
+    finishedChatId === selectedChatId ||
+    notifiedChatIds.has(finishedChatId)
+  ) {
+    return notifiedChatIds;
+  }
+  const next = new Set(notifiedChatIds);
+  next.add(finishedChatId);
+  return next;
+}
+
+export function getVisibleTabCapacity(
+  containerWidth: number,
+  totalTabs: number,
+  minTabWidth = MIN_VISIBLE_TAB_WIDTH_PX,
+): number {
+  if (containerWidth <= 0 || totalTabs <= 0) return 0;
+
+  const withoutOverflow = Math.max(
+    1,
+    Math.floor((containerWidth + TAB_GAP_PX) / (minTabWidth + TAB_GAP_PX)),
+  );
+
+  if (totalTabs <= withoutOverflow) {
+    return withoutOverflow;
+  }
+
+  const withOverflow = Math.max(
+    1,
+    Math.floor(
+      (containerWidth - OVERFLOW_TRIGGER_WIDTH_PX + TAB_GAP_PX) /
+        (minTabWidth + TAB_GAP_PX),
+    ),
+  );
+
+  return Math.min(withOverflow, totalTabs);
+}
+
+export function applySelectionToOrderedChatIds(
+  orderedChatIds: number[],
+  selectedChatId: number,
+  visibleTabCount: number,
+): number[] {
+  const selectedIndex = orderedChatIds.indexOf(selectedChatId);
+  if (selectedIndex === -1) {
+    // Unknown chat ID — don't modify the order. The caller should
+    // ensure selectedChatId is valid before invoking this function.
+    return orderedChatIds;
+  }
+
+  if (selectedIndex < visibleTabCount) {
+    return orderedChatIds;
+  }
+
+  const nextIds = [...orderedChatIds];
+  nextIds.splice(selectedIndex, 1);
+  nextIds.unshift(selectedChatId);
+  return nextIds;
+}
+
+export function reorderVisibleChatIds(
+  orderedChatIds: number[],
+  visibleTabCount: number,
+  sourceChatId: number,
+  targetChatId: number,
+): number[] {
+  const visibleIds = orderedChatIds.slice(0, visibleTabCount);
+  const sourceIndex = visibleIds.indexOf(sourceChatId);
+  const targetIndex = visibleIds.indexOf(targetChatId);
+
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+    return orderedChatIds;
+  }
+
+  const nextVisible = [...visibleIds];
+  const [movedId] = nextVisible.splice(sourceIndex, 1);
+  nextVisible.splice(targetIndex, 0, movedId);
+
+  return [...nextVisible, ...orderedChatIds.slice(visibleTabCount)];
+}
+
+export function partitionChatsByVisibleCount(
+  orderedChats: ChatSummary[],
+  visibleTabCount: number,
+): { visibleTabs: ChatSummary[]; overflowTabs: ChatSummary[] } {
+  return {
+    visibleTabs: orderedChats.slice(0, visibleTabCount),
+    overflowTabs: orderedChats.slice(visibleTabCount),
+  };
+}
+
+/**
+ * Reorders chat IDs so that tabs for the same app are grouped together.
+ * Within each app group the original relative order is preserved.
+ * App groups are ordered by the position of their first chat in the input.
+ */
+export function groupChatIdsByApp(
+  orderedChatIds: number[],
+  chatsById: Map<number, ChatSummary>,
+): number[] {
+  // Build groups keyed by appId, preserving encounter order via a Map.
+  const groups = new Map<number, number[]>();
+  for (const chatId of orderedChatIds) {
+    const chat = chatsById.get(chatId);
+    const appId = chat?.appId ?? -1;
+    let group = groups.get(appId);
+    if (!group) {
+      group = [];
+      groups.set(appId, group);
+    }
+    group.push(chatId);
+  }
+  // Flatten groups (Map preserves insertion order → first-seen app comes first).
+  return Array.from(groups.values()).flat();
+}
+
+export function getFallbackChatIdAfterClose(
+  tabs: ChatSummary[],
+  closedChatId: number,
+): number | null {
+  const closedIndex = tabs.findIndex((tab) => tab.id === closedChatId);
+  if (closedIndex === -1) return null;
+
+  const remainingTabs = tabs.filter((tab) => tab.id !== closedChatId);
+  if (remainingTabs.length === 0) return null;
+
+  const fallbackIndex = Math.min(closedIndex, remainingTabs.length - 1);
+  return remainingTabs[fallbackIndex]?.id ?? null;
+}
+
+interface ChatTabsProps {
+  selectedChatId: number | null;
+}
+
+export function ChatTabs({ selectedChatId }: ChatTabsProps) {
+  const { t } = useTranslation("chat");
+  const { chats, loading } = useChats(null);
+  const { apps } = useLoadApps();
+  const isStreamingById = useAtomValue(isStreamingByIdAtom);
+  const recentViewedChatIds = useAtomValue(recentViewedChatIdsAtom);
+  const closedChatIds = useAtomValue(closedChatIdsAtom);
+  const sessionOpenedChatIds = useAtomValue(sessionOpenedChatIdsAtom);
+  const groupTabsByApp = useAtomValue(groupTabsByAppAtom);
+  const setGroupTabsByApp = useSetAtom(groupTabsByAppAtom);
+  const setRecentViewedChatIds = useSetAtom(setRecentViewedChatIdsAtom);
+  const pushRecentViewedChatId = useSetAtom(pushRecentViewedChatIdAtom);
+  const pruneClosedChatIds = useSetAtom(pruneClosedChatIdsAtom);
+  const closeMultipleTabs = useSetAtom(closeMultipleTabsAtom);
+  const hydrateChatTabSession = useSetAtom(hydrateChatTabSessionAtom);
+  const persistChatTabSession = useSetAtom(persistChatTabSessionAtom);
+  const setSelectedChatId = useSetAtom(selectedChatIdAtom);
+  const { reopenClosedTab, hasClosedTabs, lastClosedTab } =
+    useReopenClosedTab();
+  const { selectChat } = useSelectChat();
+  const navigate = useNavigate();
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
+  const isMac = useIsMac();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [draggingChatId, setDraggingChatId] = useState<number | null>(null);
+  const [notifiedChatIds, setNotifiedChatIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const hasHydratedTabSessionRef = useRef(false);
+  const [hasHydratedTabSession, setHasHydratedTabSession] = useState(false);
+
+  const chatsById = useMemo(
+    () => new Map(chats.map((chat) => [chat.id, chat])),
+    [chats],
+  );
+
+  // Prune stale IDs from closedChatIds when the chat list changes
+  const chatIdSet = useMemo(() => new Set(chats.map((c) => c.id)), [chats]);
+  useEffect(() => {
+    if (loading || hasHydratedTabSessionRef.current) {
+      return;
+    }
+
+    hasHydratedTabSessionRef.current = true;
+    const restoredSession = hydrateChatTabSession(chatIdSet);
+    setHasHydratedTabSession(true);
+    if (
+      selectedChatId === null &&
+      pathname === "/" &&
+      restoredSession.selectedChatId !== null
+    ) {
+      const restoredChat = chatsById.get(restoredSession.selectedChatId);
+      if (restoredChat) {
+        selectChat({
+          chatId: restoredChat.id,
+          appId: restoredChat.appId,
+          preserveTabOrder: true,
+        });
+      }
+    }
+  }, [
+    chatIdSet,
+    chatsById,
+    hydrateChatTabSession,
+    loading,
+    pathname,
+    selectedChatId,
+    selectChat,
+  ]);
+
+  useEffect(() => {
+    if (!hasHydratedTabSession) {
+      return;
+    }
+
+    pruneClosedChatIds(chatIdSet);
+  }, [chatIdSet, hasHydratedTabSession, pruneClosedChatIds]);
+
+  useEffect(() => {
+    if (!hasHydratedTabSession) {
+      return;
+    }
+
+    persistChatTabSession();
+  }, [
+    closedChatIds,
+    hasHydratedTabSession,
+    persistChatTabSession,
+    recentViewedChatIds,
+    selectedChatId,
+    sessionOpenedChatIds,
+  ]);
+
+  const appById = useMemo(
+    () => new Map(apps.map((app) => [app.id, app])),
+    [apps],
+  );
+
+  const orderedChatIds = useMemo(() => {
+    const base = getOrderedRecentChatIds(
+      recentViewedChatIds,
+      chats,
+      closedChatIds,
+      sessionOpenedChatIds,
+    );
+    // When grouping is enabled, re-bucket by app on every render so newly
+    // opened chats automatically join their app's existing group.
+    return groupTabsByApp ? groupChatIdsByApp(base, chatsById) : base;
+  }, [
+    recentViewedChatIds,
+    chats,
+    closedChatIds,
+    sessionOpenedChatIds,
+    groupTabsByApp,
+    chatsById,
+  ]);
+
+  const orderedChats = useMemo(
+    () =>
+      orderedChatIds
+        .map((chatId) => chatsById.get(chatId))
+        .filter((chat): chat is ChatSummary => chat !== undefined),
+    [orderedChatIds, chatsById],
+  );
+
+  const visibleTabCapacity = useMemo(
+    () => getVisibleTabCapacity(containerWidth, orderedChats.length),
+    [containerWidth, orderedChats.length],
+  );
+
+  const visibleTabCount =
+    visibleTabCapacity > 0
+      ? visibleTabCapacity
+      : Math.min(orderedChats.length, DEFAULT_UNMEASURED_VISIBLE_TABS);
+
+  const { visibleTabs, overflowTabs } = useMemo(
+    () => partitionChatsByVisibleCount(orderedChats, visibleTabCount),
+    [orderedChats, visibleTabCount],
+  );
+  const overflowTabsForMenu = useMemo(
+    () => overflowTabs.slice(0, MAX_OVERFLOW_MENU_ITEMS),
+    [overflowTabs],
+  );
+
+  // Re-run when orderedChats becomes non-empty so the ResizeObserver attaches
+  // after the container div renders (it returns null when there are no chats).
+  const hasChats = orderedChats.length > 0;
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+
+    const updateWidth = () => {
+      const measuredWidth =
+        node.getBoundingClientRect().width ||
+        node.clientWidth ||
+        node.parentElement?.getBoundingClientRect().width ||
+        node.parentElement?.clientWidth ||
+        0;
+      setContainerWidth(measuredWidth);
+    };
+
+    // Measure once on next frame to avoid early 0-width reads during mount/layout.
+    const frameId = window.requestAnimationFrame(updateWidth);
+    updateWidth();
+
+    const observer = new ResizeObserver(() => {
+      updateWidth();
+    });
+    observer.observe(node);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
+  }, [hasChats]);
+
+  useStreamFinished(({ chatId }) => {
+    setNotifiedChatIds((current) =>
+      addFinishedChatNotification(current, chatId, selectedChatId),
+    );
+  });
+
+  // Clear notification for the currently viewed tab.
+  useEffect(() => {
+    if (selectedChatId === null) return;
+    setNotifiedChatIds((current) => {
+      if (!current.has(selectedChatId)) return current;
+      const next = new Set(current);
+      next.delete(selectedChatId);
+      return next;
+    });
+  }, [selectedChatId]);
+
+  const clearNotification = useCallback((chatId: number) => {
+    setNotifiedChatIds((prev) => {
+      if (!prev.has(chatId)) return prev;
+      const next = new Set(prev);
+      next.delete(chatId);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (
+      selectedChatId === null ||
+      !chatsById.has(selectedChatId) ||
+      containerWidth <= 0
+    ) {
+      return;
+    }
+
+    // If the selected chat was previously closed, re-open it as a tab.
+    // This prevents an infinite loop where applySelectionToOrderedChatIds
+    // would try to insert an ID that getOrderedRecentChatIds filters out.
+    if (closedChatIds.has(selectedChatId)) {
+      pushRecentViewedChatId(selectedChatId);
+      return;
+    }
+
+    const nextIds = applySelectionToOrderedChatIds(
+      orderedChatIds,
+      selectedChatId,
+      visibleTabCount,
+    );
+
+    if (!isSameIdOrder(orderedChatIds, nextIds)) {
+      setRecentViewedChatIds(nextIds);
+    }
+  }, [
+    chatsById,
+    closedChatIds,
+    containerWidth,
+    orderedChatIds,
+    pushRecentViewedChatId,
+    selectedChatId,
+    setRecentViewedChatIds,
+    visibleTabCount,
+  ]);
+
+  const handleTabClick = (chat: ChatSummary, fromOverflow = false) => {
+    if (fromOverflow) {
+      const nextIds = applySelectionToOrderedChatIds(
+        orderedChatIds,
+        chat.id,
+        visibleTabCount,
+      );
+      if (!isSameIdOrder(orderedChatIds, nextIds)) {
+        setRecentViewedChatIds(nextIds);
+      }
+    }
+
+    clearNotification(chat.id);
+
+    selectChat({
+      chatId: chat.id,
+      appId: chat.appId,
+      preserveTabOrder: true,
+    });
+  };
+
+  const handleCloseTab = (chatId: number) => {
+    const fallbackChatId = getFallbackChatIdAfterClose(orderedChats, chatId);
+    closeTabsAndClearNotifications([chatId], fallbackChatId ?? undefined);
+
+    if (fallbackChatId === null && selectedChatId === chatId) {
+      setSelectedChatId(null);
+      navigate({ to: "/" });
+    }
+  };
+
+  // Helper to close multiple tabs and optionally switch to a fallback
+  const closeTabsAndClearNotifications = useCallback(
+    (idsToClose: number[], fallbackChatId?: number) => {
+      if (idsToClose.length === 0) return;
+
+      for (const id of idsToClose) {
+        clearNotification(id);
+      }
+
+      const records: ClosedTabRecord[] = idsToClose
+        .map((id) => {
+          const chat = chatsById.get(id);
+          return chat
+            ? { chatId: chat.id, appId: chat.appId, title: chat.title }
+            : null;
+        })
+        .filter((record): record is ClosedTabRecord => record !== null);
+
+      closeMultipleTabs(records);
+
+      // Switch to fallback when a fallback is provided and either there is
+      // no selected chat (null) or the currently selected chat is being closed.
+      if (
+        fallbackChatId !== undefined &&
+        (selectedChatId === null || idsToClose.includes(selectedChatId ?? -1))
+      ) {
+        const fallbackTab = chatsById.get(fallbackChatId);
+        if (fallbackTab) {
+          selectChat({
+            chatId: fallbackTab.id,
+            appId: fallbackTab.appId,
+            preserveTabOrder: true,
+          });
+        }
+      }
+    },
+    [
+      clearNotification,
+      closeMultipleTabs,
+      selectedChatId,
+      chatsById,
+      selectChat,
+    ],
+  );
+
+  const handleCloseOtherTabs = (keepChatId: number) => {
+    const idsToClose = orderedChatIds.filter((id) => id !== keepChatId);
+    // Always switch to the kept tab if we're not already on it
+    const fallback = selectedChatId !== keepChatId ? keepChatId : undefined;
+    closeTabsAndClearNotifications(idsToClose, fallback);
+  };
+
+  const handleCloseTabsToRight = (chatId: number) => {
+    const chatIndex = orderedChatIds.indexOf(chatId);
+    if (chatIndex === -1) return;
+
+    const idsToClose = orderedChatIds.slice(chatIndex + 1);
+    // Only switch to this chat if the selected one is being closed
+    const fallback =
+      selectedChatId !== null && idsToClose.includes(selectedChatId)
+        ? chatId
+        : undefined;
+    closeTabsAndClearNotifications(idsToClose, fallback);
+  };
+
+  const handleToggleGroupByApp = () => {
+    setGroupTabsByApp((prev) => !prev);
+  };
+
+  // Check whether tabs span more than one app (used to enable/disable grouping)
+  const hasMultipleApps = useMemo(() => {
+    const appIds = new Set<number>();
+    for (const chatId of orderedChatIds) {
+      const chat = chatsById.get(chatId);
+      if (chat) appIds.add(chat.appId);
+      if (appIds.size > 1) return true;
+    }
+    return false;
+  }, [orderedChatIds, chatsById]);
+
+  if (orderedChats.length === 0) return null;
+
+  return (
+    <TooltipProvider delay={500}>
+      <div ref={containerRef} className="flex min-w-0 items-end gap-1 px-2">
+        <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+          {visibleTabs.map((chat) => {
+            const isActive = selectedChatId === chat.id;
+            const title = chat.title?.trim() || t("newChat");
+            const app = appById.get(chat.appId);
+            const appName = app?.name ?? `App ${chat.appId}`;
+            const titleExcerpt = getChatTitleExcerpt(title);
+            const isDragging = draggingChatId === chat.id;
+            const inProgress = isStreamingById.get(chat.id) === true;
+            const hasNotification = !inProgress && notifiedChatIds.has(chat.id);
+
+            const tabIndex = orderedChatIds.indexOf(chat.id);
+            const hasTabsToRight =
+              tabIndex !== -1 && tabIndex < orderedChatIds.length - 1;
+            const hasOtherTabs = orderedChatIds.length > 1;
+
+            return (
+              <ContextMenu key={chat.id}>
+                <ContextMenuTrigger>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <div
+                          draggable
+                          onAuxClick={(event) => {
+                            // Middle-click (button 1) to close tab
+                            if (event.button === 1) {
+                              event.preventDefault();
+                              handleCloseTab(chat.id);
+                            }
+                          }}
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData(
+                              "text/plain",
+                              String(chat.id),
+                            );
+                            setDraggingChatId(chat.id);
+                          }}
+                          onDragEnd={() => setDraggingChatId(null)}
+                          onDragOver={(event) => {
+                            if (
+                              draggingChatId === null ||
+                              draggingChatId === chat.id
+                            ) {
+                              return;
+                            }
+                            event.preventDefault();
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            if (
+                              draggingChatId === null ||
+                              draggingChatId === chat.id
+                            ) {
+                              return;
+                            }
+
+                            const nextIds = reorderVisibleChatIds(
+                              orderedChatIds,
+                              visibleTabs.length,
+                              draggingChatId,
+                              chat.id,
+                            );
+                            if (!isSameIdOrder(orderedChatIds, nextIds)) {
+                              // Persist the manual order and drop out of grouped
+                              // mode — a hand-arranged order wins over auto-grouping.
+                              setRecentViewedChatIds(nextIds);
+                              setGroupTabsByApp(false);
+                            }
+                            setDraggingChatId(null);
+                          }}
+                          className={cn(
+                            "no-app-region-drag group relative flex h-8 min-w-[160px] max-w-52 items-center gap-1 px-2 py-0.5",
+                            isActive
+                              ? "z-10 rounded-t-md rounded-b-none border border-b-0 border-border bg-background text-foreground"
+                              : "rounded-md bg-transparent text-muted-foreground hover:bg-muted/70",
+                            isDragging && "opacity-60",
+                          )}
+                        />
+                      }
+                    >
+                      <AppAvatar
+                        appId={chat.appId}
+                        name={appName}
+                        className="h-4 w-4 rounded-sm text-[8px]"
+                      />
+                      {inProgress && (
+                        <span
+                          className="flex items-center text-purple-600"
+                          aria-label={t("chatInProgress")}
+                          title={t("chatInProgress")}
+                        >
+                          <Loader2 size={12} className="animate-spin" />
+                        </span>
+                      )}
+                      {hasNotification && (
+                        <span
+                          className="flex items-center"
+                          aria-label={t("newActivity")}
+                          title={t("newActivity")}
+                        >
+                          <span className="h-2 w-2 rounded-full bg-blue-500" />
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return;
+                          handleTabClick(chat);
+                        }}
+                        onClick={(event) => {
+                          if (event.detail !== 0) return;
+                          handleTabClick(chat);
+                        }}
+                        className="min-w-0 flex-1 text-left rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-current={isActive ? "page" : undefined}
+                      >
+                        <div className="flex min-w-0 flex-col justify-center text-xs">
+                          <span
+                            className={cn(
+                              "truncate leading-3",
+                              isActive
+                                ? "font-semibold text-foreground"
+                                : "font-medium text-foreground/60",
+                            )}
+                          >
+                            {appName}
+                          </span>
+                          <span
+                            className={cn(
+                              "truncate text-[11px] leading-3.5",
+                              isActive
+                                ? "text-muted-foreground"
+                                : "text-muted-foreground/70",
+                            )}
+                          >
+                            {title}
+                          </span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCloseTab(chat.id);
+                        }}
+                        className={cn(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                          isActive
+                            ? "text-muted-foreground hover:bg-muted hover:text-foreground"
+                            : "opacity-0 group-hover:opacity-100 hover:bg-background/60 focus-visible:opacity-100",
+                        )}
+                        aria-label={t("closeChatTab", { title })}
+                      >
+                        <X size={12} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="bottom"
+                      align="start"
+                      sideOffset={6}
+                      className="max-w-80 !rounded-lg !border !border-border !bg-popover !px-3.5 !py-2.5 !text-popover-foreground !shadow-lg [&>:last-child]:!hidden"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[11px] leading-4 font-semibold">
+                          {appName}
+                        </div>
+                        <div className="mt-0.5 text-[11px] leading-4 break-words opacity-70">
+                          {titleExcerpt}
+                        </div>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem onClick={() => handleCloseTab(chat.id)}>
+                    {t("closeTab")}
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    onClick={() => handleCloseOtherTabs(chat.id)}
+                    disabled={!hasOtherTabs}
+                  >
+                    {t("closeOtherTabs")}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onClick={() => handleCloseTabsToRight(chat.id)}
+                    disabled={!hasTabsToRight}
+                  >
+                    {t("closeTabsToRight")}
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuCheckboxItem
+                    checked={groupTabsByApp}
+                    onCheckedChange={handleToggleGroupByApp}
+                    disabled={!hasMultipleApps && !groupTabsByApp}
+                  >
+                    {t("groupTabsByApp")}
+                  </ContextMenuCheckboxItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    onClick={reopenClosedTab}
+                    disabled={!hasClosedTabs}
+                    title={t("reopenClosedTabTooltip")}
+                  >
+                    {hasClosedTabs && lastClosedTab?.title
+                      ? t("reopenClosedTabWithTitle", {
+                          title: lastClosedTab.title,
+                        })
+                      : t("reopenClosedTab")}
+                    <ContextMenuShortcut title={t("reopenClosedTabTooltip")}>
+                      {isMac ? "⇧⌘T" : "Ctrl+⇧+T"}
+                    </ContextMenuShortcut>
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            );
+          })}
+        </div>
+
+        {overflowTabs.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className="no-app-region-drag flex h-7 w-8 items-center justify-center rounded-md border border-transparent bg-muted/50 text-muted-foreground hover:bg-muted"
+              aria-label={t("openOverflowTabs", {
+                count: overflowTabs.length,
+              })}
+            >
+              <MoreHorizontal size={14} />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              {overflowTabsForMenu.map((chat) => {
+                const title = chat.title?.trim() || t("newChat");
+                const appName =
+                  appById.get(chat.appId)?.name ?? `App ${chat.appId}`;
+                const inProgress = isStreamingById.get(chat.id) === true;
+                const hasNotification =
+                  !inProgress && notifiedChatIds.has(chat.id);
+                return (
+                  <DropdownMenuItem
+                    key={chat.id}
+                    onClick={() => handleTabClick(chat, true)}
+                    onAuxClick={(event) => {
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        handleCloseTab(chat.id);
+                      }
+                    }}
+                    className="flex items-center gap-2"
+                  >
+                    <AppAvatar
+                      appId={chat.appId}
+                      name={appName}
+                      className="h-5 w-5 rounded text-[9px]"
+                    />
+                    {inProgress && (
+                      <span
+                        className="flex items-center text-purple-600"
+                        aria-label={t("chatInProgress")}
+                        title={t("chatInProgress")}
+                      >
+                        <Loader2 size={12} className="animate-spin" />
+                      </span>
+                    )}
+                    {hasNotification && (
+                      <span
+                        className="flex items-center"
+                        aria-label={t("newActivity")}
+                        title={t("newActivity")}
+                      >
+                        <span className="h-2 w-2 rounded-full bg-blue-500" />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs leading-3.5 font-bold">
+                        {appName}
+                      </div>
+                      <div className="truncate text-xs leading-4">{title}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleCloseTab(chat.id);
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      aria-label={t("closeChatTab", { title })}
+                    >
+                      <X size={12} />
+                    </button>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function isSameIdOrder(left: number[], right: number[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function getChatTitleExcerpt(title: string, maxLength = 140): string {
+  if (title.length <= maxLength) return title;
+  return `${title.slice(0, maxLength - 3)}...`;
+}

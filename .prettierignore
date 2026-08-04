@@ -5,3 +5,5 @@ AGENTS.md
 CLAUDE.md
 pnpm-lock.yaml
 .superpowers/
+# Vendored Dyad fork (MAC-1) — keep upstream formatting for clean merges.
+apps/desktop/
