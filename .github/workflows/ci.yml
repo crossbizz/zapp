@@ -44,16 +44,32 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # @zapp/desktop is the vendored Electron app; its scripts are not wired
+      # into the shared toolchain yet (it has no lint/typecheck/build/test
+      # scripts, it uses ts/lint:oxlint/test:unit), so it is excluded from the
+      # default matrix. The exclusion must be presence-guarded: turbo hard-errors
+      # ("No package found with name '@zapp/desktop' in workspace") on a name
+      # filter for a package that is not in the workspace -- including a
+      # negation filter -- so a hard-coded --filter breaks every checkout that
+      # predates the vendored app. Emits an empty string when it is absent, so
+      # the expansion below disappears entirely rather than passing an empty
+      # argument to turbo.
+      - name: Resolve turbo filters
+        id: filters
+        run: |
+          if [ -f apps/desktop/package.json ]; then
+            filter="--filter=!@zapp/desktop"
+          else
+            filter=""
+          fi
+          echo "desktop=${filter}" >> "$GITHUB_OUTPUT"
+          echo "desktop filter: [${filter}]"
+
       # One turbo invocation for all four tasks so the whole thing is scheduled
       # as a single DAG (typecheck/test wait only on the builds they need,
       # instead of four sequential full passes).
-      #
-      # @zapp/desktop is the vendored Electron app; its scripts are not wired
-      # into the shared toolchain yet (it has no lint/typecheck/build/test
-      # scripts, it uses ts/lint:oxlint/test:unit), so it is filtered out of the
-      # default matrix. Drop the filter once its scripts are normalised.
       - name: Lint, typecheck, build, test
-        run: pnpm turbo run lint typecheck build test --filter='!@zapp/desktop'
+        run: pnpm turbo run lint typecheck build test ${{ steps.filters.outputs.desktop }}
 
   integration:
     name: integration tests
@@ -107,8 +123,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Presence-guarded for the same reason as the checks job above.
+      - name: Resolve turbo filters
+        id: filters
+        run: |
+          if [ -f apps/desktop/package.json ]; then
+            filter="--filter=!@zapp/desktop"
+          else
+            filter=""
+          fi
+          echo "desktop=${filter}" >> "$GITHUB_OUTPUT"
+          echo "desktop filter: [${filter}]"
+
       # No package defines test:integration yet, so this is a green no-op until
       # FND-5/FND-6 land their suites. test:integration is cache:false in
       # turbo.json, so these never come back from cache.
       - name: Integration tests
-        run: pnpm turbo run test:integration --filter='!@zapp/desktop'
+        run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }}
