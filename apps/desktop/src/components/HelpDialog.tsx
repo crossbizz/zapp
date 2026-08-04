@@ -572,7 +572,7 @@ ${formatLogsSection(debugInfo)}
               <span className="text-sm font-semibold">Non-AI issues</span>
             </div>
             <p className="text-sm text-muted-foreground">
-              Includes error logs to troubleshoot non-AI issues with Dyad (UI
+              Includes error logs to troubleshoot non-AI issues with Zapp (UI
               bugs, crashes, setup problems, etc.).
             </p>
             <Button

@@ -1235,7 +1235,7 @@ function EnableTestingScreen({
         Enable testing for this app
       </h3>
       <p className="text-sm text-muted-foreground max-w-sm mb-5">
-        Let Dyad write and run end-to-end tests that drive your app like a real
+        Let Zapp write and run end-to-end tests that drive your app like a real
         user. Tests are a starting point you can review, edit, and re-run.
       </p>
 
@@ -1257,8 +1257,8 @@ function EnableTestingScreen({
             {hasSupabaseIsolation
               ? "Tests run as an isolated test user under Row-Level Security, but RLS may not cover every table. We strongly recommend enabling data backups before running tests, in case they do something unintended."
               : hasManagedDatabase
-                ? "Dyad can't isolate this database in the current setup. These tests can create, update, or delete current data, so we strongly recommend enabling data backups before running them."
-                : "These tests can create, update, or delete real data, and Dyad can't isolate a custom or non-database backend. We strongly recommend enabling data backups before running tests, in case they do something unintended."}
+                ? "Zapp can't isolate this database in the current setup. These tests can create, update, or delete current data, so we strongly recommend enabling data backups before running them."
+                : "These tests can create, update, or delete real data, and Zapp can't isolate a custom or non-database backend. We strongly recommend enabling data backups before running tests, in case they do something unintended."}
           </span>
         </div>
       )}

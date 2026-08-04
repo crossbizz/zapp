@@ -222,7 +222,7 @@ export function useNotificationHandler() {
             ? ` from "${params.sourceLabel}"`
             : "";
           showWarning(
-            `"${params.toolName}"${target} needs your approval. Enable notifications for Dyad in your operating system's notification settings.`,
+            `"${params.toolName}"${target} needs your approval. Enable notifications for Zapp in your operating system's notification settings.`,
           );
         }
         return;

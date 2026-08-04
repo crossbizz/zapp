@@ -153,7 +153,7 @@ function appendBestEffortPnpmRebuild(
 
 function getDefaultCloudSandboxErrorMessage(status: number): string {
   if (status === 401 || status === 403) {
-    return "Dyad couldn’t authorize the cloud sandbox request. Please try again.";
+    return "Zapp couldn’t authorize the cloud sandbox request. Please try again.";
   }
 
   if (status === 404) {
@@ -161,11 +161,11 @@ function getDefaultCloudSandboxErrorMessage(status: number): string {
   }
 
   if (status === 429) {
-    return "Dyad is rate limiting cloud sandbox requests right now. Please try again.";
+    return "Zapp is rate limiting cloud sandbox requests right now. Please try again.";
   }
 
   if (status >= 500) {
-    return "Dyad’s cloud sandbox service is temporarily unavailable. Please try again.";
+    return "Zapp’s cloud sandbox service is temporarily unavailable. Please try again.";
   }
 
   return `Cloud sandbox request failed with ${status}.`;

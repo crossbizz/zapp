@@ -74,7 +74,7 @@ export function formatCloudSandboxError(error: unknown) {
     case "sandbox_insufficient_credits":
       return "You need at least 1 credit available to start a cloud sandbox.";
     case "sandbox_billing_unavailable":
-      return "Dyad couldn’t verify sandbox billing right now. Please try again.";
+      return "Zapp couldn’t verify sandbox billing right now. Please try again.";
     case "sandbox_credits_exhausted":
       return "This cloud sandbox stopped because your credits ran out.";
     default:
@@ -82,13 +82,13 @@ export function formatCloudSandboxError(error: unknown) {
         return "This cloud sandbox is no longer available.";
       }
       if (error.status === 401 || error.status === 403) {
-        return "Dyad couldn’t authorize the cloud sandbox request. Please try again.";
+        return "Zapp couldn’t authorize the cloud sandbox request. Please try again.";
       }
       if (error.status === 429) {
-        return "Dyad is rate limiting cloud sandbox requests right now. Please try again.";
+        return "Zapp is rate limiting cloud sandbox requests right now. Please try again.";
       }
       if (typeof error.status === "number" && error.status >= 500) {
-        return "Dyad’s cloud sandbox service is temporarily unavailable. Please try again.";
+        return "Zapp’s cloud sandbox service is temporarily unavailable. Please try again.";
       }
       return error.message;
   }
@@ -311,7 +311,7 @@ function notifyPnpmVersionMigrationAvailable({
     if (!pnpmVersionMigrationNotifiedAppIds.has(appId)) {
       safeSend(event.sender, "app:output", {
         type: "stdout",
-        message: `[dyad] This pnpm app needs a pnpm ${managedMajor} migration (pre-9 lockfile or pnpm <= 8 pin). Dyad already runs pnpm ${managedMajor}, so deploys, CI, and teammates' installs can drift without the matching project pin. Open App Details -> App Upgrades and apply "Migrate to pnpm ${managedMajor}".`,
+        message: `[dyad] This pnpm app needs a pnpm ${managedMajor} migration (pre-9 lockfile or pnpm <= 8 pin). Zapp already runs pnpm ${managedMajor}, so deploys, CI, and teammates' installs can drift without the matching project pin. Open App Details -> App Upgrades and apply "Migrate to pnpm ${managedMajor}".`,
         appId,
       });
       pnpmVersionMigrationNotifiedAppIds.add(appId);

@@ -145,7 +145,7 @@ export function ContextFilesPicker() {
                   <TooltipContent className="max-w-[300px]">
                     {isSmartContextEnabled ? (
                       <p>
-                        With Smart Context, Dyad uses the most relevant files as
+                        With Smart Context, Zapp uses the most relevant files as
                         context.
                       </p>
                     ) : (

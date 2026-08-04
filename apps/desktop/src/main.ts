@@ -388,7 +388,7 @@ export async function onReady() {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox(
       "Database Migration Failed",
-      `Dyad could not initialize its local database. ${message}`,
+      `Zapp could not initialize its local database. ${message}`,
     );
     app.quit();
     return;

@@ -401,7 +401,7 @@ async function revertCodebaseToVersion({
       `Preserving dirty tree in a checkpoint commit before restoring app ${appId}. ` +
         `User-visible uncommitted file(s): ${preservedFiles.length}` +
         (preservedUserVisibleFiles ? ` (${preservedUserVisibleFiles})` : "") +
-        ". Dyad-managed runtime files may also be included in the checkpoint.",
+        ". Zapp-managed runtime files may also be included in the checkpoint.",
     );
     await gitAddAll({ path: appPath });
     const checkpointCommit = await gitCommit({

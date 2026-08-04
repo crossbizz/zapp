@@ -189,35 +189,35 @@ function scheduleManagedPnpmInstall(currentPnpmVersion: string | null): void {
     process.env.DYAD_SKIP_MANAGED_PNPM_INSTALL === "true"
   ) {
     logger.info(
-      "Skipping implicit Dyad-managed pnpm install (DYAD_SKIP_MANAGED_PNPM_INSTALL).",
+      "Skipping implicit Zapp-managed pnpm install (DYAD_SKIP_MANAGED_PNPM_INSTALL).",
     );
     return;
   }
   if (managedPnpmInstallPromise) {
-    logger.info("Dyad-managed pnpm install is already in progress.");
+    logger.info("Zapp-managed pnpm install is already in progress.");
     return;
   }
   if (managedPnpmImplicitInstallFailed) {
     logger.info(
-      "Skipping implicit Dyad-managed pnpm install because it already failed this session.",
+      "Skipping implicit Zapp-managed pnpm install because it already failed this session.",
     );
     return;
   }
 
   if (currentPnpmVersion) {
     logger.info(
-      `Existing pnpm ${currentPnpmVersion} is older than ${PNPM_MINIMUM_RELEASE_AGE_VERSION}; installing Dyad-managed pnpm in the background.`,
+      `Existing pnpm ${currentPnpmVersion} is older than ${PNPM_MINIMUM_RELEASE_AGE_VERSION}; installing Zapp-managed pnpm in the background.`,
     );
   } else {
     logger.info(
-      "pnpm not found; installing Dyad-managed pnpm in the background.",
+      "pnpm not found; installing Zapp-managed pnpm in the background.",
     );
   }
 
   void getManagedPnpmInstallPromise()
     .then((managedPnpmVersion) => {
       managedPnpmImplicitInstallFailed = false;
-      logger.info(`Installed Dyad-managed pnpm ${managedPnpmVersion}.`);
+      logger.info(`Installed Zapp-managed pnpm ${managedPnpmVersion}.`);
     })
     .catch((error) => {
       managedPnpmImplicitInstallFailed = true;

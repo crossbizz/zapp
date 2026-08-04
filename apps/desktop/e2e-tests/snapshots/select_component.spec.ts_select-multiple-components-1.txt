@@ -21,7 +21,7 @@ Snippet:
 ```
     <div className="p-4 text-center">
       <a // <-- EDIT HERE
-        href="https://www.dyad.sh/"
+        href="https://zapp.build/"
         target="_blank"
         rel="noopener noreferrer"
 ```

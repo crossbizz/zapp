@@ -371,7 +371,7 @@ export function FirstPromptProvider({
             <DialogDescription>
               {hasConfiguredProvider
                 ? "Change how Zapp accesses AI."
-                : "Choose how Dyad should access AI before generating your app."}
+                : "Choose how Zapp should access AI before generating your app."}
             </DialogDescription>
           </DialogHeader>
           <SetupBanner variant="dialog" forceShow />

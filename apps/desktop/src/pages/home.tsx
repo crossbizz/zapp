@@ -187,7 +187,7 @@ export default function HomePage() {
               What do you want to build?
             </h1>
             <p className="mx-auto mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-              Describe your idea. Dyad will turn it into a working app.
+              Describe your idea. Zapp will turn it into a working app.
             </p>
             <div className="mt-4 flex justify-center">
               <ImportAppButton

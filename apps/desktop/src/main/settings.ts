@@ -943,7 +943,7 @@ function readSettingsForWrite(filePath: string): {
     logger.error("Existing settings file is unreadable:", error);
     notifyRendererError({
       message:
-        "Dyad could not read your existing settings file, so it fell back to default settings.",
+        "Zapp could not read your existing settings file, so it fell back to default settings.",
       action: {
         label: "Read restore docs",
         url: RESTORE_SETTINGS_DOCS_URL,
