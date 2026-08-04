@@ -1,0 +1,197 @@
+# zapp.build — local development stack (FND-7).
+#
+# Start everything with `./scripts/dev-up.sh` (compose up + bootstrap), or run
+# compose directly:
+#
+#   docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml up -d --wait
+#
+# Every credential in this file is a throwaway local-only value. Nothing here is
+# ever used outside docker-compose, and no real secret belongs in this file.
+#
+# Host ports match docs/dev-setup.md. Each one can be overridden when it clashes
+# with something else on your machine, e.g. `ZAPP_LOCALSTACK_PORT=4567 ./scripts/dev-up.sh`.
+# Ports are bound to 127.0.0.1 so the dev stack is never exposed on your LAN.
+
+name: zapp-dev
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zapp
+      POSTGRES_PASSWORD: zapp
+      POSTGRES_DB: zapp
+      # Temporal's auto-setup creates its own `temporal` / `temporal_visibility`
+      # databases on this instance using the superuser above.
+      POSTGRES_INITDB_ARGS: --data-checksums
+    ports:
+      - "127.0.0.1:${ZAPP_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zapp -d zapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${ZAPP_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  # Internal Git server (PRD §Forgejo). app.ini is *seeded* into the data volume
+  # on first boot: Forgejo needs to write its generated SECRET_KEY / INTERNAL_TOKEN
+  # into its own copy, and those generated values must never land in the repo.
+  # Delete the volume (`docker compose ... down -v`) to re-seed from app.ini.
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mkdir -p /data/gitea/conf
+        if [ ! -f /data/gitea/conf/app.ini ]; then
+          echo "[zapp] seeding /data/gitea/conf/app.ini from infra/docker/forgejo/app.ini"
+          cp /etc/forgejo/app.ini.seed /data/gitea/conf/app.ini
+          chmod 0660 /data/gitea/conf/app.ini
+        fi
+        chown -R 1000:1000 /data/gitea/conf
+        exec /usr/bin/entrypoint /bin/s6-svscan /etc/s6
+    command: []
+    ports:
+      - "127.0.0.1:${ZAPP_FORGEJO_HTTP_PORT:-3300}:3000"
+      - "127.0.0.1:${ZAPP_FORGEJO_SSH_PORT:-2222}:22"
+    volumes:
+      - forgejo-data:/data
+      - ./forgejo/app.ini:/etc/forgejo/app.ini.seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # Temporal server (frontend on 7233). Uses the shared Postgres above; the
+  # `temporal server start-dev` CLI is the lighter alternative documented in
+  # docs/dev-setup.md, but auto-setup keeps dev-up.sh a single command.
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: zapp
+      POSTGRES_PWD: zapp
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      SKIP_DB_CREATE: "false"
+      ENABLE_ES: "false"
+      DEFAULT_NAMESPACE: default
+      DEFAULT_NAMESPACE_RETENTION: 24h
+    ports:
+      - "127.0.0.1:${ZAPP_TEMPORAL_PORT:-7233}:7233"
+    healthcheck:
+      # The frontend binds the container's own IP, not loopback, so the probe
+      # has to dial the container hostname rather than 127.0.0.1.
+      test:
+        ["CMD-SHELL", "temporal operator cluster health --address $$(hostname):7233"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:2.53.0
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:${ZAPP_TEMPORAL_UI_PORT:-8233}
+    ports:
+      - "127.0.0.1:${ZAPP_TEMPORAL_UI_PORT:-8233}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+  # Artifact storage — stands in for Cloudflare R2 locally.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:${ZAPP_MINIO_CONSOLE_PORT:-9001}
+    ports:
+      - "127.0.0.1:${ZAPP_MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${ZAPP_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # SQS / SNS / SES. init-aws.sh runs on every container start (ready hook) and
+  # is idempotent; the healthcheck below only passes once it has finished.
+  localstack:
+    image: localstack/localstack:4.7.0
+    restart: unless-stopped
+    environment:
+      SERVICES: sqs,sns,ses
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      # Path-style queue URLs stay resolvable from the host and from containers.
+      SQS_ENDPOINT_STRATEGY: path
+      DEBUG: "0"
+    ports:
+      - "127.0.0.1:${ZAPP_LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "awslocal sqs get-queue-url --queue-name zapp-usage-events >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 15s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  redis-data:
+  forgejo-data:
+  minio-data:
+  localstack-data:
