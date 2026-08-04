@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -21,7 +21,20 @@ import { describe, expect, it } from 'vitest';
  * time instead of six months later.
  */
 
-const ROUTES_DIR = fileURLToPath(new URL('../src/routes', import.meta.url));
+const SRC = fileURLToPath(new URL('../src', import.meta.url));
+
+/**
+ * Every directory whose modules answer a request.
+ *
+ * `src/routes` is the obvious one. `src/events` (the SSE endpoint, CP-14) and
+ * `src/internal` (service-to-service auth, CP-8) are named by plan 02's own file
+ * layout and are handlers by any other name — they were outside this check
+ * purely because they do not exist yet, which is the worst possible reason
+ * (plan 02 CP-4 review). Listed now, so the first module that lands in either is
+ * held to the rule from its first commit. A directory that does not exist yet
+ * contributes nothing and fails nothing.
+ */
+const HANDLER_DIRECTORIES = ['routes', 'events', 'internal'] as const;
 
 /** What a route module may not import, and why it may not. */
 const FORBIDDEN: { readonly pattern: RegExp; readonly why: string }[] = [
@@ -43,21 +56,40 @@ const FORBIDDEN: { readonly pattern: RegExp; readonly why: string }[] = [
   },
 ];
 
-function routeModules(): string[] {
-  return readdirSync(ROUTES_DIR)
-    .filter((name) => name.endsWith('.ts'))
+/**
+ * Recursive, because `readdirSync` is not: a nested `src/routes/admin/users.ts`
+ * used to be invisible to this check, and a convention that stops applying one
+ * directory down is not a convention.
+ */
+function typescriptFilesIn(directory: string): string[] {
+  if (!existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return typescriptFilesIn(path);
+    }
+    return entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+/** Paths relative to `src/`, so a failure names the module the way an import does. */
+function handlerModules(): string[] {
+  return HANDLER_DIRECTORIES.flatMap((directory) => typescriptFilesIn(join(SRC, directory)))
+    .map((path) => relative(SRC, path))
     .sort();
 }
 
-describe('src/routes', () => {
-  it('has route modules to check', () => {
+describe('request handlers', () => {
+  it('has modules to check', () => {
     // A guard against the test passing because the directory moved: an empty
     // sweep would satisfy every assertion below.
-    expect(routeModules().length).toBeGreaterThan(0);
+    expect(handlerModules().length).toBeGreaterThan(0);
   });
 
-  it.each(routeModules())('%s reaches no database handle but the tenant one', (name) => {
-    const source = readFileSync(join(ROUTES_DIR, name), 'utf8');
+  it.each(handlerModules())('%s reaches no database handle but the tenant one', (name) => {
+    const source = readFileSync(join(SRC, name), 'utf8');
     // Comments are where this convention is explained, so they are stripped
     // before the check — otherwise documenting the rule would break it.
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');

@@ -1,7 +1,7 @@
 import { newId } from '@zapp/contracts';
 
-import type { Role } from '../../src/policy/permissions.js';
 import {
+  DEFAULT_PAGE_SIZE,
   SlugTakenError,
   type CreateOrganizationInput,
   type CreatedOrganization,
@@ -10,7 +10,12 @@ import {
   type OrganizationMembership,
   type OrganizationRecord,
   type OrganizationStore,
+  type PageRequest,
+  type RoleUpdate,
+  type StorePage,
 } from '../../src/orgs/store.js';
+import { NO_TRANSACTION, type AuditHook } from '../../src/plugins/audit.js';
+import type { Role } from '../../src/policy/permissions.js';
 
 /**
  * An `OrganizationStore` with two Maps behind it, so route tests need no
@@ -21,6 +26,11 @@ import {
  * when the provider refuses) is also asserted against the shipping Drizzle store
  * by the shared contract in `test/support/store-contract.ts`. When the two
  * disagree, the contract fails for one of them.
+ *
+ * The audit hooks are called where the Drizzle store calls them — after the
+ * write, before it is visible — and with {@link NO_TRANSACTION}, since a Map has
+ * none to offer. A hook that throws therefore leaves nothing behind here either,
+ * which is the property the routes depend on.
  */
 export class InMemoryOrganizationStore implements OrganizationStore {
   readonly organizations = new Map<string, OrganizationRecord>();
@@ -65,32 +75,43 @@ export class InMemoryOrganizationStore implements OrganizationStore {
       status: 'active',
     };
 
-    // Nothing is written until the provider has answered: this stands in for
-    // the transaction the Drizzle store opens, and it is what the rollback test
-    // exercises on both sides.
+    // Nothing is written until the provider has answered and the audit row has
+    // been taken: this stands in for the transaction the Drizzle store opens,
+    // and it is what the rollback test exercises on both sides.
     const { externalOrgId } = await input.link(organization);
+    const created: CreatedOrganization = { organization, membership, externalOrgId };
+    await input.audit(NO_TRANSACTION, created);
 
     this.organizations.set(organization.id, organization);
     this.memberships.set(this.key(organization.id, membership.userId), membership);
-    return { organization, membership, externalOrgId };
+    return created;
   }
 
   findById(organizationId: string): Promise<OrganizationRecord | undefined> {
     return Promise.resolve(this.organizations.get(organizationId));
   }
 
-  listForUser(userId: string): Promise<OrganizationMembership[]> {
-    const rows = [...this.memberships.values()].filter(
-      (row) => row.userId === userId && row.status !== 'removed',
-    );
-    return Promise.resolve(
-      rows.flatMap((row) => {
+  listForUser(userId: string, page?: PageRequest): Promise<StorePage<OrganizationMembership>> {
+    const limit = page?.limit ?? DEFAULT_PAGE_SIZE;
+    const rows = [...this.memberships.values()]
+      // `active`, not "not removed": an invitation nobody accepted is a row,
+      // not an access grant — the same rule `membership()` applies.
+      .filter((row) => row.userId === userId && row.status === 'active')
+      .flatMap((row) => {
         const organization = this.organizations.get(row.organizationId);
         return organization === undefined
           ? []
           : [{ organization, role: row.role, status: row.status }];
-      }),
-    );
+      })
+      // Ids are monotonic ULIDs, so descending id is newest-first.
+      .sort((left, right) => (left.organization.id < right.organization.id ? 1 : -1))
+      .filter((entry) => page?.cursor === undefined || entry.organization.id < page.cursor);
+
+    const items = rows.slice(0, limit);
+    return Promise.resolve({
+      items,
+      nextCursor: rows.length > limit ? (items.at(-1)?.organization.id ?? null) : null,
+    });
   }
 
   membership(organizationId: string, userId: string): Promise<MembershipRecord | undefined> {
@@ -98,13 +119,14 @@ export class InMemoryOrganizationStore implements OrganizationStore {
     return Promise.resolve(row === undefined || row.status === 'removed' ? undefined : row);
   }
 
-  update(
+  async update(
     organizationId: string,
     patch: { name?: string; slug?: string },
+    audit: AuditHook<OrganizationRecord>,
   ): Promise<OrganizationRecord | undefined> {
     const organization = this.organizations.get(organizationId);
     if (organization === undefined) {
-      return Promise.resolve(undefined);
+      return undefined;
     }
     if (patch.slug !== undefined) {
       for (const other of this.organizations.values()) {
@@ -112,7 +134,7 @@ export class InMemoryOrganizationStore implements OrganizationStore {
           // A *rejection*, not a synchronous throw: that is how the Drizzle
           // store surfaces it, and the difference a route written with `.catch`
           // would trip over.
-          return Promise.reject(new SlugTakenError());
+          throw new SlugTakenError();
         }
       }
     }
@@ -122,61 +144,77 @@ export class InMemoryOrganizationStore implements OrganizationStore {
       ...(patch.name === undefined ? {} : { name: patch.name }),
       ...(patch.slug === undefined ? {} : { slug: patch.slug }),
     };
+    await audit(NO_TRANSACTION, updated);
     this.organizations.set(organizationId, updated);
-    return Promise.resolve(updated);
+    return updated;
   }
 
-  addMember(input: {
+  async addMember(input: {
     organizationId: string;
     userId: string;
     role: Role;
     now: Date;
+    audit: AuditHook<MembershipRecord>;
   }): Promise<MembershipRecord> {
     const key = this.key(input.organizationId, input.userId);
     const existing = this.memberships.get(key);
     // An active membership is never rewritten: an invite must not be a way to
     // change — least of all lower — the role someone already holds.
-    if (existing?.status === 'active') {
-      return Promise.resolve(existing);
-    }
+    const membership: MembershipRecord =
+      existing?.status === 'active'
+        ? existing
+        : {
+            organizationId: input.organizationId,
+            userId: input.userId,
+            role: input.role,
+            status: 'active',
+          };
 
-    const membership: MembershipRecord = {
-      organizationId: input.organizationId,
-      userId: input.userId,
-      role: input.role,
-      status: 'active',
-    };
+    await input.audit(NO_TRANSACTION, membership);
     this.memberships.set(key, membership);
-    return Promise.resolve(membership);
+    return membership;
   }
 
-  setRole(organizationId: string, userId: string, role: Role): Promise<MemberUpdate> {
+  async setRole(
+    organizationId: string,
+    userId: string,
+    role: Role,
+    audit: AuditHook<MembershipRecord>,
+  ): Promise<RoleUpdate> {
     const key = this.key(organizationId, userId);
     const existing = this.memberships.get(key);
     if (existing === undefined || existing.status === 'removed') {
-      return Promise.resolve('member_not_found');
+      return 'member_not_found';
     }
     if (
       existing.role === 'owner' &&
       role !== 'owner' &&
       this.activeOwners(organizationId, userId).length === 0
     ) {
-      return Promise.resolve('last_owner');
+      return 'last_owner';
     }
-    this.memberships.set(key, { ...existing, role });
-    return Promise.resolve('updated');
+    const updated: MembershipRecord = { ...existing, role };
+    await audit(NO_TRANSACTION, updated);
+    this.memberships.set(key, updated);
+    return updated;
   }
 
-  removeMember(organizationId: string, userId: string): Promise<MemberUpdate> {
+  async removeMember(
+    organizationId: string,
+    userId: string,
+    audit: AuditHook<MembershipRecord>,
+  ): Promise<MemberUpdate> {
     const key = this.key(organizationId, userId);
     const existing = this.memberships.get(key);
     if (existing === undefined || existing.status === 'removed') {
-      return Promise.resolve('member_not_found');
+      return 'member_not_found';
     }
     if (existing.role === 'owner' && this.activeOwners(organizationId, userId).length === 0) {
-      return Promise.resolve('last_owner');
+      return 'last_owner';
     }
-    this.memberships.set(key, { ...existing, status: 'removed' });
-    return Promise.resolve('updated');
+    const removed: MembershipRecord = { ...existing, status: 'removed' };
+    await audit(NO_TRANSACTION, removed);
+    this.memberships.set(key, removed);
+    return 'updated';
   }
 }

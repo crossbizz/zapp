@@ -15,6 +15,7 @@ import {
   type InviteStore,
 } from '../orgs/invites.js';
 import {
+  DEFAULT_PAGE_SIZE,
   SlugTakenError,
   type CreatedOrganization,
   type MembershipRecord,
@@ -24,7 +25,7 @@ import {
 import { actorOf } from '../plugins/auth.js';
 import { authorize, organizationNotFound, selectOrganizationId } from '../plugins/tenant.js';
 import { ROLES } from '../policy/permissions.js';
-import { SlugSchema, randomSuffix, slugify } from '../slug.js';
+import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
 
 /**
  * PRD §32 organizations, memberships and invites.
@@ -101,6 +102,15 @@ const CreateInviteBody = z.object({
 });
 
 const SetRoleBody = z.object({ role: RoleSchema });
+
+/**
+ * Keyset pagination, as the FND-10 envelope describes it: `cursor` is the
+ * opaque `nextCursor` of the previous page, handed back untouched.
+ */
+const ListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(DEFAULT_PAGE_SIZE),
+  cursor: idSchema('org').optional(),
+});
 
 /** How many suffixed slugs to try before giving up on a derived one. */
 const MAX_SLUG_ATTEMPTS = 5;
@@ -187,9 +197,10 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
     async (request, reply) => {
       const user = await currentUser(request);
       const requested = request.body.slug;
-      // A name of nothing but punctuation or non-Latin script still needs a
-      // slug; a random one is better than a collision-prone constant.
-      const base = requested ?? (slugify(request.body.name) || `org-${randomSuffix()}`);
+      // A name that does not reduce to a valid slug — punctuation, a single
+      // character, a script with no Latin form — still needs one, and a random
+      // slug is better than a collision-prone constant.
+      const base = requested ?? derivedSlug(request.body.name, 'org');
 
       /**
        * The Stytch organization is created inside the store's transaction, so a
@@ -230,6 +241,19 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
             creatorUserId: user.id,
             now: now(),
             link,
+            // Inside the store's transaction, with the organization it actually
+            // wrote: an audit row for an organization that was rolled back
+            // would name an id nothing else in the database has.
+            audit: (tx, organization) =>
+              request.audit(tx, {
+                organizationId: organization.organization.id,
+                action: 'organization.created',
+                target: { type: 'organization', id: organization.organization.id },
+                metadata: {
+                  slug: organization.organization.slug,
+                  externalOrgId: organization.externalOrgId,
+                },
+              }),
           });
         } catch (error) {
           if (!(error instanceof SlugTakenError)) {
@@ -246,13 +270,6 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         throw slugTaken();
       }
 
-      await request.audit({
-        organizationId: created.organization.id,
-        action: 'organization.created',
-        target: { type: 'organization', id: created.organization.id },
-        metadata: { slug: created.organization.slug, externalOrgId: created.externalOrgId },
-      });
-
       return await reply
         .status(201)
         .send({ organization: created.organization, role: created.membership.role });
@@ -263,15 +280,26 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
     '/v1/organizations',
     {
       preHandler: [app.requireSession],
-      schema: { response: { 200: PageSchema(MembershipEntrySchema) } },
+      schema: {
+        querystring: ListQuery,
+        response: { 200: PageSchema(MembershipEntrySchema) },
+      },
     },
     async (request) => {
       // Only the caller's own memberships: this endpoint is not a directory of
       // organizations, and there is no query that would make it one.
-      const items = await organizations.listForUser(actorOf(request));
+      //
+      // Really paginated, rather than answering `nextCursor: null` to every
+      // request whatever the size of the answer (plan 02 CP-3 review): the
+      // envelope promises keyset pagination, and a client that reads the
+      // promise and pages with the cursor has to get the second page.
+      const page = await organizations.listForUser(actorOf(request), {
+        limit: request.query.limit,
+        ...(request.query.cursor === undefined ? {} : { cursor: request.query.cursor }),
+      });
       // `nextCursor` is explicitly null rather than absent (FND-10): a client
       // must never read a missing field as "there might be more".
-      return { items, nextCursor: null };
+      return { items: page.items, nextCursor: page.nextCursor };
     },
   );
 
@@ -298,7 +326,16 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
       // never see the second kind.
       let organization;
       try {
-        organization = await organizations.update(request.params.orgId, patch);
+        organization = await organizations.update(request.params.orgId, patch, (tx, updated) =>
+          request.audit(tx, {
+            organizationId: updated.id,
+            action: 'organization.updated',
+            target: { type: 'organization', id: updated.id },
+            // Which fields moved, not what they moved to: the row is the trail,
+            // not a second copy of the record.
+            metadata: { fields: Object.keys(patch).sort() },
+          }),
+        );
       } catch (error) {
         if (error instanceof SlugTakenError) {
           throw slugTaken();
@@ -308,15 +345,6 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
       if (organization === undefined) {
         throw organizationNotFound();
       }
-
-      await request.audit({
-        organizationId: organization.id,
-        action: 'organization.updated',
-        target: { type: 'organization', id: organization.id },
-        // Which fields moved, not what they moved to: the row is the trail, not
-        // a second copy of the record.
-        metadata: { fields: Object.keys(patch).sort() },
-      });
 
       return { organization };
     },
@@ -363,7 +391,11 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         expiresAt,
       });
 
-      await request.audit({
+      // `auditDetached`, and the only call site of it: the invite lives in
+      // Redis, so there is no transaction for this row to be atomic *with*.
+      // Ordered after the issue so a failure here means the token was never
+      // returned to anybody — an invite nobody holds expires unused.
+      await request.auditDetached({
         organizationId: request.params.orgId,
         action: 'member.invited',
         target: { type: 'invite', id: null },
@@ -391,9 +423,37 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
     },
     async (request, reply) => {
       const user = await currentUser(request);
+      /**
+       * The membership write happens *inside* the claim, and that is the whole
+       * point: `claim` marks the invite used, runs this, and puts the invite
+       * back if it throws. Spending the invite first and writing the membership
+       * afterwards — which is what this route used to do — strands an invitee
+       * whose membership write failed on `410 invite_used`, holding a link that
+       * can never work again (plan 02 CP-3 review).
+       */
       const claim = await invites.claim({
         tokenHash: hashInviteToken(request.params.token),
         email: normalizeEmail(user.email),
+        complete: async (invite) => {
+          const organization = await organizations.findById(invite.organizationId);
+          if (organization === undefined) {
+            throw organizationNotFound();
+          }
+          const membership = await organizations.addMember({
+            organizationId: organization.id,
+            userId: user.id,
+            role: invite.role,
+            now: now(),
+            audit: (tx, written) =>
+              request.audit(tx, {
+                organizationId: organization.id,
+                action: 'member.joined',
+                target: { type: 'membership', id: user.id },
+                metadata: { role: written.role, invitedRole: invite.role },
+              }),
+          });
+          return { organization, membership };
+        },
       });
 
       switch (claim.status) {
@@ -415,27 +475,11 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
             'That invitation was sent to a different email address.',
           );
         case 'claimed': {
-          const organization = await organizations.findById(claim.invite.organizationId);
-          if (organization === undefined) {
-            throw organizationNotFound();
-          }
-
-          const membership = await organizations.addMember({
-            organizationId: organization.id,
-            userId: user.id,
-            role: claim.invite.role,
-            now: now(),
-          });
-
-          await request.audit({
-            organizationId: organization.id,
-            action: 'member.joined',
-            target: { type: 'membership', id: user.id },
-            metadata: { role: membership.role, invitedRole: claim.invite.role },
-          });
-
           noStore(reply);
-          return { organization, role: membership.role };
+          return {
+            organization: claim.result.organization,
+            role: claim.result.membership.role,
+          };
         }
       }
     },
@@ -455,10 +499,22 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
       const membership = await membershipOf(request, request.params.orgId);
       authorize(membership, 'manage_members');
 
+      // The store returns the row it wrote. Re-reading it here instead would
+      // reintroduce two bugs at once: a concurrent removal between the write
+      // and the read turns a successful change into a spurious 404 with no
+      // audit row, and a concurrent second change makes the trail record a role
+      // nobody asked for (plan 02 CP-3 review).
       const outcome = await organizations.setRole(
         request.params.orgId,
         request.params.userId,
         request.body.role,
+        (tx, updated) =>
+          request.audit(tx, {
+            organizationId: request.params.orgId,
+            action: 'member.role_changed',
+            target: { type: 'membership', id: request.params.userId },
+            metadata: { role: updated.role },
+          }),
       );
       if (outcome === 'member_not_found') {
         throw new ApiError('member_not_found', 404, 'That member does not exist.');
@@ -467,19 +523,7 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         throw lastOwner();
       }
 
-      const updated = await organizations.membership(request.params.orgId, request.params.userId);
-      if (updated === undefined) {
-        throw new ApiError('member_not_found', 404, 'That member does not exist.');
-      }
-
-      await request.audit({
-        organizationId: request.params.orgId,
-        action: 'member.role_changed',
-        target: { type: 'membership', id: request.params.userId },
-        metadata: { role: updated.role },
-      });
-
-      return { membership: updated };
+      return { membership: outcome };
     },
   );
 
@@ -493,20 +537,25 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
       const membership = await membershipOf(request, request.params.orgId);
       authorize(membership, 'manage_members');
 
-      const outcome = await organizations.removeMember(request.params.orgId, request.params.userId);
+      const outcome = await organizations.removeMember(
+        request.params.orgId,
+        request.params.userId,
+        (tx, removed) =>
+          request.audit(tx, {
+            organizationId: request.params.orgId,
+            action: 'member.removed',
+            target: { type: 'membership', id: request.params.userId },
+            // The role they held when it was taken away: the membership row is
+            // now `removed`, so this is the only record of what was lost.
+            metadata: { role: removed.role },
+          }),
+      );
       if (outcome === 'member_not_found') {
         throw new ApiError('member_not_found', 404, 'That member does not exist.');
       }
       if (outcome === 'last_owner') {
         throw lastOwner();
       }
-
-      await request.audit({
-        organizationId: request.params.orgId,
-        action: 'member.removed',
-        target: { type: 'membership', id: request.params.userId },
-        metadata: {},
-      });
 
       return await reply.status(204).send();
     },

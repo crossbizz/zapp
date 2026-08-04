@@ -5,7 +5,7 @@ import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
-import { SlugSchema, randomSuffix, slugify } from '../slug.js';
+import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
 import { ProjectSchema, RunSchema, toProject, toRun } from '../tenant/view.js';
 
 /**
@@ -65,9 +65,10 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
       authorize(ctx, 'create_project');
 
       const requested = request.body.slug;
-      // A name of nothing but punctuation or non-Latin script still needs a
-      // slug; a random one is better than a collision-prone constant.
-      const base = requested ?? (slugify(request.body.name) || `project-${randomSuffix()}`);
+      // A name that does not reduce to a valid slug — punctuation, a single
+      // character, a script with no Latin form — still needs one, and a random
+      // slug is better than a collision-prone constant.
+      const base = requested ?? derivedSlug(request.body.name, 'project');
 
       for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt += 1) {
         const slug = attempt === 0 ? base : `${base}-${randomSuffix()}`;
@@ -81,6 +82,15 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
           // organization is the handle's, which the request cannot name at all.
           createdBy: actorOf(request),
           now: now(),
+          // Inside the insert's transaction: the row and the row that says who
+          // created it commit together or not at all.
+          audit: (tx, project) =>
+            request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'project.created',
+              target: { type: 'project', id: project.id },
+              metadata: { slug: project.slug, sourceType: project.sourceType },
+            }),
         });
 
         if (created === 'slug_taken') {
@@ -92,12 +102,6 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
           continue;
         }
 
-        await request.audit({
-          organizationId: ctx.organizationId,
-          action: 'project.created',
-          target: { type: 'project', id: created.id },
-          metadata: { slug: created.slug, sourceType: created.sourceType },
-        });
         return await reply.status(201).send({ project: toProject(created) });
       }
       throw slugTaken();

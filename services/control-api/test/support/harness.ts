@@ -5,8 +5,15 @@ import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
+import type { RateLimitConfig } from '../../src/config/rate-limits.js';
 import { createInMemoryInviteStore, type InviteStore } from '../../src/orgs/invites.js';
 import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
+import {
+  createInMemoryIdempotencyStore,
+  type IdempotencyStore,
+} from '../../src/plugins/idempotency.js';
+import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
+import type { TenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from './fake-auth-port.js';
 import { InMemoryOrganizationStore } from './org-store.js';
 
@@ -18,6 +25,29 @@ export const TEST_AUTH_CONFIG: AuthConfig = {
   sessionSecret: TEST_SECRET,
   appBaseUrl: 'https://app.zapp.test',
   apiBaseUrl: 'https://api.zapp.test',
+};
+
+/**
+ * Limits high enough to be out of the way, because every request a suite makes
+ * comes from one address and — for the auth class — the shipped ceiling of ten
+ * a minute is four sign-ins.
+ *
+ * Deliberately explicit rather than a switch inside the plugin: a suite that
+ * silently ran with rate limiting *off* would not be exercising the pipeline
+ * the service ships, so the plugin is always registered and always consulted;
+ * only the numbers move. `test/plugins.test.ts` is where they are tightened,
+ * and `test/rate-limits.config.test.ts` is what pins the shipped file's own
+ * values.
+ */
+export const TEST_RATE_LIMITS: RateLimitConfig = {
+  auth: { perMinute: 100_000, burst: 100_000, scope: 'ip', whenUnavailable: 'deny' },
+  reads: { perMinute: 100_000, burst: 100_000, scope: 'organization', whenUnavailable: 'allow' },
+  mutations: {
+    perMinute: 100_000,
+    burst: 100_000,
+    scope: 'organization',
+    whenUnavailable: 'allow',
+  },
 };
 
 /** A `UserStore` with a Map behind it, so route tests need no database. */
@@ -66,6 +96,18 @@ export interface HarnessOptions {
   readonly config?: Partial<AuthConfig>;
   readonly users?: InMemoryUserStore;
   readonly organizations?: InMemoryOrganizationStore;
+  /** Tightens one or more classes; the rest stay out of the way. */
+  readonly rateLimits?: Partial<RateLimitConfig>;
+  /** For the suites that need a limiter which cannot answer. */
+  readonly limiter?: RateLimiter;
+  readonly idempotency?: IdempotencyStore;
+  /**
+   * Registers the tenant-scoped routes against a handle of the caller's
+   * choosing. Absent by default — a unit harness has no database, and the
+   * tenant surface has its own suite against a real one
+   * (`test/integration/tenant-isolation.test.ts`).
+   */
+  readonly tenantDb?: TenantDbFactory;
 }
 
 /**
@@ -85,6 +127,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
 
   const app = buildApp({
     logger: false,
+    now,
     auth: {
       port,
       users,
@@ -94,6 +137,12 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       now,
     },
     orgs: { organizations, invites, audit },
+    ...(options.tenantDb === undefined ? {} : { tenant: { tenantDb: options.tenantDb } }),
+    limits: {
+      config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
+      limiter: options.limiter ?? createInMemoryRateLimiter(now),
+      idempotency: options.idempotency ?? createInMemoryIdempotencyStore(now),
+    },
   });
 
   return {

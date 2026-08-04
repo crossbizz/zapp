@@ -10,7 +10,7 @@ import { createInMemoryAuditSink } from '../../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { TEST_AUTH_CONFIG, cookieJar, cookiesOf } from '../support/harness.js';
+import { TEST_AUTH_CONFIG, TEST_RATE_LIMITS, cookieJar, cookiesOf } from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
@@ -45,6 +45,9 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
  * August 2027 for reasons that have nothing to do with tenancy.
  */
 const EVENT_TIME = new Date('2026-08-15T12:00:00.000Z');
+
+/** Seeding is not what this suite is about; the audit trail has its own suite. */
+const noAudit = (): Promise<void> => Promise.resolve();
 
 type Response = Awaited<ReturnType<AppInstance['inject']>>;
 
@@ -106,6 +109,19 @@ function expectOnlyTenantRows(response: Response, tenant: Tenant, expected: stri
 }
 
 /**
+ * Whether this run is a CI run — for any value CI sets, not the one GitHub
+ * happens to use.
+ *
+ * `CI === 'true'` was a hole with a very short fuse: every other CI system
+ * spells it `1`, `yes` or the name of the provider, and on any of them the
+ * guard below would have quietly stopped guarding (plan 02 CP-4 review).
+ */
+function inContinuousIntegration(): boolean {
+  const flag = (process.env['CI'] ?? '').trim().toLowerCase();
+  return flag !== '' && flag !== 'false' && flag !== '0';
+}
+
+/**
  * This suite is the milestone gate, so it must not be able to pass by not
  * running. Outside the `skipIf` below on purpose: without `DATABASE_URL` every
  * assertion in this file is skipped, and a CI job that skipped them all while
@@ -114,9 +130,20 @@ function expectOnlyTenantRows(response: Response, tenant: Tenant, expected: stri
  */
 describe('the isolation suite itself', () => {
   it('refuses to be silently skipped in CI', () => {
-    expect(process.env['CI'] === 'true' ? hasDatabase : true).toBe(true);
+    expect(inContinuousIntegration() ? hasDatabase : true).toBe(true);
   });
 });
+
+/**
+ * How many assertions the negative-control block below must actually make.
+ *
+ * Counted, because the block is what stops this suite from passing by refusing
+ * everything — and a `describe.skip` on it would downgrade the milestone gate to
+ * exactly that, silently and with a green tick. See the guard at the end of the
+ * file.
+ */
+const NEGATIVE_CONTROLS = 6;
+let negativeControlsRun = 0;
 
 describe.skipIf(!hasDatabase)('tenant isolation', () => {
   let database: TestDatabase;
@@ -181,10 +208,23 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       creatorUserId: owner.userId,
       now,
       link: () => Promise.resolve({ externalOrgId: `external-${slug}` }),
+      audit: noAudit,
     });
     const organizationId = created.organization.id;
-    await store.addMember({ organizationId, userId: builder.userId, role: 'builder', now });
-    await store.addMember({ organizationId, userId: viewer.userId, role: 'viewer', now });
+    await store.addMember({
+      organizationId,
+      userId: builder.userId,
+      role: 'builder',
+      now,
+      audit: noAudit,
+    });
+    await store.addMember({
+      organizationId,
+      userId: viewer.userId,
+      role: 'viewer',
+      now,
+      audit: noAudit,
+    });
     // Written directly: nothing in the API creates an `invited` membership row
     // today, and the rule that one is not access has to be pinned before
     // something does.
@@ -257,6 +297,11 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations: store, audit: createInMemoryAuditSink() },
       tenant: { tenantDb: createTenantDbFactory(database.db) },
+      // Rate limiting is registered exactly as it is in production — this suite
+      // just needs the numbers out of the way, since eleven sign-ins from one
+      // address is more than the shipped ten-a-minute auth ceiling. The limits
+      // themselves are `test/plugins.test.ts`'s subject.
+      limits: { config: TEST_RATE_LIMITS },
     });
     await app.ready();
 
@@ -271,12 +316,14 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       userId: bridge.userId,
       role: 'viewer',
       now,
+      audit: noAudit,
     });
     await store.addMember({
       organizationId: b.organizationId,
       userId: bridge.userId,
       role: 'owner',
       now,
+      audit: noAudit,
     });
   }, 180_000);
 
@@ -419,6 +466,21 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         .items.map((item) => item.organization.id);
       expect(ids).toEqual([a.organizationId]);
     });
+
+    it('never carry an organization the caller was only invited to', async () => {
+      // The membership list has to agree with the tenant plugin, which admits
+      // `active` and nothing else. While it said "not removed" instead, this
+      // person was shown an organization every other route then denied them
+      // (plan 02 CP-4 review).
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/organizations',
+        headers: a.pending.headers,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json<{ items: unknown[] }>().items).toEqual([]);
+    });
   });
 
   describe('the x-organization-id header', () => {
@@ -459,8 +521,9 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         userId: removed.userId,
         role: 'builder',
         now,
+        audit: noAudit,
       });
-      expect(await store.removeMember(a.organizationId, removed.userId)).toBe('updated');
+      expect(await store.removeMember(a.organizationId, removed.userId, noAudit)).toBe('updated');
 
       const response = await app.inject({
         method: 'GET',
@@ -477,6 +540,27 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: a.owner.headers,
       });
       expectRefusal(response, 400, 'organization_required');
+    });
+
+    it('cannot file a new row under another tenant', async () => {
+      // The write half of the same attack, and the one that was untested: every
+      // read above refuses to *return* B's rows, and this refuses to *create*
+      // one there. A's owner, B named in the header, a project that must never
+      // exist.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: as(a.owner, b.organizationId),
+        payload: { name: 'Planted In Beta', slug: 'planted-in-beta' },
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+
+      // Confirmed in the table rather than in the answer: nothing was written
+      // under either organization.
+      const rows = await database.sql<{ id: string }[]>`
+        select id from projects where slug = 'planted-in-beta'
+      `;
+      expect(rows).toEqual([]);
     });
 
     it('cannot override the organization that owns a path resource', async () => {
@@ -679,6 +763,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(a.viewer, a.organizationId),
       });
       expectOnlyTenantRows(events, a, a.eventIds.slice(0, 2));
+      negativeControlsRun += 1;
     });
 
     it('lets B read B’s own rows, by the same routes that refused A', async () => {
@@ -705,6 +790,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(b.builder, b.organizationId),
       });
       expectOnlyTenantRows(runs, b, [b.runIds[0] ?? '']);
+      negativeControlsRun += 1;
     });
 
     it('lets a Builder create a project, in their own organization only', async () => {
@@ -739,6 +825,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(b.owner, b.organizationId),
       });
       expectRefusal(fromB, 404, 'project_not_found');
+      negativeControlsRun += 1;
     });
 
     it('lets an Owner rename their own organization and invite into it', async () => {
@@ -760,6 +847,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { email: 'newcomer@beta.test', role: 'viewer' },
       });
       expect(invited.statusCode, invited.body).toBe(201);
+      negativeControlsRun += 1;
     });
 
     it('still requires a session for every one of these routes', async () => {
@@ -771,6 +859,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         });
         expectRefusal(response, 401, 'unauthenticated');
       }
+      negativeControlsRun += 1;
     });
 
     it('still requires the CSRF header from a cookie-borne mutation', async () => {
@@ -781,6 +870,23 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { name: 'Forged' },
       });
       expectRefusal(response, 403, 'csrf_required');
+      negativeControlsRun += 1;
+    });
+  });
+
+  /**
+   * Last, and outside the block it is about, so that disabling that block
+   * cannot disable this too.
+   *
+   * The negative controls are the only thing standing between this suite and a
+   * service that passes it by refusing every request. A `describe.skip` on
+   * them — added in a hurry, meant to be temporary — would leave the milestone
+   * gate green and meaningless, and nothing in a test report distinguishes a
+   * skipped block from an absent one. This counts them.
+   */
+  describe('the negative control', () => {
+    it('actually ran', () => {
+      expect(negativeControlsRun).toBe(NEGATIVE_CONTROLS);
     });
   });
 });

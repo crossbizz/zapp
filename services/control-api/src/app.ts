@@ -18,6 +18,7 @@ import { createInMemoryDeviceStore, type DeviceStore } from './auth/device.js';
 import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
+import { loadRateLimits, type RateLimitConfig } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
@@ -25,6 +26,12 @@ import type { OrganizationStore } from './orgs/store.js';
 import { auditLog, createInMemoryAuditSink, type AuditSink } from './plugins/audit.js';
 import { sessionAuth } from './plugins/auth.js';
 import { genRequestId, requestContext } from './plugins/context.js';
+import {
+  createInMemoryIdempotencyStore,
+  idempotency,
+  type IdempotencyStore,
+} from './plugins/idempotency.js';
+import { createInMemoryRateLimiter, rateLimit, type RateLimiter } from './plugins/rate-limit.js';
 import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerOrgRoutes } from './routes/orgs.js';
@@ -86,6 +93,20 @@ export interface TenantDeps {
 }
 
 /**
+ * What the rate-limit and idempotency plugins need (CP-5). Both are always
+ * registered — a route that could be added without a limit or without replay
+ * protection is one that will be — so what arrives here is only *which*
+ * implementation backs them.
+ */
+export interface LimitDeps {
+  /** Defaults to `config/rate-limits.json`. */
+  readonly config?: RateLimitConfig;
+  /** Defaults to the process-local bucket. Production supplies the Redis one. */
+  readonly limiter?: RateLimiter;
+  readonly idempotency?: IdempotencyStore;
+}
+
+/**
  * Collaborators handed to the app rather than reached for. Only the logger exists at
  * CP-1; the database, Redis and `AuthPort` join it as their plugins land, and each
  * arrives here so a test can substitute it.
@@ -103,32 +124,53 @@ export interface AppDeps {
   readonly orgs?: OrgDeps;
   /**
    * CP-4. Requires {@link AppDeps.orgs} — tenant resolution asks the
-   * organization store whether the caller is a member before it scopes anything.
+   * organization store whether the caller is a member before it scopes
+   * anything — and, outside development, is required *by* it: see
+   * {@link buildApp}.
    */
   readonly tenant?: TenantDeps;
+  /** CP-5. Optional everywhere; the fallbacks are refused outside development. */
+  readonly limits?: LimitDeps;
+  /** Injected in tests so expiry and refill are asserted rather than waited for. */
+  readonly now?: () => Date;
 }
 
 /**
- * Guards the process-local fallbacks in {@link AppDeps.auth} and {@link AppDeps.orgs}.
+ * Whether this process is one a mistake is allowed to be cheap in.
+ *
+ * `production` is not the only value that means production: `src/env.ts` treats
+ * an *unset* `NODE_ENV` as production deliberately, because every switch that
+ * reads it is safer in its production position and an unset variable must never
+ * be what turns a relaxation on. This asks the same question the same way — a
+ * container that forgot the variable gets the guards, not the fallbacks. Vitest
+ * sets `NODE_ENV=test`, so the suites are unaffected.
+ */
+function isDevelopment(): boolean {
+  const environment = process.env['NODE_ENV'];
+  return environment === 'development' || environment === 'test';
+}
+
+/**
+ * Guards the process-local fallbacks.
  *
  * Each of them is correct for exactly one instance: a logout honoured only by
  * the instance that served it, a device login that completes only when both legs
  * land on the same process, an invite that can be accepted only against the
- * process that issued it, and an audit trail a restart erases. Those are
- * failures a staging deployment would show as flakiness and a production one as
- * a security hole. Supplying an in-memory implementation explicitly stays
- * possible — this refuses only to *default* to one, which is how it would happen
- * by accident. CP-5's persistent implementations remove the question.
+ * process that issued it, an audit trail a restart erases, a rate limit
+ * multiplied by the number of replicas, and an idempotency key the next
+ * instance has never heard of. Those are failures a staging deployment would
+ * show as flakiness and a production one as a security hole. Supplying an
+ * in-memory implementation explicitly stays possible — this refuses only to
+ * *default* to one, which is how it would happen by accident.
  */
 function inDevelopmentOnly<T>(name: string, why: string, build: () => T): T {
-  if (process.env['NODE_ENV'] === 'production') {
+  if (!isDevelopment()) {
     throw new Error(`refusing to start: no ${name} was supplied, and ${why}`);
   }
   return build();
 }
 
-const SINGLE_INSTANCE =
-  'the in-memory fallback is single-instance only (CP-5 supplies the shared one)';
+const SINGLE_INSTANCE = 'the in-memory fallback is single-instance only';
 
 /**
  * Builds the API without binding a port, which is what makes it testable: `inject`
@@ -175,9 +217,46 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     throw new Error('refusing to start: tenant routes require orgs (AppDeps.orgs)');
   }
 
+  if (deps.orgs !== undefined && deps.tenant === undefined) {
+    // The mirror of the guard above, and the reason it is here: for a whole
+    // task nothing refused this combination, so `server.ts` shipped an app with
+    // organizations but no tenant plugin — every `/v1/projects` and `/v1/runs`
+    // route silently absent from the only entrypoint that listens, and M0's
+    // headline exit criterion demonstrated solely against a test's own wiring
+    // (plan 02 CP-4 review). Fail-closed, so it was never a hole; it was worse
+    // than a hole, because nothing said so.
+    //
+    // Development-only rather than absolute: a unit suite that exercises the
+    // organization surface has no database to bind a tenant handle to, and
+    // requiring one there would buy nothing.
+    inDevelopmentOnly(
+      'tenantDb (AppDeps.tenant)',
+      'an organization surface with no tenant-scoped routes is half a control plane',
+      () => undefined,
+    );
+  }
+
+  const now = deps.now ?? deps.auth?.now ?? (() => new Date());
+
+  // Registered here — after `/healthz`, before every other route — so the two
+  // route-enrolling plugins see everything that follows and nothing that came
+  // before. A liveness probe a cache outage can fail is not a liveness probe.
+  void app.register(rateLimit, {
+    config: deps.limits?.config ?? loadRateLimits(),
+    limiter:
+      deps.limits?.limiter ??
+      inDevelopmentOnly('rate limiter', SINGLE_INSTANCE, () => createInMemoryRateLimiter(now)),
+  });
+  void app.register(idempotency, {
+    store:
+      deps.limits?.idempotency ??
+      inDevelopmentOnly('idempotency store', SINGLE_INSTANCE, () =>
+        createInMemoryIdempotencyStore(now),
+      ),
+  });
+
   if (deps.auth !== undefined) {
     const auth = deps.auth;
-    const now = auth.now ?? (() => new Date());
     const signer = createSessionSigner({
       secret: auth.config.sessionSecret,
       ...(auth.config.previousSecret === undefined
@@ -202,7 +281,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         orgs.audit ??
         inDevelopmentOnly(
           'audit sink',
-          'an audit trail a restart erases is not an audit trail (CP-5 writes audit_events)',
+          'an audit trail a restart erases is not an audit trail',
           createInMemoryAuditSink,
         );
       void app.register(auditLog, { sink, now });

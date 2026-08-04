@@ -27,6 +27,35 @@ if (!hasDatabase) {
   );
 }
 
+const REDIS_URL = process.env.REDIS_URL ?? '';
+
+/** Env-gated the same way: with no `REDIS_URL`, the Redis suites skip — never pass. */
+export const hasRedis = REDIS_URL !== '';
+
+if (!hasRedis) {
+  console.warn(
+    '[@zapp/control-api] Redis integration tests skipped: REDIS_URL is unset — start the dev stack with ./scripts/dev-up.sh',
+  );
+}
+
+/**
+ * The Redis to test against.
+ *
+ * No `_test` sibling and no `FLUSHDB`, deliberately: Redis' numbered databases
+ * are not namespaces a shared instance can be carved up with safely, and a
+ * suite that flushed one could erase a developer's running stack. Every suite
+ * below works on randomly named keys instead, which collide with nothing and
+ * expire on their own.
+ *
+ * @throws Error when `REDIS_URL` is unset — guard the suite with `hasRedis`.
+ */
+export function redisUrl(): string {
+  if (!hasRedis) {
+    throw new Error('redisUrl requires REDIS_URL — guard the suite with `hasRedis`');
+  }
+  return REDIS_URL;
+}
+
 /** The guard suffix: nothing truncates a database whose name does not end in this. */
 const TEST_SUFFIX = '_test';
 

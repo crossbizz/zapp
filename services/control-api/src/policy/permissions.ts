@@ -33,27 +33,36 @@ export const ACTIONS = [
 export type Action = (typeof ACTIONS)[number];
 
 /**
- * What the matrix says about one capability for one role.
- *
- * `'configurable'` is the PRD's own third value, and it is a third value rather
- * than a `true` with a footnote because the answer genuinely depends on an
- * organization setting — encoding it as either boolean would make the table lie
- * about half the deployments.
+ * The organization settings a `Configurable` cell may depend on, as a closed
+ * set. One today; the list is what a new one is added to.
  */
-type Grant = boolean | 'configurable';
+export const PERMISSION_SETTINGS = ['builderCanDeploy'] as const;
+
+export type PermissionSetting = (typeof PERMISSION_SETTINGS)[number];
 
 /**
- * The one PRD §22.2 cell that is not a constant.
+ * What the matrix says about one capability for one role.
+ *
+ * The PRD's third value, `Configurable`, is spelled as *which setting decides
+ * it* rather than as a bare `'configurable'`. That is the difference between a
+ * flag that governs one cell and a flag that governs every cell that happens to
+ * be configurable: with a bare marker, adding a second configurable capability
+ * silently puts it under `builderCanDeploy` — a Builder allowed to approve
+ * production deploys would acquire the new capability too, which nobody
+ * decided (plan 02 CP-3 review). Naming the setting makes that impossible to
+ * express by accident.
+ */
+type Grant = boolean | PermissionSetting;
+
+/**
+ * The organization settings the PRD §22.2 `Configurable` cells depend on.
  *
  * Optional, and absent means denied: an organization that has never made the
  * decision has not made it in favour. CP-6 stores the setting on the
  * organization; until then the only caller passing it is a test, which is
  * enough to pin both halves of the cell.
  */
-export interface PermissionContext {
-  /** PRD §22.2 "Approve production deploy: Builder = Configurable". */
-  readonly builderCanDeploy?: boolean;
-}
+export type PermissionContext = Partial<Record<PermissionSetting, boolean>>;
 
 /**
  * PRD §22.2 verbatim. `satisfies` pins full membership in both directions: a new
@@ -86,7 +95,9 @@ const MATRIX = {
     create_project: true,
     edit_code: true,
     start_run: true,
-    approve_production_deploy: 'configurable',
+    // PRD §22.2 "Approve production deploy: Builder = Configurable", and the
+    // only cell in the table that is not a constant.
+    approve_production_deploy: 'builderCanDeploy',
     view_project: true,
     view_secret_metadata: true,
   },
@@ -114,18 +125,29 @@ const MATRIX = {
  */
 const GRANTS: Record<string, Record<string, Grant | undefined> | undefined> = MATRIX;
 
+/** Whether `value` names a setting this service defines — not merely some string. */
+function isSetting(value: string): value is PermissionSetting {
+  return PERMISSION_SETTINGS.some((setting) => setting === value);
+}
+
 /**
  * Whether `role` may perform `action` — the only question a route asks about
  * authorization.
  *
- * Fails closed on both axes: a value outside either enum (a bad migration, a
- * hand-edited row, a typo that survived a refactor) denies rather than landing
- * on a default branch.
+ * Fails closed on every axis: a role or action outside its enum (a bad
+ * migration, a hand-edited row, a typo that survived a refactor), and a cell
+ * naming a setting that does not exist, all deny rather than landing on a
+ * default branch that happens to allow something.
  */
 export function can(role: Role, action: Action, context: PermissionContext = {}): boolean {
   const grant = GRANTS[role]?.[action];
   if (grant === undefined) {
     return false;
   }
-  return grant === 'configurable' ? context.builderCanDeploy === true : grant;
+  if (typeof grant === 'boolean') {
+    return grant;
+  }
+  // The cell decides which setting governs it, so a setting can only ever widen
+  // the one capability that named it.
+  return isSetting(grant) && context[grant] === true;
 }

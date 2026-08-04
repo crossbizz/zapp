@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SlugTakenError, type OrganizationStore } from '../../src/orgs/store.js';
+import {
+  SlugTakenError,
+  type MembershipRecord,
+  type OrganizationStore,
+} from '../../src/orgs/store.js';
 
 /**
  * What every `OrganizationStore` must do, run against each implementation.
@@ -8,9 +12,10 @@ import { SlugTakenError, type OrganizationStore } from '../../src/orgs/store.js'
  * The unit suite runs it against the in-memory double and the integration suite
  * against the Drizzle store, from this one file — so the double cannot drift
  * into being kinder than PostgreSQL, which is the failure mode that makes route
- * tests pass and production break. The last-owner guard and the create-rollback
- * are the two rules this exists for; both are invisible to a route test, because
- * a route can only see the answer, not whether it was atomic.
+ * tests pass and production break. The last-owner guard, the create-rollback and
+ * the audit hook's atomicity are the three rules this exists for; all three are
+ * invisible to a route test, because a route can only see the answer, not
+ * whether it was atomic.
  */
 
 export interface StoreFixture {
@@ -23,6 +28,13 @@ const link =
   (externalOrgId = 'organization-test') =>
   () =>
     Promise.resolve({ externalOrgId });
+
+/** For the assertions that are not about the trail. */
+const noAudit = (): Promise<void> => Promise.resolve();
+
+/** The failure every "the audit row is part of the mutation" assertion is built on. */
+const AUDIT_FAILED = new Error('audit sink refused');
+const failingAudit = (): Promise<void> => Promise.reject(AUDIT_FAILED);
 
 export function describeOrganizationStore(name: string, setUp: () => Promise<StoreFixture>): void {
   describe(`OrganizationStore contract: ${name}`, () => {
@@ -47,8 +59,15 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
         creatorUserId: alice,
         now,
         link: link(),
+        audit: noAudit,
       });
       return created.organization.id;
+    }
+
+    /** `alice`'s memberships, as the list they used to be before pagination. */
+    async function membershipsOf(userId: string): Promise<string[]> {
+      const page = await store.listForUser(userId);
+      return page.items.map((entry) => entry.role);
     }
 
     it('creates an organization, its Owner and the provider link in one step', async () => {
@@ -58,6 +77,7 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
         creatorUserId: alice,
         now,
         link: link('organization-live-1'),
+        audit: noAudit,
       });
 
       expect(created.organization).toMatchObject({ name: 'Acme', slug: 'acme', plan: 'trial' });
@@ -72,7 +92,14 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
       await found('acme');
 
       await expect(
-        store.create({ name: 'Acme Two', slug: 'acme', creatorUserId: bob, now, link: link() }),
+        store.create({
+          name: 'Acme Two',
+          slug: 'acme',
+          creatorUserId: bob,
+          now,
+          link: link(),
+          audit: noAudit,
+        }),
       ).rejects.toBeInstanceOf(SlugTakenError);
     });
 
@@ -86,68 +113,162 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
           creatorUserId: alice,
           now,
           link: () => Promise.reject(boom),
+          audit: noAudit,
         }),
       ).rejects.toBe(boom);
 
       // No orphan organization and no orphan membership: the slug is free, and
       // the would-be Owner belongs to nothing.
-      expect(await store.listForUser(alice)).toEqual([]);
+      expect((await store.listForUser(alice)).items).toEqual([]);
       const retried = await store.create({
         name: 'Acme',
         slug: 'acme',
         creatorUserId: alice,
         now,
         link: link(),
+        audit: noAudit,
       });
       expect(retried.organization.slug).toBe('acme');
     });
 
+    it('leaves nothing behind when the audit hook fails', async () => {
+      // The other half of "the audit row is written in the same transaction as
+      // the mutation": if the row cannot be written, the mutation did not
+      // happen either. A store that swallowed this would produce organizations
+      // nothing in the trail accounts for.
+      await expect(
+        store.create({
+          name: 'Acme',
+          slug: 'acme',
+          creatorUserId: alice,
+          now,
+          link: link(),
+          audit: failingAudit,
+        }),
+      ).rejects.toBe(AUDIT_FAILED);
+
+      expect((await store.listForUser(alice)).items).toEqual([]);
+    });
+
+    it('undoes a rename whose audit row could not be written', async () => {
+      const organizationId = await found('acme');
+
+      await expect(
+        store.update(organizationId, { name: 'Acme Two', slug: 'acme-two' }, failingAudit),
+      ).rejects.toBe(AUDIT_FAILED);
+
+      expect(await store.findById(organizationId)).toMatchObject({ name: 'Acme', slug: 'acme' });
+    });
+
+    it('undoes a membership write whose audit row could not be written', async () => {
+      const organizationId = await found();
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
+
+      await expect(store.setRole(organizationId, bob, 'owner', failingAudit)).rejects.toBe(
+        AUDIT_FAILED,
+      );
+      expect(await store.membership(organizationId, bob)).toMatchObject({ role: 'builder' });
+
+      await expect(store.removeMember(organizationId, bob, failingAudit)).rejects.toBe(
+        AUDIT_FAILED,
+      );
+      expect(await store.membership(organizationId, bob)).toMatchObject({ status: 'active' });
+    });
+
+    it('hands the audit hook the row it actually wrote', async () => {
+      const organizationId = await found();
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
+
+      let seen: MembershipRecord | undefined;
+      const outcome = await store.setRole(organizationId, bob, 'viewer', (_tx, membership) => {
+        seen = membership;
+        return Promise.resolve();
+      });
+
+      // The role that was requested, from the write itself — not from a
+      // re-read that a concurrent change could have moved on.
+      expect(seen).toMatchObject({ userId: bob, role: 'viewer', status: 'active' });
+      expect(outcome).toMatchObject({ userId: bob, role: 'viewer' });
+    });
+
     it('lists a user’s own memberships and forgets removed ones', async () => {
       const organizationId = await found();
-      await store.addMember({ organizationId, userId: bob, role: 'builder', now });
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
 
-      expect((await store.listForUser(bob)).map((entry) => entry.role)).toEqual(['builder']);
-      expect(await store.removeMember(organizationId, bob)).toBe('updated');
-      expect(await store.listForUser(bob)).toEqual([]);
+      expect(await membershipsOf(bob)).toEqual(['builder']);
+      expect(await store.removeMember(organizationId, bob, noAudit)).toBe('updated');
+      expect(await membershipsOf(bob)).toEqual([]);
       expect(await store.membership(organizationId, bob)).toBeUndefined();
+    });
+
+    it('pages the list, and says so only when there is another page', async () => {
+      const first = await found('acme');
+      const second = await store.create({
+        name: 'Beta',
+        slug: 'beta',
+        creatorUserId: alice,
+        now,
+        link: link(),
+        audit: noAudit,
+      });
+
+      const page = await store.listForUser(alice, { limit: 1 });
+      expect(page.items).toHaveLength(1);
+      // Newest first: ids are monotonic, so the second organization leads.
+      expect(page.items[0]?.organization.id).toBe(second.organization.id);
+      expect(page.nextCursor).toBe(second.organization.id);
+
+      const next = await store.listForUser(alice, { limit: 1, cursor: page.nextCursor ?? '' });
+      expect(next.items.map((entry) => entry.organization.id)).toEqual([first]);
+      // The last page says so rather than promising a third.
+      expect(next.nextCursor).toBeNull();
     });
 
     it('reactivates a removed membership rather than duplicating it', async () => {
       const organizationId = await found();
-      await store.addMember({ organizationId, userId: bob, role: 'builder', now });
-      await store.removeMember(organizationId, bob);
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
+      await store.removeMember(organizationId, bob, noAudit);
 
-      await store.addMember({ organizationId, userId: bob, role: 'viewer', now });
+      await store.addMember({ organizationId, userId: bob, role: 'viewer', now, audit: noAudit });
 
       expect(await store.membership(organizationId, bob)).toMatchObject({
         role: 'viewer',
         status: 'active',
       });
-      expect(await store.listForUser(bob)).toHaveLength(1);
+      expect((await store.listForUser(bob)).items).toHaveLength(1);
     });
 
     it('never rewrites an active membership', async () => {
       const organizationId = await found();
 
       // The Owner "accepts" a viewer invitation to their own organization.
-      await store.addMember({ organizationId, userId: alice, role: 'viewer', now });
+      await store.addMember({
+        organizationId,
+        userId: alice,
+        role: 'viewer',
+        now,
+        audit: noAudit,
+      });
 
       expect(await store.membership(organizationId, alice)).toMatchObject({ role: 'owner' });
     });
 
     it('refuses to demote the last Owner, and says which rule stopped it', async () => {
       const organizationId = await found();
-      await store.addMember({ organizationId, userId: bob, role: 'builder', now });
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
 
-      expect(await store.setRole(organizationId, alice, 'viewer')).toBe('last_owner');
+      expect(await store.setRole(organizationId, alice, 'viewer', noAudit)).toBe('last_owner');
       expect(await store.membership(organizationId, alice)).toMatchObject({ role: 'owner' });
     });
 
     it('allows the demotion once a second Owner exists', async () => {
       const organizationId = await found();
-      await store.addMember({ organizationId, userId: bob, role: 'owner', now });
+      await store.addMember({ organizationId, userId: bob, role: 'owner', now, audit: noAudit });
 
-      expect(await store.setRole(organizationId, alice, 'viewer')).toBe('updated');
+      expect(await store.setRole(organizationId, alice, 'viewer', noAudit)).toMatchObject({
+        role: 'viewer',
+        status: 'active',
+      });
       expect(await store.membership(organizationId, alice)).toMatchObject({ role: 'viewer' });
     });
 
@@ -155,36 +276,45 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
       const organizationId = await found();
 
       // Re-setting the last Owner's own role must not trip the guard.
-      expect(await store.setRole(organizationId, alice, 'owner')).toBe('updated');
+      expect(await store.setRole(organizationId, alice, 'owner', noAudit)).toMatchObject({
+        role: 'owner',
+      });
       expect(await store.membership(organizationId, alice)).toMatchObject({ role: 'owner' });
     });
 
     it('refuses to remove the last Owner but not the last member', async () => {
       const organizationId = await found();
-      await store.addMember({ organizationId, userId: bob, role: 'builder', now });
+      await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });
 
-      expect(await store.removeMember(organizationId, alice)).toBe('last_owner');
+      expect(await store.removeMember(organizationId, alice, noAudit)).toBe('last_owner');
       // A non-Owner is not load-bearing.
-      expect(await store.removeMember(organizationId, bob)).toBe('updated');
+      expect(await store.removeMember(organizationId, bob, noAudit)).toBe('updated');
       expect(await store.membership(organizationId, alice)).toMatchObject({ status: 'active' });
     });
 
     it('reports a stranger as not a member, for both writes', async () => {
       const organizationId = await found();
 
-      expect(await store.setRole(organizationId, bob, 'viewer')).toBe('member_not_found');
-      expect(await store.removeMember(organizationId, bob)).toBe('member_not_found');
+      expect(await store.setRole(organizationId, bob, 'viewer', noAudit)).toBe('member_not_found');
+      expect(await store.removeMember(organizationId, bob, noAudit)).toBe('member_not_found');
     });
 
     it('renames an organization and refuses a slug someone else holds', async () => {
       const organizationId = await found('acme');
-      await store.create({ name: 'Beta', slug: 'beta', creatorUserId: bob, now, link: link() });
+      await store.create({
+        name: 'Beta',
+        slug: 'beta',
+        creatorUserId: bob,
+        now,
+        link: link(),
+        audit: noAudit,
+      });
 
-      expect(await store.update(organizationId, { name: 'Acme Two' })).toMatchObject({
+      expect(await store.update(organizationId, { name: 'Acme Two' }, noAudit)).toMatchObject({
         name: 'Acme Two',
         slug: 'acme',
       });
-      await expect(store.update(organizationId, { slug: 'beta' })).rejects.toBeInstanceOf(
+      await expect(store.update(organizationId, { slug: 'beta' }, noAudit)).rejects.toBeInstanceOf(
         SlugTakenError,
       );
       expect(await store.findById(organizationId)).toMatchObject({ slug: 'acme' });

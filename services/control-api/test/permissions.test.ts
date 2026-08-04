@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { ACTIONS, ROLES, can, type Action, type Role } from '../src/policy/permissions.js';
+import {
+  ACTIONS,
+  PERMISSION_SETTINGS,
+  ROLES,
+  can,
+  type Action,
+  type Role,
+} from '../src/policy/permissions.js';
 
 /**
  * PRD §22.2, transcribed rather than imported.
@@ -142,6 +149,19 @@ describe('PRD §22.2 permission matrix', () => {
       });
     }
   }
+});
+
+describe('the Configurable cell', () => {
+  it('is governed by a setting it names, not by "configurable" in general', () => {
+    // The matrix spells its one `Configurable` cell as *which* setting decides
+    // it. That is what keeps a second configurable capability, whenever one
+    // lands, from inheriting `builderCanDeploy` — a Builder allowed to approve
+    // production deploys silently acquiring an unrelated new power is not a
+    // decision anybody would have made on purpose (plan 02 CP-3 review).
+    expect([...PERMISSION_SETTINGS]).toEqual(['builderCanDeploy']);
+    // And an unknown setting fails closed, like every other unknown here.
+    expect(can('builder', 'approve_production_deploy', { notASetting: true } as never)).toBe(false);
+  });
 });
 
 describe('read secret values (PRD §22.2 last row)', () => {

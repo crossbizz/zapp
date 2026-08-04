@@ -28,3 +28,18 @@ export type ServiceEnv = z.infer<typeof EnvSchema>;
 export function loadEnv(source: unknown = process.env): ServiceEnv {
   return defineEnv(EnvSchema, source);
 }
+
+/**
+ * Shared state, and therefore deliberately outside {@link EnvSchema}: it has no
+ * default and never will. Redis holds the token denylist, the device grants,
+ * the invitations, the idempotency records and the rate limit buckets (CP-5), so
+ * a process that cannot name one would come up serving requests with a revoked
+ * session still valid and every limit unenforced — the same reason
+ * `loadAuthEnv` refuses to default a session secret.
+ */
+const RedisEnvSchema = z.object({ REDIS_URL: z.string().min(1) });
+
+/** @throws Error naming the offending variable — never its value. */
+export function loadRedisUrl(source: unknown = process.env): string {
+  return defineEnv(RedisEnvSchema, source).REDIS_URL;
+}

@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
+import type { RedisCommands } from '../redis/client.js';
+
 /**
  * The desktop sign-in handshake (RFC 8628 in shape, zapp in spelling).
  *
@@ -85,10 +87,150 @@ interface StoredGrant {
 }
 
 /**
- * Process-local, like {@link import('./denylist.js').createInMemoryTokenDenylist}
- * and for the same reason: CP-5 moves this to Redis so any instance can serve
- * the poll that follows a browser leg another instance handled. Until then a
- * device login only completes when both requests reach the same process.
+ * How long a decided or lapsed grant is remembered past its expiry.
+ *
+ * Without it Redis would reap the key the moment the grant expired, and a
+ * device that polled a second too late would be told its code was never issued
+ * rather than that it ran out of time — the one answer its user can act on.
+ */
+const DEVICE_RETENTION_MS = 10 * 60 * 1000;
+
+const CODE_KEY = 'device:code:';
+const USER_KEY = 'device:user:';
+
+/**
+ * Every decision on a grant, as one server-side step.
+ *
+ * A grant is a two-party object — a browser decides it, a device spends it — so
+ * every transition has to be a single atomic check-and-write. Read-then-write
+ * would let a second approval repoint one code at a second identity, and let
+ * two polls of one device code each walk away with a session.
+ *
+ * Expiry is compared here rather than left to the key's TTL because the TTL
+ * carries {@link DEVICE_RETENTION_MS} of slack for the reason above: the key
+ * outlives the grant, so the script — not Redis — is what says the grant is
+ * over.
+ */
+const APPROVE = `
+  local expiresAt = tonumber(redis.call('HGET', KEYS[1], 'expiresAt'))
+  if expiresAt == nil or expiresAt <= tonumber(ARGV[1]) then return 0 end
+  if redis.call('HGET', KEYS[1], 'denied') then return 0 end
+  if redis.call('HGET', KEYS[1], 'userId') then return 0 end
+  redis.call('HSET', KEYS[1], 'userId', ARGV[2])
+  return 1
+`;
+
+const DENY = `
+  local expiresAt = tonumber(redis.call('HGET', KEYS[1], 'expiresAt'))
+  if expiresAt == nil or expiresAt <= tonumber(ARGV[1]) then return 0 end
+  redis.call('HSET', KEYS[1], 'denied', '1')
+  redis.call('HDEL', KEYS[1], 'userId')
+  return 1
+`;
+
+const CLAIM = `
+  local expiresAt = tonumber(redis.call('HGET', KEYS[1], 'expiresAt'))
+  if expiresAt == nil then return 'unknown' end
+  if expiresAt <= tonumber(ARGV[1]) then return 'expired' end
+  if redis.call('HGET', KEYS[1], 'denied') then
+    redis.call('DEL', KEYS[1])
+    return 'denied'
+  end
+  local userId = redis.call('HGET', KEYS[1], 'userId')
+  if not userId then return 'pending' end
+  redis.call('DEL', KEYS[1])
+  return 'approved:' .. userId
+`;
+
+/**
+ * The shipping implementation (CP-5): any instance can serve the poll that
+ * follows a browser leg another instance handled, which is what a device login
+ * needs to work behind a load balancer at all.
+ *
+ * Two keys per grant — the hash, addressed by the device code, and a pointer
+ * from the user code to it — because the two secrets are presented by different
+ * parties. The pointer is resolved client-side rather than inside the script so
+ * no script ever computes a key name it was not given, which is what keeps this
+ * correct on a clustered Redis where key names decide which node runs the
+ * script.
+ */
+export function createRedisDeviceStore(
+  redis: RedisCommands,
+  now: () => Date = () => new Date(),
+): DeviceStore {
+  /** The grant hash a user code points at, if it still points at one. */
+  async function codeKeyFor(userCode: string): Promise<string | undefined> {
+    const deviceCode = await redis.get(`${USER_KEY}${userCode.toUpperCase()}`);
+    return deviceCode === null ? undefined : `${CODE_KEY}${deviceCode}`;
+  }
+
+  async function decide(script: string, userCode: string, args: string[]): Promise<boolean> {
+    const key = await codeKeyFor(userCode);
+    if (key === undefined) {
+      return false;
+    }
+    return (await redis.eval(script, [key], [String(now().getTime()), ...args])) === 1;
+  }
+
+  return {
+    async start() {
+      const at = now().getTime();
+      const grant: DeviceGrant = {
+        deviceCode: randomBytes(DEVICE_CODE_BYTES).toString('hex'),
+        userCode: userCode(),
+        expiresAt: new Date(at + DEVICE_GRANT_TTL_MS),
+      };
+      const ttl = DEVICE_GRANT_TTL_MS + DEVICE_RETENTION_MS;
+
+      // The hash first: a user-code pointer that resolves to nothing is a dead
+      // end, but a grant nobody can approve is merely unusable — and the device
+      // is told so by its own poll.
+      await redis.eval(
+        `redis.call('HSET', KEYS[1], 'userCode', ARGV[1], 'expiresAt', ARGV[2])
+         redis.call('PEXPIRE', KEYS[1], ARGV[3])
+         return 1`,
+        [`${CODE_KEY}${grant.deviceCode}`],
+        [grant.userCode, String(grant.expiresAt.getTime()), String(ttl)],
+      );
+      await redis.set(`${USER_KEY}${grant.userCode}`, grant.deviceCode, ttl);
+      return grant;
+    },
+
+    async approve(code, userId) {
+      return await decide(APPROVE, code, [userId]);
+    },
+
+    async deny(code) {
+      return await decide(DENY, code, []);
+    },
+
+    async claim(deviceCode) {
+      const reply = await redis.eval(
+        CLAIM,
+        [`${CODE_KEY}${deviceCode}`],
+        [String(now().getTime())],
+      );
+      const status = typeof reply === 'string' ? reply : 'unknown';
+      if (status.startsWith('approved:')) {
+        return { status: 'approved', userId: status.slice('approved:'.length) };
+      }
+      switch (status) {
+        case 'pending':
+        case 'expired':
+        case 'denied':
+          return { status };
+        default:
+          return { status: 'unknown' };
+      }
+    },
+  };
+}
+
+/**
+ * Process-local, and therefore correct only for a single instance — kept for
+ * tests and for a single-process development run. A device login only completes
+ * when both legs reach the same process, which is why `buildApp` refuses to fall
+ * back to this one outside development.
  */
 export function createInMemoryDeviceStore(now: () => Date = () => new Date()): DeviceStore {
   const byDeviceCode = new Map<string, StoredGrant>();

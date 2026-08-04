@@ -1,0 +1,45 @@
+{
+  "$comment": [
+    "Rate limits for services/control-api, per plan 02 CP-5.",
+    "A file rather than constants in code: an operator responding to an incident",
+    "changes a limit by editing this and restarting, not by opening a pull request.",
+    "Loaded and validated by src/config/rate-limits.ts; an invalid file refuses to boot.",
+    "",
+    "perMinute — sustained rate: how fast the bucket refills.",
+    "burst     — bucket capacity: how many requests may arrive at once.",
+    "scope     — 'organization' keys the bucket by organization (falling back to the",
+    "            user, then the client address, when a request names none); 'ip' keys",
+    "            it by client address alone, which is what an unauthenticated brute",
+    "            force has to be counted by.",
+    "whenUnavailable — what to do when Redis cannot answer. 'allow' keeps the API up",
+    "            at the cost of a missed window; 'deny' keeps the protection at the",
+    "            cost of the route. Reads and mutations fail open because a limiter",
+    "            that takes the control plane down is worse than one that misses a",
+    "            window. Auth fails closed because password-adjacent brute-force",
+    "            protection that evaporates the moment a cache blips is not",
+    "            protection at all."
+  ],
+  "classes": {
+    "auth": {
+      "note": "/v1/auth/* — sign-in, refresh, device grants. Counted per client address.",
+      "perMinute": 10,
+      "burst": 10,
+      "scope": "ip",
+      "whenUnavailable": "deny"
+    },
+    "reads": {
+      "note": "Every GET and HEAD outside /v1/auth.",
+      "perMinute": 600,
+      "burst": 600,
+      "scope": "organization",
+      "whenUnavailable": "allow"
+    },
+    "mutations": {
+      "note": "Every other method outside /v1/auth — POST, PATCH, PUT, DELETE.",
+      "perMinute": 60,
+      "burst": 60,
+      "scope": "organization",
+      "whenUnavailable": "allow"
+    }
+  }
+}

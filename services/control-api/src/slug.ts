@@ -49,3 +49,23 @@ export function slugify(name: string): string {
 export function randomSuffix(): string {
   return randomBytes(3).toString('hex');
 }
+
+/**
+ * A slug derived from `name`, guaranteed to be one.
+ *
+ * `slugify` answers with whatever survives, and what survives is not always a
+ * slug: a name of one character ("X", "李") reduces to a single character, which
+ * {@link SlugSchema} rejects at two, and a name with nothing Latin in it reduces
+ * to nothing at all. Both used to become rows that this service's own schema
+ * would refuse on the way back out — a `PATCH` that changed only the name would
+ * fail validation on a slug the caller never chose (plan 02 CP-3 review).
+ *
+ * So the derived slug is checked against the same schema a client's slug is
+ * held to, and anything that fails it falls back to `<prefix>-<random>`. That
+ * keeps the rule in one place: a future tightening of `SlugSchema` cannot leave
+ * derived slugs behind.
+ */
+export function derivedSlug(name: string, prefix: string): string {
+  const candidate = slugify(name);
+  return SlugSchema.safeParse(candidate).success ? candidate : `${prefix}-${randomSuffix()}`;
+}

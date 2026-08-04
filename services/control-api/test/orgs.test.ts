@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import { hashInviteToken, INVITE_TTL_MS } from '../src/orgs/invites.js';
+import { SlugSchema } from '../src/slug.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 
 /**
@@ -239,6 +240,28 @@ describe('POST /v1/organizations', () => {
     );
   });
 
+  it('never derives a slug its own schema would reject', async () => {
+    // A one-character name reduces to a one-character slug, which `SlugSchema`
+    // refuses at two — so the row could be created and then never accepted back
+    // by a `PATCH` that touched only the name (plan 02 CP-3 review).
+    const built = harness();
+    const owner = await signIn(built, OWNER);
+
+    for (const name of ['A', '李', '.']) {
+      const response = await built.app.inject({
+        method: 'POST',
+        url: '/v1/organizations',
+        headers: owner.headers,
+        payload: { name },
+      });
+
+      expect(response.statusCode, name).toBe(201);
+      const { slug } = response.json<{ organization: { slug: string } }>().organization;
+      expect(SlugSchema.safeParse(slug).success, `${name} → ${slug}`).toBe(true);
+      expect(slug).toMatch(/^org-[0-9a-f]{6}$/);
+    }
+  });
+
   it('records the creation in the audit trail, actor and all', async () => {
     const built = harness();
     const { owner, organizationId } = await found(built);
@@ -310,6 +333,60 @@ describe('GET /v1/organizations', () => {
     expect(body.items[0]?.role).toBe('owner');
     // FND-10: explicitly null, never absent.
     expect(body.nextCursor).toBeNull();
+  });
+
+  it('pages with the cursor it hands out', async () => {
+    // The envelope promises keyset pagination on every list. It used to answer
+    // `nextCursor: null` unconditionally, which is a promise a client cannot
+    // act on and a page size nobody chose (plan 02 CP-3 review).
+    const built = harness();
+    const first = await found(built, OWNER, 'Acme One');
+    const second = await built.app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: first.owner.headers,
+      payload: { name: 'Acme Two' },
+    });
+    const secondId = second.json<{ organization: { id: string } }>().organization.id;
+
+    const page = await built.app.inject({
+      method: 'GET',
+      url: '/v1/organizations?limit=1',
+      headers: first.owner.headers,
+    });
+    const body = page.json<{
+      items: { organization: { id: string } }[];
+      nextCursor: string | null;
+    }>();
+    expect(body.items.map((item) => item.organization.id)).toEqual([secondId]);
+    expect(body.nextCursor).toBe(secondId);
+
+    const next = await built.app.inject({
+      method: 'GET',
+      url: `/v1/organizations?limit=1&cursor=${body.nextCursor ?? ''}`,
+      headers: first.owner.headers,
+    });
+    const rest = next.json<{
+      items: { organization: { id: string } }[];
+      nextCursor: string | null;
+    }>();
+    expect(rest.items.map((item) => item.organization.id)).toEqual([first.organizationId]);
+    // The last page says so rather than promising a third.
+    expect(rest.nextCursor).toBeNull();
+  });
+
+  it('refuses a cursor that is not one', async () => {
+    const built = harness();
+    const founded = await found(built);
+
+    const response = await built.app.inject({
+      method: 'GET',
+      url: '/v1/organizations?cursor=not-an-id',
+      headers: founded.owner.headers,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorOf(response)).toBe('validation_failed');
   });
 
   it('requires a session', async () => {
@@ -460,7 +537,11 @@ describe('POST /v1/organizations/:orgId/invites', () => {
 
     // The hash opens it…
     expect(
-      await built.invites.claim({ tokenHash: hashInviteToken(token), email: OTHER.email }),
+      await built.invites.claim({
+        tokenHash: hashInviteToken(token),
+        email: OTHER.email,
+        complete: () => Promise.resolve(undefined),
+      }),
     ).toMatchObject({ status: 'claimed' });
     // …and nothing anywhere else — the store, or the audit trail it wrote —
     // contains the token itself.

@@ -3,6 +3,7 @@ export {
   type AppDeps,
   type AppInstance,
   type AuthDeps,
+  type LimitDeps,
   type OrgDeps,
   type TenantDeps,
 } from './app.js';
@@ -30,10 +31,12 @@ export type { SessionContext } from './plugins/auth.js';
 // comparing roles.
 export {
   ACTIONS,
+  PERMISSION_SETTINGS,
   ROLES,
   can,
   type Action,
   type PermissionContext,
+  type PermissionSetting,
   type Role,
 } from './policy/permissions.js';
 export {
@@ -45,22 +48,64 @@ export {
   type OrganizationMembership,
   type OrganizationRecord,
   type OrganizationStore,
+  type PageRequest,
+  type RoleUpdate,
+  type StorePage,
 } from './orgs/store.js';
 export {
   createInMemoryInviteStore,
+  createRedisInviteStore,
   hashInviteToken,
   INVITE_TTL_MS,
+  type ClaimInput,
   type InviteClaim,
   type InviteRecord,
   type InviteStore,
 } from './orgs/invites.js';
+
+// CP-5 — the audit trail, idempotency keys and rate limits. The sinks and
+// stores are exported so a later service composes the same seams rather than
+// inventing parallel ones; `composeApp` is what `server.ts` itself uses.
 export {
   AUDIT_ACTIONS,
+  createDbAuditSink,
   createInMemoryAuditSink,
+  NO_TRANSACTION,
   type AuditAction,
+  type AuditExecutor,
+  type AuditHook,
+  type AuditMetadata,
   type AuditRecord,
   type AuditSink,
+  type AuditValue,
 } from './plugins/audit.js';
+export { createRedisTokenDenylist } from './auth/denylist.js';
+export { createRedisDeviceStore } from './auth/device.js';
+export { createRedisConnection, type RedisCommands, type RedisConnection } from './redis/client.js';
+export {
+  loadRateLimits,
+  RATE_LIMIT_CLASSES,
+  RATE_LIMITS_PATH,
+  type RateLimitClass,
+  type RateLimitConfig,
+  type RateLimitRule,
+} from './config/rate-limits.js';
+export {
+  createInMemoryRateLimiter,
+  createRedisRateLimiter,
+  type RateLimitDecision,
+  type RateLimiter,
+} from './plugins/rate-limit.js';
+export {
+  createInMemoryIdempotencyStore,
+  createRedisIdempotencyStore,
+  IDEMPOTENT_REPLAY_HEADER,
+  type IdempotencyEntry,
+  type IdempotencyStore,
+  type StoredResponse,
+} from './plugins/idempotency.js';
+export { composeApp, type ServiceRuntime } from './compose.js';
+export { loadRedisUrl } from './env.js';
 
 // CP-4 — tenant context. `forOrg` never leaves this boundary: a caller builds
 // the factory once and hands it to `buildApp`, and every route reads through

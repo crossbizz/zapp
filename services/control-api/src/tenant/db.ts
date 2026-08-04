@@ -9,6 +9,7 @@ import {
 } from '@zapp/db';
 
 import { isUniqueViolation } from '../db/errors.js';
+import type { AuditHook } from '../plugins/audit.js';
 
 /**
  * The only database handle a route handler is ever given.
@@ -37,6 +38,11 @@ export interface NewProjectInput {
   readonly supportLevel: SupportLevel;
   readonly createdBy: string;
   readonly now: Date;
+  /**
+   * Runs inside the insert's transaction, so the `audit_events` row and the
+   * project commit together or not at all (plan 02 CP-5).
+   */
+  readonly audit: AuditHook<Project>;
 }
 
 /**
@@ -76,27 +82,30 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         ...scoped.projects,
         async create(input: NewProjectInput): Promise<CreatedProject> {
           try {
-            const [row] = await db
-              .insert(projects)
-              .values({
-                id: newId('proj'),
-                // The handle's organization, full stop. There is deliberately no
-                // way for a caller to supply this.
-                organizationId: scoped.organizationId,
-                name: input.name,
-                slug: input.slug,
-                description: input.description,
-                sourceType: input.sourceType,
-                supportLevel: input.supportLevel,
-                createdBy: input.createdBy,
-                createdAt: input.now,
-              })
-              .returning();
-            if (row === undefined) {
-              // Unreachable: an insert with RETURNING yields the row it wrote.
-              throw new Error('project insert returned no row');
-            }
-            return row;
+            return await db.transaction(async (tx) => {
+              const [row] = await tx
+                .insert(projects)
+                .values({
+                  id: newId('proj'),
+                  // The handle's organization, full stop. There is deliberately
+                  // no way for a caller to supply this.
+                  organizationId: scoped.organizationId,
+                  name: input.name,
+                  slug: input.slug,
+                  description: input.description,
+                  sourceType: input.sourceType,
+                  supportLevel: input.supportLevel,
+                  createdBy: input.createdBy,
+                  createdAt: input.now,
+                })
+                .returning();
+              if (row === undefined) {
+                // Unreachable: an insert with RETURNING yields the row it wrote.
+                throw new Error('project insert returned no row');
+              }
+              await input.audit(tx, row);
+              return row;
+            });
           } catch (error) {
             if (isUniqueViolation(error)) {
               return 'slug_taken';

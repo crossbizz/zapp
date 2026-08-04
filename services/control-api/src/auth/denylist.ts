@@ -1,3 +1,5 @@
+import type { RedisCommands } from '../redis/client.js';
+
 /**
  * Revocation for tokens that are otherwise still valid.
  *
@@ -39,16 +41,48 @@ export function sessionFamilyKey(sessionId: string): string {
   return `sid:${sessionId}`;
 }
 
+/** Namespace, so a denied `jti` cannot collide with any other key in the database. */
+const KEY_PREFIX = 'deny:';
+
 /**
- * Process-local, and therefore correct only for a single instance.
+ * The shipping implementation (CP-5), and the reason {@link TokenDenylist.deny}
+ * returns a boolean: `SET key "" NX PX <ttl>` answers `OK` for the caller that
+ * created the key and `nil` for everyone after, so the *write* decides who spent
+ * a refresh token. A `GET` followed by a `SET` would let two concurrent
+ * presentations of one token both pass, which is precisely the reuse this exists
+ * to detect.
  *
- * This is deliberate and temporary: the Upstash Redis client is a locked stack
- * decision (master plan §2) and arrives with the rate-limit and fanout work in
- * CP-5, at which point this becomes `SET NX PX` behind the same interface and
- * every caller stays as written. Until then a multi-instance deployment would
- * honour a logout only on the instance that served it — which is why this ships
- * behind a port instead of a `Map` in a route handler, and why `buildApp`
- * refuses to fall back to it in production.
+ * Expiry is Redis', not ours: an entry outlives the token it revokes by nothing,
+ * so the list stays bounded by the number of unexpired sessions rather than
+ * growing forever, and there is no sweep to get wrong.
+ */
+export function createRedisTokenDenylist(
+  redis: RedisCommands,
+  now: () => Date = () => new Date(),
+): TokenDenylist {
+  return {
+    async deny(key, expiresAt) {
+      const ttl = expiresAt.getTime() - now().getTime();
+      // Already expired: there is nothing left to revoke, and writing a key
+      // with a non-positive TTL is an error rather than a no-op.
+      if (ttl <= 0) {
+        return false;
+      }
+      return await redis.setIfAbsent(`${KEY_PREFIX}${key}`, '', ttl);
+    },
+
+    async isDenied(...keys) {
+      return await redis.exists(keys.map((key) => `${KEY_PREFIX}${key}`));
+    },
+  };
+}
+
+/**
+ * Process-local, and therefore correct only for a single instance — kept for
+ * tests and for a single-process development run. {@link createRedisTokenDenylist}
+ * is what a deployment uses; `buildApp` refuses to fall back to this one outside
+ * development, because a multi-instance deployment would otherwise honour a
+ * logout only on the instance that served it.
  */
 export function createInMemoryTokenDenylist(now: () => Date = () => new Date()): TokenDenylist {
   const entries = new Map<string, number>();

@@ -1,8 +1,9 @@
 import { newId } from '@zapp/contracts';
 import { memberships, organizations, type Database, type Executor } from '@zapp/db';
-import { and, asc, desc, eq, exists, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
+import type { AuditHook } from '../plugins/audit.js';
 import type { Role } from '../policy/permissions.js';
 
 /**
@@ -24,6 +25,12 @@ import type { Role } from '../policy/permissions.js';
  *     side of it: {@link CreateOrganizationInput.link} runs inside the same
  *     transaction as the rows, so a Stytch organization that cannot be created
  *     leaves no zapp organization behind (plan 02 CP-3).
+ *   - **The audit row is part of the mutation.** Every write here takes an
+ *     {@link AuditHook} and calls it inside its own transaction, so the row that
+ *     says what happened and the change it describes commit together or not at
+ *     all (plan 02 CP-5, master plan §Global Constraints). It is not optional:
+ *     a mutation that could be performed without recording it is one that will
+ *     be.
  */
 
 export type MembershipStatus = 'invited' | 'active' | 'removed';
@@ -74,6 +81,8 @@ export interface CreateOrganizationInput {
    * worse than no organization at all.
    */
   readonly link: (organization: OrganizationRecord) => Promise<{ externalOrgId: string }>;
+  /** Runs last, still inside the transaction — see the file header. */
+  readonly audit: AuditHook<CreatedOrganization>;
 }
 
 export interface CreatedOrganization {
@@ -93,18 +102,51 @@ export interface CreatedOrganization {
 /** Outcome of a membership write. `last_owner` is the invariant, not an error. */
 export type MemberUpdate = 'updated' | 'member_not_found' | 'last_owner';
 
+/**
+ * `setRole`'s answer: the membership as it now stands, or why it was refused.
+ *
+ * The *record*, not `'updated'` — because the caller's next act is to report and
+ * audit it, and re-reading the row outside the store call is how the two drift:
+ * a concurrent removal between the write and the read turns a successful change
+ * into a spurious 404 with no audit row, and a concurrent second change makes
+ * the trail record a role nobody requested (plan 02 CP-3 review).
+ */
+export type RoleUpdate = MembershipRecord | 'member_not_found' | 'last_owner';
+
+/** One keyset page. `nextCursor` is null on the last one — never absent (FND-10). */
+export interface StorePage<T> {
+  readonly items: T[];
+  readonly nextCursor: string | null;
+}
+
+export interface PageRequest {
+  readonly limit: number;
+  /** The last id of the previous page; rows strictly after it are returned. */
+  readonly cursor?: string;
+}
+
 export interface OrganizationStore {
-  /** @throws {SlugTakenError} when `slug` is taken; rolls back if `link` rejects. */
+  /** @throws {SlugTakenError} when `slug` is taken; rolls back if `link` or `audit` rejects. */
   create(input: CreateOrganizationInput): Promise<CreatedOrganization>;
   findById(organizationId: string): Promise<OrganizationRecord | undefined>;
-  /** The caller's own memberships, newest first. Removed ones are not memberships. */
-  listForUser(userId: string): Promise<OrganizationMembership[]>;
-  /** `undefined` when there is no membership, or it was removed — which is the same answer. */
+  /**
+   * The caller's own **active** memberships, newest first, one keyset page at a
+   * time.
+   *
+   * `active`, not merely "not removed": an invitation that was issued and never
+   * accepted is a row, not an access grant — the same rule `membership()` and
+   * the tenant plugin apply, because it is the same question. A list that
+   * disagreed with them would show a person an organization every other route
+   * then denies them.
+   */
+  listForUser(userId: string, page?: PageRequest): Promise<StorePage<OrganizationMembership>>;
+  /** `undefined` when there is no active membership — removed and invited are the same answer. */
   membership(organizationId: string, userId: string): Promise<MembershipRecord | undefined>;
   /** @throws {SlugTakenError} */
   update(
     organizationId: string,
     patch: { name?: string; slug?: string },
+    audit: AuditHook<OrganizationRecord>,
   ): Promise<OrganizationRecord | undefined>;
   /**
    * Adds a membership, or reactivates a removed one. An **active** membership is
@@ -116,10 +158,23 @@ export interface OrganizationStore {
     userId: string;
     role: Role;
     now: Date;
+    audit: AuditHook<MembershipRecord>;
   }): Promise<MembershipRecord>;
-  setRole(organizationId: string, userId: string, role: Role): Promise<MemberUpdate>;
-  removeMember(organizationId: string, userId: string): Promise<MemberUpdate>;
+  setRole(
+    organizationId: string,
+    userId: string,
+    role: Role,
+    audit: AuditHook<MembershipRecord>,
+  ): Promise<RoleUpdate>;
+  removeMember(
+    organizationId: string,
+    userId: string,
+    audit: AuditHook<MembershipRecord>,
+  ): Promise<MemberUpdate>;
 }
+
+/** How many memberships a page carries when the client does not say. */
+export const DEFAULT_PAGE_SIZE = 50;
 
 const UNIQUE_VIOLATION = '23505';
 
@@ -195,7 +250,7 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
     tx: Executor,
     organizationId: string,
     userId: string,
-  ): Promise<MemberUpdate> {
+  ): Promise<'member_not_found' | 'last_owner'> {
     const [row] = await tx
       .select({ userId: memberships.userId })
       .from(memberships)
@@ -209,6 +264,14 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
       .limit(1);
     return row === undefined ? 'member_not_found' : 'last_owner';
   }
+
+  /** The membership columns, as a record — one shape for every write that returns one. */
+  const MEMBERSHIP_COLUMNS = {
+    organizationId: memberships.organizationId,
+    userId: memberships.userId,
+    role: memberships.role,
+    status: memberships.status,
+  } as const;
 
   return {
     async create(input) {
@@ -240,7 +303,9 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
         // Last, and inside the transaction: everything above it is undone if
         // the provider refuses.
         const { externalOrgId } = await input.link(organization);
-        return { organization, membership, externalOrgId };
+        const created = { organization, membership, externalOrgId };
+        await input.audit(tx, created);
+        return created;
       });
     },
 
@@ -253,8 +318,10 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
       return row;
     },
 
-    async listForUser(userId) {
-      return await db
+    async listForUser(userId, page) {
+      const limit = page?.limit ?? DEFAULT_PAGE_SIZE;
+      const cursor = page?.cursor;
+      const rows = await db
         .select({
           organization: ORGANIZATION_COLUMNS,
           role: memberships.role,
@@ -262,14 +329,30 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
         })
         .from(memberships)
         .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
-        .where(and(eq(memberships.userId, userId), ne(memberships.status, 'removed')))
-        // Ids are monotonic ULIDs, so descending id is newest-first.
-        .orderBy(desc(organizations.id));
+        .where(
+          and(
+            eq(memberships.userId, userId),
+            eq(memberships.status, 'active'),
+            ...(cursor === undefined ? [] : [lt(organizations.id, cursor)]),
+          ),
+        )
+        // Ids are monotonic ULIDs, so descending id is newest-first — and a
+        // total order, which is what makes the cursor below unambiguous.
+        .orderBy(desc(organizations.id))
+        // One extra row, never returned: its presence is the whole of "there is
+        // another page", and asking that way costs one row instead of a count.
+        .limit(limit + 1);
+
+      const items = rows.slice(0, limit);
+      return {
+        items,
+        nextCursor: rows.length > limit ? (items.at(-1)?.organization.id ?? null) : null,
+      };
     },
 
     async membership(organizationId, userId) {
       const [row] = await db
-        .select()
+        .select(MEMBERSHIP_COLUMNS)
         .from(memberships)
         .where(
           and(
@@ -279,27 +362,25 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
           ),
         )
         .limit(1);
-      return row === undefined
-        ? undefined
-        : {
-            organizationId: row.organizationId,
-            userId: row.userId,
-            role: row.role,
-            status: row.status,
-          };
+      return row;
     },
 
-    async update(organizationId, patch) {
+    async update(organizationId, patch, audit) {
       try {
-        const [row] = await db
-          .update(organizations)
-          .set({
-            ...(patch.name === undefined ? {} : { name: patch.name }),
-            ...(patch.slug === undefined ? {} : { slug: patch.slug }),
-          })
-          .where(eq(organizations.id, organizationId))
-          .returning(ORGANIZATION_COLUMNS);
-        return row;
+        return await db.transaction(async (tx) => {
+          const [row] = await tx
+            .update(organizations)
+            .set({
+              ...(patch.name === undefined ? {} : { name: patch.name }),
+              ...(patch.slug === undefined ? {} : { slug: patch.slug }),
+            })
+            .where(eq(organizations.id, organizationId))
+            .returning(ORGANIZATION_COLUMNS);
+          if (row !== undefined) {
+            await audit(tx, row);
+          }
+          return row;
+        });
       } catch (error) {
         if (isUniqueViolation(error)) {
           throw new SlugTakenError();
@@ -309,45 +390,43 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
     },
 
     async addMember(input) {
-      await db
-        .insert(memberships)
-        .values({
-          organizationId: input.organizationId,
-          userId: input.userId,
-          role: input.role,
-          status: 'active',
-          createdAt: input.now,
-        })
-        .onConflictDoUpdate({
-          target: [memberships.organizationId, memberships.userId],
-          set: { role: input.role, status: 'active' },
-          // The existing row, not the proposed one: an active membership is
-          // never rewritten.
-          setWhere: ne(memberships.status, 'active'),
-        });
+      return await db.transaction(async (tx) => {
+        await tx
+          .insert(memberships)
+          .values({
+            organizationId: input.organizationId,
+            userId: input.userId,
+            role: input.role,
+            status: 'active',
+            createdAt: input.now,
+          })
+          .onConflictDoUpdate({
+            target: [memberships.organizationId, memberships.userId],
+            set: { role: input.role, status: 'active' },
+            // The existing row, not the proposed one: an active membership is
+            // never rewritten.
+            setWhere: ne(memberships.status, 'active'),
+          });
 
-      const [row] = await db
-        .select()
-        .from(memberships)
-        .where(
-          and(
-            eq(memberships.organizationId, input.organizationId),
-            eq(memberships.userId, input.userId),
-          ),
-        )
-        .limit(1);
-      if (row === undefined) {
-        throw new Error('membership upsert returned no row');
-      }
-      return {
-        organizationId: row.organizationId,
-        userId: row.userId,
-        role: row.role,
-        status: row.status,
-      };
+        const [row] = await tx
+          .select(MEMBERSHIP_COLUMNS)
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.organizationId, input.organizationId),
+              eq(memberships.userId, input.userId),
+            ),
+          )
+          .limit(1);
+        if (row === undefined) {
+          throw new Error('membership upsert returned no row');
+        }
+        await input.audit(tx, row);
+        return row;
+      });
     },
 
-    async setRole(organizationId, userId, role) {
+    async setRole(organizationId, userId, role, audit) {
       // Promotion to Owner can never remove the last one, so it carries no guard.
       const guard =
         role === 'owner'
@@ -356,7 +435,7 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
 
       return await db.transaction(async (tx) => {
         await lockOwners(tx, organizationId);
-        const updated = await tx
+        const [updated] = await tx
           .update(memberships)
           .set({ role })
           .where(
@@ -367,19 +446,23 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
               ...guard,
             ),
           )
-          .returning({ userId: memberships.userId });
+          .returning(MEMBERSHIP_COLUMNS);
 
-        return updated.length > 0 ? 'updated' : await classify(tx, organizationId, userId);
+        if (updated === undefined) {
+          return await classify(tx, organizationId, userId);
+        }
+        await audit(tx, updated);
+        return updated;
       });
     },
 
-    async removeMember(organizationId, userId) {
+    async removeMember(organizationId, userId, audit) {
       return await db.transaction(async (tx) => {
         await lockOwners(tx, organizationId);
         // Soft: the row stays as the audit trail of an access change (PRD §23.1
         // gives memberships a `removed` status for exactly this), and every read
         // path treats it as absent.
-        const updated = await tx
+        const [updated] = await tx
           .update(memberships)
           .set({ status: 'removed' })
           .where(
@@ -390,9 +473,13 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
               or(ne(memberships.role, 'owner'), anotherActiveOwner(organizationId, userId)),
             ),
           )
-          .returning({ userId: memberships.userId });
+          .returning(MEMBERSHIP_COLUMNS);
 
-        return updated.length > 0 ? 'updated' : await classify(tx, organizationId, userId);
+        if (updated === undefined) {
+          return await classify(tx, organizationId, userId);
+        }
+        await audit(tx, updated);
+        return 'updated';
       });
     },
   };

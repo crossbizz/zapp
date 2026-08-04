@@ -1,33 +1,56 @@
 import { createDb } from '@zapp/db';
 
-import { buildApp } from './app.js';
 import { loadAuthEnv } from './auth/config.js';
-import { createStytchAuthPort } from './auth/stytch.js';
-import { createDbUserStore } from './auth/users.js';
-import { loadEnv } from './env.js';
+import { composeApp } from './compose.js';
+import { loadRateLimits } from './config/rate-limits.js';
+import { loadEnv, loadRedisUrl } from './env.js';
 import { loggerOptions } from './logging.js';
-import { createDbOrganizationStore } from './orgs/store.js';
+import { createRedisConnection } from './redis/client.js';
+
+/**
+ * The listen entrypoint, and nothing else: read the environment, open the
+ * handles, hand them to {@link composeApp}, serve. Every wiring decision lives
+ * in `compose.ts`, where a test can assert it.
+ */
 
 const env = loadEnv();
-// Fails fast and by name: a control plane that cannot verify a session, or does
-// not know which database it owns, must not accept the first request.
+// Fails fast and by name: a control plane that cannot verify a session, does
+// not know which database it owns, cannot reach the store holding its revoked
+// sessions, or has no limits configured must not accept the first request.
 const auth = loadAuthEnv();
-const database = createDb(auth.databaseUrl);
+const redisUrl = loadRedisUrl();
+const rateLimits = loadRateLimits();
 
-const app = buildApp({
-  logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
-  auth: {
-    port: createStytchAuthPort(auth.stytch),
-    users: createDbUserStore(database.db),
-    config: auth.config,
+const database = createDb(auth.databaseUrl);
+// The app does not exist yet, and a connection error can arrive at any time
+// after this line. Routed through a mutable sink so it reaches the same logger
+// as everything else rather than a bare `console`.
+let logRedisError: (error: Error) => void = () => {};
+const redis = createRedisConnection(redisUrl, {
+  onError: (error) => {
+    logRedisError(error);
   },
-  orgs: { organizations: createDbOrganizationStore(database.db) },
 });
 
-// The pool is opened here, so it is closed here — `close()` runs every `onClose`
-// hook, and this is the hook for the handle this file created.
+const app = composeApp({
+  logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
+  database: database.db,
+  redis,
+  auth,
+  rateLimits,
+});
+
+logRedisError = (error) => {
+  // Not fatal: the rate limiter fails open for reads and closed for auth by
+  // configuration, and the session layer reports its own failures per request.
+  app.log.error({ err: error }, 'redis connection error');
+};
+
+// The handles are opened here, so they are closed here — `close()` runs every
+// `onClose` hook, and these are the hooks for the handles this file created.
 app.addHook('onClose', async () => {
   await database.close();
+  await redis.close();
 });
 
 /**

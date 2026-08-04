@@ -30,6 +30,9 @@ const ALICE = {
   displayName: 'Alice Example',
 };
 
+/** Store calls whose subject is not the audit trail still have to pass a hook. */
+const noAudit = (): Promise<void> => Promise.resolve();
+
 describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
   let database: TestDatabase;
   let store: OrganizationStore;
@@ -72,6 +75,7 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
         creatorUserId: alice,
         now: new Date(),
         link: () => Promise.reject(new Error('provider refused')),
+        audit: noAudit,
       }),
     ).rejects.toThrow('provider refused');
 
@@ -90,9 +94,16 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
       creatorUserId: alice,
       now: new Date(),
       link: () => Promise.resolve({ externalOrgId: 'organization-test' }),
+      audit: noAudit,
     });
     const organizationId = created.organization.id;
-    await store.addMember({ organizationId, userId: bob, role: 'owner', now: new Date() });
+    await store.addMember({
+      organizationId,
+      userId: bob,
+      role: 'owner',
+      now: new Date(),
+      audit: noAudit,
+    });
 
     // The interleaving is staged rather than hoped for: an open transaction
     // demotes Bob and holds, and Alice's demotion arrives while it is still
@@ -113,8 +124,8 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    let outcome: string | undefined;
-    const pending = store.setRole(organizationId, alice, 'viewer').then((result) => {
+    let outcome: unknown;
+    const pending = store.setRole(organizationId, alice, 'viewer', noAudit).then((result) => {
       outcome = result;
     });
     await new Promise((resolve) => setTimeout(resolve, 250));
