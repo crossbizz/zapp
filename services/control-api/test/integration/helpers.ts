@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { createDb, type Db } from '@zapp/db';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 
+import { credentialGate } from '../support/credentials.js';
+
 /**
  * The database rail for this service's integration suites.
  *
@@ -18,23 +20,34 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 
 const DATABASE_URL = process.env.DATABASE_URL ?? '';
 
-/** Env-gated on the FND-7 dev stack: with no `DATABASE_URL`, suites skip — never pass. */
-export const hasDatabase = DATABASE_URL !== '';
+/**
+ * Env-gated on the FND-7 dev stack: with no `DATABASE_URL`, suites skip — never
+ * pass.
+ *
+ * Through `credentialGate` rather than `!== ''` so that one rule decides what
+ * "present" means for every gated suite in this service — see
+ * `../support/credentials.ts`. `.env.example` ships a working local URL here, so
+ * this gate does not change behaviour; it is the *rule* that is shared, not the
+ * outcome.
+ */
+const databaseGate = credentialGate(['DATABASE_URL']);
+export const hasDatabase = databaseGate.present;
 
 if (!hasDatabase) {
   console.warn(
-    '[@zapp/control-api] integration tests skipped: DATABASE_URL is unset — start the dev stack with ./scripts/dev-up.sh',
+    `[@zapp/control-api] integration tests skipped: ${databaseGate.reason} — start the dev stack with ./scripts/dev-up.sh`,
   );
 }
 
 const REDIS_URL = process.env.REDIS_URL ?? '';
 
 /** Env-gated the same way: with no `REDIS_URL`, the Redis suites skip — never pass. */
-export const hasRedis = REDIS_URL !== '';
+const redisGate = credentialGate(['REDIS_URL']);
+export const hasRedis = redisGate.present;
 
 if (!hasRedis) {
   console.warn(
-    '[@zapp/control-api] Redis integration tests skipped: REDIS_URL is unset — start the dev stack with ./scripts/dev-up.sh',
+    `[@zapp/control-api] Redis integration tests skipped: ${redisGate.reason} — start the dev stack with ./scripts/dev-up.sh`,
   );
 }
 

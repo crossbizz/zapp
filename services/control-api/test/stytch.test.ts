@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AuthPortError } from '../src/auth/port.js';
-import { createStytchAuthPort, type StytchClientLike } from '../src/auth/stytch.js';
+import {
+  classifyStytchFailure,
+  createStytchAuthPort,
+  type StytchClientLike,
+  type StytchFault,
+} from '../src/auth/stytch.js';
 
 /**
  * The Stytch adapter, tested where it can be: the request it shapes and the
@@ -242,6 +247,130 @@ describe('verifySession', () => {
     const port = createStytchAuthPort(CONFIG, client);
 
     expect(await port.verifySession('expired')).toBeNull();
+  });
+});
+
+/**
+ * The half of the adapter that decides whether a failure is routine.
+ *
+ * Written because it was not decided at all: `verifySession` was
+ * `catch { return null }` and `exchangeCode` funnelled everything into
+ * `exchange_failed`, so a 401 from a wrong secret and a 401 from an expired
+ * session were the same event to every reader — including
+ * `test/integration/auth.test.ts`, which is how that suite passed against
+ * `STYTCH_SECRET=replace-me` with a project id of all zeros.
+ */
+describe('classifyStytchFailure', () => {
+  /** What the SDK constructs from a non-2xx body (`stytch/dist/shared/errors.js`). */
+  const stytchError = (fields: Record<string, unknown>): unknown =>
+    Object.assign(new Error('stytch'), {
+      status_code: 401,
+      request_id: 'request-id-test-9f0b',
+      ...fields,
+    });
+
+  it('calls a refusal of our own credentials a misconfiguration', () => {
+    expect(
+      classifyStytchFailure(
+        stytchError({ error_type: 'unauthorized_credentials' }),
+        'verifySession',
+      ),
+    ).toEqual({
+      kind: 'misconfigured',
+      operation: 'verifySession',
+      errorType: 'unauthorized_credentials',
+      statusCode: 401,
+      requestId: 'request-id-test-9f0b',
+    });
+  });
+
+  it('calls a refusal of the subject a rejection, at the same status code', () => {
+    // The pair that matters: both are 401s, and only the error type separates
+    // "this session is over" from "we cannot sign in to Stytch at all".
+    const fault = classifyStytchFailure(
+      stytchError({ error_type: 'session_not_found' }),
+      'verifySession',
+    );
+    expect(fault.kind).toBe('rejected');
+    expect(fault.statusCode).toBe(401);
+    expect(fault.requestId).toBe('request-id-test-9f0b');
+  });
+
+  it('calls anything that never answered unreachable, and invents no detail', () => {
+    // A RequestError, a fetch TypeError, an abort: no status, no request id,
+    // and — the point — never mistaken for Stytch having rejected something.
+    for (const thrown of [new Error('fetch failed'), 'nonsense', undefined, { request: {} }]) {
+      const fault = classifyStytchFailure(thrown, 'exchangeCode');
+      expect(fault).toEqual({ kind: 'unreachable', operation: 'exchangeCode' });
+    }
+  });
+});
+
+describe('fault reporting', () => {
+  it('reports a rejected session and still answers null', async () => {
+    const faults: StytchFault[] = [];
+    const { client, calls } = mockClient();
+    calls.authenticateJwt.mockRejectedValue(
+      Object.assign(new Error('stytch'), {
+        status_code: 401,
+        error_type: 'session_not_found',
+        request_id: 'request-id-test-1',
+      }),
+    );
+    const port = createStytchAuthPort({ ...CONFIG, onFault: (f) => faults.push(f) }, client);
+
+    expect(await port.verifySession('expired')).toBeNull();
+    expect(faults).toEqual([
+      {
+        kind: 'rejected',
+        operation: 'verifySession',
+        errorType: 'session_not_found',
+        statusCode: 401,
+        requestId: 'request-id-test-1',
+      },
+    ]);
+  });
+
+  it('reports a misconfiguration through exchangeCode without changing what the caller sees', async () => {
+    const faults: StytchFault[] = [];
+    const { client, calls } = mockClient();
+    calls.authenticate.mockRejectedValue(
+      Object.assign(new Error('stytch'), {
+        status_code: 401,
+        error_type: 'unauthorized_credentials',
+        request_id: 'request-id-test-2',
+      }),
+    );
+    const port = createStytchAuthPort({ ...CONFIG, onFault: (f) => faults.push(f) }, client);
+
+    const error = await port.exchangeCode('token').catch((thrown: unknown) => thrown);
+
+    // The client is told nothing about our credentials — telling them would be
+    // an oracle, and the wording is the same one every other failure produces.
+    expect((error as AuthPortError).code).toBe('exchange_failed');
+    expect((error as AuthPortError).message).toBe('Sign-in could not be completed.');
+    // The operator is told exactly which of the two things went wrong.
+    expect(faults.map((fault) => fault.kind)).toEqual(['misconfigured']);
+  });
+
+  it('says nothing when the failure was ours rather than the provider’s', async () => {
+    // `organization_required` is raised inside the guarded operation by this
+    // adapter. Stytch answered fine; there is no provider fault to classify,
+    // and reporting one would put noise in front of the real ones.
+    const faults: StytchFault[] = [];
+    const { client } = mockClient({
+      authenticate: {
+        intermediate_session_token: 'ist-5',
+        email_address: 'nobody@acme.test',
+        discovered_organizations: [],
+      },
+    });
+    const port = createStytchAuthPort({ ...CONFIG, onFault: (f) => faults.push(f) }, client);
+
+    await expect(port.exchangeCode('token')).rejects.toMatchObject({
+      code: 'organization_required',
+    });
+    expect(faults).toEqual([]);
   });
 });
 

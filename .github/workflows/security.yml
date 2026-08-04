@@ -20,6 +20,27 @@ jobs:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # A job-level block *replaces* the workflow-level one rather than adding to
+    # it, so `contents: read` is repeated here for the checkout.
+    #
+    # `pull-requests: read` is what this job was missing. On a `pull_request`
+    # event the action scans the PR's commit range, which it reads from
+    # `GET /repos/{owner}/{repo}/pulls/{number}/commits` -- an endpoint
+    # `contents: read` does not cover. Without it the action crashed before
+    # scanning anything: `RequestError [HttpError]: Resource not accessible by
+    # integration` (403) out of `ScanPullRequest`, on every PR this repo has
+    # ever had (run 30922986837, and its two siblings). Three Dependabot PRs
+    # have been permanently red on a job that never ran a scan.
+    #
+    # Read and not write, on purpose: a Dependabot-triggered run gets a
+    # read-only GITHUB_TOKEN that no `permissions:` block can raise, so a job
+    # that needed write here could not be fixed at all -- see
+    # GITLEAKS_ENABLE_COMMENTS below.
+    permissions:
+      contents: read
+      pull-requests: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -35,6 +56,13 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action posts its findings as PR comments by default, which needs
+          # `pull-requests: write` -- a permission a Dependabot run cannot be
+          # granted, so leaving it on would trade one guaranteed 403 for
+          # another. A finding still fails the job, and still names the file and
+          # line in the step log and the job summary; the comment was never the
+          # blocking part.
+          GITLEAKS_ENABLE_COMMENTS: 'false'
 
   license-boundary:
     name: license boundary (no Dyad src/pro)

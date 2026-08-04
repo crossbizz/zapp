@@ -9,6 +9,7 @@ import { createDb, type Db } from '@zapp/db';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 
 import { createForgejoClient, type ForgejoClient } from '../../src/forgejo/client.js';
+import { credentialGate } from '../support/credentials.js';
 
 /**
  * The Forgejo rail for this service's integration suites.
@@ -42,7 +43,28 @@ import { createForgejoClient, type ForgejoClient } from '../../src/forgejo/clien
 const FORGEJO_URL = process.env['FORGEJO_URL'] ?? '';
 const FORGEJO_ADMIN_TOKEN = process.env['FORGEJO_ADMIN_TOKEN'] ?? '';
 
-export const hasForgejo = FORGEJO_URL !== '' && FORGEJO_ADMIN_TOKEN !== '';
+/**
+ * `credentialGate`, not `!== ''` — and here that is not a tidy-up, it is the
+ * third way this gate has been found to pass by not running.
+ *
+ * `.env.example` ships `FORGEJO_ADMIN_TOKEN=replace-me`, and node's `--env-file`
+ * never overrides a variable that is already in the process environment. So a
+ * shell that has `source`d `.env` shadows the real token in
+ * `.env.local.forgejo` — which is the file the `test:integration` script loads
+ * (`--env-file-if-exists`), because the previous round of this same bug was a
+ * developer being told to export the variables by hand. The suites then skip,
+ * vitest exits 0, and the run looks like the cross-repo denial property was
+ * checked.
+ *
+ * A placeholder is treated exactly as an absence — skip loudly, and refuse
+ * outright in CI — with one difference that is the whole point of the change:
+ * the warning says *placeholder*, not *unset*, because those are different
+ * machines. "Unset" is one nobody configured. "Placeholder" is one somebody
+ * believes they configured.
+ */
+const forgejoGate = credentialGate(['FORGEJO_URL', 'FORGEJO_ADMIN_TOKEN']);
+
+export const hasForgejo = forgejoGate.present;
 
 /**
  * Whether this run is a CI run — for any value CI sets, not the one GitHub
@@ -74,14 +96,27 @@ export function inContinuousIntegration(): boolean {
  */
 if (!hasForgejo && inContinuousIntegration()) {
   throw new Error(
-    'refusing to skip: CI is set but FORGEJO_URL / FORGEJO_ADMIN_TOKEN are not. These suites carry the cross-repo denial property; a CI run that skips them proves nothing. See the git-isolation job in .github/workflows/ci.yml.',
+    `refusing to skip: CI is set but ${forgejoGate.reason}. These suites carry the cross-repo denial property; a CI run that skips them proves nothing. See the git-isolation job in .github/workflows/ci.yml.`,
   );
 }
 
 if (!hasForgejo) {
   console.warn(
-    '[@zapp/git-service] Forgejo integration tests skipped: FORGEJO_URL / FORGEJO_ADMIN_TOKEN are unset — start the dev stack with ./scripts/dev-up.sh',
+    `[@zapp/git-service] Forgejo integration tests SKIPPED — not run, not passed: ${forgejoGate.reason} — start the dev stack with ./scripts/dev-up.sh`,
   );
+  if (forgejoGate.placeholders.includes('FORGEJO_ADMIN_TOKEN')) {
+    // The diagnosis, not just the symptom: a placeholder token means something
+    // *was* loaded, and there is only one thing it can have come from.
+    console.warn(
+      '[@zapp/git-service]   FORGEJO_ADMIN_TOKEN holds the .env.example placeholder, which means .env is in this shell’s environment.',
+    );
+    console.warn(
+      '[@zapp/git-service]   node --env-file never overrides an exported variable, so it is shadowing the real token in .env.local.forgejo.',
+    );
+    console.warn(
+      '[@zapp/git-service]   Run in a shell that has not sourced .env, or export the value from .env.local.forgejo yourself.',
+    );
+  }
 }
 
 export const forgejoUrl = (): string => {
@@ -212,11 +247,14 @@ export async function eventually<T>(
  */
 const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
 
-export const hasDatabase = DATABASE_URL !== '';
+/** Through the same gate as the Forgejo one, so one rule decides what "present" means. */
+const databaseGate = credentialGate(['DATABASE_URL']);
+
+export const hasDatabase = databaseGate.present;
 
 if (!hasDatabase) {
   console.warn(
-    '[@zapp/git-service] audit integration tests skipped: DATABASE_URL is unset — start the dev stack with ./scripts/dev-up.sh',
+    `[@zapp/git-service] audit integration tests skipped: ${databaseGate.reason} — start the dev stack with ./scripts/dev-up.sh`,
   );
 }
 

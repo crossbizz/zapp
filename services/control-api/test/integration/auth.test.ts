@@ -5,8 +5,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp, type AppInstance } from '../../src/app.js';
 import { SESSION_COOKIE } from '../../src/auth/cookies.js';
 import { AuthPortError, type AuthIdentity, type AuthPort } from '../../src/auth/port.js';
-import { createStytchAuthPort } from '../../src/auth/stytch.js';
+import { createStytchAuthPort, type StytchFault } from '../../src/auth/stytch.js';
 import { createDbUserStore } from '../../src/auth/users.js';
+import { credentialGate } from '../support/credentials.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
 import { TEST_AUTH_CONFIG, cookieJar, cookiesOf } from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
@@ -17,6 +18,10 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
  * and skip visibly — `DATABASE_URL` for the first (FND-7's dev stack, and the
  * CI service container), `STYTCH_PROJECT_ID` + `STYTCH_SECRET` for the second
  * (AGENTS.md §10: an M1 credential, absent while this was written).
+ *
+ * "Skip visibly" is now enforced rather than asserted: both gates run through
+ * `credentialGate`, which treats `.env.example`'s placeholders as absent. See
+ * the comment above the Stytch gate below for what that cost.
  */
 
 const ALICE: AuthIdentity = {
@@ -141,40 +146,96 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
   });
 });
 
-const hasStytch =
-  (process.env['STYTCH_PROJECT_ID'] ?? '') !== '' && (process.env['STYTCH_SECRET'] ?? '') !== '';
+/**
+ * `credentialGate`, not `!== ''`.
+ *
+ * This suite used to be gated on "the variables are non-empty", which
+ * `.env.example`'s `STYTCH_SECRET=replace-me` satisfies — and
+ * `scripts/dev-up.sh` copies `.env.example` to `.env`. So on any developer
+ * machine with a stock `.env`, and for anyone who exported one before running
+ * the suite, this ran against a project id of all zeros and a secret of
+ * `replace-me`, and reported *2 passed in 239 ms*. The assertions could not have
+ * failed: both of them accepted any failure at all. See
+ * `../support/credentials.ts`.
+ *
+ * Only the two variables `turbo.json` names in `test:integration`'s `env` list
+ * are gated on. turbo 2 runs tasks in strict env mode, so a third name would be
+ * stripped from the task environment and this suite would skip *even with real
+ * credentials exported* — the exact failure that cost GIT-2/GIT-3 a whole task.
+ * `STYTCH_PUBLIC_TOKEN` is only read by `getAuthorizationUrl`, which builds a
+ * URL and calls nothing, so nothing below needs it.
+ */
+const stytchGate = credentialGate(['STYTCH_PROJECT_ID', 'STYTCH_SECRET']);
 
-if (!hasStytch) {
+if (!stytchGate.present) {
   console.warn(
-    '[@zapp/control-api] Stytch integration tests skipped: STYTCH_PROJECT_ID / STYTCH_SECRET are unset (M1 credential, AGENTS.md §10)',
+    `[@zapp/control-api] Stytch integration tests SKIPPED — not run, not passed: ${stytchGate.reason} (M1 credential, AGENTS.md §10)`,
   );
 }
 
-describe.skipIf(!hasStytch)('Stytch B2B, against the live test project', () => {
+describe.skipIf(!stytchGate.present)('Stytch B2B, against the live test project', () => {
   // Built per test rather than in the suite body: vitest still *collects* a
   // skipped `describe`, and the Stytch client throws on an empty project id —
   // which would turn "skipped, no credentials" into a failing suite.
-  const connect = (): AuthPort =>
+  const connect = (faults: StytchFault[]): AuthPort =>
     createStytchAuthPort({
       projectId: process.env['STYTCH_PROJECT_ID'] ?? '',
       secret: process.env['STYTCH_SECRET'] ?? '',
       publicToken: process.env['STYTCH_PUBLIC_TOKEN'] ?? '',
+      onFault: (fault) => faults.push(fault),
     });
 
-  it('answers null for a session token the project does not know', async () => {
-    // Proves the credentials, the host selection and the null-not-throw
-    // contract in one call — without creating anything in a shared project.
-    expect(await connect().verifySession('not-a-session-jwt')).toBeNull();
+  /**
+   * The assertion that makes this suite mean something.
+   *
+   * Every call below is a *failing* call — deliberately, because the passing
+   * ones would create state in a project shared with whoever else is testing.
+   * A failing call proves nothing on its own: garbage credentials fail too, and
+   * that is exactly how this suite passed against `replace-me`. What separates
+   * the two is *which* failure came back —
+   *
+   *   - `kind: 'rejected'` means Stytch authenticated us and then declined to
+   *     honour the token we asked about. Impossible without credentials it
+   *     accepts.
+   *   - `kind: 'misconfigured'` is what a wrong project id or secret produces.
+   *   - `kind: 'unreachable'` means nothing answered, so nothing was proven.
+   *
+   * — and that a Stytch `request_id` came back at all, which is a value only
+   * Stytch mints. Together: a real round trip happened, and Stytch accepted us
+   * while rejecting the subject.
+   */
+  function expectStytchAnsweredAboutTheSubject(faults: readonly StytchFault[]): void {
+    expect(faults, 'the adapter reported no provider failure at all').toHaveLength(1);
+    const fault = faults[0];
+    expect(
+      fault?.kind,
+      `expected Stytch to reject the subject; got ${fault?.kind ?? 'nothing'} ` +
+        `(error_type=${fault?.errorType ?? 'none'}, status=${String(fault?.statusCode ?? 0)}). ` +
+        'A `misconfigured` here means STYTCH_PROJECT_ID / STYTCH_SECRET are not credentials this project accepts.',
+    ).toBe('rejected');
+    // Only Stytch mints one of these, so its presence is the round trip.
+    expect(fault?.requestId ?? '', 'no Stytch request_id came back').not.toBe('');
+  }
+
+  it('is refused a session token the project never issued, and says so as a rejection', async () => {
+    const faults: StytchFault[] = [];
+
+    // Still null, still not a throw — `AuthPort.verifySession`'s contract.
+    expect(await connect(faults).verifySession('not-a-session-jwt')).toBeNull();
+    expectStytchAnsweredAboutTheSubject(faults);
   }, 30_000);
 
   it('rejects a discovery token the project never issued, as an AuthPortError', async () => {
-    const error = await connect()
+    const faults: StytchFault[] = [];
+    const error = await connect(faults)
       .exchangeCode('not-a-real-token')
       .catch((thrown: unknown) => thrown);
 
     expect(error).toBeInstanceOf(AuthPortError);
     expect((error as AuthPortError).code).toBe('exchange_failed');
-    // Whatever Stytch said, the client sees our words.
+    // Whatever Stytch said, the client sees our words…
     expect((error as AuthPortError).message).toBe('Sign-in could not be completed.');
+    // …and the operator sees which of the two things went wrong.
+    expectStytchAnsweredAboutTheSubject(faults);
   }, 30_000);
 });

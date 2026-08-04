@@ -61,16 +61,31 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
-      # No `cache: pnpm` here, unlike ci.yml: this job never does a workspace
-      # install. `install:packaging` uses its own --store-dir (see below), which
-      # is deliberately not cached -- it is a full copy of a ~2 GB dependency
+      # No pnpm store caching here, unlike ci.yml: this job never does a
+      # workspace install. `install:packaging` uses its own --store-dir
+      # (apps/desktop/.packaging-store -- see scripts/zapp/install-packaging.mjs),
+      # which is deliberately not cached: it is a full copy of a ~2 GB dependency
       # tree and would dominate the repo's 10 GB cache budget. The Electron
       # binary and node-gyp headers are the expensive, stable part, so those are
       # cached instead.
+      #
+      # `package-manager-cache: false` is what actually turns it off, and
+      # omitting `cache:` is not. actions/setup-node@v5 added that input with a
+      # default of `true`, which enables the pnpm cache from the root
+      # package.json's `packageManager` field whether or not `cache:` is set --
+      # so this job was caching pnpm despite the comment above saying it was
+      # not, and it failed on every single run since the workflow landed. The
+      # post step tried to save `$(pnpm store path)`
+      # (~/Library/pnpm/store/v3), nothing here ever creates that directory, and
+      # @actions/cache's save throws on a path that does not exist:
+      # "Path Validation Error: Path(s) specified in the action for caching
+      # do(es) not exist". actions/cache downgrades that to a warning; setup-node
+      # does not, so it failed the job after every functional step had passed.
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Cache Electron and node-gyp downloads
         uses: actions/cache@v5
@@ -274,21 +289,32 @@ jobs:
         with:
           persist-credentials: false
 
-      # Must run before setup-node: `cache: pnpm` shells out to `pnpm store
-      # path`, so a pnpm binary has to be on PATH first.
+      # `pnpm run install:packaging` below needs a pnpm on PATH, and corepack
+      # reads the `packageManager` field in package.json to pick the exact
+      # version. (It also used to have to precede setup-node, back when this job
+      # asked for `cache: pnpm` -- that input shells out to `pnpm store path`.
+      # It no longer does; see the next step.)
       - name: Enable corepack
         run: corepack enable
 
-      # Unlike package-macos, `cache: pnpm` earns its keep here. The install
-      # below uses its own --store-dir and is not what this caches; the *apps
-      # under test* are. The preview and process-management specs boot a real
-      # dev server, which makes the app run `pnpm install` for the imported
-      # template against the default store -- the slowest part of the suite.
+      # Identical to package-macos, deliberately: neither job populates the
+      # default pnpm store, so neither job may ask setup-node to save it. See
+      # the long comment on that job's Setup Node for what
+      # `package-manager-cache: false` is doing and why omitting `cache:` is not
+      # enough.
+      #
+      # This job did previously ask for `cache: pnpm`, on the theory that the
+      # *apps under test* populate the default store when the preview and
+      # process-management specs boot a real dev server. That is not what
+      # happens: run 30922984176 ran the suite to completion (6 passed, 1
+      # skipped) and its post step still failed with the store directory
+      # missing, so there was never anything to save. Caching whatever those
+      # specs do install is a change to the specs, not a workflow setting.
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Cache Electron and node-gyp downloads
         uses: actions/cache@v5
