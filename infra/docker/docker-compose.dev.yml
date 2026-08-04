@@ -1,9 +1,13 @@
 # zapp.build — local development stack (FND-7).
 #
-# Start everything with `./scripts/dev-up.sh` (compose up + bootstrap), or run
-# compose directly:
+# Start everything with `./scripts/dev-up.sh` — it is the only supported way to
+# get a usable environment. Running compose directly:
 #
 #   docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml up -d --wait
+#
+# starts the containers but skips the bootstrap the stack cannot do itself: the
+# MinIO `zapp-artifacts` bucket and the Forgejo admin user + API token are NOT
+# created. Use it for restarting a stack dev-up.sh has already bootstrapped.
 #
 # Every credential in this file is a throwaway local-only value. Nothing here is
 # ever used outside docker-compose, and no real secret belongs in this file.

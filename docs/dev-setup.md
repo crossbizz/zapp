@@ -10,6 +10,7 @@ Forgejo (internal Git), Temporal, MinIO (artifacts), and LocalStack (SQS/SNS/SES
 | Node | 22.x | `.nvmrc` pins it — `nvm use` |
 | pnpm | 9.15+ | `corepack enable && corepack prepare pnpm@9.15.0 --activate` |
 | Docker | with Compose v2 | Docker Desktop, OrbStack, or Colima; the daemon must be running |
+| curl | any | used by `dev-up.sh` for health and token checks (preinstalled on macOS/Linux) |
 | Temporal CLI | optional | only for the lightweight alternative below |
 
 ## One-command bootstrap
@@ -26,8 +27,11 @@ pnpm install
 3. creates the MinIO bucket `zapp-artifacts`;
 4. verifies the six LocalStack queues exist;
 5. runs `pnpm db:migrate` (skipped until `packages/db` exists);
-6. creates the Forgejo admin user + API token on first run and writes them to
+6. creates the Forgejo admin user + API token and writes them to
    `.env.local.forgejo` (gitignored — copy `FORGEJO_ADMIN_TOKEN` into `.env`).
+   On later runs it reuses the stored token, and if that token no longer works
+   (e.g. after `down -v`) it mints a fresh one while keeping the admin password
+   in the file valid.
 
 ## Services
 
@@ -74,7 +78,9 @@ docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml ps
 docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml exec postgres psql -U zapp -d zapp
 docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml exec redis redis-cli
 docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml exec localstack awslocal sqs list-queues
-docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml exec minio mc ls zapp-local/zapp-artifacts
+# the image's built-in `local` alias has no credentials, so set one up first
+docker compose -p zapp-dev -f infra/docker/docker-compose.dev.yml exec minio \
+  sh -c 'mc alias set zapp-local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null && mc ls zapp-local/zapp-artifacts'
 ```
 
 ## Port conflicts

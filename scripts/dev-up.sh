@@ -27,9 +27,11 @@ MINIO_PORT="${ZAPP_MINIO_PORT:-9000}"
 MINIO_CONSOLE_PORT="${ZAPP_MINIO_CONSOLE_PORT:-9001}"
 LOCALSTACK_PORT="${ZAPP_LOCALSTACK_PORT:-4566}"
 
-# Local-only values, matching docker-compose.dev.yml.
-MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
-MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
+# Local-only MinIO root credentials — these are literals in
+# docker-compose.dev.yml, so they are literals here too: reading them from the
+# caller's environment would let an unrelated exported var break `mc alias set`.
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-zapp-artifacts}"
 FORGEJO_ADMIN_USER="${FORGEJO_ADMIN_USER:-zapp-admin}"
 FORGEJO_ADMIN_EMAIL="${FORGEJO_ADMIN_EMAIL:-admin@zapp.local}"
@@ -54,7 +56,7 @@ compose() {
 random_hex() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -68,6 +70,8 @@ esac
 
 # ---------------------------------------------------------------- preflight --
 command -v docker >/dev/null 2>&1 || die "docker is not installed — see docs/dev-setup.md"
+command -v curl >/dev/null 2>&1 || die "curl is not installed — see docs/dev-setup.md"
+command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed — run 'corepack enable && corepack prepare pnpm@9.15.0 --activate'"
 docker info >/dev/null 2>&1 || die "the Docker daemon is not running — start Docker Desktop/OrbStack and retry"
 [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE"
 
@@ -113,40 +117,71 @@ else
   log "skipping pnpm db:migrate — packages/db does not exist yet"
 fi
 
-# ----------------------------------------------------------- forgejo token --
+# ---------------------------------------------------- forgejo admin access --
+FORGEJO_API="http://127.0.0.1:${FORGEJO_HTTP_PORT}"
+
+forgejo_cli() { compose exec -T -u git forgejo forgejo "$@"; }
+
 forgejo_user_exists() {
-  compose exec -T -u git forgejo forgejo admin user list 2>/dev/null |
+  forgejo_cli admin user list 2>/dev/null |
     awk 'NR > 1 { print $2 }' | grep -qx "$FORGEJO_ADMIN_USER"
 }
 
-curl -fsS "http://127.0.0.1:${FORGEJO_HTTP_PORT}/api/healthz" >/dev/null ||
+forgejo_password_works() {
+  curl -fs -o /dev/null -u "${FORGEJO_ADMIN_USER}:$1" "${FORGEJO_API}/api/v1/user"
+}
+
+env_file_value() { sed -n "s/^$1=//p" "$2" | head -1; }
+
+curl -fsS "${FORGEJO_API}/api/healthz" >/dev/null ||
   die "Forgejo /api/healthz is not returning 200 on port $FORGEJO_HTTP_PORT"
 
-existing_token=""
+stored_token=""
+stored_token_name=""
+stored_password=""
 if [ -f "$FORGEJO_ENV_FILE" ]; then
-  existing_token="$(sed -n 's/^FORGEJO_ADMIN_TOKEN=//p' "$FORGEJO_ENV_FILE" | head -1)"
+  stored_token="$(env_file_value FORGEJO_ADMIN_TOKEN "$FORGEJO_ENV_FILE")"
+  stored_token_name="$(env_file_value FORGEJO_ADMIN_TOKEN_NAME "$FORGEJO_ENV_FILE")"
+  stored_password="$(env_file_value FORGEJO_ADMIN_PASSWORD "$FORGEJO_ENV_FILE")"
 fi
 
 # A token from a previous run is only reusable if it still authenticates — after
 # `down -v` the Forgejo volume is gone and the stored token is dead.
-if [ -n "$existing_token" ] && curl -fs -o /dev/null \
-  -H "Authorization: token ${existing_token}" \
-  "http://127.0.0.1:${FORGEJO_HTTP_PORT}/api/v1/user"; then
+if [ -n "$stored_token" ] && curl -fs -o /dev/null \
+  -H "Authorization: token ${stored_token}" "${FORGEJO_API}/api/v1/user"; then
   log "Forgejo admin token in $(basename "$FORGEJO_ENV_FILE") is still valid"
 else
-  admin_password=""
+  # The file is rewritten below, so the password has to survive the round trip:
+  # it is the only copy, and an API token alone gets you no UI login.
+  admin_password="$stored_password"
   if forgejo_user_exists; then
-    log "Forgejo admin user '$FORGEJO_ADMIN_USER' already exists"
+    if [ -n "$admin_password" ] && forgejo_password_works "$admin_password"; then
+      log "Forgejo admin user '$FORGEJO_ADMIN_USER' already exists"
+    else
+      admin_password="$(random_hex)"
+      log "resetting password for existing Forgejo admin '$FORGEJO_ADMIN_USER'"
+      forgejo_cli admin user change-password --username "$FORGEJO_ADMIN_USER" \
+        --password "$admin_password" --must-change-password=false >/dev/null
+    fi
   else
     admin_password="$(random_hex)"
     log "creating Forgejo admin user '$FORGEJO_ADMIN_USER'"
-    compose exec -T -u git forgejo forgejo admin user create \
-      --admin --username "$FORGEJO_ADMIN_USER" --password "$admin_password" \
-      --email "$FORGEJO_ADMIN_EMAIL" --must-change-password=false >/dev/null
+    forgejo_cli admin user create --admin --username "$FORGEJO_ADMIN_USER" \
+      --password "$admin_password" --email "$FORGEJO_ADMIN_EMAIL" \
+      --must-change-password=false >/dev/null
   fi
 
-  token="$(compose exec -T -u git forgejo forgejo admin user generate-access-token \
-    --username "$FORGEJO_ADMIN_USER" --token-name "zapp-dev-$(date +%s)" \
+  # Best effort: retire the previous all-scope token instead of letting them pile
+  # up. Token endpoints need basic auth, which is why the password matters above.
+  if [ -n "$stored_token_name" ] && curl -fs -o /dev/null -X DELETE \
+    -u "${FORGEJO_ADMIN_USER}:${admin_password}" \
+    "${FORGEJO_API}/api/v1/users/${FORGEJO_ADMIN_USER}/tokens/${stored_token_name}"; then
+    log "revoked stale access token '$stored_token_name'"
+  fi
+
+  token_name="zapp-dev-$(date +%s)"
+  token="$(forgejo_cli admin user generate-access-token \
+    --username "$FORGEJO_ADMIN_USER" --token-name "$token_name" \
     --scopes all --raw | tr -d '\r\n')"
   [ -n "$token" ] || die "failed to mint a Forgejo admin token"
 
@@ -156,13 +191,12 @@ else
       echo "# Generated by scripts/dev-up.sh — local dev only, never commit."
       echo "FORGEJO_URL=http://localhost:${FORGEJO_HTTP_PORT}"
       echo "FORGEJO_ADMIN_USER=${FORGEJO_ADMIN_USER}"
+      echo "FORGEJO_ADMIN_PASSWORD=${admin_password}"
+      echo "FORGEJO_ADMIN_TOKEN_NAME=${token_name}"
       echo "FORGEJO_ADMIN_TOKEN=${token}"
-      if [ -n "$admin_password" ]; then
-        echo "FORGEJO_ADMIN_PASSWORD=${admin_password}"
-      fi
     } >"$FORGEJO_ENV_FILE"
   )
-  log "wrote Forgejo admin token to $(basename "$FORGEJO_ENV_FILE") (gitignored)"
+  log "wrote Forgejo admin credentials to $(basename "$FORGEJO_ENV_FILE") (gitignored)"
 fi
 
 # ------------------------------------------------------------------ summary --
