@@ -68,7 +68,8 @@ cross-repo denial test is the only thing proving customer repos are isolated fro
 
 | File | What it holds |
 |---|---|
-| [`docs/plans/00-master-plan.md`](docs/plans/00-master-plan.md) | **Read first.** Locked stack decisions (§2), Global Constraints, milestones M0–M6 with exit criteria (§4), execution model (§8), and the M0 gate sign-off at the end. |
+| [`docs/zapp-build-prd.md`](docs/zapp-build-prd.md) | **The source spec (v1.1, 3,188 lines).** Every plan task cites it by section — §14.4 event catalog, §16.1 tool list, §17.2 execution contract, §22.2 RBAC matrix, §23 data model, §24.2 verification gates, §32 API surface, §39 P0 exit criteria. Treat it as background you consult by citation, **not** as scope to re-derive: the plans already translated it, and where they knowingly diverge the deviation is recorded in that plan's Execution log. It is also a *live* artifact — `packages/db/test/prd-schema-conformance.test.ts` parses §23 on every CI run and fails if the schema and the PRD disagree in either direction, so editing the PRD's §23 tables breaks the build until the schema follows. |
+| [`docs/plans/00-master-plan.md`](docs/plans/00-master-plan.md) | **Read first.** Locked stack decisions (§2 — several supersede PRD §35 suggestions), Global Constraints (PRD §42 guardrails), milestones M0–M6 with exit criteria (§4), execution model (§8), and the M0 gate sign-off at the end. |
 | [`tasks/todo.md`](tasks/todo.md) | Live checkbox tracker, grouped by milestone. Also holds the **M0 gate findings** section (GATE-1..7) with what's closed and what carried forward. |
 | `docs/plans/01`–`10` | Per-workstream plans. Every task carries Files / Interfaces / Steps. **Each plan's `## Execution log` at the bottom is the real history** — deviations, folds into later tasks, and blockers found by review. Read the log for a plan before starting any of its tasks. |
 | [`AGENTS.md`](AGENTS.md) | Binding agent instructions: task loop, definition of done, honesty rules, credential table. |
@@ -128,6 +129,14 @@ Paste this into a fresh AI coding session at the repo root:
 ```text
 Read AGENTS.md, HANDOFF.md, docs/plans/00-master-plan.md (especially §2 locked decisions,
 Global Constraints, §4 milestones, and the M0 gate sign-off at the end), and tasks/todo.md.
+
+The product spec is docs/zapp-build-prd.md (v1.1). Don't read it end to end — the plans
+already translated it into tasks. Read the specific sections a task cites, and treat the
+plan as authoritative where the two differ, because several locked decisions in master §2
+deliberately supersede PRD §35 suggestions (Stytch not WorkOS, Grafana Cloud not Sentry,
+Flexprice for metering, AWS SQS/SNS/SES with LocalStack). Note §23 is load-bearing: a test
+parses it every CI run and fails if the PRD and the Drizzle schema disagree, so a PRD edit
+there is a code change.
 
 M0 is complete and signed off; M1 is next. Before starting any task, read the owning plan's
 `## Execution log` at the bottom of docs/plans/<NN>-*.md — it records deviations and blockers
