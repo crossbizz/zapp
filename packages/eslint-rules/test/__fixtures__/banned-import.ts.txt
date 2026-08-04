@@ -1,0 +1,14 @@
+// Fixture for zapp/no-dyad-pro-imports. Stored with a `.txt` extension so that
+// nothing ever compiles, bundles, formats or lints it by accident -- the test reads
+// it as text and hands it to the ESLint `Linter` directly.
+//
+// It carries exactly ONE banned specifier. The rest of the file must stay clean, so a
+// rule that over-matches fails the "exactly 1 error" assertion just as loudly as a
+// rule that under-matches.
+
+import { readFile } from "node:fs/promises";
+import { LocalAgentHandler } from "@dyad-sh/desktop/pro/main/local_agent";
+
+export async function loadAgent(configPath: string) {
+  return new LocalAgentHandler(await readFile(configPath, "utf8"));
+}

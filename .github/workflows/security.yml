@@ -36,6 +36,132 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  license-boundary:
+    name: license boundary (no Dyad src/pro)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # persist-credentials: false -- nothing here needs a token, and this job runs
+      # against untrusted PR content.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # No pnpm install, no Node: this is a grep over the checked-out tree and has to
+      # stay fast enough to be uninteresting.
+      #
+      # Upstream Dyad is dual-licensed -- everything outside `src/pro/` is Apache-2.0,
+      # `src/pro/` is proprietary (Functional Source License 1.1). Only the Apache-2.0
+      # portion is vendored (NOTICE, docs/adr/0002-dyad-fork.md), so master plan global
+      # constraint 17 bans importing `src/pro` from anywhere in this repo.
+      #
+      # This is the half of that ban that covers `apps/desktop`. The other half is the
+      # `zapp/no-dyad-pro-imports` ESLint rule (packages/eslint-rules), which is precise
+      # but only sees what the root ESLint config lints -- and the vendored tree is not
+      # in the root lint graph. Neither half is redundant.
+      - name: No imports of Dyad `src/pro`
+        run: |
+          set -euo pipefail
+
+          # Four specifier shapes, all segment-anchored so that legitimate neighbours
+          # stay quiet: `./main/pro` (src/main/pro.ts), `src/production/`, `pro_stubs/`,
+          # `@dyad-sh/desktop/promises` and the https://dyad.sh/pro marketing URL.
+          pattern="(^|[^A-Za-z0-9_.-])src/pro/|[\"'](\.\.?/)+pro/|[\"']@/pro/|@dyad[^\"']*/pro/"
+
+          # Self-test the pattern before trusting a clean result: a typo that matches
+          # nothing would otherwise pass this job silently, forever.
+          must_match=(
+            'import { x } from "src/pro/main/foo";'
+            'import { x } from "../pro/main/foo";'
+            'import { x } from "./pro/main/foo";'
+            'import { x } from "@/pro/shared/foo";'
+            'const x = require("@dyad-sh/desktop/pro/main/foo");'
+          )
+          must_not_match=(
+            'import { handleDyadProReturn } from "./main/pro";'
+            'import { x } from "@/zapp/pro_stubs/shared";'
+            'import { x } from "src/production/config";'
+            'import { x } from "@dyad-sh/desktop/promises";'
+            'ipc.system.openExternalUrl("https://dyad.sh/pro");'
+          )
+          for line in "${must_match[@]}"; do
+            if ! printf '%s\n' "$line" | grep -qE "$pattern"; then
+              echo "::error::pattern self-test failed: should have matched: $line"
+              exit 1
+            fi
+          done
+          for line in "${must_not_match[@]}"; do
+            if printf '%s\n' "$line" | grep -qE "$pattern"; then
+              echo "::error::pattern self-test failed: should not have matched: $line"
+              exit 1
+            fi
+          done
+          echo "pattern self-test: $(( ${#must_match[@]} + ${#must_not_match[@]} )) cases OK"
+
+          # Presence-guarded: services/ and sandbox/ do not exist yet, and `grep` on a
+          # missing directory is an error, not an empty result.
+          roots=()
+          for dir in apps/desktop/src apps/desktop/shared packages services sandbox; do
+            if [ -d "$dir" ]; then roots+=("$dir"); fi
+          done
+          # An empty root list means the layout moved and this gate went blind, which
+          # must fail rather than report success against nothing.
+          if [ ${#roots[@]} -eq 0 ]; then
+            echo "::error::no scan roots found -- the license boundary gate is scanning nothing"
+            exit 1
+          fi
+          echo "scanning: ${roots[*]}"
+
+          # Filters, narrowest first:
+          #  - `//`, `*`, `/*`, `{/*` line prefixes: a comment cannot import anything,
+          #    and the vendored tree documents each removed Pro module in a comment.
+          #  - `zapp: pro-removed`: the marker MAC-1 leaves at every stubbed call site.
+          #  - `__fixtures__`: the ESLint rule's own test fixture is a real banned
+          #    import on purpose (packages/eslint-rules/test/__fixtures__).
+          matches=$(
+            grep -rnE \
+              --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=out \
+              --exclude-dir=.turbo --exclude-dir=coverage --exclude-dir=.next \
+              --exclude='*.md' \
+              "$pattern" "${roots[@]}" \
+              | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(//|\*|/\*|\{/\*)' \
+              | grep -v 'zapp: pro-removed' \
+              | grep -v '__fixtures__' \
+              || true
+          )
+
+          # A `src/pro` directory must not exist at all, regardless of who imports it.
+          dirs=$(find "${roots[@]}" -type d -path '*/src/pro' -not -path '*/node_modules/*' || true)
+
+          # NOTICE is the Apache-2.0 §4(d) attribution for the vendored tree. Losing it
+          # is a licence violation even with zero Pro imports.
+          notice_error=""
+          if [ ! -f NOTICE ]; then
+            notice_error="NOTICE is missing"
+          elif ! grep -q 'apps/desktop' NOTICE; then
+            notice_error="NOTICE no longer attributes apps/desktop"
+          fi
+
+          failed=0
+          if [ -n "$matches" ]; then
+            echo "::error::Imports of Dyad Pro code found. src/pro is FSL-1.1, not Apache-2.0, and is not vendored here."
+            printf '%s\n' "$matches"
+            failed=1
+          fi
+          if [ -n "$dirs" ]; then
+            echo "::error::A src/pro directory exists in the tree:"
+            printf '%s\n' "$dirs"
+            failed=1
+          fi
+          if [ -n "$notice_error" ]; then
+            echo "::error::$notice_error -- see docs/adr/0002-dyad-fork.md"
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+
+          echo "license boundary clean: no src/pro imports, no src/pro directory, NOTICE present"
+
   dependencies:
     name: dependency scan (osv-scanner)
     runs-on: ubuntu-latest

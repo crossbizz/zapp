@@ -1,0 +1,19 @@
+{
+  "name": "@zapp/eslint-rules",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./no-dyad-pro-imports": "./src/no-dyad-pro-imports.mjs"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "eslint": "^9.14.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.14.0",
+    "vitest": "^2.1.4"
+  }
+}

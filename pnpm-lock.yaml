@@ -542,6 +542,21 @@ importers:
         specifier: ^2.1.4
         version: 2.1.9(@types/node@22.20.1)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
 
+  packages/eslint-rules:
+    devDependencies:
+      eslint:
+        specifier: ^9.14.0
+        version: 9.39.5(jiti@2.7.0)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.14.0
+        version: 8.66.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.4
+        version: 2.1.9(@types/node@24.13.3)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
+
 packages:
 
   '@adobe/css-tools@4.5.0':

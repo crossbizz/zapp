@@ -1,0 +1,18 @@
+// Fixture for zapp/no-dyad-pro-imports: every specifier here is legitimate and must
+// NOT be reported. These are the exact shapes a naive /pro/ regex false-positives on,
+// and all of them really occur in the vendored Dyad tree.
+//
+// Resolved against a file at apps/desktop/src/main.ts (see the test).
+
+import { handleDyadProReturn } from "./main/pro"; // src/main/pro.ts -- Apache-2.0
+import { parseSearchReplaceBlocks } from "@/zapp/pro_stubs/shared"; // zapp-authored stub
+import type { AgentToolName } from "../shared/pro_types"; // outside src/
+import { promisify } from "node:util";
+import { SearchReplace } from "@dyad-sh/desktop/promises";
+
+const legacy = require("./providers/pro-tier");
+const UPGRADE_URL = "https://dyad.sh/pro"; // a URL is not an import
+
+export { applySearchReplace } from "@/zapp/pro_stubs/shared";
+export type { AgentToolName, SearchReplace };
+export { handleDyadProReturn, parseSearchReplaceBlocks, promisify, legacy, UPGRADE_URL };
