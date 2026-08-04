@@ -198,3 +198,23 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## Review
 
 _(Populated at execution time: outcomes, deviations, lessons per the user's workflow. See each plan's `## Execution log`.)_
+
+## M0 gate check — findings (2026-08-04)
+
+Gate verdict: **PASSED WITH EXCEPTIONS**. All six criteria met in substance and verified
+against the running system (real server booted, 30 routes probed, isolation 46/46, git
+cross-repo denial proven by a refused clone, license boundary clean across all history).
+Blockers below must close before M0 is signed off.
+
+- [ ] GATE-1 Desktop workflow has never been green (0/4 runs; post-job pnpm cache save) — fix in flight
+- [ ] GATE-2 Stytch "live" test passes with garbage credentials; `.env` placeholders make gates think creds exist — fix in flight
+- [ ] GATE-3 osv-scanner: 58 known vulns (3 Critical, 23 High, all fixable) behind continue-on-error — triage at gate, decide now not in M5
+- [ ] GATE-4 Security workflow fails on every dependabot PR (403 reading /pulls/N/commits) — fix in flight
+- [ ] GATE-5 No control-api → git-service → Forgejo integration test (each half proven separately; M1/CP-9 needs the join)
+- [ ] GATE-6 Desktop's own suites unwired from CI (363 vitest files, 123/125 Playwright specs never run)
+- [ ] GATE-7 Dev Forgejo has 42 orphaned test repos despite afterAll cleanup claims
+
+**Unverified by credential absence (stated plainly, not hidden):** Stytch against a real
+IdP; macOS signing + notarization (steps skipped on every run — MAC-2's core claim has
+never executed); Docker runtime preservation; Modal/Temporal/LocalStack (no test reads
+MODAL_* at all).
