@@ -11,7 +11,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] FND-3 contracts: ids, agent events, run/task enums
 - [x] FND-4 contracts: sandbox/adapter/deployment/tool interfaces
 - [x] FND-5 db: identity + billing schema
-- [ ] FND-6 db: full PRD §23 schema + event partitioning + tenant repos
+- [x] FND-6 db: full PRD §23 schema + event partitioning + tenant repos
 - [x] FND-7 docker-compose dev env + bootstrap
 - [x] FND-8 CI pipeline + security scans
 - [x] FND-9 NOTICE, src/pro import ban, ADRs

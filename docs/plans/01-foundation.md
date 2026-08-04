@@ -223,9 +223,9 @@ export const memberships = pgTable("memberships", {
 - `run_event_counters` table (`run_id` pk, `last_sequence` bigint) + `nextEventSequence(tx, runId)` helper using `INSERT ... ON CONFLICT DO UPDATE SET last_sequence = run_event_counters.last_sequence + 1 RETURNING last_sequence`.
 **Effort:** L
 
-- [ ] **Step 1:** Failing integration test `tenant.test.ts`: seed two orgs each with a project + run + 3 events; `forOrg(db, orgA).projects.list()` returns only org A's; `forOrg(db, orgA).events.byRun(runB.id)` returns `[]` (not error — invisible); `nextEventSequence` called 100× concurrently for one run yields 1..100 with no gaps/dupes.
-- [ ] **Step 2:** Implement schema files (columns exactly as PRD §23 lists; all FKs; status/text enums as in contracts package), partition migration (create parent + 12 monthly partitions + a `create_next_partition()` SQL function), tenant helper, sequence helper.
-- [ ] **Step 3:** Tests pass against compose Postgres. Commit: `feat(db): full PRD §23 schema, event partitioning, tenant-scoped repositories`
+- [x] **Step 1:** Failing integration test `tenant.test.ts`: seed two orgs each with a project + run + 3 events; `forOrg(db, orgA).projects.list()` returns only org A's; `forOrg(db, orgA).events.byRun(runB.id)` returns `[]` (not error — invisible); `nextEventSequence` called 100× concurrently for one run yields 1..100 with no gaps/dupes.
+- [x] **Step 2:** Implement schema files (columns exactly as PRD §23 lists; all FKs; status/text enums as in contracts package), partition migration (create parent + 12 monthly partitions + a `create_next_partition()` SQL function), tenant helper, sequence helper.
+- [x] **Step 3:** Tests pass against compose Postgres. Commit: `feat(db): full PRD §23 schema, event partitioning, tenant-scoped repositories`
 
 ### Task FND-7: Local dev environment
 
@@ -308,3 +308,4 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-10 done (b20372e + close-out d980cf1, 106 tests; primitives module, min(1)+trim envelope).
 - 2026-08-03: FND-5 done (d1cb938, review Approved; 14 unit + 9 integration tests, CI-visible execution proven). Minors 1/2/5 folded into FND-6 dispatch; Minor 3 (stale ci.yml comment) fixed by controller; Minor 4 deferred. subscriptions sub_ prefix + memberships PK noted → sub_ lands in FND-6 IdPrefix extension.
 - 2026-08-03: FND-9 done (fadc872 + fix 8197e8e, review Approved; eslint rule 29 tests + CI gate w/ 19-case self-test over apps+packages roots). Commented-import tradeoff documented in ADR-0001 + job header.
+- 2026-08-04: FND-6 done (5a0a463 + ed9b4e5 + hardening 3259eac, review fully Approved). 28/28 tables PRD-conformance-tested permanently; composite tenant FKs on 13 tables; UTC partition bounds; IdPrefix 26. PLAN 01 COMPLETE (11/11).
