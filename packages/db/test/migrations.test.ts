@@ -1,0 +1,111 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { is } from 'drizzle-orm';
+import { PgTable } from 'drizzle-orm/pg-core';
+import { describe, expect, it } from 'vitest';
+
+import * as schema from '../src/schema/index.js';
+import { tableName } from './table-config.js';
+
+/**
+ * The migrations are the schema's source of truth — the TypeScript tables only
+ * describe what the SQL builds. These pins are database-free, so a table added
+ * without a migration, or a hand-written migration lost to a regeneration,
+ * fails in the `test` job rather than at the first deploy.
+ */
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../drizzle', import.meta.url));
+
+const journal = JSON.parse(
+  readFileSync(new URL('../drizzle/meta/_journal.json', import.meta.url), 'utf8'),
+) as { entries: { idx: number; tag: string; when: number }[] };
+
+const files = readdirSync(MIGRATIONS_DIR)
+  .filter((file) => file.endsWith('.sql'))
+  .sort();
+
+const allSql = files.map((file) => readFileSync(`${MIGRATIONS_DIR}/${file}`, 'utf8')).join('\n');
+
+const partitioningSql = readFileSync(
+  new URL('../drizzle/0001_prd23_schema_and_event_partitioning.sql', import.meta.url),
+  'utf8',
+);
+
+describe('migration journal', () => {
+  it('lists every migration file, in order, exactly once', () => {
+    expect(journal.entries.map((entry) => `${String(entry.idx).padStart(4, '0')}_`)).toEqual(
+      files.map((file) => file.slice(0, 5)),
+    );
+    expect(journal.entries.map((entry) => `${entry.tag}.sql`)).toEqual(files);
+    // The migrator applies in `when` order and skips what it has already run; a
+    // migration dated before its predecessor would silently never apply.
+    const timestamps = journal.entries.map((entry) => entry.when);
+    expect([...timestamps].sort((a, b) => a - b)).toEqual(timestamps);
+  });
+
+  it('creates every table the schema declares', () => {
+    // Catches the common miss: a table added to src/schema without running
+    // `pnpm db:generate`, which typechecks and unit-tests green and then fails
+    // against a real database.
+    const tables = Object.values(schema)
+      .filter((value) => is(value, PgTable))
+      .map(tableName);
+
+    expect(tables.length).toBeGreaterThan(23);
+    for (const table of tables) {
+      expect(allSql).toContain(`CREATE TABLE "${table}"`);
+    }
+  });
+});
+
+describe('agent_events partitioning', () => {
+  it('declares the parent as range-partitioned on occurred_at', () => {
+    expect(partitioningSql).toContain('PARTITION BY RANGE ("occurred_at")');
+    expect(partitioningSql).toContain(
+      'CONSTRAINT "agent_events_pk" PRIMARY KEY("id","occurred_at")',
+    );
+    expect(partitioningSql).toContain('CHECK (pg_column_size(payload_json) <= 65536)');
+  });
+
+  it('seeds twelve months from the P0 launch month, and no more', () => {
+    const seeded = [...partitioningSql.matchAll(/create_event_partition\('(\d{4}-\d{2})-01'\)/g)]
+      .map((match) => match[1])
+      .sort();
+
+    expect(seeded).toEqual([
+      '2026-08',
+      '2026-09',
+      '2026-10',
+      '2026-11',
+      '2026-12',
+      '2027-01',
+      '2027-02',
+      '2027-03',
+      '2027-04',
+      '2027-05',
+      '2027-06',
+      '2027-07',
+    ]);
+  });
+
+  it('ships the function the retention job extends the runway with', () => {
+    // Plan 10 (OPS-14) owns the schedule; the SQL lives here so a database
+    // restored from these migrations alone is already able to roll forward.
+    expect(partitioningSql).toContain('CREATE FUNCTION create_next_partition()');
+    expect(partitioningSql).toContain('CREATE FUNCTION create_event_partition(starts date)');
+    // Every partition gets the per-partition unique index; the parent cannot
+    // carry it, because a unique index there must include the partition key.
+    expect(partitioningSql).toContain(
+      "'CREATE UNIQUE INDEX IF NOT EXISTS %I ON %I (run_id, sequence)'",
+    );
+  });
+
+  it('creates no DEFAULT partition', () => {
+    // Deliberate: a row parked in a default partition would outlive its
+    // retention window and stay invisible to the month-at-a-time archiver, so
+    // an unpartitioned month has to fail loudly at insert time instead.
+    expect(partitioningSql).not.toMatch(/DEFAULT\s*;/i);
+    expect(partitioningSql.toLowerCase()).not.toContain('partition of agent_events default');
+  });
+});

@@ -1,49 +1,51 @@
-import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 import * as db from '../src/index.js';
 import { USAGE_CATEGORIES } from '../src/schema/billing.js';
 import {
+  agentEvents,
+  agentPhases,
+  agentRuns,
+  agentTasks,
+  approvals,
+  artifacts,
+  auditEvents,
+  branches,
+  decisions,
+  deployments,
+  environments,
+  integrationConnections,
   memberships,
   organizations,
+  projectContracts,
+  projects,
+  releases,
+  repositories,
+  runEventCounters,
+  secretMetadata,
+  specifications,
   subscriptions,
+  syntheticChecks,
+  testCases,
+  testRuns,
   usageLedger,
   users,
+  verificationResults,
+  workspaces,
 } from '../src/schema/index.js';
-
-/**
- * These run without a database on purpose: the column names are the contract
- * PRD §23.1 fixes, and a rename must fail here — in the plain `test` run that
- * CI executes everywhere — rather than only where Postgres happens to exist.
- */
-
-function columnNames(table: PgTable): string[] {
-  return getTableConfig(table).columns.map((column) => column.name);
-}
-
-function indexNames(table: PgTable): (string | undefined)[] {
-  return getTableConfig(table).indexes.map((index) => index.config.name);
-}
-
-/** Each foreign key rendered as `column -> table.column`. */
-function foreignKeys(table: PgTable): string[] {
-  return getTableConfig(table).foreignKeys.map((foreignKey) => {
-    const reference = foreignKey.reference();
-    const from = reference.columns.map((column) => column.name).join(', ');
-    const to = reference.foreignColumns.map((column) => column.name).join(', ');
-    return `${from} -> ${getTableConfig(reference.foreignTable).name}.${to}`;
-  });
-}
-
-function sqlType(table: PgTable, columnName: string): string | undefined {
-  return getTableConfig(table)
-    .columns.find((column) => column.name === columnName)
-    ?.getSQLType();
-}
+import {
+  checkNames,
+  columnNames,
+  foreignKeys,
+  indexNames,
+  requiredColumns,
+  sqlType,
+  tableName,
+} from './table-config.js';
 
 describe('identity tables', () => {
   it('names its tables as PRD §23.1 does', () => {
-    expect([users, organizations, memberships].map((table) => getTableConfig(table).name)).toEqual([
+    expect([users, organizations, memberships].map(tableName)).toEqual([
       'users',
       'organizations',
       'memberships',
@@ -143,9 +145,7 @@ describe('billing tables', () => {
   });
 
   it('constrains the usage category in the database, not just in TypeScript', () => {
-    expect(getTableConfig(usageLedger).checks.map((check) => check.name)).toEqual([
-      'usage_ledger_category_check',
-    ]);
+    expect(checkNames(usageLedger)).toEqual(['usage_ledger_category_check']);
   });
 
   it('enumerates exactly the plan 01 FND-5 usage categories, in order', () => {
@@ -164,26 +164,129 @@ describe('billing tables', () => {
   });
 });
 
+/**
+ * Every table the PRD models below identity and billing, in PRD order. The list
+ * is the pin: a §23 table nobody implemented, or one implemented under a
+ * different name, fails here.
+ */
+const TENANT_OWNED_TABLES = [
+  // PRD §23.2
+  projects,
+  repositories,
+  branches,
+  environments,
+  projectContracts,
+  // PRD §23.3
+  specifications,
+  decisions,
+  agentRuns,
+  agentPhases,
+  agentTasks,
+  approvals,
+  // PRD §23.4
+  workspaces,
+  agentEvents,
+  artifacts,
+  testRuns,
+  testCases,
+  verificationResults,
+  // PRD §23.5
+  releases,
+  deployments,
+  syntheticChecks,
+  // PRD §23.6
+  secretMetadata,
+  integrationConnections,
+  auditEvents,
+];
+
+describe('tenant scoping', () => {
+  it('implements every PRD §23.2–23.6 table, named as the PRD names it', () => {
+    expect(TENANT_OWNED_TABLES.map(tableName)).toEqual([
+      'projects',
+      'repositories',
+      'branches',
+      'environments',
+      'project_contracts',
+      'specifications',
+      'decisions',
+      'agent_runs',
+      'agent_phases',
+      'agent_tasks',
+      'approvals',
+      'workspaces',
+      'agent_events',
+      'artifacts',
+      'test_runs',
+      'test_cases',
+      'verification_results',
+      'releases',
+      'deployments',
+      'synthetic_checks',
+      'secret_metadata',
+      'integration_connections',
+      'audit_events',
+    ]);
+  });
+
+  it.each(TENANT_OWNED_TABLES.map((table) => [tableName(table), table] as const))(
+    '%s carries organization_id right after id, with a real foreign key',
+    (_name, table) => {
+      // PRD §22.3: every control-plane query is organization-scoped, and
+      // `forOrg` filters on this column directly rather than joining a chain of
+      // parents it would then have to trust. The position is part of the
+      // convention — the PRD itself puts it here on the tables that declare it.
+      expect(columnNames(table).slice(0, 2)).toEqual(['id', 'organization_id']);
+      expect(foreignKeys(table)).toContain('organization_id -> organizations.id');
+      expect(requiredColumns(table)).toContain('organization_id');
+    },
+  );
+
+  it('leaves the event sequence allocator out of it', () => {
+    // run_event_counters is reached only through nextEventSequence(runId) and is
+    // never listed, read or joined by tenant, so a tenant column would be dead
+    // weight on the hottest write in the system.
+    expect(columnNames(runEventCounters)).toEqual(['run_id', 'last_sequence']);
+    expect(foreignKeys(runEventCounters)).toEqual(['run_id -> agent_runs.id']);
+  });
+});
+
 describe('public surface', () => {
-  it('exports no mutation helper that could rewrite the append-only ledger', () => {
-    // usage_ledger corrections are compensating entries (plan 10 OPS-1), and
-    // CP-1 revokes UPDATE/DELETE from the app role. Nothing here may offer one.
+  it('exports no mutation-named helper (grants enforce append-only — CP-1)', () => {
+    // usage_ledger, agent_events and audit_events are append-only: corrections
+    // are compensating entries (plan 10 OPS-1) and retention drops partitions
+    // rather than rows. This pin is a smoke alarm, not the enforcement — CP-1
+    // revokes UPDATE/DELETE from the application role, and that is what binds.
     expect(Object.keys(db).filter((name) => /update|delete|remove|truncate/i.test(name))).toEqual(
       [],
     );
   });
 
   it('exports every table through the barrel', () => {
-    expect(Object.keys(db)).toEqual(
+    const exported = Object.keys(db);
+    expect(exported).toEqual(
       expect.arrayContaining([
         'createDb',
+        'forOrg',
+        'nextEventSequence',
         'users',
         'organizations',
         'memberships',
         'subscriptions',
         'usageLedger',
         'USAGE_CATEGORIES',
+        'runEventCounters',
+        'MAX_EVENT_PAYLOAD_BYTES',
       ]),
     );
+    // Every PRD §23 table reaches consumers by its camelCase export, so a table
+    // added to the schema but not to the barrel fails here rather than at the
+    // first import in plan 02.
+    for (const table of TENANT_OWNED_TABLES) {
+      const exportName = tableName(table).replace(/_(.)/g, (_match, letter: string) =>
+        letter.toUpperCase(),
+      );
+      expect(exported).toContain(exportName);
+    }
   });
 });

@@ -1,14 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-
 import { newId } from '@zapp/contracts';
 import { and, eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { migrate } from 'drizzle-orm/postgres-js/migrator';
-import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createDb, type Db } from '../../src/client.js';
 import {
   memberships,
   organizations,
@@ -16,71 +9,14 @@ import {
   usageLedger,
   users,
 } from '../../src/schema/index.js';
-
-/**
- * Env-gated on the FND-7 dev stack (`./scripts/dev-up.sh`). With no
- * `DATABASE_URL` every test below reports as *skipped* — never as passed.
- */
-const DATABASE_URL = process.env.DATABASE_URL ?? '';
-const hasDatabase = DATABASE_URL !== '';
-
-if (!hasDatabase) {
-  console.warn(
-    '[@zapp/db] integration tests skipped: DATABASE_URL is unset — start the dev stack with ./scripts/dev-up.sh',
-  );
-}
-
-const MIGRATIONS_FOLDER = fileURLToPath(new URL('../../drizzle', import.meta.url));
-
-/**
- * `subscriptions` has no entry in the closed TypeID prefix list (master plan
- * §Global Constraints) — plan 10 owns that call — so the tests use an opaque id
- * rather than borrowing an unrelated entity's prefix. The column is plain text.
- */
-const newSubscriptionId = (): string => `sub_${randomUUID()}`;
-
-/** `noUncheckedIndexedAccess` types `rows[0]` as optional; fail loudly rather than assert non-null. */
-function only<T>(rows: readonly T[]): T {
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('expected a row, got none');
-  }
-  return row;
-}
-
-/**
- * Runs a query that must fail and returns the driver's error. Drizzle wraps
- * failures in its own error type, so the SQLSTATE fields (`code`,
- * `constraint_name`) live on the postgres.js `cause` underneath; raw
- * `handle.sql` queries throw that error directly.
- */
-async function rejection(query: Promise<unknown>): Promise<unknown> {
-  try {
-    await query;
-  } catch (error) {
-    return error instanceof Error && error.cause !== undefined ? error.cause : error;
-  }
-  throw new Error('expected the query to be rejected, but it succeeded');
-}
+import { hasDatabase, only, rejection, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 describe.skipIf(!hasDatabase)('identity and billing schema', () => {
-  let handle: Db;
+  let handle: TestDatabase;
   let organizationId: string;
 
   beforeAll(async () => {
-    // Migrations run on their own single-use connection: the migrator's
-    // `if not exists` bookkeeping DDL raises a NOTICE on every re-run, and that
-    // is noise rather than information for everything that follows.
-    const migrationSql = postgres(DATABASE_URL, { max: 1, onnotice: () => undefined });
-    try {
-      // The generated SQL is the schema's source of truth, so applying it here
-      // is also what proves drizzle/ still matches the TypeScript tables.
-      await migrate(drizzle(migrationSql), { migrationsFolder: MIGRATIONS_FOLDER });
-    } finally {
-      await migrationSql.end();
-    }
-
-    handle = createDb(DATABASE_URL);
+    handle = await setUpTestDatabase();
   });
 
   afterAll(async () => {
@@ -88,10 +24,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
   });
 
   beforeEach(async () => {
-    // CASCADE rather than an exhaustive table list: FND-6 adds more tables
-    // referencing organizations into this same database. Nothing here drops a
-    // schema, so the dev database stays reusable across runs.
-    await handle.sql`truncate table usage_ledger, subscriptions, memberships, organizations, users cascade`;
+    await handle.truncateAll();
 
     organizationId = newId('org');
     await handle.db
@@ -251,13 +184,13 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
     });
 
     it('stores a subscription with its Stripe billing period', async () => {
-      const id = newSubscriptionId();
+      const id = newId('sub');
       const currentPeriodStart = new Date('2026-08-01T00:00:00.000Z');
       const currentPeriodEnd = new Date('2026-09-01T00:00:00.000Z');
       await handle.db.insert(subscriptions).values({
         id,
         organizationId,
-        stripeSubscriptionId: newSubscriptionId(),
+        stripeSubscriptionId: newId('sub'),
         planId: 'team_monthly',
         status: 'active',
         currentPeriodStart,
@@ -274,9 +207,9 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
     });
 
     it('rejects two subscriptions carrying the same Stripe id', async () => {
-      const stripeSubscriptionId = newSubscriptionId();
+      const stripeSubscriptionId = newId('sub');
       await handle.db.insert(subscriptions).values({
-        id: newSubscriptionId(),
+        id: newId('sub'),
         organizationId,
         stripeSubscriptionId,
         planId: 'team_monthly',
@@ -286,7 +219,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       expect(
         await rejection(
           handle.db.insert(subscriptions).values({
-            id: newSubscriptionId(),
+            id: newId('sub'),
             organizationId,
             stripeSubscriptionId,
             planId: 'team_monthly',

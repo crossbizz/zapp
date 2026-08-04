@@ -1,0 +1,243 @@
+import {
+  AGENT_EVENT_TYPES,
+  AgentEventVisibilitySchema,
+  WorkspaceStatusSchema,
+} from '@zapp/contracts';
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core';
+
+import { oneOf, organizationId } from './columns.js';
+import { agentRuns, agentTasks } from './planning.js';
+import { branches, projects } from './projects.js';
+
+/**
+ * PRD §23.4 — execution and evidence: where work ran, what it emitted, and the
+ * proof a release later cites. Columns follow PRD §23.4 in order, with
+ * `organization_id` after `id` (`./columns.ts`).
+ *
+ * Two vocabularies are contractual and constrained in the database as well:
+ * the workspace lifecycle (PRD §18.9) and event visibility (PRD §14.4).
+ */
+
+const WORKSPACE_STATUSES = WorkspaceStatusSchema.options;
+const EVENT_VISIBILITIES = AgentEventVisibilitySchema.options;
+
+/** PRD §14.4 payload ceiling: 64 KiB. Anything larger belongs in `artifacts` + object storage (master plan §5.2). */
+export const MAX_EVENT_PAYLOAD_BYTES = 65_536;
+
+export const workspaces = pgTable(
+  'workspaces',
+  {
+    id: text('id').primaryKey(), // ws_*
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id),
+    /** Null for workspaces that scan or preview without checking out a branch. */
+    branchId: text('branch_id').references(() => branches.id),
+    /** `modal` in P0 (PRD §18.1); the column exists so a second provider needs no migration. */
+    provider: text('provider').notNull(),
+    /** Null while `requested`: the provider assigns it at creation (PRD §18.9). */
+    providerWorkspaceId: text('provider_workspace_id'),
+    status: text('status', { enum: WORKSPACE_STATUSES }).notNull(),
+    /** `small` | `standard` | `large` (PRD §18.10) — also the billing floor (plan 03 WS-8). */
+    resourceProfile: text('resource_profile').notNull(),
+    /** Latest provider snapshot; null when none exists or it has expired (PRD §18.8). */
+    snapshotRef: text('snapshot_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
+    terminatedAt: timestamp('terminated_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('workspaces_status_check', oneOf('status', WORKSPACE_STATUSES)),
+    // The reaper and the reconciler both sweep by (tenant, status); the project
+    // index serves "which sandboxes does this project have running".
+    index('workspaces_org_status_idx').on(t.organizationId, t.status),
+    index('workspaces_project_idx').on(t.projectId),
+  ],
+);
+
+/**
+ * PRD §14.4 event log — the hot table, and the one Mission Control replays from.
+ *
+ * This object maps the **parent** of a range-partitioned table: the physical
+ * `PARTITION BY RANGE (occurred_at)` clause, the monthly partitions and the
+ * per-partition `unique (run_id, sequence)` indexes live in the hand-written
+ * migration `0001_agent_events_partitioning.sql`, because drizzle-kit cannot
+ * author partitioning. Two consequences are visible here:
+ *
+ * - the primary key is `(id, occurred_at)`, since Postgres requires every
+ *   unique constraint on a partitioned table to contain the partition key;
+ * - `(run_id, sequence)` is therefore unique *per partition*. Globally it is
+ *   upheld by `run_event_counters`, the single allocator of sequence numbers
+ *   ({@link nextEventSequence} in `../events.ts`).
+ *
+ * Append-only (master plan §Global Constraints): this package exports no update
+ * or delete helper for it, and plan 02 (CP-1) revokes those grants from the
+ * application role. Retention is partition-drop, not `DELETE` (plan 10 OPS-14).
+ */
+export const agentEvents = pgTable(
+  'agent_events',
+  {
+    id: text('id').notNull(), // evt_*
+    organizationId: organizationId(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    /** 1-based, gapless per run, allocated by `nextEventSequence` — clients resume from it (plan 02 CP-15). */
+    sequence: bigint('sequence', { mode: 'number' }).notNull(),
+    type: text('type', { enum: AGENT_EVENT_TYPES }).notNull(),
+    payloadJson: jsonb('payload_json').notNull(),
+    visibility: text('visibility', { enum: EVENT_VISIBILITIES }).notNull(),
+    /**
+     * The partition key. No default on purpose: an event happened when the
+     * producer says it happened, and a late-arriving batch must not be stamped
+     * with its insert time — that would file it under the wrong partition.
+     */
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'agent_events_pk', columns: [t.id, t.occurredAt] }),
+    check('agent_events_visibility_check', oneOf('visibility', EVENT_VISIBILITIES)),
+    // Keeps one oversized payload from being written at all, rather than
+    // discovering it when the stream stalls. `pg_column_size` measures the
+    // datum, so this is the same 64 KiB the ingest API rejects (PRD §14.4).
+    check(
+      'agent_events_payload_size_check',
+      sql.raw(`pg_column_size(payload_json) <= ${String(MAX_EVENT_PAYLOAD_BYTES)}`),
+    ),
+    // Master plan §5.2: the tenant-scoped, time-bounded read, and what lets the
+    // planner prune partitions instead of scanning every month.
+    index('agent_events_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+  ],
+);
+
+/**
+ * One row per run: the allocator behind `agent_events.sequence`.
+ *
+ * Not a PRD §23 table — it is the mechanism that makes `sequence` gapless under
+ * concurrency, which the PRD §14.4 replay contract needs and a partitioned
+ * unique index cannot provide on its own. See `nextEventSequence`.
+ */
+export const runEventCounters = pgTable('run_event_counters', {
+  runId: text('run_id')
+    .primaryKey()
+    .references(() => agentRuns.id),
+  /** Highest sequence handed out for this run; 0 means none yet. */
+  lastSequence: bigint('last_sequence', { mode: 'number' }).notNull().default(0),
+});
+
+export const artifacts = pgTable(
+  'artifacts',
+  {
+    id: text('id').primaryKey(), // art_*
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id),
+    /** Null for artifacts that belong to the project rather than to one run (imports, scans). */
+    runId: text('run_id').references(() => agentRuns.id),
+    taskId: text('task_id').references(() => agentTasks.id),
+    /** Screenshot, trace, log bundle, evidence manifest… plan 05 owns the vocabulary. */
+    type: text('type').notNull(),
+    /** Tenant-prefixed object-storage key (master plan §5.2), never a public URL. */
+    storageRef: text('storage_ref').notNull(),
+    /** Content hash of the stored object: what makes evidence citable and de-duplicable. */
+    contentHash: text('content_hash').notNull(),
+    metadataJson: jsonb('metadata_json').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('artifacts_project_created_at_idx').on(t.projectId, t.createdAt),
+    index('artifacts_run_idx').on(t.runId),
+  ],
+);
+
+export const testRuns = pgTable(
+  'test_runs',
+  {
+    id: text('id').primaryKey(), // trun_*
+    organizationId: organizationId(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    /** Null for run-level gates that are not attributable to one task (release verification). */
+    taskId: text('task_id').references(() => agentTasks.id),
+    /** The exact commit the gate ran against — evidence is worthless without it (PRD §24.3). */
+    commitSha: text('commit_sha').notNull(),
+    /** PRD §24.2 gate category: unit, integration, browser, smoke… plan 05 owns the list. */
+    type: text('type').notNull(),
+    status: text('status').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    /** Counts and timings; null while the run is still in flight. */
+    summaryJson: jsonb('summary_json'),
+  },
+  (t) => [index('test_runs_run_idx').on(t.runId)],
+);
+
+export const testCases = pgTable(
+  'test_cases',
+  {
+    id: text('id').primaryKey(), // tcase_*
+    organizationId: organizationId(),
+    testRunId: text('test_run_id')
+      .notNull()
+      .references(() => testRuns.id),
+    name: text('name').notNull(),
+    status: text('status').notNull(),
+    /** Null when the runner reports no timing (skipped cases). */
+    durationMs: integer('duration_ms'),
+    /** Screenshot or trace proving the result (PRD §24.4); null when the case produced none. */
+    evidenceArtifactId: text('evidence_artifact_id').references(() => artifacts.id),
+    /** Failure message and stack, already scrubbed; null when the case passed. */
+    errorJson: jsonb('error_json'),
+  },
+  (t) => [index('test_cases_test_run_idx').on(t.testRunId)],
+);
+
+export const verificationResults = pgTable(
+  'verification_results',
+  {
+    id: text('id').primaryKey(), // vr_*
+    organizationId: organizationId(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    /** Null for a release-level verdict covering the whole run. */
+    taskId: text('task_id').references(() => agentTasks.id),
+    commitSha: text('commit_sha').notNull(),
+    /** The verifier's verdict; plan 05 (VF-10) fixes the vocabulary. */
+    decision: text('decision').notNull(),
+    /** Per-criterion outcome, each pointing at the evidence that settled it (PRD §24.3). */
+    criteriaResultsJson: jsonb('criteria_results_json').notNull(),
+    /** Residual risks the verifier wants a human to see (PRD §24.6). */
+    risksJson: jsonb('risks_json').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('verification_results_run_idx').on(t.runId)],
+);
+
+export type Workspace = typeof workspaces.$inferSelect;
+export type NewWorkspace = typeof workspaces.$inferInsert;
+export type AgentEventRow = typeof agentEvents.$inferSelect;
+export type NewAgentEventRow = typeof agentEvents.$inferInsert;
+export type RunEventCounter = typeof runEventCounters.$inferSelect;
+export type Artifact = typeof artifacts.$inferSelect;
+export type NewArtifact = typeof artifacts.$inferInsert;
+export type TestRun = typeof testRuns.$inferSelect;
+export type NewTestRun = typeof testRuns.$inferInsert;
+export type TestCase = typeof testCases.$inferSelect;
+export type NewTestCase = typeof testCases.$inferInsert;
+export type VerificationResult = typeof verificationResults.$inferSelect;
+export type NewVerificationResult = typeof verificationResults.$inferInsert;

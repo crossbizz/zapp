@@ -1,6 +1,6 @@
-import { sql } from 'drizzle-orm';
 import { check, index, numeric, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
+import { oneOf } from './columns.js';
 import { organizations } from './identity.js';
 
 export const subscriptions = pgTable(
@@ -26,10 +26,11 @@ export const subscriptions = pgTable(
 );
 
 /**
- * PRD §23.1, in order. Persisted as `text` + CHECK rather than a pg enum: plan
- * 10 (OPS-4) already has to add `credit_grant`, and extending a CHECK is one
- * `ALTER TABLE`, while enum values cannot be dropped at all and only append.
- * The TypeScript union below is the compile-time half of the same rule.
+ * PRD §23.1, in order. Persisted as `text` + CHECK rather than a pg enum (see
+ * `oneOf` in `./columns.ts`): plan 10 (OPS-4) already has to add `credit_grant`,
+ * and extending a CHECK is one `ALTER TABLE`, while enum values cannot be
+ * dropped at all and only append. The TypeScript union below is the
+ * compile-time half of the same rule.
  */
 export const USAGE_CATEGORIES = [
   'model_input_tokens',
@@ -43,13 +44,6 @@ export const USAGE_CATEGORIES = [
 ] as const;
 
 export type UsageCategory = (typeof USAGE_CATEGORIES)[number];
-
-// Built from the list above so the database and the TypeScript union can never
-// drift. Unqualified `category` on purpose: a table CHECK cannot use a
-// table-qualified column reference. The values are compile-time literals.
-const usageCategoryCheck = sql.raw(
-  `category in (${USAGE_CATEGORIES.map((category) => `'${category}'`).join(', ')})`,
-);
 
 /**
  * Append-only (plan 01 §Global Constraints, plan 10 OPS-1): rows are never
@@ -89,7 +83,7 @@ export const usageLedger = pgTable(
     // Every read is org-scoped and time-bounded (invoicing periods, budget
     // windows, the three-way reconciliation job in plan 10).
     index('usage_ledger_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
-    check('usage_ledger_category_check', usageCategoryCheck),
+    check('usage_ledger_category_check', oneOf('category', USAGE_CATEGORIES)),
   ],
 );
 

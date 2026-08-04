@@ -6,6 +6,16 @@ import * as schema from './schema/index.js';
 /** The Drizzle query interface, typed with every table in the schema barrel. */
 export type Database = PostgresJsDatabase<typeof schema>;
 
+/** An open transaction, as `db.transaction(...)` hands it to its callback. */
+export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * Anything that can run a statement: the pool-backed client, or a transaction
+ * on it. Helpers take this so a caller can compose them into one atomic unit —
+ * `nextEventSequence` plus the insert it feeds, for instance.
+ */
+export type Executor = Database | Transaction;
+
 /** What {@link createDb} hands back: the ORM, the driver underneath it, and one way to release both. */
 export interface Db {
   /** Typed query builder — the interface repositories and services should take. */
