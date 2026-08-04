@@ -208,7 +208,7 @@ Blockers below must close before M0 is signed off.
 
 - [x] GATE-1 Desktop workflow green (8f367fb: setup-node package-manager-cache defaults true regardless of `cache:`) — VERIFIED live, both jobs
 - [x] GATE-2 Stytch gate now rejects placeholders and skips loudly; adapter classifies rejected/misconfigured/unreachable; integration test asserts a Stytch-issued request_id so it cannot pass unauthenticated (8f367fb)
-- [ ] GATE-3 osv-scanner: 58 known vulns (3 Critical, 23 High, all fixable) behind continue-on-error — triage at gate, decide now not in M5
+- [x] GATE-3 osv triaged and dispositioned at the gate: vitest 2→3 landed (closes CVE-2026-47429, 9.8 Critical — note: the ID I first cited was wrong, the implementer corrected it). Result 58→57, **everything outside apps/desktop is now vulnerability-free; 100% of the remainder is the vendored tree → OPS-13 owns it**. Two deliberate non-actions: (a) electron 40.8.5 (worth 18 findings) STOPPED — it reproducibly fails the desktop preserve suite's PTY test, and CI's `retries: 2` would likely have masked it; landing it would have been the green-isn't-evidence trap. Needs real triage, not a retry. (b) vite 5→6 (8.2 High) cannot close from our manifests — apps/desktop pins vite ^5.4.17 directly and no patched 5.x exists; adding vite@^6 to our packages would close zero findings while looking like a fix. Both are OPS-13 scope.
 - [x] GATE-4 dependabot scan permissions fixed (8f367fb; least-privilege pull-requests: read) — verify on the next dependabot PR
 - [ ] GATE-5 No control-api → git-service → Forgejo integration test (each half proven separately; M1/CP-9 needs the join)
 - [ ] GATE-6 Desktop's own suites unwired from CI (363 vitest files, 123/125 Playwright specs never run)
