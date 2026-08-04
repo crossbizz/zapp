@@ -19,7 +19,12 @@ import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { consumeOutputChunks } from '../src/exec.js';
-import { buildWorkspaceAgent, writeNdjsonRecord } from '../src/main.js';
+import { portableMetricsSource } from '../src/health.js';
+import {
+  buildWorkspaceAgent,
+  closeWorkspaceAgentForSignal,
+  writeNdjsonRecord,
+} from '../src/main.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -83,6 +88,42 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+async function serverConnectionCount(server: Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.getConnections((error, count) => {
+      if (error === null) resolve(count);
+      else reject(error);
+    });
+  });
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error('Operation did not settle'));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function waitForNoServerConnections(server: Server): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if ((await serverConnectionCount(server)) === 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Server retained ${String(await serverConnectionCount(server))} connection(s)`);
+}
+
 function parseNdjson(body: string): StreamRecord[] {
   return body
     .trim()
@@ -94,10 +135,12 @@ describe('workspace-agent RPC daemon', () => {
   let workspaceRoot: string;
   let token: string;
   let app: FastifyInstance | undefined;
+  let idempotencySequence: number;
 
   beforeEach(async () => {
     workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-workspace-agent-'));
     token = randomBytes(32).toString('hex');
+    idempotencySequence = 0;
     app = await buildWorkspaceAgent({ workspaceRoot, token });
   });
 
@@ -108,8 +151,11 @@ describe('workspace-agent RPC daemon', () => {
     await rm(workspaceRoot, { recursive: true, force: true });
   });
 
-  function authorization(value = token): { authorization: string } {
-    return { authorization: `Bearer ${value}` };
+  function authorization(
+    value = token,
+    idempotencyKey = `test-key-${String((idempotencySequence += 1))}`,
+  ): { authorization: string; 'idempotency-key': string } {
+    return { authorization: `Bearer ${value}`, 'idempotency-key': idempotencyKey };
   }
 
   function requireApp(): FastifyInstance {
@@ -191,6 +237,30 @@ describe('workspace-agent RPC daemon', () => {
     expect(writer.writes).toHaveLength(2);
   });
 
+  test('removes NDJSON wait listeners when a backpressured client closes', async () => {
+    class ClosingWriter extends EventEmitter {
+      write(): boolean {
+        return false;
+      }
+    }
+    const writer = new ClosingWriter();
+    const writing = writeNdjsonRecord(writer, {
+      type: 'stdout',
+      data: 'blocked',
+      at: new Date().toISOString(),
+    });
+    expect(writer.listenerCount('drain')).toBe(1);
+    expect(writer.listenerCount('close')).toBe(1);
+    expect(writer.listenerCount('error')).toBe(1);
+
+    writer.emit('close');
+
+    await expect(writing).rejects.toThrow('Streaming client closed');
+    expect(writer.listenerCount('drain')).toBe(0);
+    expect(writer.listenerCount('close')).toBe(0);
+    expect(writer.listenerCount('error')).toBe(0);
+  });
+
   test.each([
     { name: 'escaped cwd', cwd: '../outside', cmd: process.execPath },
     { name: 'missing executable', cwd: '.', cmd: '/definitely/missing/zapp-command' },
@@ -230,14 +300,14 @@ describe('workspace-agent RPC daemon', () => {
   });
 
   test.each([false, true])(
-    'isolates daemon credentials while preserving PATH and request env when pty=%s',
+    'isolates reserved daemon env while allowing application credentials when pty=%s',
     async (pty) => {
       const previousAgentToken = process.env.ZAPP_AGENT_TOKEN;
-      const previousServiceToken = process.env.ZAPP_SERVICE_TOKEN_SECRET;
-      const previousPlatformToken = process.env.SERVICE_TOKEN_SECRET;
+      const previousWorkspaceRoot = process.env.ZAPP_WORKSPACE_ROOT;
+      const previousDevServerPort = process.env.ZAPP_DEV_SERVER_PORT;
       process.env.ZAPP_AGENT_TOKEN = token;
-      process.env.ZAPP_SERVICE_TOKEN_SECRET = 'service-token-sentinel';
-      process.env.SERVICE_TOKEN_SECRET = 'platform-token-sentinel';
+      process.env.ZAPP_WORKSPACE_ROOT = workspaceRoot;
+      process.env.ZAPP_DEV_SERVER_PORT = '8877';
 
       try {
         const response = await requireApp().inject({
@@ -248,9 +318,14 @@ describe('workspace-agent RPC daemon', () => {
             cmd: process.execPath,
             args: [
               '-e',
-              "process.stdout.write([process.env.ZAPP_AGENT_TOKEN ?? 'absent', process.env.ZAPP_SERVICE_TOKEN_SECRET ?? 'absent', process.env.SERVICE_TOKEN_SECRET ?? 'absent', process.env.PATH ? 'path' : 'no-path', process.env.ALLOWED_VALUE ?? 'missing'].join('|'))",
+              "process.stdout.write([process.env.ZAPP_AGENT_TOKEN ?? 'absent', process.env.ZAPP_WORKSPACE_ROOT ?? 'absent', process.env.ZAPP_DEV_SERVER_PORT ?? 'absent', process.env.PATH ? 'path' : 'no-path', process.env.CUSTOM_API_KEY, process.env.STRIPE_SECRET_KEY, process.env.APP_PASSWORD, process.env.DATABASE_URL].join('|'))",
             ],
-            env: { ALLOWED_VALUE: 'allowed' },
+            env: {
+              CUSTOM_API_KEY: 'custom-value',
+              STRIPE_SECRET_KEY: 'stripe-value',
+              APP_PASSWORD: 'password-value',
+              DATABASE_URL: 'postgres://application/database',
+            },
             timeoutMs: 2_000,
             pty,
           },
@@ -258,20 +333,20 @@ describe('workspace-agent RPC daemon', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json<{ stdout: string }>().stdout).toContain(
-          'absent|absent|absent|path|allowed',
+          'absent|absent|absent|path|custom-value|stripe-value|password-value|postgres://application/database',
         );
       } finally {
         if (previousAgentToken === undefined) delete process.env.ZAPP_AGENT_TOKEN;
         else process.env.ZAPP_AGENT_TOKEN = previousAgentToken;
-        if (previousServiceToken === undefined) delete process.env.ZAPP_SERVICE_TOKEN_SECRET;
-        else process.env.ZAPP_SERVICE_TOKEN_SECRET = previousServiceToken;
-        if (previousPlatformToken === undefined) delete process.env.SERVICE_TOKEN_SECRET;
-        else process.env.SERVICE_TOKEN_SECRET = previousPlatformToken;
+        if (previousWorkspaceRoot === undefined) delete process.env.ZAPP_WORKSPACE_ROOT;
+        else process.env.ZAPP_WORKSPACE_ROOT = previousWorkspaceRoot;
+        if (previousDevServerPort === undefined) delete process.env.ZAPP_DEV_SERVER_PORT;
+        else process.env.ZAPP_DEV_SERVER_PORT = previousDevServerPort;
       }
     },
   );
 
-  test.each([false, true])('rejects protected request env before spawning when pty=%s', async (pty) => {
+  test.each([false, true])('rejects reserved request env before spawning when pty=%s', async (pty) => {
     const marker = join(workspaceRoot, `protected-env-${String(pty)}`);
     const response = await requireApp().inject({
       method: 'POST',
@@ -280,7 +355,11 @@ describe('workspace-agent RPC daemon', () => {
       payload: {
         cmd: process.execPath,
         args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
-        env: { ZAPP_SERVICE_TOKEN_SECRET: 'request-sentinel' },
+        env: {
+          ZAPP_AGENT_TOKEN: 'request-token',
+          ZAPP_WORKSPACE_ROOT: '/request/root',
+          ZAPP_DEV_SERVER_PORT: '9999',
+        },
         timeoutMs: 2_000,
         pty,
       },
@@ -288,6 +367,284 @@ describe('workspace-agent RPC daemon', () => {
 
     expect(response.statusCode).toBe(400);
     await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test.each([false, true])(
+    'rejects non-POSIX env names and NUL values before spawning when pty=%s',
+    async (pty) => {
+      const marker = join(workspaceRoot, `invalid-env-${String(pty)}`);
+      const command = {
+        cmd: process.execPath,
+        args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
+        timeoutMs: 2_000,
+        pty,
+      };
+      const invalidName = await requireApp().inject({
+        method: 'POST',
+        url: '/exec',
+        headers: authorization(),
+        payload: { ...command, env: { 'INVALID-NAME': 'value' } },
+      });
+      const nulValue = await requireApp().inject({
+        method: 'POST',
+        url: '/exec',
+        headers: authorization(),
+        payload: { ...command, env: { VALID_NAME: 'before\0after' } },
+      });
+
+      expect(invalidName.statusCode).toBe(400);
+      expect(nulValue.statusCode).toBe(400);
+      await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  test('requires a valid Idempotency-Key on every mutating route', async () => {
+    const authorizationHeader = { authorization: `Bearer ${token}` };
+    const requests = [
+      {
+        method: 'POST' as const,
+        url: '/exec',
+        payload: { cmd: 'true', args: [], timeoutMs: 1_000 },
+      },
+      {
+        method: 'POST' as const,
+        url: '/exec?stream=1',
+        payload: { cmd: 'true', args: [], timeoutMs: 1_000 },
+      },
+      { method: 'POST' as const, url: '/exec/999999/kill' },
+      {
+        method: 'PUT' as const,
+        url: '/files?path=idempotency-required.txt',
+        payload: Buffer.from('must-not-write'),
+      },
+      {
+        method: 'POST' as const,
+        url: '/git',
+        payload: { operation: 'status', args: ['--short'] },
+      },
+    ];
+
+    for (const request of requests) {
+      const missing = await requireApp().inject({
+        ...request,
+        headers: authorizationHeader,
+      });
+      const invalid = await requireApp().inject({
+        ...request,
+        headers: { ...authorizationHeader, 'idempotency-key': 'contains spaces' },
+      });
+      expect(missing.statusCode, request.url).toBe(400);
+      expect(missing.json(), request.url).toEqual({ error: 'bad_request' });
+      expect(invalid.statusCode, request.url).toBe(400);
+      expect(invalid.json(), request.url).toEqual({ error: 'bad_request' });
+    }
+    await expect(access(join(workspaceRoot, 'idempotency-required.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  test('replays buffered and streamed exec responses without repeating side effects', async () => {
+    const bufferedMarker = join(workspaceRoot, 'buffered-replay-count');
+    const bufferedPayload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').appendFileSync(${JSON.stringify(bufferedMarker)}, 'x'); process.stdout.write('buffered')`,
+      ],
+      timeoutMs: 2_000,
+    };
+    const bufferedHeaders = authorization(token, 'buffered-exec-replay');
+    const firstBuffered = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: bufferedHeaders,
+      payload: bufferedPayload,
+    });
+    const replayedBuffered = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: bufferedHeaders,
+      payload: bufferedPayload,
+    });
+
+    const streamedMarker = join(workspaceRoot, 'streamed-replay-count');
+    const streamedPayload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').appendFileSync(${JSON.stringify(streamedMarker)}, 'x'); process.stdout.write('streamed')`,
+      ],
+      timeoutMs: 2_000,
+    };
+    const streamedHeaders = authorization(token, 'streamed-exec-replay');
+    const firstStreamed = await requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: streamedHeaders,
+      payload: streamedPayload,
+    });
+    const replayedStreamed = await requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: streamedHeaders,
+      payload: streamedPayload,
+    });
+
+    expect(replayedBuffered.statusCode).toBe(firstBuffered.statusCode);
+    expect(replayedBuffered.body).toBe(firstBuffered.body);
+    expect(await readFile(bufferedMarker, 'utf8')).toBe('x');
+    expect(replayedStreamed.statusCode).toBe(firstStreamed.statusCode);
+    expect(replayedStreamed.headers['content-type']).toBe(firstStreamed.headers['content-type']);
+    expect(replayedStreamed.body).toBe(firstStreamed.body);
+    expect(parseNdjson(replayedStreamed.body).at(-1)?.type).toBe('exit');
+    expect(await readFile(streamedMarker, 'utf8')).toBe('x');
+  });
+
+  test('coalesces concurrent duplicate exec requests into one execution', async () => {
+    const marker = join(workspaceRoot, 'concurrent-idempotency-count');
+    const request = {
+      method: 'POST' as const,
+      url: '/exec',
+      headers: authorization(token, 'concurrent-exec-replay'),
+      payload: {
+        cmd: process.execPath,
+        args: [
+          '-e',
+          `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.stdout.write('once'), 100)`,
+        ],
+        timeoutMs: 2_000,
+      },
+    };
+
+    const [first, duplicate] = await Promise.all([
+      requireApp().inject(request),
+      requireApp().inject(request),
+    ]);
+
+    expect(first.statusCode).toBe(200);
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.body).toBe(first.body);
+    expect(await readFile(marker, 'utf8')).toBe('x');
+  });
+
+  test('replays kill, file-write, and git responses without repeating side effects', async () => {
+    const pidFile = join(workspaceRoot, 'idempotent-kill.pid');
+    const activeRequest = requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: authorization(token, 'active-for-idempotent-kill'),
+      payload: {
+        cmd: process.execPath,
+        args: [
+          '-e',
+          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+        ],
+        timeoutMs: 10_000,
+      },
+    });
+    const pid = Number(await waitForFile(pidFile));
+    const killHeaders = authorization(token, 'kill-replay');
+    const firstKill = await requireApp().inject({
+      method: 'POST',
+      url: `/exec/${String(pid)}/kill`,
+      headers: killHeaders,
+    });
+    await activeRequest;
+    const replayedKill = await requireApp().inject({
+      method: 'POST',
+      url: `/exec/${String(pid)}/kill`,
+      headers: killHeaders,
+    });
+
+    const fileHeaders = {
+      ...authorization(token, 'file-write-replay'),
+      'content-type': 'application/octet-stream',
+    };
+    const firstWrite = await requireApp().inject({
+      method: 'PUT',
+      url: '/files?path=idempotent.txt',
+      headers: fileHeaders,
+      payload: Buffer.from('original'),
+    });
+    await writeFile(join(workspaceRoot, 'idempotent.txt'), 'changed-after-first-write');
+    const replayedWrite = await requireApp().inject({
+      method: 'PUT',
+      url: '/files?path=idempotent.txt',
+      headers: fileHeaders,
+      payload: Buffer.from('original'),
+    });
+
+    await execFileAsync('git', ['init'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'idempotent-git.txt'), 'content');
+    const gitHeaders = authorization(token, 'git-replay');
+    const gitPayload = {
+      operation: 'add_commit' as const,
+      paths: ['idempotent-git.txt'],
+      message: 'idempotent commit',
+    };
+    const firstGit = await requireApp().inject({
+      method: 'POST',
+      url: '/git',
+      headers: gitHeaders,
+      payload: gitPayload,
+    });
+    const replayedGit = await requireApp().inject({
+      method: 'POST',
+      url: '/git',
+      headers: gitHeaders,
+      payload: gitPayload,
+    });
+    const { stdout: commitCount } = await execFileAsync('git', ['rev-list', '--count', 'HEAD'], {
+      cwd: workspaceRoot,
+    });
+
+    expect(firstKill.json()).toEqual({ killed: true });
+    expect(replayedKill.body).toBe(firstKill.body);
+    expect(firstWrite.statusCode).toBe(204);
+    expect(replayedWrite.statusCode).toBe(204);
+    expect(await readFile(join(workspaceRoot, 'idempotent.txt'), 'utf8')).toBe(
+      'changed-after-first-write',
+    );
+    expect(replayedGit.body).toBe(firstGit.body);
+    expect(commitCount.trim()).toBe('1');
+  });
+
+  test('returns 409 when an Idempotency-Key is reused for another payload or route', async () => {
+    const headers = {
+      ...authorization(token, 'idempotency-conflict'),
+      'content-type': 'application/octet-stream',
+    };
+    const first = await requireApp().inject({
+      method: 'PUT',
+      url: '/files?path=conflict.txt',
+      headers,
+      payload: Buffer.from('first'),
+    });
+    const payloadConflict = await requireApp().inject({
+      method: 'PUT',
+      url: '/files?path=conflict.txt',
+      headers,
+      payload: Buffer.from('second'),
+    });
+    const routeConflict = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: authorization(token, 'idempotency-conflict'),
+      payload: { cmd: 'true', args: [], timeoutMs: 1_000 },
+    });
+
+    expect(first.statusCode).toBe(204);
+    expect(payloadConflict.statusCode).toBe(409);
+    expect(payloadConflict.json()).toEqual({ error: 'idempotency_conflict' });
+    expect(routeConflict.statusCode).toBe(409);
+    expect(routeConflict.json()).toEqual({ error: 'idempotency_conflict' });
+    expect(await readFile(join(workspaceRoot, 'conflict.txt'), 'utf8')).toBe('first');
   });
 
   test('times out the whole process group without leaving a descendant', async () => {
@@ -344,7 +701,8 @@ describe('workspace-agent RPC daemon', () => {
   });
 
   test('kills and reaps a streamed command when the client disconnects', async () => {
-    const address = await requireApp().listen({ host: '127.0.0.1', port: 0 });
+    const activeApp = requireApp();
+    const address = await activeApp.listen({ host: '127.0.0.1', port: 0 });
     const pidFile = join(workspaceRoot, 'disconnected.pid');
     const response = await fetch(`${address}/exec?stream=1`, {
       method: 'POST',
@@ -368,6 +726,17 @@ describe('workspace-agent RPC daemon', () => {
     await reader.cancel();
 
     await waitForProcessExit(pid);
+    app = undefined;
+    const closePromise = activeApp.close();
+    try {
+      await settleWithin(closePromise, 1_000);
+      await waitForNoServerConnections(activeApp.server);
+      expect(activeApp.server.listening).toBe(false);
+      expect(await serverConnectionCount(activeApp.server)).toBe(0);
+    } finally {
+      activeApp.server.closeAllConnections();
+      await closePromise;
+    }
   });
 
   test('reports a non-zero exit when the kill route terminates a PTY command', async () => {
@@ -460,6 +829,38 @@ describe('workspace-agent RPC daemon', () => {
     expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBe(1_048_575);
     expect(result.truncated).toBe(true);
   });
+
+  test.each([false, true])(
+    'discards all output after a decoded scalar cannot fit when stream=%s',
+    async (stream) => {
+      const script = [
+        `process.stdout.write('A'.repeat(${String(OUTPUT_LIMIT - 1)}));`,
+        "setTimeout(() => process.stdout.write('€'), 25);",
+        "setTimeout(() => process.stdout.write('Z'), 50);",
+      ].join('');
+      const response = await requireApp().inject({
+        method: 'POST',
+        url: stream ? '/exec?stream=1' : '/exec',
+        headers: authorization(),
+        payload: { cmd: process.execPath, args: ['-e', script], timeoutMs: 2_000 },
+      });
+      const records = stream ? parseNdjson(response.body) : [];
+      const stdout = stream
+        ? records
+            .filter((record) => record.type === 'stdout')
+            .map((record) => record.data ?? '')
+            .join('')
+        : response.json<{ stdout: string }>().stdout;
+      const truncated = stream
+        ? records.at(-1)?.truncated
+        : response.json<{ truncated: boolean }>().truncated;
+
+      expect(Buffer.byteLength(stdout)).toBe(OUTPUT_LIMIT - 1);
+      expect(stdout.endsWith('A')).toBe(true);
+      expect(stdout.endsWith('Z')).toBe(false);
+      expect(truncated).toBe(true);
+    },
+  );
 
   test('round-trips arbitrary bytes and lists files with depth and glob controls', async () => {
     const bytes = Buffer.from([0, 255, 1, 254, 2]);
@@ -773,6 +1174,73 @@ describe('workspace-agent RPC daemon', () => {
     });
   });
 
+  test('portable metrics include process-group descendants with separate user and system CPU', async () => {
+    await requireApp().close();
+    app = await buildWorkspaceAgent({ workspaceRoot, token, metricsSource: portableMetricsSource });
+    const baselineResponse = await requireApp().inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: authorization(),
+    });
+    const baseline = baselineResponse.json<{
+      cpu: { userMicros: number; systemMicros: number };
+      memory: { rssBytes: number };
+    }>();
+    const rootPidFile = join(workspaceRoot, 'metrics-root.pid');
+    const childPidFile = join(workspaceRoot, 'metrics-child.pid');
+    const childScript = [
+      "const fs = require('node:fs');",
+      "const memory = Buffer.alloc(96 * 1024 * 1024, 1);",
+      "const fd = fs.openSync('/dev/null', 'w');",
+      "const block = Buffer.alloc(4096, 1);",
+      'const deadline = Date.now() + 750;',
+      'let value = 1;',
+      'while (Date.now() < deadline) { fs.writeSync(fd, block); value += Math.sqrt(value); }',
+      `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+      'setInterval(() => { value += memory[0]; }, 1000);',
+    ].join('');
+    const activeRequest = requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: authorization(),
+      payload: {
+        cmd: '/bin/sh',
+        args: [
+          '-c',
+          'echo $$ > "$ROOT_PID_FILE"; "$NODE_BIN" -e "$CHILD_SCRIPT" & wait',
+        ],
+        env: {
+          ROOT_PID_FILE: rootPidFile,
+          NODE_BIN: process.execPath,
+          CHILD_SCRIPT: childScript,
+        },
+        timeoutMs: 10_000,
+      },
+    });
+    const rootPid = Number(await waitForFile(rootPidFile));
+    await waitForFile(childPidFile);
+
+    const activeResponse = await requireApp().inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: authorization(),
+    });
+    const active = activeResponse.json<{
+      cpu: { userMicros: number; systemMicros: number };
+      memory: { rssBytes: number };
+    }>();
+    await requireApp().inject({
+      method: 'POST',
+      url: `/exec/${String(rootPid)}/kill`,
+      headers: authorization(),
+    });
+    await activeRequest;
+
+    expect(active.memory.rssBytes - baseline.memory.rssBytes).toBeGreaterThan(64 * 1024 * 1024);
+    expect(active.cpu.userMicros - baseline.cpu.userMicros).toBeGreaterThan(50_000);
+    expect(active.cpu.systemMicros - baseline.cpu.systemMicros).toBeGreaterThan(50_000);
+  });
+
   test('closing the agent reaps every active child', async () => {
     const pidFile = join(workspaceRoot, 'close.pid');
     const request = requireApp().inject({
@@ -795,5 +1263,29 @@ describe('workspace-agent RPC daemon', () => {
     await request;
 
     await waitForProcessExit(pid);
+  });
+
+  test('signal shutdown exits 0 on close success and exits 1 safely on rejection', async () => {
+    const successExitCodes: number[] = [];
+    const successDiagnostics: string[] = [];
+    await closeWorkspaceAgentForSignal(
+      { close: () => Promise.resolve() },
+      (code) => successExitCodes.push(code),
+      (message) => successDiagnostics.push(message),
+    );
+
+    const failureExitCodes: number[] = [];
+    const failureDiagnostics: string[] = [];
+    await closeWorkspaceAgentForSignal(
+      { close: () => Promise.reject(new Error('private close failure detail')) },
+      (code) => failureExitCodes.push(code),
+      (message) => failureDiagnostics.push(message),
+    );
+
+    expect(successExitCodes).toEqual([0]);
+    expect(successDiagnostics).toEqual([]);
+    expect(failureExitCodes).toEqual([1]);
+    expect(failureDiagnostics).toEqual(['workspace-agent failed to shut down\n']);
+    expect(failureDiagnostics.join('')).not.toContain('private close failure detail');
   });
 });

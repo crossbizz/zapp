@@ -90,35 +90,101 @@ async function readCgroupUsage(): Promise<MetricsUsage | undefined> {
   }
 }
 
+interface ProcessUsageRow {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly processGroupId: number;
+  readonly rssBytes: number;
+  readonly userMicros: number;
+  readonly systemMicros: number;
+}
+
+function parseProcessUsage(output: string): ProcessUsageRow[] {
+  const rows: ProcessUsageRow[] = [];
+  for (const line of output.trim().split('\n')) {
+    const [pid, parentPid, processGroupId, rssKiB, userTime, systemTime] = line
+      .trim()
+      .split(/\s+/u);
+    if (
+      pid === undefined ||
+      parentPid === undefined ||
+      processGroupId === undefined ||
+      rssKiB === undefined ||
+      userTime === undefined ||
+      systemTime === undefined
+    ) {
+      continue;
+    }
+    const numeric = [pid, parentPid, processGroupId, rssKiB].map(Number);
+    if (numeric.some((value) => !Number.isInteger(value) || value < 0)) {
+      continue;
+    }
+    rows.push({
+      pid: numeric[0] ?? 0,
+      parentPid: numeric[1] ?? 0,
+      processGroupId: numeric[2] ?? 0,
+      rssBytes: (numeric[3] ?? 0) * 1_024,
+      userMicros: parseCpuTime(userTime),
+      systemMicros: parseCpuTime(systemTime),
+    });
+  }
+  return rows;
+}
+
+function selectWorkspaceProcesses(
+  rows: readonly ProcessUsageRow[],
+  activePids: readonly number[],
+): ProcessUsageRow[] {
+  const active = new Set(activePids);
+  const processGroups = new Set(
+    rows.filter((row) => active.has(row.pid)).map((row) => row.processGroupId),
+  );
+  const selected = new Set<number>();
+  for (const row of rows) {
+    if (active.has(row.pid) || processGroups.has(row.processGroupId)) {
+      selected.add(row.pid);
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (!selected.has(row.pid) && selected.has(row.parentPid)) {
+        selected.add(row.pid);
+        changed = true;
+      }
+    }
+  }
+  return rows.filter((row) => selected.has(row.pid));
+}
+
 async function readPortableUsage(activePids: readonly number[]): Promise<MetricsUsage> {
   const cpu = process.cpuUsage();
   const memory = process.memoryUsage();
-  let childCpuMicros = 0;
+  let childUserMicros = 0;
+  let childSystemMicros = 0;
   let childRssBytes = 0;
   if (activePids.length > 0) {
     try {
-      const result = await execa(
-        'ps',
-        ['-o', 'time=,rss=', '-p', activePids.join(',')],
-        {
-          reject: false,
-          env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
-          extendEnv: false,
-        },
-      );
-      for (const line of result.stdout.trim().split('\n')) {
-        const match = /^\s*(\S+)\s+(\d+)\s*$/.exec(line);
-        if (match?.[1] !== undefined && match[2] !== undefined) {
-          childCpuMicros += parseCpuTime(match[1]);
-          childRssBytes += Number(match[2]) * 1_024;
-        }
+      const result = await execa('ps', ['-A', '-o', 'pid=,ppid=,pgid=,rss=,utime=,stime='], {
+        reject: false,
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+        extendEnv: false,
+      });
+      for (const row of selectWorkspaceProcesses(parseProcessUsage(result.stdout), activePids)) {
+        childUserMicros += row.userMicros;
+        childSystemMicros += row.systemMicros;
+        childRssBytes += row.rssBytes;
       }
     } catch {
       // A process may exit between the active-process snapshot and sampling.
     }
   }
   return MetricsUsageSchema.parse({
-    cpu: { userMicros: cpu.user + childCpuMicros, systemMicros: cpu.system },
+    cpu: {
+      userMicros: cpu.user + childUserMicros,
+      systemMicros: cpu.system + childSystemMicros,
+    },
     memory: {
       rssBytes: memory.rss + childRssBytes,
       heapTotalBytes: memory.heapTotal,
@@ -129,9 +195,13 @@ async function readPortableUsage(activePids: readonly number[]): Promise<Metrics
   });
 }
 
+export const portableMetricsSource: MetricsSource = {
+  sample: readPortableUsage,
+};
+
 const defaultMetricsSource: MetricsSource = {
   async sample(activePids) {
-    return (await readCgroupUsage()) ?? readPortableUsage(activePids);
+    return (await readCgroupUsage()) ?? portableMetricsSource.sample(activePids);
   },
 };
 

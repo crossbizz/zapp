@@ -18,19 +18,22 @@ const SAFE_INHERITED_ENV_NAMES = [
   'LOGNAME',
 ] as const;
 
-function isProtectedEnvName(name: string): boolean {
-  const normalized = name.toUpperCase();
-  return (
-    /^(?:ZAPP_|AWS_|MODAL_|STYTCH_|DATABASE_URL$|REDIS_URL$|NODE_OPTIONS$|NODE_PATH$|LD_|DYLD_|BASH_ENV$|ENV$)/u.test(
-      normalized,
-    ) || /(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE_KEY|API_KEY)(?:_|$)/u.test(normalized)
-  );
-}
+const RESERVED_AGENT_ENV_NAMES = new Set([
+  'ZAPP_AGENT_TOKEN',
+  'ZAPP_WORKSPACE_ROOT',
+  'ZAPP_DEV_SERVER_PORT',
+]);
 
 const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
-  for (const name of Object.keys(env)) {
-    if (isProtectedEnvName(name)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Protected environment name' });
+  for (const [name, value] of Object.entries(env)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid environment name' });
+    }
+    if (RESERVED_AGENT_ENV_NAMES.has(name)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Reserved environment name' });
+    }
+    if (value.includes('\0')) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid environment value' });
     }
   }
 });
@@ -133,6 +136,7 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
   const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
   let outputBytes = 0;
   let truncated = false;
+  let prefixClosed = false;
   let finalized = false;
   let appendChain = Promise.resolve();
 
@@ -154,17 +158,19 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
   };
 
   const appendText = async (stream: 'stdout' | 'stderr', text: string): Promise<void> => {
-    if (text.length === 0) {
+    if (text.length === 0 || prefixClosed) {
       return;
     }
     const remaining = MAX_EXEC_OUTPUT_BYTES - outputBytes;
     if (remaining <= 0) {
       truncated = true;
+      prefixClosed = true;
       return;
     }
     const accepted = validUtf8Prefix(text, remaining);
     if (accepted !== text) {
       truncated = true;
+      prefixClosed = true;
     }
     outputBytes += Buffer.byteLength(accepted);
     if (accepted.length === 0) {

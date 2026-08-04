@@ -2,7 +2,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import fastify, { type FastifyInstance } from 'fastify';
+import fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from 'fastify';
 import { z, ZodError } from 'zod';
 import { PathViolationError } from '@zapp/workspace-runtime';
 import {
@@ -56,6 +60,155 @@ const EmptyBodySchema = z.undefined();
 const KillParamsSchema = z.object({ pid: z.coerce.number().int().positive() }).strict();
 const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const ErrorResponseSchema = z.object({ error: z.string() }).strict();
+const IdempotencyKeySchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
+const MUTATING_ROUTES = new Set(['/exec', '/exec/:pid/kill', '/files', '/git']);
+const MAX_IDEMPOTENCY_ENTRIES = 256;
+
+interface CachedResponse {
+  readonly statusCode: number;
+  readonly contentType?: string;
+  readonly body?: string | Buffer;
+}
+
+interface IdempotencyEntry {
+  readonly fingerprint: string;
+  readonly completion: Promise<CachedResponse>;
+  readonly resolve: (response: CachedResponse) => void;
+  readonly reject: (error: Error) => void;
+  complete: boolean;
+}
+
+type IdempotencyStart =
+  | { readonly kind: 'conflict' }
+  | { readonly kind: 'full' }
+  | { readonly kind: 'owner'; readonly entry: IdempotencyEntry }
+  | { readonly kind: 'replay'; readonly completion: Promise<CachedResponse> };
+
+/**
+ * Replay state is deliberately process-lifetime only. The fixed-size map prevents
+ * an agent from accumulating keys without bound; sandbox-service callers retain
+ * responsibility for retrying with the same standard Idempotency-Key after reconnect.
+ */
+class IdempotencyStore {
+  private readonly entries = new Map<string, IdempotencyEntry>();
+
+  start(key: string, fingerprint: string): IdempotencyStart {
+    const existing = this.entries.get(key);
+    if (existing !== undefined) {
+      if (existing.fingerprint !== fingerprint) {
+        return { kind: 'conflict' };
+      }
+      if (existing.complete) {
+        this.entries.delete(key);
+        this.entries.set(key, existing);
+      }
+      return { kind: 'replay', completion: existing.completion };
+    }
+
+    if (this.entries.size >= MAX_IDEMPOTENCY_ENTRIES) {
+      const completed = [...this.entries].find(([, entry]) => entry.complete);
+      if (completed === undefined) {
+        return { kind: 'full' };
+      }
+      this.entries.delete(completed[0]);
+    }
+
+    let resolveCompletion: (response: CachedResponse) => void = () => undefined;
+    let rejectCompletion: (error: Error) => void = () => undefined;
+    const completion = new Promise<CachedResponse>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    void completion.catch(() => undefined);
+    const entry: IdempotencyEntry = {
+      fingerprint,
+      completion,
+      resolve: resolveCompletion,
+      reject: rejectCompletion,
+      complete: false,
+    };
+    this.entries.set(key, entry);
+    return { kind: 'owner', entry };
+  }
+
+  complete(entry: IdempotencyEntry, response: CachedResponse): void {
+    if (entry.complete) {
+      return;
+    }
+    entry.complete = true;
+    entry.resolve({
+      ...response,
+      ...(Buffer.isBuffer(response.body) ? { body: Buffer.from(response.body) } : {}),
+    });
+  }
+
+  fail(key: string, entry: IdempotencyEntry, error: unknown): void {
+    if (this.entries.get(key) !== entry) {
+      return;
+    }
+    this.entries.delete(key);
+    entry.reject(error instanceof Error ? error : new Error('Idempotent operation failed'));
+  }
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Buffer.isBuffer(value)) {
+    return { binary: value.toString('base64') };
+  }
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalize(nested)]),
+    );
+  }
+  return value;
+}
+
+function idempotencyFingerprint(request: FastifyRequest): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        method: request.method,
+        url: request.url,
+        body: canonicalize(request.body),
+      }),
+    )
+    .digest('hex');
+}
+
+function cachedPayload(payload: unknown): string | Buffer | undefined {
+  if (payload === undefined || payload === null) {
+    return undefined;
+  }
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (Buffer.isBuffer(payload)) {
+    return Buffer.from(payload);
+  }
+  if (payload instanceof Uint8Array) {
+    return Buffer.from(payload);
+  }
+  throw new Error('Unsupported idempotent response payload');
+}
+
+async function sendCachedResponse(reply: FastifyReply, response: CachedResponse): Promise<void> {
+  reply.code(response.statusCode);
+  if (response.contentType !== undefined) {
+    reply.header('content-type', response.contentType);
+  }
+  await reply.send(
+    Buffer.isBuffer(response.body) ? Buffer.from(response.body) : response.body,
+  );
+}
 
 function tokenDigest(value: string): Buffer {
   return createHash('sha256').update(value).digest();
@@ -82,8 +235,11 @@ export interface NdjsonWriter {
   off(event: 'close' | 'drain' | 'error', listener: (...args: unknown[]) => void): unknown;
 }
 
+function serializeNdjsonRecord(record: unknown): string {
+  return `${JSON.stringify(ExecStreamRecordSchema.parse(record))}\n`;
+}
+
 export async function writeNdjsonRecord(writer: NdjsonWriter, record: unknown): Promise<void> {
-  const validated = ExecStreamRecordSchema.parse(record);
   if (writer.destroyed === true || writer.writableEnded === true) {
     throw new Error('Streaming client closed');
   }
@@ -108,7 +264,7 @@ export async function writeNdjsonRecord(writer: NdjsonWriter, record: unknown): 
     writer.once('drain', onDrain);
     writer.once('close', onClose);
     writer.once('error', onError);
-    if (writer.write(`${JSON.stringify(validated)}\n`)) {
+    if (writer.write(serializeNdjsonRecord(record))) {
       cleanup();
       resolve();
     }
@@ -123,9 +279,33 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     throw new Error('Workspace root must be a directory');
   }
 
-  const app = fastify({ logger: false, bodyLimit: 16 * 1_024 * 1_024 });
+  const app = fastify({
+    logger: false,
+    bodyLimit: 16 * 1_024 * 1_024,
+    forceCloseConnections: true,
+  });
   const expectedDigest = tokenDigest(parsed.token);
   const execManager = new ExecManager(workspaceRoot);
+  const idempotency = new IdempotencyStore();
+  const idempotencyKeys = new WeakMap<FastifyRequest, string>();
+  const idempotencyOwners = new WeakMap<
+    FastifyRequest,
+    { key: string; entry: IdempotencyEntry }
+  >();
+
+  const completeIdempotency = (request: FastifyRequest, response: CachedResponse): void => {
+    const owner = idempotencyOwners.get(request);
+    if (owner !== undefined) {
+      idempotency.complete(owner.entry, response);
+    }
+  };
+
+  const failIdempotency = (request: FastifyRequest, error: unknown): void => {
+    const owner = idempotencyOwners.get(request);
+    if (owner !== undefined) {
+      idempotency.fail(owner.key, owner.entry, error);
+    }
+  };
 
   app.addContentTypeParser(
     'application/octet-stream',
@@ -141,7 +321,52 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     }
     if (request.method === 'GET' && hasHttpBody(request.headers)) {
       await reply.code(400).send(ErrorResponseSchema.parse({ error: 'bad_request' }));
+      return;
     }
+    const routeUrl = request.routeOptions.url;
+    if (routeUrl !== undefined && MUTATING_ROUTES.has(routeUrl)) {
+      const header = request.headers['idempotency-key'];
+      const key = IdempotencyKeySchema.parse(typeof header === 'string' ? header : undefined);
+      idempotencyKeys.set(request, key);
+    }
+  });
+  app.addHook('preHandler', async (request, reply) => {
+    const routeUrl = request.routeOptions.url;
+    if (routeUrl === undefined || !MUTATING_ROUTES.has(routeUrl)) {
+      return;
+    }
+    const key = idempotencyKeys.get(request);
+    if (key === undefined) {
+      throw new Error('Idempotency key was not validated');
+    }
+    const started = idempotency.start(key, idempotencyFingerprint(request));
+    if (started.kind === 'conflict') {
+      await reply
+        .code(409)
+        .send(ErrorResponseSchema.parse({ error: 'idempotency_conflict' }));
+      return;
+    }
+    if (started.kind === 'full') {
+      await reply
+        .code(503)
+        .send(ErrorResponseSchema.parse({ error: 'idempotency_capacity' }));
+      return;
+    }
+    if (started.kind === 'replay') {
+      await sendCachedResponse(reply, await started.completion);
+      return;
+    }
+    idempotencyOwners.set(request, { key, entry: started.entry });
+  });
+  app.addHook('onSend', async (request, reply, payload) => {
+    const contentType = reply.getHeader('content-type');
+    const body = cachedPayload(payload);
+    completeIdempotency(request, {
+      statusCode: reply.statusCode,
+      ...(contentType === undefined ? {} : { contentType: String(contentType) }),
+      ...(body === undefined ? {} : { body }),
+    });
+    return payload;
   });
   app.addHook('preClose', async () => {
     await execManager.killAll();
@@ -171,6 +396,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       resolve: () => void;
       reject: (error: unknown) => void;
     }> = [];
+    const streamBody: string[] = [];
     let streamReady = false;
     let activePid: number | undefined;
     let resolveStarted: () => void = () => undefined;
@@ -180,6 +406,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       rejectStarted = reject;
     });
     const completion = execManager.run(input, async (record) => {
+      streamBody.push(serializeNdjsonRecord(record));
       if (record.type === 'started') {
         activePid = record.pid;
         resolveStarted();
@@ -219,8 +446,14 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       }
       streamReady = true;
       await completion;
+      completeIdempotency(request, {
+        statusCode: 200,
+        contentType: 'application/x-ndjson; charset=utf-8',
+        body: streamBody.join(''),
+      });
       reply.raw.end();
     } catch (error) {
+      failIdempotency(request, error);
       for (const pending of pendingRecords.splice(0)) {
         pending.reject(error);
       }
@@ -293,6 +526,22 @@ const EnvironmentSchema = z.object({
   ZAPP_DEV_SERVER_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
 });
 
+export async function closeWorkspaceAgentForSignal(
+  app: { close: () => Promise<unknown> },
+  exit: (code: 0 | 1) => void = (code) => process.exit(code),
+  diagnostic: (message: string) => void = (message) => {
+    process.stderr.write(message);
+  },
+): Promise<void> {
+  try {
+    await app.close();
+    exit(0);
+  } catch {
+    diagnostic('workspace-agent failed to shut down\n');
+    exit(1);
+  }
+}
+
 async function startFromEnvironment(): Promise<void> {
   const environment = EnvironmentSchema.parse(process.env);
   const app = await buildWorkspaceAgent({
@@ -303,9 +552,7 @@ async function startFromEnvironment(): Promise<void> {
       : { devServerPort: environment.ZAPP_DEV_SERVER_PORT }),
   });
   const shutdown = (): void => {
-    void app.close().finally(() => {
-      process.exit(0);
-    });
+    void closeWorkspaceAgentForSignal(app);
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
