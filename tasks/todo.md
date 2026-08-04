@@ -32,7 +32,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] GIT-2 git-service GitProvider
 - [ ] GIT-3 Repo-scoped short-lived tokens
 ### Plan 09 — Desktop fork prep
-- [ ] MAC-1 Dyad fork builds without src/pro
+- [x] MAC-1 Dyad fork builds without src/pro
 - [ ] MAC-2 Rebrand + signing/notarization CI
 - [ ] MAC-3 Dyad capability preservation suite
 
@@ -107,6 +107,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-3 Plan quotas + budget enforcement
 - [ ] MAC-4 Platform auth + Keychain
 - [ ] MAC-5 Unified local+cloud dashboard
+- [ ] MAC-5.5 Triage 51 Pro-dependent integration test files (spec source: 13 local_agent_* files; before/with MAC-6)
 - [ ] MAC-6 Local WorkspaceRuntime + local sessions
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)

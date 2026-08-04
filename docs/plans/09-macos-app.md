@@ -25,9 +25,9 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/desktop/` (Dyad fork), `docs/adr/0002-dyad-fork.md`
 **Effort:** L
 
-- [ ] **Step 1:** Vendor Dyad at a pinned commit (recorded in ADR + NOTICE); remove `src/pro` directory; build until clean: stub/no-op every Pro import site (each site marked `// zapp: pro-removed`), feature-flag Pro-only UI off.
-- [ ] **Step 2:** Prove: `pnpm --filter desktop start` launches; create/open a local Vite template project; chat panel renders (model calls may be non-functional until MAC-6 — UI boots is the bar); `pnpm --filter desktop make` produces a signed-less dev .app.
-- [ ] **Step 3:** FND-9 lint green on the fork (no pro imports); NOTICE updated.
+- [x] **Step 1:** Vendor Dyad at a pinned commit (recorded in ADR + NOTICE); remove `src/pro` directory; build until clean: stub/no-op every Pro import site (each site marked `// zapp: pro-removed`), feature-flag Pro-only UI off.
+- [x] **Step 2:** Prove: `pnpm --filter desktop start` launches; create/open a local Vite template project; chat panel renders (model calls may be non-functional until MAC-6 — UI boots is the bar); `pnpm --filter desktop make` produces a signed-less dev .app.
+- [x] **Step 3:** FND-9 lint green on the fork (no pro imports); NOTICE updated.
 - [ ] Commit: `feat(desktop): dyad fork building without src/pro (PRD §38.1 exit)`
 
 ### Task MAC-2: Rebrand + packaging/signing/notarization CI
@@ -137,3 +137,6 @@ Master plan §Global Constraints, plus:
 ## Execution log
 
 - (empty)
+
+## Execution log
+- 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
