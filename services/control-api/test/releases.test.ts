@@ -52,6 +52,8 @@ class RecordingReleasePort implements ReleasePort {
   approveResultOverride: Partial<ReleaseRow> | undefined;
   skipCreateAudit = false;
   skipApproveAudit = false;
+  lookupOverrideId: string | undefined;
+  evidenceResultOverride: Partial<EvidenceManifest> | undefined;
   readonly releaseId = newId('rel');
   readonly releases = new Map<string, ReleaseRow>();
 
@@ -93,7 +95,7 @@ class RecordingReleasePort implements ReleasePort {
     return row;
   }
   getRelease(input: ReleaseLookupInput): Promise<ReleaseRow | undefined> {
-    const row = this.releases.get(input.releaseId);
+    const row = this.releases.get(this.lookupOverrideId ?? input.releaseId);
     return Promise.resolve(row?.organizationId === input.organizationId ? row : undefined);
   }
   getReadiness(): Promise<ReadinessReport> {
@@ -147,6 +149,7 @@ class RecordingReleasePort implements ReleasePort {
       preview: { url: 'https://preview.zapp.test' },
       rollback: { supported: true },
       known_risks: [],
+      ...this.evidenceResultOverride,
     });
   }
   seed(row: ReleaseRow): void {
@@ -315,6 +318,88 @@ describe('release route shells', () => {
     expect(wired.releases.deploys).toHaveLength(0);
     expect(wired.releases.rollbacks).toHaveLength(0);
     expect(wired.built.audit.events.filter((event) => event.action.startsWith('release.'))).toEqual([]);
+  });
+
+  it('rejects a same-tenant different release returned for reads and mutations', async () => {
+    const wired = await wire(true);
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-requested-source-01'), payload: candidateBody(wired) });
+    expect(created.statusCode, created.body).toBe(201);
+    const requestedReleaseId = created.json<{ release: { id: string } }>().release.id;
+    const returnedReleaseId = newId('rel');
+    wired.releases.seed({
+      ...wired.releases.release(),
+      id: returnedReleaseId,
+      organizationId: wired.organizationId,
+      projectId: wired.projectId,
+      environmentId: wired.environmentId,
+      commitSha: 'b'.repeat(40),
+      createdBy: wired.owner.userId,
+    });
+    wired.releases.lookupOverrideId = returnedReleaseId;
+    const auditCount = wired.built.audit.events.length;
+    for (const request of [
+      { key: 'same-tenant-wrong-read', method: 'GET' as const, url: `/v1/releases/${requestedReleaseId}`, payload: undefined },
+      { key: 'same-tenant-wrong-evidence', method: 'GET' as const, url: `/v1/releases/${requestedReleaseId}/evidence`, payload: undefined },
+      { key: 'same-tenant-wrong-approve', method: 'POST' as const, url: `/v1/releases/${requestedReleaseId}/approve`, payload: undefined },
+      { key: 'same-tenant-wrong-deploy', method: 'POST' as const, url: `/v1/releases/${requestedReleaseId}/deploy`, payload: { deploymentType: 'redeploy' } },
+      { key: 'same-tenant-wrong-rollback', method: 'POST' as const, url: `/v1/releases/${requestedReleaseId}/rollback`, payload: { reason: 'wrong selected release' } },
+    ]) {
+      const options = request.payload === undefined
+        ? { method: request.method, url: request.url, headers: wired.as(wired.owner) }
+        : { method: request.method, url: request.url, headers: mutationHeaders(wired, wired.owner, request.key), payload: request.payload };
+      const response = await wired.built.app.inject(options);
+      expect(response.statusCode).toBe(502);
+      expect(ApiErrorSchema.parse(JSON.parse(response.body) as unknown).error.code).toBe('release_service_unavailable');
+      expect(response.body).not.toContain(returnedReleaseId);
+    }
+    expect(wired.releases.approvals).toEqual([]);
+    expect(wired.releases.deploys).toEqual([]);
+    expect(wired.releases.rollbacks).toEqual([]);
+    expect(wired.built.audit.events).toHaveLength(auditCount);
+  });
+
+  it('rejects evidence bound to another release without leaking its criteria or risks', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-evidence-source-01'), payload: candidateBody(wired) });
+    expect(created.statusCode, created.body).toBe(201);
+    const wrongReleaseId = newId('rel');
+    const wrongCriterion = 'foreign-criterion-release-id';
+    const wrongRisk = 'foreign-risk-release-id';
+    wired.releases.evidenceResultOverride = {
+      release_id: wrongReleaseId,
+      criteria: [{ id: wrongCriterion, status: 'failed' }],
+      known_risks: [{ id: wrongRisk, detail: 'Foreign release risk.' }],
+    };
+    const auditCount = wired.built.audit.events.length;
+    const response = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${created.json<{ release: { id: string } }>().release.id}/evidence`, headers: wired.as(wired.owner) });
+    expect(response.statusCode).toBe(502);
+    expect(ApiErrorSchema.parse(response.json()).error.code).toBe('release_service_unavailable');
+    expect(response.body).not.toContain(wrongReleaseId);
+    expect(response.body).not.toContain(wrongCriterion);
+    expect(response.body).not.toContain(wrongRisk);
+    expect(wired.built.audit.events).toHaveLength(auditCount);
+  });
+
+  it('rejects evidence bound to a different commit without leaking its criteria or risks', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-evidence-commit-source-01'), payload: candidateBody(wired) });
+    expect(created.statusCode, created.body).toBe(201);
+    const wrongCommit = 'b'.repeat(40);
+    const wrongCriterion = 'foreign-criterion-commit';
+    const wrongRisk = 'foreign-risk-commit';
+    wired.releases.evidenceResultOverride = {
+      commit_sha: wrongCommit,
+      criteria: [{ id: wrongCriterion, status: 'failed' }],
+      known_risks: [{ id: wrongRisk, detail: 'Foreign commit risk.' }],
+    };
+    const auditCount = wired.built.audit.events.length;
+    const response = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${created.json<{ release: { id: string } }>().release.id}/evidence`, headers: wired.as(wired.owner) });
+    expect(response.statusCode).toBe(502);
+    expect(ApiErrorSchema.parse(response.json()).error.code).toBe('release_service_unavailable');
+    expect(response.body).not.toContain(wrongCommit);
+    expect(response.body).not.toContain(wrongCriterion);
+    expect(response.body).not.toContain(wrongRisk);
+    expect(wired.built.audit.events).toHaveLength(auditCount);
   });
 
   it('tenant-validates release environment and specification children before port or audit', async () => {

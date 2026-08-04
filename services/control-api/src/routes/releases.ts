@@ -324,7 +324,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const ctx = tenantOf(request);
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'view_project');
-    return { evidence: await portResult(() => deps.port.getEvidence({ organizationId: ctx.organizationId, releaseId: row.id }), EvidenceManifestSchema) };
+    return { evidence: await evidenceFor(deps.port, row) };
   });
 }
 
@@ -342,8 +342,16 @@ async function releaseFor(port: ReleasePort, organizationId: string, releaseId: 
   } catch {
     throw releaseServiceFailed();
   }
-  if (result.organizationId !== organizationId) throw releaseNotFound();
+  if (result.organizationId !== organizationId || result.id !== releaseId) throw releaseServiceFailed();
   return result;
+}
+async function evidenceFor(port: ReleasePort, release: ReleaseRow): Promise<EvidenceManifest> {
+  return await portResult(async () => {
+    const result = EvidenceManifestSchema.parse(await port.getEvidence({ organizationId: release.organizationId, releaseId: release.id }));
+    if (result.release_id !== release.id || result.commit_sha !== release.commitSha)
+      throw new Error('evidence identity mismatch');
+    return result;
+  }, EvidenceManifestSchema);
 }
 async function portResult<T>(work: () => Promise<T>, schema: z.ZodType<T>): Promise<T> {
   try { return schema.parse(await work()); } catch { throw releaseServiceFailed(); }
