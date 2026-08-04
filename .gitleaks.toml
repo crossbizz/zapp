@@ -1,0 +1,29 @@
+# gitleaks configuration for zapp.build
+#
+# The `security.yml` workflow runs gitleaks on every push and PR, and a weekly
+# full-history scan. Redaction tests necessarily contain strings shaped like
+# credentials -- that is what they assert gets redacted -- so without an
+# allowlist the weekly scan fails on the code that exists to prevent leaks.
+#
+# The allowlist is deliberately narrow: test files only, and only for the
+# generic heuristics. A real provider-shaped key (Stripe, AWS, GitHub, Slack)
+# still fails everywhere, including in tests, because a real key in a fixture
+# is exactly the mistake this scan exists to catch.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API key (allowlisted in redaction/vault tests)"
+regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\||:|<=|=>|:=|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
+keywords = ["key", "api", "token", "secret", "client", "passwd", "password", "auth", "access"]
+
+  [rules.allowlist]
+  description = "Fixture values in tests that assert redaction/encryption behaviour"
+  paths = [
+    '''.*\.test\.ts$''',
+    '''.*/test/support/.*\.ts$''',
+    '''.*/e2e-tests/.*\.ts$''',
+    '''.*/__fixtures__/.*''',
+  ]
