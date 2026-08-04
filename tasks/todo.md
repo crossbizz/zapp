@@ -34,7 +34,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ### Plan 09 — Desktop fork prep
 - [x] MAC-1 Dyad fork builds without src/pro
 - [x] MAC-2 Rebrand + signing/notarization CI
-- [ ] MAC-3 Dyad capability preservation suite
+- [x] MAC-3 Dyad capability preservation suite
 
 ## M1 — Walking skeleton: prompt → preview (Weeks 3–8)
 

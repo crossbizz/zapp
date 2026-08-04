@@ -44,8 +44,8 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/desktop/test/preserve.spec.ts` (Playwright-for-Electron smoke set)
 **Effort:** M
 
-- [ ] Binding behavior: automated smoke for the PRD §21.1 preserve list that exists in Dyad today: local file access, terminal/PTY opens, bundled Git operations, local process management (dev server start/stop), local preview renders, window/protocol handling. Each = one spec; Docker specs env-gated to runners with Docker.
-- [ ] Commit: `test(desktop): dyad capability preservation suite`
+- [x] Binding behavior: automated smoke for the PRD §21.1 preserve list that exists in Dyad today: local file access, terminal/PTY opens, bundled Git operations, local process management (dev server start/stop), local preview renders, window/protocol handling. Each = one spec; Docker specs env-gated to runners with Docker.
+- [x] Commit: `test(desktop): dyad capability preservation suite`
 
 ### Task MAC-4 [M2]: Platform auth + Keychain
 
@@ -142,3 +142,4 @@ Master plan §Global Constraints, plus:
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
 - 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
 - 2026-08-04: MAC-3 done pending fix round (e050b01, review Approved; 7 specs all judged REAL). Suite location e2e-tests/ (plan path would have been collected by NOTHING — playwright testDir). CONTROLLER DECISION: wiring test:preserve into desktop.yml as an e2e-preserve job (an inert net earns no trust). Follow-ups: upstream monaco helper broken (replaceEditorContent targets aria-hidden ime-text-area) — blocks edit_code/editor_commit_menu specs, needs an upstream-facing fix task.
+- 2026-08-04: MAC-3 done (e050b01 + fix 2816766 + budget e3493f5, fully Approved; 7 real specs, wired as CI job e2e-preserve). PLAN 09 M0 SCOPE COMPLETE (MAC-1/2/3). COST WATCH: a main push touching apps/desktop now spends both package-macos (90m budget) and e2e-preserve (45m) on macos-14 (10x-billed) — if it bites, move e2e-preserve to PR-only + nightly on main.
