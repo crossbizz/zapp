@@ -1,0 +1,16 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test:integration": {
+      // The suite imports @zapp/contracts, which resolves through its package
+      // exports to dist/. The CI integration job runs this task on its own with
+      // no build step in front of it, so the dependency has to be declared here
+      // rather than assumed. cache/env repeat the root definition: a package
+      // configuration replaces the task it overrides.
+      "dependsOn": ["^build"],
+      "cache": false,
+      "env": ["DATABASE_URL", "REDIS_URL"]
+    }
+  }
+}
