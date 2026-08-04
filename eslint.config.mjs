@@ -65,7 +65,7 @@ export default tseslint.config(
   {
     // Config files sit outside every package's tsconfig `include`, so the project
     // service cannot type them. Lint them without type information instead.
-    files: ['**/*.{js,cjs,mjs}', '**/*.config.{ts,mts,cts}', 'vitest.workspace.ts'],
+    files: ['**/*.{js,cjs,mjs}', '**/*.config.{ts,mts,cts}'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       parserOptions: {
