@@ -192,3 +192,4 @@ Master plan §Global Constraints, plus:
 ## Execution log
 
 - (empty)
+- 2026-08-04: DEPLOYMENT NOTE (from CP-5 fix): rate-limit proxy trust defaults to NONE. Any deploy behind an edge proxy MUST set `proxy.trustedHops` (or trustedProxies) in config/rate-limits.json in the same change, or ip-scoped classes bucket by the ingress. The plugin warns at boot naming the field; setting both fields refuses to boot. Owner: OPS deploy runbook.
