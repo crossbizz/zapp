@@ -29,7 +29,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ### Plan 06 — Internal Git
 - [x] GIT-1 Forgejo deployment + bootstrap
-- [ ] GIT-2 git-service GitProvider
+- [x] GIT-2 git-service GitProvider
 - [ ] GIT-3 Repo-scoped short-lived tokens
 ### Plan 09 — Desktop fork prep
 - [x] MAC-1 Dyad fork builds without src/pro

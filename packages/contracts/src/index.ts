@@ -126,3 +126,23 @@ export {
   type RollbackInput,
 } from './deployment.js';
 export { ApiErrorSchema, IdempotencyHeader, PageSchema, type ApiError, type Page } from './api.js';
+// PRD §19.1 — the internal Git service, provider-neutral (plan 06 GIT-2).
+export {
+  BranchRefSchema,
+  CommitDetailSchema,
+  CommitSummarySchema,
+  CreateRepositoryInputSchema,
+  CreatedRepositorySchema,
+  InternalRepoRefSchema,
+  RELEASE_BRANCH_PATTERN,
+  internalRepoRef,
+  parseInternalRepoRef,
+  type BranchRef,
+  type CommitDetail,
+  type CommitPage,
+  type CommitSummary,
+  type CreateRepositoryInput,
+  type CreatedRepository,
+  type GitProvider,
+  type RepoRefParts,
+} from './git.js';

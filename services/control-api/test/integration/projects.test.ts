@@ -39,6 +39,13 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
 /** Fails on demand, so the rollback can be provoked rather than argued about. */
 class ScriptedGitService implements GitServicePort {
   fail = false;
+  /**
+   * What a real provider reports once it has created the repository (plan 06
+   * GIT-2), and `undefined` for the record-only stand-in. Settable so this suite
+   * can prove `repositories.provisioned_at` follows the *implementation* rather
+   * than following the fact that the insert ran.
+   */
+  provisionedAt: Date | undefined = undefined;
   readonly calls: { projectId: string; projectSlug: string; defaultBranch: string }[] = [];
 
   createRepository(input: {
@@ -46,7 +53,7 @@ class ScriptedGitService implements GitServicePort {
     projectId: string;
     projectSlug: string;
     defaultBranch: string;
-  }): Promise<{ internalRepoRef: string }> {
+  }): Promise<{ internalRepoRef: string; provisionedAt?: Date }> {
     this.calls.push({
       projectId: input.projectId,
       projectSlug: input.projectSlug,
@@ -55,7 +62,10 @@ class ScriptedGitService implements GitServicePort {
     if (this.fail) {
       return Promise.reject(new GitServiceError('forgejo refused'));
     }
-    return Promise.resolve({ internalRepoRef: `${input.organizationId}/${input.projectSlug}` });
+    return Promise.resolve({
+      internalRepoRef: `${input.organizationId}/${input.projectSlug}`,
+      ...(this.provisionedAt === undefined ? {} : { provisionedAt: this.provisionedAt }),
+    });
   }
 }
 
@@ -264,6 +274,34 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
       projectSlug: created.project.slug,
       defaultBranch: 'main',
     });
+  });
+
+  it('leaves provisioned_at null for a git service that only names the repository', async () => {
+    // The record-only stand-in's signature (CP-6): the row exists, the
+    // repository on disk does not, and this column is the only thing that says
+    // so (`packages/db/src/schema/projects.ts`).
+    git.provisionedAt = undefined;
+    const created = await create({ name: 'Named Only' });
+
+    const [row] = await database.sql<{ provisioned_at: Date | null }[]>`
+      select provisioned_at from repositories where project_id = ${created.project.id}
+    `;
+    expect(row?.provisioned_at).toBeNull();
+  });
+
+  it('records provisioned_at when the git service actually created the repository', async () => {
+    // Plan 06 GIT-2's Forgejo-backed client reports when the repository came
+    // into existence, and the column follows the implementation rather than the
+    // fact that the insert ran.
+    const provisionedAt = new Date('2026-03-04T05:06:07.000Z');
+    git.provisionedAt = provisionedAt;
+    const created = await create({ name: 'Really Provisioned' });
+
+    const [row] = await database.sql<{ provisioned_at: Date | null }[]>`
+      select provisioned_at from repositories where project_id = ${created.project.id}
+    `;
+    expect(row?.provisioned_at).toEqual(provisionedAt);
+    git.provisionedAt = undefined;
   });
 
   it('leaves no row behind when the git service refuses', async () => {

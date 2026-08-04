@@ -1,5 +1,7 @@
-import { defineEnv } from '@zapp/config';
+import { defineEnv, type ServiceTokenConfig } from '@zapp/config';
 import { z } from 'zod';
+
+import { LOG_LEVELS } from './logging.js';
 
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
@@ -22,7 +24,7 @@ const EnvSchema = z.object({
   HOST: z.string().min(1).default('0.0.0.0'),
   /** 4500 — plan 06's port for this service. */
   PORT: z.coerce.number().int().min(1).max(65535).default(4500),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
 });
 
 export type ServiceEnv = z.infer<typeof EnvSchema>;
@@ -90,5 +92,36 @@ export function loadForgejoEnv(source: unknown = process.env): ForgejoEnv {
     baseUrl: env.FORGEJO_URL.replace(/\/+$/, ''),
     adminToken: env.FORGEJO_ADMIN_TOKEN,
     timeoutMs: env.FORGEJO_TIMEOUT_MS,
+  };
+}
+
+/**
+ * The secret every zapp service signs its inter-service calls with (plan 02
+ * CP-8), and the one this service verifies them against.
+ *
+ * The same shape and the same reasoning as the control plane's loader, and it is
+ * required here for a sharper reason: `/internal/git/*` is this service's *only*
+ * surface. With no secret there is nothing to verify a caller with, so the
+ * process would either refuse everybody or — if anyone ever defaulted it —
+ * accept everybody, holding a Forgejo admin token the whole time.
+ *
+ * `SERVICE_TOKEN_SECRET_PREVIOUS` is verification-only and empty is the steady
+ * state: rotation sets it to the outgoing secret, the new one moves in as
+ * current, and it is emptied once no token older than a few minutes can still be
+ * in flight — which for a credential that lives five minutes is essentially
+ * immediately.
+ */
+const ServiceTokenEnvSchema = z.object({
+  SERVICE_TOKEN_SECRET: z.string().min(32),
+  SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
+});
+
+/** @throws Error naming the offending variables — never their values. */
+export function loadServiceTokenConfig(source: unknown = process.env): ServiceTokenConfig {
+  const env = defineEnv(ServiceTokenEnvSchema, source);
+  const previous = env.SERVICE_TOKEN_SECRET_PREVIOUS;
+  return {
+    secret: env.SERVICE_TOKEN_SECRET,
+    ...(previous === undefined || previous === '' ? {} : { previousSecret: previous }),
   };
 }

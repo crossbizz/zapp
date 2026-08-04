@@ -4,6 +4,7 @@ import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from './env.js';
+import { loadGitServiceUrl } from './git/client.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
 
@@ -28,6 +29,10 @@ const masterKey = loadMasterKey();
 // the surface with no user-facing form at all, so a deployment that cannot
 // verify a service token must not come up serving it (CP-8).
 const serviceTokens = loadServiceTokenConfig();
+// Where projects' repositories are actually created (plan 06 GIT-2). Undefined
+// is allowed here and refused by `composeApp` outside development — the decision
+// belongs next to the binding, where a test can assert it.
+const gitServiceUrl = loadGitServiceUrl();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -47,6 +52,7 @@ const app = composeApp({
   auth,
   masterKey,
   serviceTokens,
+  ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,
 });
 

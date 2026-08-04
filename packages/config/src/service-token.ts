@@ -52,6 +52,25 @@ export const SERVICE_NAMES = [
   'release-service',
   'git-service',
   'model-gateway',
+  /**
+   * The control plane, added by plan 06 GIT-2 — and it is the *seventh* entry
+   * for a reason worth writing down, because CP-8 defined this list as six and
+   * `control-api` as explicitly not one of them.
+   *
+   * That was right while the control plane only ever *verified* tokens: a
+   * verifier that also appeared in the list of things it verifies is a name
+   * nobody could distinguish from a caller. It stopped being right when the
+   * control plane acquired something to call. Creating a project provisions a
+   * repository through the git service, inside the transaction that writes the
+   * project row (`services/control-api/src/git/client.ts`), so the control plane
+   * now holds a credential like any other caller and must be nameable as `sub`.
+   *
+   * Nothing is weakened by the addition. `SERVICE_TOKEN_AUDIENCES` gains
+   * `control-api` as an audience, which only matters for a route that verifies
+   * it — there is none — and every internal route still names its own allowlist,
+   * so being in this list confers reach nowhere.
+   */
+  'control-api',
 ] as const;
 
 export type ServiceName = (typeof SERVICE_NAMES)[number];

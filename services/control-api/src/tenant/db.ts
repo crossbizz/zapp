@@ -104,7 +104,16 @@ export interface NewProjectInput {
    * it runs with, which is why the branch name is an argument rather than
    * something the caller has to spell identically.
    */
-  readonly repository: (request: RepositoryRequest) => Promise<{ internalRepoRef: string }>;
+  readonly repository: (request: RepositoryRequest) => Promise<{
+    readonly internalRepoRef: string;
+    /**
+     * When the repository actually came into existence. Absent from a
+     * record-only implementation, and that absence is exactly what
+     * `repositories.provisioned_at` records — see
+     * `src/git/port.ts#CreatedRepository`.
+     */
+    readonly provisionedAt?: Date;
+  }>;
   /**
    * Runs last, still inside the transaction, so the `audit_events` row and
    * everything it describes commit together or not at all (plan 02 CP-5).
@@ -385,7 +394,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               // Ordered deliberately: the slug collision is settled by the
               // insert above before anything is asked of the git service, so a
               // retry with a suffixed slug never leaves a repository behind.
-              const { internalRepoRef } = await input.repository({
+              const { internalRepoRef, provisionedAt } = await input.repository({
                 project,
                 defaultBranch: DEFAULT_BRANCH,
               });
@@ -401,6 +410,16 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                   externalRepoRef: null,
                   defaultBranch: DEFAULT_BRANCH,
                   syncPolicy: NO_SYNC,
+                  /**
+                   * Null when the git service only *named* the repository, set
+                   * when it created one (plan 06 GIT-2). The column is the one
+                   * thing that distinguishes a row still to be provisioned from
+                   * one that must not be created twice
+                   * (`packages/db/src/schema/projects.ts`), so it is written
+                   * from what the implementation reported rather than from the
+                   * fact that this insert ran.
+                   */
+                  provisionedAt: provisionedAt ?? null,
                 })
                 .returning();
               if (repository === undefined) {

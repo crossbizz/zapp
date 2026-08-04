@@ -432,7 +432,11 @@ describe('secret rotation', () => {
 });
 
 describe('the service enum', () => {
-  it('names exactly the six services plan 02 CP-8 defines', () => {
+  it('names exactly the services that may hold a token', () => {
+    // Six from plan 02 CP-8, plus the control plane, which plan 06 GIT-2 added
+    // when it acquired something to call: creating a project provisions a
+    // repository through the git service, so the control plane holds a
+    // credential like any other caller. See the comment on `SERVICE_NAMES`.
     expect([...SERVICE_NAMES]).toEqual([
       'orchestrator-worker',
       'sandbox-service',
@@ -440,6 +444,7 @@ describe('the service enum', () => {
       'release-service',
       'git-service',
       'model-gateway',
+      'control-api',
     ]);
   });
 
@@ -447,7 +452,7 @@ describe('the service enum', () => {
     for (const name of SERVICE_NAMES) {
       expect(isServiceName(name)).toBe(true);
     }
-    for (const name of ['', 'control-api', 'sandbox', 'SANDBOX-SERVICE', 42, null, undefined]) {
+    for (const name of ['', 'control_api', 'sandbox', 'SANDBOX-SERVICE', 42, null, undefined]) {
       expect(isServiceName(name), String(name)).toBe(false);
     }
   });

@@ -8,7 +8,7 @@ import { createRedisDeviceStore } from './auth/device.js';
 import { createStytchAuthPort } from './auth/stytch.js';
 import { createDbUserStore } from './auth/users.js';
 import type { RateLimitSettings } from './config/rate-limits.js';
-import { createRecordOnlyGitService } from './git/port.js';
+import { resolveGitService } from './git/client.js';
 import type { LoggerConfig } from './logging.js';
 import { createRedisInviteStore } from './orgs/invites.js';
 import { createDbOrganizationStore } from './orgs/store.js';
@@ -54,6 +54,13 @@ export interface ServiceRuntime {
    * plane that discovered that from a 401 in staging discovered it too late.
    */
   readonly serviceTokens: ServiceTokenConfig;
+  /**
+   * Where `services/git-service` answers, from `loadGitServiceUrl`
+   * (`src/git/client.ts`). Undefined only in development, where the record-only
+   * stand-in keeps `pnpm dev` working with no git service running; outside it,
+   * an undefined value is a refusal to start.
+   */
+  readonly gitServiceUrl?: string;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
@@ -93,12 +100,21 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // absent.
     tenant: {
       tenantDb: createTenantDbFactory(database),
-      // Named here rather than left to `buildApp`'s default, because this file
-      // is where a port's shipping binding is supposed to be legible: today the
-      // record-only stand-in, which writes the `repositories` row and its
-      // `internal_repo_ref` and contacts nothing. Plan 06's GIT-2 swaps in the
-      // Forgejo client on this line and nothing else moves.
-      git: createRecordOnlyGitService(),
+      /**
+       * The git service (plan 06 GIT-2), which is what CP-6 said would land on
+       * this line — and it did, without anything else moving.
+       *
+       * `resolveGitService` refuses to start when `GIT_SERVICE_URL` is unset
+       * outside development, for the reason the fallbacks below are refused
+       * there: a control plane that quietly kept the record-only stand-in would
+       * create projects whose `repositories` rows point at repositories that do
+       * not exist, and the first symptom would be a clone failure in somebody
+       * else's service, days later.
+       */
+      git: resolveGitService({
+        baseUrl: runtime.gitServiceUrl,
+        serviceTokens: runtime.serviceTokens,
+      }),
     },
     secrets: {
       masterKey: runtime.masterKey,

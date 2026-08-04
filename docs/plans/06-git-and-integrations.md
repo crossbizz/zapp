@@ -80,8 +80,27 @@ export interface GitProvider {
 Routes `/internal/git/*` (service-token). Repo naming: `org_{orgId}/proj_{projectId}` (Forgejo org per zapp org created lazily — tenant path isolation).
 **Effort:** L
 
-- [ ] Failing integration tests: create repo → clone URL works with admin token; branch protect blocks force-push; per-org Forgejo org isolation (repo of org A not listable with org B scoped token — asserted in GIT-3 test).
-- [ ] Commit: `feat(git-service): forgejo-backed GitProvider`
+- [x] Failing integration tests: create repo → clone URL works with admin token; branch protect blocks force-push; per-org Forgejo org isolation (repo of org A not listable with org B scoped token — asserted in GIT-3 test).
+- [x] Commit: `feat(git-service): forgejo-backed GitProvider`
+
+Where the pieces landed, and the two decisions worth knowing:
+
+- **The `GitProvider` interface is in `packages/contracts`** (`src/git.ts`), not in
+  the service. PRD §19.1 calls the contract provider-neutral, and it has no
+  runtime dependency beyond zod, so the control plane can depend on it without
+  depending on Forgejo. The Forgejo implementation is `services/git-service`.
+- **`internalRepoRef` is one function, called by both sides.** CP-6 already
+  derived `org_{ulid}/proj_{ulid}` from the immutable ids — the same shape this
+  plan specifies, because a TypeID *is* `org_<ulid>` — so nothing had to change
+  to make them agree; the derivation simply moved into the contract so they
+  cannot stop agreeing.
+- `SERVICE_NAMES` in `@zapp/config` gained `control-api`. CP-8 defined the
+  control plane as a verifier and explicitly not a caller; creating a project now
+  provisions a repository through this service, so it holds a credential like any
+  other caller and must be nameable as `sub`.
+- Routes address a repository by `(organizationId, projectId)` and derive the ref
+  themselves. A caller that could name a ref could name *any* ref, and this
+  service holds the Forgejo admin token.
 
 ### Task GIT-3: Scoped short-lived tokens
 

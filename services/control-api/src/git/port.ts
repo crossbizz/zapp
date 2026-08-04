@@ -1,3 +1,5 @@
+import { internalRepoRef } from '@zapp/contracts';
+
 /**
  * The internal Git service, as the control plane needs it.
  *
@@ -40,6 +42,19 @@ export interface CreatedRepository {
    * release.
    */
   readonly internalRepoRef: string;
+  /**
+   * When the repository actually came into existence — as opposed to when the
+   * row describing it was written.
+   *
+   * Absent for an implementation that only names a repository, which is
+   * precisely the difference `repositories.provisioned_at` exists to record
+   * (`packages/db/src/schema/projects.ts`): the record-only stand-in below
+   * leaves it null, and plan 06's Forgejo-backed client sets it, so a row that
+   * still has to be provisioned is distinguishable from one that must not be
+   * created twice. An implementation returning this is asserting that a clone
+   * would now succeed.
+   */
+  readonly provisionedAt?: Date;
 }
 
 /**
@@ -128,13 +143,19 @@ export interface GitServicePort {
  * `provisioned_at` is deliberately left null by everything this stand-in
  * writes: the record exists, the repository on disk does not, and plan 06's
  * GIT-2 is what can tell the difference (`packages/db/src/schema/projects.ts`).
+ *
+ * The derivation itself moved to `internalRepoRef` in `@zapp/contracts` when
+ * GIT-2 landed, and that is more than tidying. The git service derives the same
+ * ref every time it is asked to act on a project, and two copies of this
+ * expression in two services would be two things a future edit could put out of
+ * step — silently, since the symptom is a repository at an address the control
+ * plane no longer expects. One function, called by both, cannot disagree with
+ * itself.
  */
 export function createRecordOnlyGitService(): GitServicePort {
   return {
     createRepository(input) {
-      return Promise.resolve({
-        internalRepoRef: `${input.organizationId.toLowerCase()}/${input.projectId.toLowerCase()}`,
-      });
+      return Promise.resolve({ internalRepoRef: internalRepoRef(input) });
     },
   };
 }

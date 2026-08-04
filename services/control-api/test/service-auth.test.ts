@@ -267,8 +267,13 @@ describe('what the route will not accept as a token', () => {
       ],
       ['signed with a secret this deployment does not hold', await foreign.issue(SANDBOX)],
       [
+        // Not `control-api`, which used to be the example here: plan 06 GIT-2
+        // added it to `SERVICE_NAMES` when the control plane acquired something
+        // to call, so that subject now *verifies* and is refused one step later
+        // by the decrypt route's allowlist (403). A subject nothing has ever
+        // named is what this case is about.
         'a subject that is not a known service',
-        craft({ alg: 'HS256', typ: 'JWT' }, claimsAt(now, { sub: 'control-api' })),
+        craft({ alg: 'HS256', typ: 'JWT' }, claimsAt(now, { sub: 'billing-service' })),
       ],
       [
         'a lifetime beyond the ceiling, however it was minted',

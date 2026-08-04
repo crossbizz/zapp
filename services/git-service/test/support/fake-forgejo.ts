@@ -30,6 +30,15 @@ export interface Route {
   readonly body?: unknown;
   /** Thrown instead of answering. For proving a failure path. */
   readonly error?: Error;
+  /**
+   * What this path answers from the *next* call onwards.
+   *
+   * The only way to express the race the provider's idempotency exists for: a
+   * repository that is absent when we check and present when we create. A single
+   * canned answer per path cannot say that, and a test that could not say it
+   * would be testing the easy half.
+   */
+  readonly then?: Route;
 }
 
 export interface FakeForgejo extends ForgejoClient {
@@ -67,7 +76,11 @@ export function createFakeForgejo(
         auth: auth.kind,
       });
 
-      const route = table.get(`${request.method} ${request.path}`);
+      const key = `${request.method} ${request.path}`;
+      const route = table.get(key);
+      if (route?.then !== undefined) {
+        table.set(key, route.then);
+      }
       if (route?.error !== undefined) {
         return Promise.reject(route.error);
       }
