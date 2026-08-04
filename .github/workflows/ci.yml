@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Superseded PR runs are cancelled to free runners; pushes to main always run to
+# completion so every commit on the default branch has a real result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # corepack must not block on an interactive download prompt in CI.
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+  TURBO_TELEMETRY_DISABLED: '1'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  checks:
+    name: lint / typecheck / build / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Must run before setup-node: `cache: pnpm` shells out to `pnpm store path`,
+      # so a pnpm binary has to exist on PATH first. corepack reads the
+      # `packageManager` field in package.json to pick the exact pnpm version.
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # One turbo invocation for all four tasks so the whole thing is scheduled
+      # as a single DAG (typecheck/test wait only on the builds they need,
+      # instead of four sequential full passes).
+      #
+      # @zapp/desktop is the vendored Electron app; its scripts are not wired
+      # into the shared toolchain yet (it has no lint/typecheck/build/test
+      # scripts, it uses ts/lint:oxlint/test:unit), so it is filtered out of the
+      # default matrix. Drop the filter once its scripts are normalised.
+      - name: Lint, typecheck, build, test
+        run: pnpm turbo run lint typecheck build test --filter='!@zapp/desktop'
+
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Steps do not start until every service reports healthy.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Throwaway credentials for ephemeral service containers on the runner's
+      # loopback interface. Not secrets, never reused outside this job.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No package defines test:integration yet, so this is a green no-op until
+      # FND-5/FND-6 land their suites. test:integration is cache:false in
+      # turbo.json, so these never come back from cache.
+      - name: Integration tests
+        run: pnpm turbo run test:integration --filter='!@zapp/desktop'

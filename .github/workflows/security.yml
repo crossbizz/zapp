@@ -1,0 +1,82 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 06:17 UTC. Off-the-hour to avoid GitHub's scheduler stampede.
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # gitleaks scans commit history, not just the tip tree, so the default
+          # shallow clone would hide anything committed and later removed.
+          fetch-depth: 0
+
+      # Blocking from day one: the job fails if any secret is found.
+      # GITLEAKS_LICENSE is only required for repos owned by a GitHub
+      # organization; crossbizz is a user account, so none is needed.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: dependency scan (osv-scanner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Advisory in M0: findings are reported but do not fail the build.
+      # OPS-13 (M5) removes continue-on-error to make this blocking.
+      #
+      # google/osv-scanner-action publishes no floating major tag, so this is
+      # pinned to an exact release rather than @v2. The reusable workflow is
+      # deliberately not used: it uploads SARIF to code scanning (unavailable on
+      # a private repo without Advanced Security) and reusable-workflow jobs
+      # cannot take continue-on-error.
+      #
+      # scan-args is newline-separated; each line becomes one argv entry.
+      - name: OSV scan (pnpm-lock.yaml)
+        id: osv
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        with:
+          scan-args: |-
+            scan
+            source
+            --lockfile=./pnpm-lock.yaml
+
+      - name: Publish advisory note
+        if: always()
+        env:
+          OSV_OUTCOME: ${{ steps.osv.outcome }}
+        run: |
+          {
+            echo "### Dependency scan (osv-scanner) - advisory only"
+            echo ""
+            echo "Scanned \`pnpm-lock.yaml\` against the OSV database."
+            echo ""
+            echo "- Scan step outcome: \`${OSV_OUTCOME}\` (\`failure\` means vulnerabilities were reported)"
+            echo "- Findings do **not** fail CI in M0 (\`continue-on-error: true\`)"
+            echo "- This check becomes blocking in OPS-13 (M5)"
+            echo ""
+            echo "Open the **OSV scan (pnpm-lock.yaml)** step log for the full vulnerability table."
+          } >> "$GITHUB_STEP_SUMMARY"
