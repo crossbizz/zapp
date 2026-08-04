@@ -36,6 +36,20 @@
       "when": 1785831705856,
       "tag": "0004_append_only_truncate_and_app_role",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785832752441,
+      "tag": "0005_users_external_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785832753441,
+      "tag": "0006_append_only_truncate_trigger",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, text, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
 
 export const users = pgTable(
@@ -9,8 +10,32 @@ export const users = pgTable(
     avatarUrl: text('avatar_url'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /**
+     * The identity provider's own id for this person — a Stytch member id
+     * (plan 02 CP-2/CP-3, ADR-0001). Not a PRD §23.1 column: that section was
+     * written before the provider was chosen, and the PRD is not edited to
+     * match the implementation. `test/prd-schema-conformance.test.ts` carries
+     * the exemption and the reason for it.
+     *
+     * Nullable, because a row can exist before it is linked (an invite, a
+     * seeded fixture), and last in the list because that is where
+     * `ALTER TABLE ... ADD COLUMN` physically puts it.
+     *
+     * Matching on this rather than on `email` is what makes a login survive an
+     * address change, and what stops a re-registered address from inheriting
+     * the previous holder's account.
+     */
+    externalId: text('external_id'),
   },
-  (t) => [uniqueIndex('users_email_idx').on(t.email)],
+  (t) => [
+    uniqueIndex('users_email_idx').on(t.email),
+    // Partial: two users may both be unlinked, and Postgres would allow that
+    // under a plain unique index anyway (NULLs are distinct) — the predicate
+    // says so out loud and keeps the index to the rows that carry a value.
+    uniqueIndex('users_external_id_idx')
+      .on(t.externalId)
+      .where(sql`external_id is not null`),
+  ],
 );
 
 export const organizations = pgTable(

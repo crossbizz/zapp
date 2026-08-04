@@ -150,12 +150,26 @@ export async function setUpTestDatabase(): Promise<TestDatabase> {
 }
 
 /**
- * `TRUNCATE` every table in `public`, or refuse loudly.
+ * Empty every table in `public`, or refuse loudly.
  *
  * Tables are read from the catalog rather than listed: this package grows, and
  * a list that goes stale silently leaves rows behind for the next test to trip
- * over. Partitions are skipped — truncating their parent empties them, and
- * naming both is a needless lock.
+ * over. Partitions are skipped — emptying their parent empties them, and naming
+ * both is a needless lock.
+ *
+ * `usage_ledger` and `audit_events` are append-only (plan 02 CP-2): triggers
+ * reject UPDATE, DELETE and TRUNCATE on them for *every* role, owner and
+ * superuser included, which is the point. So a reset cannot go around them —
+ * `DELETE` is refused by one trigger and `TRUNCATE` by the other, and even
+ * leaving both tables out of the statement does not help, because `CASCADE`
+ * from `organizations` reaches them and fires the trigger anyway (measured).
+ *
+ * It therefore goes *through* them, using the escape hatch those migrations
+ * document for deliberate maintenance: stand the guards down inside a
+ * transaction, empty, put them back. Ownership is required to do it, the window
+ * is one transaction, and a failure rolls the guards back up with everything
+ * else. A test database being reset is exactly the deliberate case that hatch
+ * exists for; nothing else in this package may use it.
  */
 export async function truncateAll(sql: postgres.Sql): Promise<void> {
   const [current] = await sql<{ name: string }[]>`select current_database() as name`;
@@ -178,8 +192,33 @@ export async function truncateAll(sql: postgres.Sql): Promise<void> {
     return;
   }
 
+  // Read from the catalog, not hardcoded: the guards arrive with a migration,
+  // so a database that has not applied it yet simply has none to stand down,
+  // and a table protected later is picked up without touching this file.
+  // Matched by the `<table>_append_only[_truncate]` naming those migrations use.
+  const guards = await sql<{ table: string; trigger: string }[]>`
+    select relation.relname as table, trigger.tgname as trigger
+      from pg_trigger trigger
+      join pg_class relation on relation.oid = trigger.tgrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+     where namespace.nspname = 'public'
+       and not trigger.tgisinternal
+       and trigger.tgname in (
+         relation.relname || '_append_only',
+         relation.relname || '_append_only_truncate'
+       )
+  `;
+
   const targets = tables.map((table) => `"${table.name}"`).join(', ');
-  await sql.unsafe(`truncate table ${targets} restart identity cascade`);
+  await sql.begin(async (tx) => {
+    for (const guard of guards) {
+      await tx.unsafe(`alter table "${guard.table}" disable trigger "${guard.trigger}"`);
+    }
+    await tx.unsafe(`truncate table ${targets} restart identity cascade`);
+    for (const guard of guards) {
+      await tx.unsafe(`alter table "${guard.table}" enable trigger "${guard.trigger}"`);
+    }
+  });
 }
 
 /** `noUncheckedIndexedAccess` types `rows[0]` as optional; fail loudly rather than assert non-null. */

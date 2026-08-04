@@ -60,6 +60,10 @@ describe('identity tables', () => {
       'avatar_url',
       'created_at',
       'last_seen_at',
+      // Not a PRD column: the identity-provider link (ADR-0001), declared with
+      // its reason in prd-schema-conformance.test.ts and last in the list
+      // because that is where ALTER TABLE ... ADD COLUMN puts it.
+      'external_id',
     ]);
   });
 
@@ -85,7 +89,9 @@ describe('identity tables', () => {
   });
 
   it('indexes the lookups the control plane makes', () => {
-    expect(indexNames(users)).toEqual(['users_email_idx']);
+    // The external id is unique only where it is set: two users may both be
+    // unlinked, and that is not a duplicate.
+    expect(indexNames(users)).toEqual(['users_email_idx', 'users_external_id_idx']);
     expect(indexNames(organizations)).toEqual(['organizations_slug_idx']);
     // The unique index is also what makes (organization, user) the membership's
     // identity — the table has no surrogate key.

@@ -39,6 +39,23 @@ const NON_PRD_TABLES = new Map([
   ],
 ]);
 
+/**
+ * Columns the schema carries that PRD §23 does not list, keyed `table.column`.
+ *
+ * Same contract as {@link NON_PRD_TABLES}: a deviation is allowed to exist, but
+ * only in writing. The PRD is not edited to match the implementation — it
+ * records what the product must do, and an implementation detail it predates is
+ * this file's problem to declare, not the PRD's to absorb. Anything not listed
+ * here fails the diff, which is what keeps the list from becoming a rubber
+ * stamp.
+ */
+const NON_PRD_COLUMNS = new Map([
+  [
+    'users.external_id',
+    'platform identity link (Stytch member id); PRD §23.1 predates the identity-provider decision (ADR-0001)',
+  ],
+]);
+
 /** `#### \`table\`` followed by a `- \`column\`` list, which is how PRD §23 is written. */
 function parsePrdSection(markdown: string): Map<string, string[]> {
   const lines = markdown.split('\n');
@@ -98,6 +115,16 @@ describe('PRD §23 conformance', () => {
     }
   });
 
+  it('declares each non-PRD column against a table and column that exist', () => {
+    // An allowlist entry that no longer matches anything is how a stale
+    // exemption survives a rename and quietly widens the hole it was cut for.
+    for (const [key, reason] of NON_PRD_COLUMNS) {
+      const [table, column] = key.split('.');
+      expect(implemented.get(table ?? '')).toContain(column);
+      expect(reason.length).toBeGreaterThan(20);
+    }
+  });
+
   it.each([...prdTables.keys()].map((table) => [table]))(
     '%s has exactly the PRD columns, in PRD order',
     (table) => {
@@ -107,9 +134,11 @@ describe('PRD §23 conformance', () => {
       // Drop the denormalized tenant column only where the PRD does not list it;
       // where the PRD *does* list it, position and all, it must still line up.
       const declaresTenantColumn = prdColumns.includes(TENANT_COLUMN);
-      const compared = declaresTenantColumn
-        ? actual
-        : actual.filter((column) => column !== TENANT_COLUMN);
+      const compared = actual.filter(
+        (column) =>
+          !(column === TENANT_COLUMN && !declaresTenantColumn) &&
+          !NON_PRD_COLUMNS.has(`${table}.${column}`),
+      );
 
       expect(compared).toEqual(prdColumns);
 

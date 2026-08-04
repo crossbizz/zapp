@@ -1,5 +1,5 @@
 import { newId } from '@zapp/contracts';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -97,6 +97,45 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
         code: '23503', // foreign_key_violation
         constraint_name: 'memberships_user_id_users_id_fk',
       });
+    });
+
+    it('links a user to the identity provider, and rejects a second row claiming the same link', async () => {
+      const externalId = `member-test-${newId('user')}`;
+      const userId = newId('user');
+      await handle.db.insert(users).values({
+        id: userId,
+        email: `linked+${userId}@example.com`,
+        displayName: 'Linked',
+        externalId,
+      });
+
+      const user = only(await handle.db.select().from(users).where(eq(users.id, userId)));
+      expect(user.externalId).toBe(externalId);
+
+      expect(
+        await rejection(
+          handle.db.insert(users).values({
+            id: newId('user'),
+            email: `other+${newId('user')}@example.com`,
+            displayName: 'Impostor',
+            externalId,
+          }),
+        ),
+      ).toMatchObject({ code: '23505', constraint_name: 'users_external_id_idx' });
+    });
+
+    it('lets many users stay unlinked', async () => {
+      // The unique index is partial: an invited or seeded user has no provider
+      // record yet, and two of those are not duplicates of each other.
+      for (const name of ['First', 'Second']) {
+        const id = newId('user');
+        await handle.db
+          .insert(users)
+          .values({ id, email: `${name}+${id}@example.com`, displayName: name });
+      }
+
+      const unlinked = await handle.db.select().from(users).where(isNull(users.externalId));
+      expect(unlinked).toHaveLength(2);
     });
 
     it('rejects two users sharing an email address', async () => {
@@ -229,6 +268,67 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       ).toMatchObject({
         code: '23505',
         constraint_name: 'subscriptions_stripe_subscription_id_idx',
+      });
+    });
+  });
+
+  describe('append-only ledgers', () => {
+    // The REVOKE in migration 0004 binds only where the API connects as a role
+    // that owns nothing. Development and CI run as the owner (often a
+    // superuser), where a REVOKE is a no-op — so the trigger from 0006 is what
+    // makes "you cannot empty a ledger" true in the environment where the
+    // careless statement actually gets written.
+    for (const table of ['usage_ledger', 'audit_events']) {
+      it(`refuses TRUNCATE on ${table}, owner or not`, async () => {
+        expect(await rejection(handle.sql.unsafe(`truncate table ${table}`))).toMatchObject({
+          code: '42501', // insufficient_privilege — the same class a REVOKE produces
+          message: `${table} is append-only`,
+        });
+      });
+    }
+
+    it('refuses a TRUNCATE that only reaches a ledger by CASCADE', async () => {
+      // The path that matters in practice: nobody writes `truncate usage_ledger`
+      // by accident, but `truncate organizations cascade` reaches it, and the
+      // trigger fires for cascaded tables exactly as it does for named ones.
+      expect(
+        await rejection(handle.sql.unsafe('truncate table organizations cascade')),
+      ).toMatchObject({ code: '42501' });
+    });
+
+    it('lets the harness reset the ledger, and re-arms the guard afterwards', async () => {
+      await handle.db.insert(usageLedger).values({
+        id: newId('evt'),
+        organizationId,
+        category: 'storage_gib_hours',
+        provider: 'r2',
+        quantity: '1',
+        unit: 'gib_hour',
+        costUsd: '0.01',
+        creditsCharged: '0.01',
+        occurredAt: new Date(),
+      });
+
+      await handle.truncateAll();
+
+      const remaining = await handle.db.select().from(usageLedger);
+      expect(remaining).toEqual([]);
+
+      // The reset stands the guards down for one transaction; leaving them down
+      // would make every assertion above pass for the wrong reason.
+      const guards = await handle.sql<{ name: string; enabled: string }[]>`
+        select trigger.tgname as name, trigger.tgenabled as enabled
+          from pg_trigger trigger
+          join pg_class relation on relation.oid = trigger.tgrelid
+         where not trigger.tgisinternal
+           and relation.relname in ('usage_ledger', 'audit_events')
+         order by trigger.tgname
+      `;
+      expect(guards).toHaveLength(4); // update/delete + truncate, on both tables
+      expect(guards.every((guard) => guard.enabled === 'O')).toBe(true);
+
+      expect(await rejection(handle.sql.unsafe('truncate table usage_ledger'))).toMatchObject({
+        code: '42501',
       });
     });
   });
