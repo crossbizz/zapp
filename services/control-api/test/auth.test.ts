@@ -93,10 +93,10 @@ function jar(cookies: Map<string, string>, drop: string[] = []): string {
   return cookieJar(copy);
 }
 
-function me(
-  app: AppInstance,
-  headers: Record<string, string>,
-): Promise<{ statusCode: number; json: () => unknown; body: string }> {
+/** What `inject` resolves to — spelled once rather than restated per helper. */
+type LightResponse = Awaited<ReturnType<AppInstance['inject']>>;
+
+function me(app: AppInstance, headers: Record<string, string>): Promise<LightResponse> {
   return app.inject({ method: 'GET', url: '/v1/me', headers });
 }
 
@@ -425,11 +425,7 @@ describe('POST /v1/auth/refresh', () => {
     const built = harness();
     const device = await approveDevice(built);
 
-    const response = await built.app.inject({
-      method: 'POST',
-      url: '/v1/auth/refresh',
-      payload: { refreshToken: device.refreshToken },
-    });
+    const response = await refresh(built, device.refreshToken);
 
     expect(response.statusCode).toBe(200);
     const body: { accessToken: string; refreshToken: string } = response.json();
@@ -541,18 +537,37 @@ interface DeviceTokens {
   readonly refreshToken: string;
 }
 
-/** Starts a device grant, approves it through the browser leg, and claims it. */
-async function approveDevice(built: Harness): Promise<DeviceTokens> {
+/**
+ * The whole desktop handshake: start a grant, sign in, *explicitly approve the
+ * displayed code*, then claim the token. The approval is a separate,
+ * authenticated call — that separation is the fix for the device-consent hole,
+ * so every test that wants a device token has to go through it.
+ */
+async function approveDevice(built: Harness, session?: Map<string, string>): Promise<DeviceTokens> {
   const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
   const grant: { deviceCode: string; userCode: string } = started.json();
-  await login(built, { userCode: grant.userCode });
+  const cookies = session ?? (await login(built)).cookies;
+
+  const approved = await built.app.inject({
+    method: 'POST',
+    url: '/v1/auth/device/approve',
+    headers: { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+    payload: { userCode: grant.userCode },
+  });
+  expect(approved.statusCode).toBe(204);
 
   const claimed = await built.app.inject({
     method: 'POST',
     url: '/v1/auth/device/token',
     payload: { deviceCode: grant.deviceCode },
   });
+  expect(claimed.statusCode).toBe(200);
   return claimed.json();
+}
+
+/** POSTs a refresh token the way a bearer client does: in the body, no cookies. */
+function refresh(built: Harness, refreshToken: string): Promise<LightResponse> {
+  return built.app.inject({ method: 'POST', url: '/v1/auth/refresh', payload: { refreshToken } });
 }
 
 describe('device flow', () => {
@@ -595,6 +610,16 @@ describe('device flow', () => {
 
     const browser = await login(built, { userCode: grant.userCode });
     expect(browser.status).toBe(302);
+    const approved = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers: {
+        cookie: jar(browser.cookies),
+        [CSRF_HEADER]: browser.cookies.get(CSRF_COOKIE) ?? '',
+      },
+      payload: { userCode: grant.userCode },
+    });
+    expect(approved.statusCode).toBe(204);
 
     const claimed = await built.app.inject({
       method: 'POST',
@@ -647,13 +672,347 @@ describe('device flow', () => {
     expect(ApiErrorSchema.parse(response.json()).error.code).toBe('invalid_device_code');
   });
 
-  it('ignores an unknown user code rather than telling the browser one exists', async () => {
+  it('signs the human in and sends them to the approval screen, whatever the code', async () => {
     const built = harness();
 
-    // The browser leg still logs the human in; there is simply nothing to approve.
+    // Even a code that was never issued: the browser leg only ever signs
+    // someone in and shows them a screen, so it has nothing to leak.
     const result = await login(built, { userCode: 'ZZZZ-ZZZZ' });
 
     expect(result.status).toBe(302);
+    expect(result.location).toBe('https://app.zapp.test/device?userCode=ZZZZ-ZZZZ');
     expect(result.cookies.get(SESSION_COOKIE)).toEqual(expect.stringMatching(/\S/));
+  });
+});
+
+describe('device consent', () => {
+  it('does not hand an attacker a session when a victim follows verificationUriComplete', async () => {
+    // The chain the security review found, run end to end. Before the fix the
+    // final poll returned the victim's access token and a 30-day refresh token.
+    const built = harness();
+
+    // 1. The attacker starts a device grant on their own machine…
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { deviceCode: string; userCode: string; verificationUriComplete: string } =
+      started.json();
+
+    // 2. …and sends the victim the link. The victim signs in; for someone
+    //    already signed in with the provider this is entirely silent.
+    const victim = await login(built, { userCode: grant.userCode });
+    expect(victim.status).toBe(302);
+    expect(victim.cookies.get(SESSION_COOKIE)).toEqual(expect.stringMatching(/\S/));
+
+    // 3. The attacker polls. There is nothing to collect: signing in is not
+    //    consent, and the victim was taken to a screen naming the code instead.
+    const polled = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/token',
+      payload: { deviceCode: grant.deviceCode },
+    });
+
+    expect(polled.statusCode).toBe(400);
+    expect(ApiErrorSchema.parse(polled.json()).error.code).toBe('authorization_pending');
+    expect(polled.body).not.toContain('accessToken');
+    expect(polled.body).not.toContain('refreshToken');
+    expect(victim.location).toBe(`https://app.zapp.test/device?userCode=${grant.userCode}`);
+  });
+
+  it('refuses to approve without a session', async () => {
+    const built = harness();
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { userCode: string } = started.json();
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      payload: { userCode: grant.userCode },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(ApiErrorSchema.parse(response.json()).error.code).toBe('unauthenticated');
+  });
+
+  it('refuses to approve a cookie-authenticated request with no CSRF header', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { userCode: string } = started.json();
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers: { cookie: jar(cookies) },
+      payload: { userCode: grant.userCode },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(ApiErrorSchema.parse(response.json()).error.code).toBe('csrf_required');
+  });
+
+  it('binds the grant to whoever approved it, not to whoever started the browser leg', async () => {
+    const users = new InMemoryUserStore();
+    const built = harness({ users });
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { deviceCode: string; userCode: string } = started.json();
+
+    // Alice walks through the browser leg — which no longer decides anything.
+    await login(built, { userCode: grant.userCode, code: 'alice-code' });
+    // Bob is the one who presses Approve.
+    const bob = await login(built, {
+      identity: { externalId: 'member-test-bob', email: 'bob@acme.test', displayName: 'Bob' },
+      code: 'bob-code',
+    });
+    await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers: { cookie: jar(bob.cookies), [CSRF_HEADER]: bob.cookies.get(CSRF_COOKIE) ?? '' },
+      payload: { userCode: grant.userCode },
+    });
+
+    const claimed = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/token',
+      payload: { deviceCode: grant.deviceCode },
+    });
+    const tokens: DeviceTokens = claimed.json();
+    const profile = await me(built.app, { authorization: `Bearer ${tokens.accessToken}` });
+
+    expect(profile.statusCode).toBe(200);
+    const body: { user: { email: string } } = profile.json();
+    expect(body.user.email).toBe('bob@acme.test');
+  });
+
+  it('tells the polling device when a human declines', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { deviceCode: string; userCode: string } = started.json();
+
+    const denied = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/deny',
+      headers: { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+      payload: { userCode: grant.userCode },
+    });
+    expect(denied.statusCode).toBe(204);
+
+    const polled = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/token',
+      payload: { deviceCode: grant.deviceCode },
+    });
+    expect(polled.statusCode).toBe(400);
+    expect(ApiErrorSchema.parse(polled.json()).error.code).toBe('access_denied');
+  });
+
+  it('answers 404 for a code that was never issued, and for one already decided', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    const headers = { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' };
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { userCode: string } = started.json();
+
+    const unknown = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers,
+      payload: { userCode: 'ZZZZ-ZZZZ' },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(ApiErrorSchema.parse(unknown.json()).error.code).toBe('device_request_not_found');
+
+    await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers,
+      payload: { userCode: grant.userCode },
+    });
+    // A second approval would let one code be pointed at a second identity.
+    const again = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers,
+      payload: { userCode: grant.userCode },
+    });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('lets a bearer client approve without a CSRF header', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { userCode: string } = started.json();
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers: { authorization: `Bearer ${cookies.get(SESSION_COOKIE) ?? ''}` },
+      payload: { userCode: grant.userCode },
+    });
+
+    expect(response.statusCode).toBe(204);
+  });
+});
+
+describe('refresh rotation races', () => {
+  it('lets exactly one of two concurrent presentations spend the token', async () => {
+    const built = harness();
+    const device = await approveDevice(built);
+
+    const [first, second] = await Promise.all([
+      refresh(built, device.refreshToken),
+      refresh(built, device.refreshToken),
+    ]);
+
+    // The write is the test: one caller denied the jti, the other found it
+    // already denied. A read-then-write would have let both mint a session.
+    expect([first.statusCode, second.statusCode].sort((a, b) => a - b)).toEqual([200, 401]);
+  });
+
+  it('revokes the whole family when a spent refresh token is replayed', async () => {
+    const built = harness();
+    const device = await approveDevice(built);
+
+    const rotated: DeviceTokens = (await refresh(built, device.refreshToken)).json();
+    // The thief replays the token the victim already spent.
+    const replay = await refresh(built, device.refreshToken);
+    expect(replay.statusCode).toBe(401);
+
+    // Everything minted from that login dies with it — including the token the
+    // victim rotated to legitimately, because there is no way to tell the two
+    // holders apart.
+    expect((await refresh(built, rotated.refreshToken)).statusCode).toBe(401);
+    expect(
+      (await me(built.app, { authorization: `Bearer ${rotated.accessToken}` })).statusCode,
+    ).toBe(401);
+  });
+});
+
+describe('logout never fails closed', () => {
+  it('revokes a refresh token a bearer client hands it in the body', async () => {
+    const built = harness();
+    const device = await approveDevice(built);
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/logout',
+      headers: { authorization: `Bearer ${device.accessToken}` },
+      payload: { refreshToken: device.refreshToken },
+    });
+
+    expect(response.statusCode).toBe(204);
+    // The desktop app cannot send our host-only cookie, so the body is the only
+    // way its 30-day credential can be revoked at all.
+    expect((await refresh(built, device.refreshToken)).statusCode).toBe(401);
+    expect(
+      (await me(built.app, { authorization: `Bearer ${device.accessToken}` })).statusCode,
+    ).toBe(401);
+  });
+
+  it('still clears cookies and answers 204 once the access token has expired', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    built.advance(ACCESS_TOKEN_TTL_MS + 1_000);
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/logout',
+      headers: { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+    });
+
+    // A 401 here would leave a live 30-day refresh token in the field.
+    expect(response.statusCode).toBe(204);
+    expect(cookiesOf(response.headers['set-cookie']).get(SESSION_COOKIE)).toBe('');
+    const refreshed = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      headers: { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+    });
+    expect(refreshed.statusCode).toBe(401);
+  });
+
+  it('still demands CSRF when the cookie it was handed is expired', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+    built.advance(ACCESS_TOKEN_TTL_MS + 1_000);
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/logout',
+      headers: { cookie: jar(cookies) },
+    });
+
+    // An expired cookie is still an ambient credential; tolerating it must not
+    // mean a cross-site page can force a logout.
+    expect(response.statusCode).toBe(403);
+  });
+});
+
+describe('token handling hygiene', () => {
+  it('marks every token-bearing response no-store', async () => {
+    const built = harness();
+    const started = await built.app.inject({ method: 'GET', url: '/v1/auth/device' });
+    const grant: { deviceCode: string; userCode: string } = started.json();
+    const { cookies } = await login(built);
+    await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/approve',
+      headers: { cookie: jar(cookies), [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+      payload: { userCode: grant.userCode },
+    });
+
+    const claimed = await built.app.inject({
+      method: 'POST',
+      url: '/v1/auth/device/token',
+      payload: { deviceCode: grant.deviceCode },
+    });
+    expect(claimed.headers['cache-control']).toBe('no-store');
+
+    const tokens: DeviceTokens = claimed.json();
+    expect((await refresh(built, tokens.refreshToken)).headers['cache-control']).toBe('no-store');
+  });
+
+  it('accepts the Bearer scheme however it is capitalised', async () => {
+    const built = harness();
+    const { cookies } = await login(built);
+
+    // RFC 7235: the scheme token is case-insensitive.
+    for (const scheme of ['Bearer', 'bearer', 'BEARER']) {
+      const response = await me(built.app, {
+        authorization: `${scheme} ${cookies.get(SESSION_COOKIE) ?? ''}`,
+      });
+      expect(response.statusCode, scheme).toBe(200);
+    }
+  });
+
+  it('refuses a callback carrying a Stytch token type this flow cannot exchange', async () => {
+    const built = harness();
+    const start = await built.app.inject({ method: 'GET', url: '/v1/auth/login' });
+    const state = new URL(start.headers.location as string).searchParams.get('state') ?? '';
+    built.port.issueCode('auth-code-1', ALICE);
+
+    const response = await built.app.inject({
+      method: 'GET',
+      url: `/v1/auth/callback?token=auth-code-1&stytch_token_type=sso&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieJar(cookiesOf(start.headers['set-cookie'])) },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(ApiErrorSchema.parse(response.json()).error.code).toBe('invalid_state');
+  });
+
+  it('accepts the discovery token type Stytch actually sends', async () => {
+    const built = harness();
+    const start = await built.app.inject({ method: 'GET', url: '/v1/auth/login' });
+    const state = new URL(start.headers.location as string).searchParams.get('state') ?? '';
+    built.port.issueCode('auth-code-1', ALICE);
+
+    const response = await built.app.inject({
+      method: 'GET',
+      url: `/v1/auth/callback?token=auth-code-1&stytch_token_type=discovery_oauth&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieJar(cookiesOf(start.headers['set-cookie'])) },
+    });
+
+    expect(response.statusCode).toBe(302);
   });
 });

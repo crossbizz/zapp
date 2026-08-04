@@ -1,5 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
 
@@ -16,29 +14,31 @@ import {
   parseCookies,
   serializeCookie,
 } from '../auth/cookies.js';
-import type { TokenDenylist } from '../auth/denylist.js';
+import { sessionFamilyKey, type TokenDenylist } from '../auth/denylist.js';
 import { DEVICE_POLL_INTERVAL_SECONDS, type DeviceStore } from '../auth/device.js';
 import { AuthPortError, type AuthPort } from '../auth/port.js';
 import {
   ACCESS_TOKEN_TTL_MS,
   LOGIN_STATE_TTL_MS,
   REFRESH_TOKEN_TTL_MS,
+  constantTimeEquals,
   randomToken,
   type SessionSigner,
   type SessionTokens,
 } from '../auth/session.js';
 import type { UserStore } from '../auth/users.js';
 import { ApiError } from '../errors.js';
-import { assertCsrf } from '../plugins/auth.js';
+import { assertCsrf, carriesAuthCookie } from '../plugins/auth.js';
 
 /**
  * PRD §32 `/v1/auth/*` and `/v1/me`.
  *
  * The browser leg (`/login` → provider → `/callback`) ends with three cookies
- * and a redirect; the desktop leg (`/device` → the same browser leg → `/device/token`)
- * ends with a bearer token. Both mint the same session, so everything
- * downstream — `/v1/me` today, every tenant route from CP-4 — has exactly one
- * kind of credential to understand.
+ * and a redirect. The desktop leg is deliberately *not* a continuation of it: a
+ * device grant is only ever bound to a user by an explicit, authenticated,
+ * CSRF-protected `POST /v1/auth/device/approve`. Both legs mint the same
+ * session, so everything downstream — `/v1/me` today, every tenant route from
+ * CP-4 — has one kind of credential to understand.
  */
 
 const seconds = (milliseconds: number): number => Math.floor(milliseconds / 1000);
@@ -86,6 +86,11 @@ const DeviceGrantResponseSchema = z.object({
   interval: z.number().int().positive(),
 });
 
+const DeviceDecisionSchema = z.object({ userCode: UserCodeSchema });
+
+/** What Stytch calls a discovery-OAuth redirect. Anything else is not our flow. */
+const DISCOVERY_TOKEN_TYPE = 'discovery_oauth';
+
 export interface AuthRoutesDeps {
   readonly port: AuthPort;
   readonly users: UserStore;
@@ -101,6 +106,14 @@ function setCookies(reply: FastifyReply, cookies: string[]): void {
   for (const cookie of cookies) {
     reply.header('set-cookie', cookie);
   }
+}
+
+/**
+ * Nothing that carries a credential may be kept by a cache, a proxy, or the
+ * browser's back/forward store.
+ */
+function noStore(reply: FastifyReply): void {
+  reply.header('cache-control', 'no-store');
 }
 
 /**
@@ -136,12 +149,6 @@ function clearedCookies(): string[] {
   ];
 }
 
-function equals(a: string, b: string): boolean {
-  const left = Buffer.from(a, 'utf8');
-  const right = Buffer.from(b, 'utf8');
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
 /** Every way a login handshake can fail says the same thing. */
 function invalidState(): ApiError {
   return new ApiError('invalid_state', 400, 'The sign-in request could not be verified.');
@@ -151,6 +158,13 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
   const { port, users, config, signer, denylist, deviceStore, now } = deps;
   const callbackUri = `${config.apiBaseUrl}/v1/auth/callback`;
   const verificationUri = `${config.apiBaseUrl}/v1/auth/login`;
+
+  /**
+   * How long a revoked login stays revoked: as long as the longest-lived token
+   * that could still be presented for it. Reached from the access-token side we
+   * cannot know the refresh token's expiry, so we take the upper bound.
+   */
+  const familyExpiry = (): Date => new Date(now().getTime() + REFRESH_TOKEN_TTL_MS);
 
   app.get(
     '/v1/auth/login',
@@ -185,6 +199,7 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
           code: z.string().min(1).optional(),
           /** …and Stytch's, which is what actually arrives from a discovery redirect. */
           token: z.string().min(1).optional(),
+          stytch_token_type: z.string().min(1).optional(),
           state: z.string().min(1),
         }),
       },
@@ -192,7 +207,16 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
     async (request, reply) => {
       const state = await signer.verifyLoginState(request.query.state, now());
       const nonce = parseCookies(request.headers.cookie).get(OAUTH_STATE_COOKIE) ?? '';
-      if (state === null || nonce === '' || !equals(state.nonce, nonce)) {
+      if (state === null || nonce === '' || !constantTimeEquals(state.nonce, nonce)) {
+        throw invalidState();
+      }
+
+      // Stytch sends several token types to a project's callback (SSO, magic
+      // links, discovery). Only one of them can be exchanged by the call
+      // `AuthPort.exchangeCode` makes, so anything else fails closed here
+      // rather than being handed to the wrong endpoint.
+      const tokenType = request.query.stytch_token_type;
+      if (tokenType !== undefined && tokenType !== DISCOVERY_TOKEN_TYPE) {
         throw invalidState();
       }
 
@@ -217,18 +241,23 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
       const user = await users.upsertFromIdentity(identity, now());
       const tokens = await signer.mintSession({ userId: user.id, now: now() });
 
-      // The browser leg doubles as the approval step for a desktop device
-      // grant. An unknown or expired code is ignored: this person did log in,
-      // and telling a browser which codes exist would be a probing oracle.
-      if (state.userCode !== undefined) {
-        await deviceStore.approve(state.userCode, user.id);
-      }
-
+      noStore(reply);
       setCookies(reply, [
         ...sessionCookies(tokens, randomToken()),
         expireCookie(OAUTH_STATE_COOKIE, { path: AUTH_PATH }),
       ]);
-      return reply.redirect(config.appBaseUrl, 302);
+
+      // A device grant is NOT approved here. Signing in and handing a separate
+      // machine a 30-day credential are different decisions, and a callback
+      // that conflated them would let anyone who can send a link harvest the
+      // session of whoever clicks it — for someone already signed in the whole
+      // browser leg is silent, so there would be nothing to notice. The browser
+      // goes to the approval screen instead, which shows the code.
+      const destination =
+        state.userCode === undefined
+          ? config.appBaseUrl
+          : `${config.appBaseUrl}/device?userCode=${encodeURIComponent(state.userCode)}`;
+      return reply.redirect(destination, 302);
     },
   );
 
@@ -250,20 +279,33 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
 
   app.post(
     '/v1/auth/logout',
-    { preHandler: [app.requireSession, app.requireCsrf] },
+    {
+      // `resolveSession`, not `requireSession`: logging out must never fail
+      // closed. A caller whose access token has already expired still needs the
+      // refresh token revoked and the cookies cleared, and a 401 would leave a
+      // live 30-day credential in the field.
+      preHandler: [app.resolveSession, app.requireCsrf],
+      schema: { body: z.object({ refreshToken: z.string().min(1).optional() }).nullish() },
+    },
     async (request, reply) => {
       const auth = request.auth;
       if (auth !== undefined) {
         await denylist.deny(auth.jti, auth.expiresAt);
-        // The refresh token is the one that would let a stolen cookie jar come
-        // back tomorrow, so it goes too — when the browser sent one.
-        const refresh = parseCookies(request.headers.cookie).get(REFRESH_COOKIE);
-        const claims = refresh === undefined ? null : await signer.verifyRefresh(refresh, now());
-        if (claims !== null) {
-          await denylist.deny(claims.jti, claims.expiresAt);
-        }
+        await denylist.deny(sessionFamilyKey(auth.sessionId), familyExpiry());
       }
 
+      // From the cookie for a browser, from the body for the desktop app: a
+      // bearer client cannot send our host-only cookie, and its refresh token
+      // is the one that matters most.
+      const refresh =
+        request.body?.refreshToken ?? parseCookies(request.headers.cookie).get(REFRESH_COOKIE);
+      const claims = refresh === undefined ? null : await signer.verifyRefresh(refresh, now());
+      if (claims !== null) {
+        await denylist.deny(claims.jti, claims.expiresAt);
+        await denylist.deny(sessionFamilyKey(claims.sessionId), claims.expiresAt);
+      }
+
+      noStore(reply);
       setCookies(reply, clearedCookies());
       return reply.status(204).send();
     },
@@ -285,7 +327,7 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
 
       // Same rule as every other route: a credential the browser attached by
       // itself needs the header only our own page can set.
-      if (viaCookie) {
+      if (carriesAuthCookie(request)) {
         assertCsrf(request);
       }
 
@@ -294,21 +336,37 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
         throw rejected;
       }
       const claims = await signer.verifyRefresh(token, now());
-      if (claims === null || (await denylist.isDenied(claims.jti))) {
+      if (claims === null) {
         throw rejected;
       }
 
-      // Rotation: the token that was just spent is denied for the rest of its
-      // life, so replaying a stolen refresh token fails even though it still
-      // verifies. The session id survives, which is what ties the chain of
-      // tokens to one login.
-      await denylist.deny(claims.jti, claims.expiresAt);
+      // A reuse detected earlier revoked every token minted from this login,
+      // including the ones rotated legitimately before the theft was noticed.
+      // That is the point: the thief and the victim are both holding tokens,
+      // and there is no way to tell which is which.
+      if (await denylist.isDenied(sessionFamilyKey(claims.sessionId))) {
+        throw rejected;
+      }
+
+      // Rotation as one atomic step: the write *is* the test. Whoever gets
+      // `true` spent the token; anyone else — a replay, or the loser of a race
+      // between two concurrent presentations — did not, and that is reuse.
+      if (!(await denylist.deny(claims.jti, claims.expiresAt))) {
+        await denylist.deny(sessionFamilyKey(claims.sessionId), familyExpiry());
+        request.log.warn(
+          { errorCode: 'refresh_token_reuse' },
+          'refresh token replayed — session family revoked',
+        );
+        throw rejected;
+      }
+
       const tokens = await signer.mintSession({
         userId: claims.userId,
         sessionId: claims.sessionId,
         now: now(),
       });
 
+      noStore(reply);
       if (viaCookie) {
         setCookies(reply, sessionCookies(tokens, randomToken()));
         return { tokenType: 'Bearer', expiresIn: seconds(ACCESS_TOKEN_TTL_MS) } as const;
@@ -338,6 +396,39 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
     },
   );
 
+  /**
+   * The consent step. Everything that makes a device grant dangerous is
+   * concentrated here: it is authenticated, CSRF-protected, and driven by a
+   * code the person has been *shown* — the web app renders "a device is asking
+   * for access, code ABCD-EFGH" and this is what its Approve button calls. The
+   * session the device receives is the approver's own, which is what stops
+   * anyone from being walked into granting somebody else's.
+   */
+  app.post(
+    '/v1/auth/device/approve',
+    { preHandler: [app.requireSession, app.requireCsrf], schema: { body: DeviceDecisionSchema } },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (auth === undefined || !(await deviceStore.approve(request.body.userCode, auth.userId))) {
+        // Unknown, expired, or already decided — one answer for all three, so
+        // this cannot be used to enumerate live codes.
+        throw new ApiError('device_request_not_found', 404, 'That sign-in request is not open.');
+      }
+      return reply.status(204).send();
+    },
+  );
+
+  app.post(
+    '/v1/auth/device/deny',
+    { preHandler: [app.requireSession, app.requireCsrf], schema: { body: DeviceDecisionSchema } },
+    async (request, reply) => {
+      if (!(await deviceStore.deny(request.body.userCode))) {
+        throw new ApiError('device_request_not_found', 404, 'That sign-in request is not open.');
+      }
+      return reply.status(204).send();
+    },
+  );
+
   app.post(
     '/v1/auth/device/token',
     {
@@ -346,18 +437,21 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
         response: { 200: TokenResponseSchema },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const claim = await deviceStore.claim(request.body.deviceCode);
       switch (claim.status) {
         case 'pending':
           // RFC 8628's answer: keep polling, nothing is wrong.
           throw new ApiError('authorization_pending', 400, 'Sign-in has not finished yet.');
+        case 'denied':
+          throw new ApiError('access_denied', 400, 'The sign-in request was declined.');
         case 'expired':
           throw new ApiError('expired_device_code', 400, 'This sign-in request has expired.');
         case 'unknown':
           throw new ApiError('invalid_device_code', 400, 'This sign-in request is not valid.');
         case 'approved': {
           const tokens = await signer.mintSession({ userId: claim.userId, now: now() });
+          noStore(reply);
           return {
             tokenType: 'Bearer',
             expiresIn: seconds(ACCESS_TOKEN_TTL_MS),

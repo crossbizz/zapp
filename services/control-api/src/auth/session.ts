@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { SignJWT, jwtVerify } from 'jose';
 
@@ -81,6 +81,18 @@ export interface SignerConfig {
 /** 16 bytes, hex — the alphabet cookies accept without escaping. */
 export function randomToken(): string {
   return randomBytes(16).toString('hex');
+}
+
+/**
+ * Constant-time comparison for the secrets this service compares by hand — the
+ * login nonce and the CSRF token. Tolerates a length mismatch instead of
+ * throwing the way `timingSafeEqual` does on its own; the lengths of these are
+ * fixed and public, only their contents are not.
+ */
+export function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export function createSessionSigner(config: SignerConfig): SessionSigner {

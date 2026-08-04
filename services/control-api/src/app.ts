@@ -67,6 +67,26 @@ export interface AppDeps {
 }
 
 /**
+ * Guards the process-local fallbacks in {@link AppDeps.auth}.
+ *
+ * Both of them are correct for exactly one instance: a logout honoured only by
+ * the instance that served it, and a device login that completes only when both
+ * legs land on the same process, are failures a staging deployment would show
+ * as flakiness and a production one as a security hole. Supplying an in-memory
+ * implementation explicitly stays possible — this refuses only to *default* to
+ * one, which is how it would happen by accident. CP-5's Redis implementations
+ * remove the question.
+ */
+function inDevelopmentOnly<T>(name: string, build: () => T): T {
+  if (process.env['NODE_ENV'] === 'production') {
+    throw new Error(
+      `refusing to start: no ${name} was supplied, and the in-memory fallback is single-instance only (CP-5 supplies the Redis-backed one)`,
+    );
+  }
+  return build();
+}
+
+/**
  * Builds the API without binding a port, which is what makes it testable: `inject`
  * drives the full lifecycle — hooks, validation, serialization, error handling — with
  * no socket. `server.ts` is the only place that listens.
@@ -106,8 +126,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         ? {}
         : { previousSecret: auth.config.previousSecret }),
     });
-    const denylist = auth.denylist ?? createInMemoryTokenDenylist(now);
-    const deviceStore = auth.deviceStore ?? createInMemoryDeviceStore(now);
+    const denylist =
+      auth.denylist ?? inDevelopmentOnly('denylist', () => createInMemoryTokenDenylist(now));
+    const deviceStore =
+      auth.deviceStore ?? inDevelopmentOnly('deviceStore', () => createInMemoryDeviceStore(now));
 
     void app.register(sessionAuth, { signer, denylist, now });
     // `after` rather than a call here: the routes reference `app.requireSession`,

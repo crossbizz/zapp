@@ -34,21 +34,45 @@ export type DeviceClaim =
   /** Never issued, already spent, or swept. Both cases answer the same thing. */
   | { readonly status: 'unknown' }
   | { readonly status: 'expired' }
+  /** A signed-in human looked at this code and said no. */
+  | { readonly status: 'denied' }
   | { readonly status: 'approved'; readonly userId: string };
 
 export interface DeviceStore {
   start(): Promise<DeviceGrant>;
-  /** Binds a grant to the human who just authenticated. `false` when there is no such grant. */
+  /**
+   * Binds a grant to the human who approved it — and it is *that* human whose
+   * session the device receives, which is why approval has to be an explicit,
+   * authenticated act rather than a side effect of signing in. `false` when
+   * there is no such pending grant.
+   */
   approve(userCode: string, userId: string): Promise<boolean>;
+  /** Refuses a grant outright, so the polling device is told rather than left waiting. */
+  deny(userCode: string): Promise<boolean>;
   /** Reads *and spends* an approved grant: a device code buys exactly one token. */
   claim(deviceCode: string): Promise<DeviceClaim>;
 }
 
+/**
+ * The largest multiple of the alphabet that fits in a byte. Bytes at or above
+ * it are discarded rather than folded with `%`, which would make the first
+ * `256 % 29` characters likelier than the rest — a small bias, but this is a
+ * short code that someone can be socially engineered into typing, so its
+ * entropy should be exactly what it looks like.
+ */
+const UNBIASED_LIMIT = Math.floor(256 / USER_CODE_ALPHABET.length) * USER_CODE_ALPHABET.length;
+
 function userCode(): string {
-  const bytes = randomBytes(USER_CODE_GROUP * 2);
-  const characters = [...bytes].map(
-    (byte) => USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length] ?? 'A',
-  );
+  const characters: string[] = [];
+  const wanted = USER_CODE_GROUP * 2;
+  while (characters.length < wanted) {
+    for (const byte of randomBytes(wanted)) {
+      const character = USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
+      if (byte < UNBIASED_LIMIT && character !== undefined && characters.length < wanted) {
+        characters.push(character);
+      }
+    }
+  }
   return `${characters.slice(0, USER_CODE_GROUP).join('')}-${characters.slice(USER_CODE_GROUP).join('')}`;
 }
 
@@ -57,6 +81,7 @@ interface StoredGrant {
   readonly userCode: string;
   readonly expiresAt: number;
   userId?: string;
+  denied?: boolean;
 }
 
 /**
@@ -98,10 +123,29 @@ export function createInMemoryDeviceStore(now: () => Date = () => new Date()): D
 
     approve(code, userId) {
       const grant = byUserCode.get(code.toUpperCase());
-      if (grant === undefined || grant.expiresAt <= now().getTime()) {
+      // An already-decided grant is not re-decidable: a second approval would
+      // let one code be pointed at a second identity.
+      if (
+        grant === undefined ||
+        grant.expiresAt <= now().getTime() ||
+        grant.denied === true ||
+        grant.userId !== undefined
+      ) {
         return Promise.resolve(false);
       }
       grant.userId = userId;
+      return Promise.resolve(true);
+    },
+
+    deny(code) {
+      const grant = byUserCode.get(code.toUpperCase());
+      if (grant === undefined || grant.expiresAt <= now().getTime()) {
+        return Promise.resolve(false);
+      }
+      grant.denied = true;
+      // The userId is cleared as well: denying after approving is a person
+      // changing their mind, and the later answer is the one that counts.
+      delete grant.userId;
       return Promise.resolve(true);
     },
 
@@ -114,6 +158,11 @@ export function createInMemoryDeviceStore(now: () => Date = () => new Date()): D
         byDeviceCode.delete(grant.deviceCode);
         byUserCode.delete(grant.userCode);
         return Promise.resolve({ status: 'expired' } as const);
+      }
+      if (grant.denied === true) {
+        byDeviceCode.delete(grant.deviceCode);
+        byUserCode.delete(grant.userCode);
+        return Promise.resolve({ status: 'denied' } as const);
       }
       if (grant.userId === undefined) {
         return Promise.resolve({ status: 'pending' } as const);

@@ -29,6 +29,13 @@
       "when": 1785829662598,
       "tag": "0003_append_only_usage_and_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785831705856,
+      "tag": "0004_append_only_truncate_and_app_role",
+      "breakpoints": true
     }
   ]
 }
