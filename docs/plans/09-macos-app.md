@@ -28,7 +28,7 @@ Master plan §Global Constraints, plus:
 - [x] **Step 1:** Vendor Dyad at a pinned commit (recorded in ADR + NOTICE); remove `src/pro` directory; build until clean: stub/no-op every Pro import site (each site marked `// zapp: pro-removed`), feature-flag Pro-only UI off.
 - [x] **Step 2:** Prove: `pnpm --filter desktop start` launches; create/open a local Vite template project; chat panel renders (model calls may be non-functional until MAC-6 — UI boots is the bar); `pnpm --filter desktop make` produces a signed-less dev .app.
 - [x] **Step 3:** FND-9 lint green on the fork (no pro imports); NOTICE updated.
-- [ ] Commit: `feat(desktop): dyad fork building without src/pro (PRD §38.1 exit)`
+- [x] Commit: `feat(desktop): dyad fork building without src/pro (PRD §38.1 exit)`
 
 ### Task MAC-2: Rebrand + packaging/signing/notarization CI
 
@@ -36,7 +36,7 @@ Master plan §Global Constraints, plus:
 **Effort:** M
 
 - [x] Binding behavior: identity `build.zapp.desktop`, product name "zapp", protocol `zapp://` (auth callback + deep links `zapp://project/{id}`), icon assets *(DMG maker deferred 2026-08-04: upstream ships none — genuinely new scope; stapled .app in .zip satisfies P0 distribution; revisit at public-beta polish)*; CI: macOS runner make → codesign (Developer ID cert in secrets) → notarytool staple → artifact upload; unsigned dev builds for PRs; auto-updater neutralized until a zapp feed exists (env-gated ZAPP_UPDATE_FEED — MAC-11 owns the feed).
-- [x] Verify: notarized build passes Gatekeeper on a clean machine (`spctl -a -vv`).
+- [ ] Verify: notarized build passes Gatekeeper on a clean machine (`spctl -a -vv`). *(UNVERIFIED 2026-08-04 — no Developer ID cert exists yet; gating structurally sound per review; first cert-bearing CI run is first execution. Reopens when certs provided.)*
 - [x] Commit: `feat(desktop): zapp identity + signed/notarized packaging pipeline`
 
 ### Task MAC-3: Preserve-list regression suite
