@@ -4,9 +4,42 @@ import { z } from 'zod';
 /**
  * Every entity id is a TypeID: an entity prefix, an underscore, and a ULID.
  * The set is closed — master plan §Global Constraints owns this list.
+ *
+ * One prefix per PRD §23 table, so no row anywhere carries an untyped
+ * identifier. Prefixes are never reused or renamed: an id outlives the code
+ * that minted it, and `idSchema` is what an API boundary rejects a stale or
+ * cross-entity id with.
  */
 export type IdPrefix =
-  'org' | 'user' | 'proj' | 'run' | 'task' | 'ws' | 'rel' | 'dep' | 'evt' | 'art' | 'spec' | 'sec';
+  // Identity, billing and projects (PRD §23.1–23.2).
+  | 'org'
+  | 'user'
+  | 'sub' // subscriptions
+  | 'proj'
+  | 'repo' // repositories
+  | 'br' // branches
+  | 'env' // environments
+  | 'pc' // project_contracts
+  // Specification, planning and execution (PRD §23.3–23.4).
+  | 'spec' // specifications
+  | 'dec' // decisions
+  | 'run' // agent_runs
+  | 'phase' // agent_phases
+  | 'task' // agent_tasks
+  | 'appr' // approvals
+  | 'ws' // workspaces
+  | 'evt' // agent_events
+  | 'art' // artifacts
+  | 'trun' // test_runs
+  | 'tcase' // test_cases
+  | 'vr' // verification_results
+  // Releases, security and integrations (PRD §23.5–23.6).
+  | 'rel' // releases
+  | 'dep' // deployments
+  | 'syn' // synthetic_checks
+  | 'sec' // secret_metadata
+  | 'intc' // integration_connections
+  | 'aud'; // audit_events
 
 /** Crockford base32: digits plus A–Z without I, L, O and U. */
 const ULID_PATTERN = '[0-9A-HJKMNP-TV-Z]{26}';

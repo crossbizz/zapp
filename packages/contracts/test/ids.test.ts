@@ -16,12 +16,28 @@ const ALL_PREFIXES: readonly IdPrefix[] = [
   'art',
   'spec',
   'sec',
+  'sub',
+  'repo',
+  'br',
+  'env',
+  'pc',
+  'dec',
+  'phase',
+  'appr',
+  'trun',
+  'tcase',
+  'vr',
+  'syn',
+  'intc',
+  'aud',
 ];
 
 describe('ALL_PREFIXES', () => {
   it('is exactly the master plan prefix list, in order', () => {
     // This literal is deliberately untyped: a prefix deleted from both the
-    // IdPrefix union and the typed list above still has to fail here.
+    // IdPrefix union and the typed list above still has to fail here. The first
+    // twelve are the original core; the rest arrived with FND-6, which gave
+    // every PRD §23 table a typed identifier.
     expect(ALL_PREFIXES).toEqual([
       'org',
       'user',
@@ -35,7 +51,27 @@ describe('ALL_PREFIXES', () => {
       'art',
       'spec',
       'sec',
+      'sub',
+      'repo',
+      'br',
+      'env',
+      'pc',
+      'dec',
+      'phase',
+      'appr',
+      'trun',
+      'tcase',
+      'vr',
+      'syn',
+      'intc',
+      'aud',
     ]);
+    // Catches a prefix pasted twice, and a rename that leaves the old one behind.
+    expect(new Set(ALL_PREFIXES).size).toBe(ALL_PREFIXES.length);
+  });
+
+  it('covers every PRD §23 table with one prefix each', () => {
+    expect(ALL_PREFIXES).toHaveLength(26);
   });
 });
 

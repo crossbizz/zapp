@@ -34,8 +34,10 @@ describe('AgentEventSchema', () => {
   it('accepts the optional phase, task and agent identifiers', () => {
     const evt = {
       ...baseEvent,
-      phaseId: 'phase_1',
+      phaseId: 'phase_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
       taskId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+      // A role name, not an id: `agent_runs` has agents, `agent_tasks` records
+      // which role ran, and neither is a row of its own (PRD §15.2).
       agentId: 'coder',
     };
     expect(AgentEventSchema.parse(evt)).toMatchObject(evt);
@@ -67,6 +69,20 @@ describe('AgentEventSchema', () => {
       AgentEventSchema.safeParse({ ...baseEvent, taskId: '01J8ME7YQZJ2V9Q0X3T5B6K7NC' }).success,
     ).toBe(false);
     expect(AgentEventSchema.safeParse({ ...baseEvent, phaseId: '' }).success).toBe(false);
+    // `agent_phases` is a real table with a `phase_` id since FND-6, so the
+    // producer-local string this field used to accept is no longer valid.
+    expect(AgentEventSchema.safeParse({ ...baseEvent, phaseId: 'phase_1' }).success).toBe(false);
+    expect(
+      AgentEventSchema.safeParse({ ...baseEvent, phaseId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NC' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('keeps agentId a role name rather than a typed id', () => {
+    // Agent roles (PRD §15.2) are not rows, so this field stays a plain string —
+    // extending the TypeID list must not silently turn it into an id.
+    expect(AgentEventSchema.safeParse({ ...baseEvent, agentId: 'verifier' }).success).toBe(true);
+    expect(AgentEventSchema.safeParse({ ...baseEvent, agentId: '' }).success).toBe(false);
   });
   it('rejects an occurredAt that is not an ISO 8601 timestamp', () => {
     expect(AgentEventSchema.safeParse({ ...baseEvent, occurredAt: '2026-08-03' }).success).toBe(

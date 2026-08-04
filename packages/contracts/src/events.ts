@@ -60,10 +60,10 @@ export const AgentEventSchema = z.object({
   occurredAt: z.string().datetime(),
   organizationId: idSchema('org'),
   projectId: idSchema('proj'),
-  // Phases and agents are outside the closed TypeID prefix list, so they carry
-  // the producer's own identifier (a plan-local phase id, an agent role).
-  phaseId: z.string().min(1).optional(),
+  phaseId: idSchema('phase').optional(),
   taskId: idSchema('task').optional(),
+  // Not an id: agents are roles (PRD §15.2 — planner, coder, verifier), and no
+  // table has a row per agent for this to point at.
   agentId: z.string().min(1).optional(),
   type: z.enum(AGENT_EVENT_TYPES),
   visibility: AgentEventVisibilitySchema,
