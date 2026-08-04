@@ -319,7 +319,7 @@ function notifyPnpmVersionMigrationAvailable({
     safeSend(event.sender, "app:output", {
       type: "package-manager-warning",
       warningKind: "pnpm-migration",
-      message: `This app pins an older pnpm that can't read the lockfile Dyad writes. Migrate to pnpm ${managedMajor} so CI, deploys, and teammates can install it reliably.`,
+      message: `This app pins an older pnpm that can't read the lockfile Zapp writes. Migrate to pnpm ${managedMajor} so CI, deploys, and teammates can install it reliably.`,
       appId,
     });
   } catch (error) {

@@ -502,7 +502,7 @@ export function ImportAppDialog({ isOpen, onClose }: ImportAppDialogProps) {
                     {hasAiRules === false && (
                       <Alert className="border-yellow-500/20 text-yellow-500 flex items-start gap-2">
                         <span
-                          title="AI_RULES.md lets Dyad know which tech stack to use for editing the app"
+                          title="AI_RULES.md lets Zapp know which tech stack to use for editing the app"
                           className="flex-shrink-0 mt-1"
                         >
                           <Info className="h-4 w-4" />

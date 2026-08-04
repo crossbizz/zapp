@@ -123,7 +123,7 @@ export function ProModeSelector() {
                     <SelectorRow
                       id="web-search"
                       label="Web Access"
-                      tooltip="Allows Dyad to access the web (e.g. search for information)"
+                      tooltip="Allows Zapp to access the web (e.g. search for information)"
                       isTogglable={proModeTogglable}
                       settingEnabled={Boolean(settings?.enableProWebSearch)}
                       toggle={toggleWebSearch}

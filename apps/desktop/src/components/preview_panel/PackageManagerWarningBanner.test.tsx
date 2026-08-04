@@ -254,7 +254,7 @@ describe("PackageManagerWarningBanner", () => {
     renderBanner({
       kind: "pnpm-migration",
       message:
-        "This app pins an older pnpm that can't read the lockfile Dyad writes.",
+        "This app pins an older pnpm that can't read the lockfile Zapp writes.",
     });
 
     expect(screen.queryByRole("button", { name: /install/i })).toBeNull();
