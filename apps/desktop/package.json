@@ -58,6 +58,7 @@
     "pre:e2e": "cross-env E2E_TEST_BUILD=true npm run package",
     "e2e": "playwright test",
     "e2e:fast": "PLAYWRIGHT_RETRIES=1 playwright test",
+    "test:preserve": "playwright test e2e-tests/zapp-preserve",
     "e2e:shard": "playwright test --shard",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
