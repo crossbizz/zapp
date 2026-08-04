@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 
 import type { ServiceAudience } from '@zapp/config';
 import { AgentEventSchema, newId } from '@zapp/contracts';
@@ -133,6 +134,98 @@ describe('event publisher failure and recovery', () => {
       ]);
     });
     await publisher.close();
+  });
+
+  it('contains a synchronous reporter throw and processes the next notification', async () => {
+    // Break caught: a diagnostic callback must never poison the serialized
+    // notification chain or make publisher shutdown reject.
+    const currentRunId = runId();
+    let notify: ((payload: string) => void) | undefined;
+    let sequence = 1;
+    let publishAttempt = 0;
+    let reports = 0;
+    const delivered: string[] = [];
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence: () => Promise.resolve({ sequence }),
+        publish(_channel, body) {
+          publishAttempt += 1;
+          if (publishAttempt === 1) return Promise.reject(new Error('redis unavailable'));
+          delivered.push(body);
+          return Promise.resolve();
+        },
+      },
+      {
+        onError() {
+          reports += 1;
+          throw new Error('synchronous reporter failure');
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(reports).toBe(1);
+    });
+
+    sequence = 2;
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(delivered).toEqual(['{"sequence":2}']);
+    });
+    await expect(publisher.close()).resolves.toBeUndefined();
+  });
+
+  it('contains a rejected reporter promise and processes the next notification', async () => {
+    // Break caught: an async diagnostic rejection must be observed internally,
+    // without becoming an unhandled rejection or breaking later work.
+    const currentRunId = runId();
+    let notify: ((payload: string) => void) | undefined;
+    let sequence = 1;
+    let publishAttempt = 0;
+    let reports = 0;
+    const delivered: string[] = [];
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence: () => Promise.resolve({ sequence }),
+        publish(_channel, body) {
+          publishAttempt += 1;
+          if (publishAttempt === 1) return Promise.reject(new Error('redis unavailable'));
+          delivered.push(body);
+          return Promise.resolve();
+        },
+      },
+      {
+        onError() {
+          reports += 1;
+          return Promise.reject(new Error('asynchronous reporter failure'));
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(reports).toBe(1);
+    });
+
+    sequence = 2;
+    notify?.(currentRunId);
+    await vi.waitFor(() => {
+      expect(delivered).toEqual(['{"sequence":2}']);
+    });
+    await expect(publisher.close()).resolves.toBeUndefined();
   });
 
   it('ignores malformed notifications and valid runs with no committed event', async () => {
@@ -270,6 +363,49 @@ describe('event publisher failure and recovery', () => {
 
     expect(retrySignal?.aborted).toBe(true);
     expect(attempts).toBe(1);
+  });
+
+  it('removes each default retry abort listener after its delay completes', async () => {
+    // Break caught: completed default backoff timers otherwise retain one
+    // listener each on the process-long retry signal until shutdown.
+    const NativeAbortController = globalThis.AbortController;
+    const signals: AbortSignal[] = [];
+    class TrackingAbortController extends NativeAbortController {
+      constructor() {
+        super();
+        signals.push(this.signal);
+      }
+    }
+
+    vi.useFakeTimers();
+    vi.stubGlobal('AbortController', TrackingAbortController);
+    let attempts = 0;
+    const publisher = createEventPublisher({
+      listen() {
+        attempts += 1;
+        if (attempts < 3) return Promise.reject(new Error('postgres unavailable'));
+        return Promise.resolve({ unlisten: () => Promise.resolve() });
+      },
+      readLatestSequence: () => Promise.resolve(undefined),
+      publish: () => Promise.resolve(),
+    });
+
+    try {
+      publisher.start();
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(200);
+      await publisher.ready();
+
+      expect(attempts).toBe(3);
+      expect(signals).toHaveLength(1);
+      const retrySignal = signals[0];
+      if (retrySignal === undefined) throw new Error('retry signal was not created');
+      expect(getEventListeners(retrySignal, 'abort')).toHaveLength(0);
+    } finally {
+      await publisher.close();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('unsubscribes exactly once and rejects notifications after close', async () => {

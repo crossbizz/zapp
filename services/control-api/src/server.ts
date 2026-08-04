@@ -4,6 +4,7 @@ import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from './env.js';
+import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl } from './git/client.js';
 import { loggerOptions } from './logging.js';
@@ -89,12 +90,19 @@ const eventPublisher = createEventPublisher(
   },
 );
 
+const eventPublisherLifecycle = createEventPublisherLifecycle({
+  publisher: eventPublisher,
+  listen: async () => {
+    await app.listen({ host: env.HOST, port: env.PORT });
+  },
+  database,
+  redis,
+});
+
 // The handles are opened here, so they are closed here — `close()` runs every
 // `onClose` hook, and these are the hooks for the handles this file created.
 app.addHook('onClose', async () => {
-  await eventPublisher.close();
-  await database.close();
-  await redis.close();
+  await eventPublisherLifecycle.close();
 });
 
 /**
@@ -122,9 +130,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
-  eventPublisher.start();
-  await eventPublisher.ready();
-  await app.listen({ host: env.HOST, port: env.PORT });
+  await eventPublisherLifecycle.start();
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
   process.exit(1);

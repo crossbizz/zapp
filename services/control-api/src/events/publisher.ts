@@ -30,7 +30,7 @@ interface RetryOptions {
 }
 
 export interface EventPublisherOptions {
-  readonly onError?: (error: Error) => void;
+  readonly onError?: (error: Error) => unknown;
   readonly retry?: RetryOptions;
 }
 
@@ -46,19 +46,14 @@ function asError(error: unknown): Error {
 
 function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    if (signal.aborted) {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
       resolve();
-      return;
-    }
-    const timer = setTimeout(resolve, delayMs);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
   });
 }
 
@@ -110,14 +105,18 @@ export function createEventPublisher(
     markReady = resolve;
   });
 
-  const report = (error: unknown): void => {
-    options.onError?.(asError(error));
+  const report = async (error: unknown): Promise<void> => {
+    try {
+      await options.onError?.(asError(error));
+    } catch {
+      // Diagnostics must not become another publisher failure.
+    }
   };
 
   const processNotification = async (payload: string): Promise<void> => {
     const parsedRunId = NotificationSchema.safeParse(payload);
     if (!parsedRunId.success) {
-      report(parsedRunId.error);
+      await report(parsedRunId.error);
       return;
     }
 
@@ -125,7 +124,7 @@ export function createEventPublisher(
       await dependencies.readLatestSequence(parsedRunId.data),
     );
     if (!row.success) {
-      report(row.error);
+      await report(row.error);
       return;
     }
 
@@ -139,8 +138,8 @@ export function createEventPublisher(
       .then(async () => {
         if (!closed) await processNotification(payload);
       })
-      .catch((error: unknown) => {
-        report(error);
+      .catch(async (error: unknown) => {
+        await report(error);
       });
   };
 
@@ -158,11 +157,11 @@ export function createEventPublisher(
         return;
       } catch (error) {
         if (isClosed()) return;
-        report(error);
+        await report(error);
         try {
           await sleep(delay, retryController.signal);
         } catch (sleepError) {
-          if (!isClosed()) report(sleepError);
+          if (!isClosed()) await report(sleepError);
         }
         delay = Math.min(maximumDelay, delay * 2);
       }
@@ -191,7 +190,7 @@ export function createEventPublisher(
         try {
           await active.unlisten();
         } catch (error) {
-          report(error);
+          await report(error);
         }
       }
       await listenerLoop;
