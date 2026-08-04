@@ -6,6 +6,7 @@ import { createStytchAuthPort } from './auth/stytch.js';
 import { createDbUserStore } from './auth/users.js';
 import { loadEnv } from './env.js';
 import { loggerOptions } from './logging.js';
+import { createDbOrganizationStore } from './orgs/store.js';
 
 const env = loadEnv();
 // Fails fast and by name: a control plane that cannot verify a session, or does
@@ -20,6 +21,7 @@ const app = buildApp({
     users: createDbUserStore(database.db),
     config: auth.config,
   },
+  orgs: { organizations: createDbOrganizationStore(database.db) },
 });
 
 // The pool is opened here, so it is closed here — `close()` runs every `onClose`

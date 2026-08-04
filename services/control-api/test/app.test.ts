@@ -262,6 +262,27 @@ describe('log serializers', () => {
     }
   });
 
+  it('keeps an invite token out of the request line', () => {
+    // The one route whose *path* carries a credential (plan 02 CP-3). Logging
+    // it verbatim would write a seven-day bearer token into this service's log
+    // and into every proxy in front of it.
+    const token = 'a'.repeat(64);
+    const serialized = logSerializers.req({
+      id: 'req-2',
+      method: 'POST',
+      url: `/v1/invites/${token}/accept`,
+    });
+
+    expect(serialized.url).toBe('/v1/invites/:token/accept');
+    expect(JSON.stringify(serialized)).not.toContain(token);
+  });
+
+  it('leaves a url with nothing secret in it alone', () => {
+    expect(
+      logSerializers.req({ id: 'req-3', method: 'GET', url: '/v1/organizations?x=1' }).url,
+    ).toBe('/v1/organizations?x=1');
+  });
+
   it('reduces a reply to its status code', () => {
     expect(
       logSerializers.res({ statusCode: 204, headers: { 'set-cookie': 'x' } } as never),

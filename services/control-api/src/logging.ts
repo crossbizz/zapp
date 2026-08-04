@@ -9,6 +9,34 @@ export type LogLevel = (typeof LOG_LEVELS)[number];
 export type LoggerConfig = NonNullable<FastifyServerOptions['logger']>;
 
 /**
+ * Paths whose *shape* puts a credential in the URL, and the template each one
+ * is logged as instead.
+ *
+ * There is normally nothing secret in a path, which is why the allowlist below
+ * can pass `url` through. `POST /v1/invites/:token/accept` is the exception: the
+ * token is a seven-day bearer credential (plan 02 CP-3), the route shape comes
+ * from PRD §32 rather than from us, and a request line is the one place it would
+ * otherwise be written down in plain text — in this service's log, and in every
+ * proxy in front of it.
+ *
+ * Kept as a list rather than a single regex so the next route with the same
+ * problem is one line, and so the reason travels with it.
+ */
+const CREDENTIAL_PATHS: readonly (readonly [RegExp, string])[] = [
+  [/^\/v1\/invites\/[^/?#]+\/accept/, '/v1/invites/:token/accept'],
+];
+
+/** Replaces a credential-bearing path segment with its route template. */
+export function redactUrl(url: string): string {
+  for (const [pattern, template] of CREDENTIAL_PATHS) {
+    if (pattern.test(url)) {
+      return url.replace(pattern, template);
+    }
+  }
+  return url;
+}
+
+/**
  * What a log line is allowed to say about a request and its reply.
  *
  * This is an allowlist, not a redaction list: the serializers build a fresh object
@@ -22,7 +50,7 @@ export type LoggerConfig = NonNullable<FastifyServerOptions['logger']>;
  */
 export const logSerializers = {
   req(request: Pick<FastifyRequest, 'id' | 'method' | 'url'>) {
-    return { requestId: request.id, method: request.method, url: request.url };
+    return { requestId: request.id, method: request.method, url: redactUrl(request.url) };
   },
   res(reply: Pick<FastifyReply, 'statusCode'>) {
     return { statusCode: reply.statusCode };

@@ -18,6 +18,11 @@ export class FakeAuthPort implements AuthPort {
   readonly providerSessions = new Map<string, string>();
   readonly authorizationRequests: { redirectUri: string; state: string }[] = [];
   readonly createdOrganizations: { name: string; slug: string }[] = [];
+  /**
+   * Makes {@link createOrganization} refuse. The call is still recorded, so a
+   * test can prove the attempt happened *and* that nothing survived it.
+   */
+  organizationCreateFails = false;
 
   /** Registers `identity` under `code` and hands the code back. */
   issueCode(code: string, identity: AuthIdentity): string {
@@ -48,6 +53,11 @@ export class FakeAuthPort implements AuthPort {
 
   createOrganization(input: { name: string; slug: string }): Promise<{ externalOrgId: string }> {
     this.createdOrganizations.push(input);
+    if (this.organizationCreateFails) {
+      return Promise.reject(
+        new AuthPortError('organization_create_failed', 'the provider refused the organization'),
+      );
+    }
     return Promise.resolve({ externalOrgId: `organization-test-${input.slug}` });
   }
 }

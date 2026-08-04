@@ -109,6 +109,62 @@ export interface TestDatabase extends Db {
 }
 
 /**
+ * The postgres.js client, named from `@zapp/db`'s own export rather than
+ * imported: `postgres` is that package's dependency, not this one's, and a
+ * `import type` of it here would be a dependency this service does not declare.
+ */
+type Sql = Db['sql'];
+
+/** The two names `packages/db/drizzle/0003`–`0006` give an append-only guard. */
+const GUARD_SUFFIXES = ['_append_only', '_append_only_truncate'] as const;
+
+interface Guard {
+  readonly table: string;
+  readonly trigger: string;
+}
+
+/**
+ * The append-only guards currently installed, read from the catalog rather than
+ * listed: a database that has not applied the migration yet simply has none, and
+ * a table protected later is picked up without touching this file.
+ */
+async function appendOnlyGuards(sql: Sql): Promise<Guard[]> {
+  return await sql<Guard[]>`
+    select relation.relname as table, trigger.tgname as trigger
+      from pg_trigger trigger
+      join pg_class relation on relation.oid = trigger.tgrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+     where namespace.nspname = 'public'
+       and not trigger.tgisinternal
+       and trigger.tgname in (
+         relation.relname || ${GUARD_SUFFIXES[0]},
+         relation.relname || ${GUARD_SUFFIXES[1]}
+       )
+  `;
+}
+
+/**
+ * Every guard's `tgenabled`, by trigger name. `'O'` is Postgres' "enabled, fires
+ * in origin sessions" — the armed position, and the only one a reset may leave
+ * behind. `'D'` is disabled.
+ */
+export async function guardStates(sql: Sql): Promise<Map<string, string>> {
+  const rows = await sql<{ trigger: string; enabled: string }[]>`
+    select trigger.tgname as trigger, trigger.tgenabled as enabled
+      from pg_trigger trigger
+      join pg_class relation on relation.oid = trigger.tgrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+     where namespace.nspname = 'public'
+       and not trigger.tgisinternal
+       and trigger.tgname in (
+         relation.relname || ${GUARD_SUFFIXES[0]},
+         relation.relname || ${GUARD_SUFFIXES[1]}
+       )
+  `;
+  return new Map(rows.map((row) => [row.trigger, row.enabled]));
+}
+
+/**
  * Opens the test database, creating and migrating it as needed. Applying the
  * migrations here is what makes this a test of the shipped schema rather than
  * of a hand-built one — including this task's own `0003` append-only migration.
@@ -132,9 +188,44 @@ export async function setUpTestDatabase(): Promise<TestDatabase> {
       if (!(current?.name ?? '').endsWith(TEST_SUFFIX)) {
         throw new Error(`refusing to truncate "${current?.name ?? ''}"`);
       }
-      await handle.sql.unsafe(
-        'truncate table "memberships", "organizations", "users" restart identity cascade',
-      );
+
+      // `usage_ledger` and `audit_events` are append-only, and since
+      // `packages/db/drizzle/0006` a `BEFORE TRUNCATE` trigger enforces that for
+      // every role — owner and superuser included, which is the point. Leaving
+      // both tables out of the statement does not avoid it: `CASCADE` from
+      // `organizations` reaches them through their `organization_id` foreign key
+      // and fires the trigger anyway.
+      //
+      // So the reset goes *through* the guards, using the escape hatch those
+      // migrations document for deliberate maintenance, exactly as
+      // `packages/db/test/integration/helpers.ts` does: stand them down inside a
+      // transaction, empty, put them back. The window is one transaction, a
+      // failure rolls the guards back up with everything else, and the
+      // post-condition below refuses to hand back a database whose protections
+      // are still down — a harness that disarmed an append-only ledger and said
+      // nothing would be worse than the reset it was trying to perform.
+      const guards = await appendOnlyGuards(handle.sql);
+      await handle.sql.begin(async (tx) => {
+        for (const guard of guards) {
+          await tx.unsafe(`alter table "${guard.table}" disable trigger "${guard.trigger}"`);
+        }
+        await tx.unsafe(
+          'truncate table "memberships", "organizations", "users" restart identity cascade',
+        );
+        for (const guard of guards) {
+          await tx.unsafe(`alter table "${guard.table}" enable trigger "${guard.trigger}"`);
+        }
+      });
+
+      const states = await guardStates(handle.sql);
+      const disarmed = guards.filter((guard) => states.get(guard.trigger) !== 'O');
+      if (disarmed.length > 0) {
+        throw new Error(
+          `append-only guards left disabled after a reset: ${disarmed
+            .map((guard) => guard.trigger)
+            .join(', ')}`,
+        );
+      }
     },
   };
 }

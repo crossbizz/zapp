@@ -20,9 +20,13 @@ import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
+import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
+import type { OrganizationStore } from './orgs/store.js';
+import { auditLog, createInMemoryAuditSink, type AuditSink } from './plugins/audit.js';
 import { sessionAuth } from './plugins/auth.js';
 import { genRequestId, requestContext } from './plugins/context.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerOrgRoutes } from './routes/orgs.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -51,6 +55,19 @@ export interface AuthDeps {
 }
 
 /**
+ * What the organization surface needs (CP-3). Same rule as {@link AuthDeps}: the
+ * store arrives from outside, so the routes, the RBAC matrix and the invite
+ * lifecycle are all testable without PostgreSQL.
+ */
+export interface OrgDeps {
+  readonly organizations: OrganizationStore;
+  /** Defaults to the process-local store. CP-5 supplies the persistent one. */
+  readonly invites?: InviteStore;
+  /** Defaults to the process-local sink. CP-5 supplies the `audit_events` writer. */
+  readonly audit?: AuditSink;
+}
+
+/**
  * Collaborators handed to the app rather than reached for. Only the logger exists at
  * CP-1; the database, Redis and `AuthPort` join it as their plugins land, and each
  * arrives here so a test can substitute it.
@@ -64,27 +81,31 @@ export interface AppDeps {
    * unconfigured deployment cannot serve half an authentication flow.
    */
   readonly auth?: AuthDeps;
+  /** CP-3. Requires {@link AppDeps.auth} — every organization route needs a session. */
+  readonly orgs?: OrgDeps;
 }
 
 /**
- * Guards the process-local fallbacks in {@link AppDeps.auth}.
+ * Guards the process-local fallbacks in {@link AppDeps.auth} and {@link AppDeps.orgs}.
  *
- * Both of them are correct for exactly one instance: a logout honoured only by
- * the instance that served it, and a device login that completes only when both
- * legs land on the same process, are failures a staging deployment would show
- * as flakiness and a production one as a security hole. Supplying an in-memory
- * implementation explicitly stays possible — this refuses only to *default* to
- * one, which is how it would happen by accident. CP-5's Redis implementations
- * remove the question.
+ * Each of them is correct for exactly one instance: a logout honoured only by
+ * the instance that served it, a device login that completes only when both legs
+ * land on the same process, an invite that can be accepted only against the
+ * process that issued it, and an audit trail a restart erases. Those are
+ * failures a staging deployment would show as flakiness and a production one as
+ * a security hole. Supplying an in-memory implementation explicitly stays
+ * possible — this refuses only to *default* to one, which is how it would happen
+ * by accident. CP-5's persistent implementations remove the question.
  */
-function inDevelopmentOnly<T>(name: string, build: () => T): T {
+function inDevelopmentOnly<T>(name: string, why: string, build: () => T): T {
   if (process.env['NODE_ENV'] === 'production') {
-    throw new Error(
-      `refusing to start: no ${name} was supplied, and the in-memory fallback is single-instance only (CP-5 supplies the Redis-backed one)`,
-    );
+    throw new Error(`refusing to start: no ${name} was supplied, and ${why}`);
   }
   return build();
 }
+
+const SINGLE_INSTANCE =
+  'the in-memory fallback is single-instance only (CP-5 supplies the shared one)';
 
 /**
  * Builds the API without binding a port, which is what makes it testable: `inject`
@@ -117,6 +138,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     () => ({ status: 'ok' }) as const,
   );
 
+  if (deps.auth === undefined && deps.orgs !== undefined) {
+    // Half a tenant surface is worse than none: every route in `orgs.ts` starts
+    // from `request.auth`, and without the session plugin they would 500 rather
+    // than 401.
+    throw new Error('refusing to start: orgs routes require auth (AppDeps.auth)');
+  }
+
   if (deps.auth !== undefined) {
     const auth = deps.auth;
     const now = auth.now ?? (() => new Date());
@@ -127,15 +155,49 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         : { previousSecret: auth.config.previousSecret }),
     });
     const denylist =
-      auth.denylist ?? inDevelopmentOnly('denylist', () => createInMemoryTokenDenylist(now));
+      auth.denylist ??
+      inDevelopmentOnly('denylist', SINGLE_INSTANCE, () => createInMemoryTokenDenylist(now));
     const deviceStore =
-      auth.deviceStore ?? inDevelopmentOnly('deviceStore', () => createInMemoryDeviceStore(now));
+      auth.deviceStore ??
+      inDevelopmentOnly('deviceStore', SINGLE_INSTANCE, () => createInMemoryDeviceStore(now));
 
     void app.register(sessionAuth, { signer, denylist, now });
+
+    const orgs = deps.orgs;
+    if (orgs !== undefined) {
+      const invites =
+        orgs.invites ??
+        inDevelopmentOnly('inviteStore', SINGLE_INSTANCE, () => createInMemoryInviteStore(now));
+      const sink =
+        orgs.audit ??
+        inDevelopmentOnly(
+          'audit sink',
+          'an audit trail a restart erases is not an audit trail (CP-5 writes audit_events)',
+          createInMemoryAuditSink,
+        );
+      void app.register(auditLog, { sink, now });
+
+      app.after((error) => {
+        // Truthiness rather than `!== null`: avvio hands the first `after`
+        // callback `null` and the ones that follow `undefined`, and both mean
+        // the plugins before it loaded cleanly. Only a real error is rethrown.
+        if (error) {
+          throw error;
+        }
+        registerOrgRoutes(app, {
+          organizations: orgs.organizations,
+          invites,
+          users: auth.users,
+          port: auth.port,
+          now,
+        });
+      });
+    }
+
     // `after` rather than a call here: the routes reference `app.requireSession`,
     // and a decorator added by a plugin only exists once that plugin has loaded.
     app.after((error) => {
-      if (error !== null) {
+      if (error) {
         throw error;
       }
       registerAuthRoutes(app, {

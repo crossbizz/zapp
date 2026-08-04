@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { newId } from '@zapp/contracts';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
+import { guardStates, hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
  * `packages/db/drizzle/0003_append_only_usage_and_audit.sql` and its successor
@@ -196,6 +196,48 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
       await database.sql.unsafe(`drop owned by ${PROBE_ROLE}`);
       await database.sql.unsafe(`drop role ${PROBE_ROLE}`);
     }
+  });
+
+  it('refuses a TRUNCATE, including through a CASCADE from organizations', async () => {
+    // `0006`'s trigger, which is what made the reset in `helpers.ts` have to
+    // stand the guards down. Both spellings land on the same SQLSTATE: the
+    // table named directly, and the table reached by cascade.
+    for (const table of LEDGERS) {
+      expect(await sqlstate(database.sql.unsafe(`truncate table ${table}`)), table).toBe('42501');
+    }
+    expect(
+      await sqlstate(
+        database.sql.unsafe('truncate table "organizations" restart identity cascade'),
+      ),
+    ).toBe('42501');
+  });
+
+  it('re-arms every guard after the harness resets the database', async () => {
+    await seed();
+
+    await database.truncateIdentity();
+
+    // `'O'` is the armed position. A reset that left one of these disabled would
+    // silently turn an append-only ledger into an ordinary table for every test
+    // that ran afterwards — and for anything else pointed at this database.
+    const states = await guardStates(database.sql);
+    expect(states.size).toBe(LEDGERS.length * 2);
+    for (const [trigger, enabled] of states) {
+      expect(enabled, trigger).toBe('O');
+    }
+
+    // Armed in practice, not just in the catalog.
+    for (const table of LEDGERS) {
+      expect(await sqlstate(database.sql.unsafe(`truncate table ${table}`)), table).toBe('42501');
+      expect(await sqlstate(database.sql.unsafe(`delete from ${table}`)), table).toBe('42501');
+    }
+
+    // …and the reset did its job: the cascade emptied the ledgers on the way.
+    const [remaining] = await database.sql<{ count: string }[]>`
+      select count(*)::text as count from audit_events
+    `;
+    expect(remaining?.count).toBe('0');
+    organizationId = '';
   });
 
   it('still accepts the INSERT the ledger exists for', async () => {

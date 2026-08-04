@@ -2,9 +2,13 @@ import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
 import { buildApp, type AppInstance } from '../../src/app.js';
+import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
+import { createInMemoryInviteStore, type InviteStore } from '../../src/orgs/invites.js';
+import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
 import { FakeAuthPort } from './fake-auth-port.js';
+import { InMemoryOrganizationStore } from './org-store.js';
 
 /** 32 bytes of nothing, in the shape the config demands. Never a real key. */
 export const TEST_SECRET = 'a'.repeat(64);
@@ -49,6 +53,10 @@ export interface Harness {
   readonly app: AppInstance;
   readonly port: FakeAuthPort;
   readonly users: InMemoryUserStore;
+  readonly organizations: InMemoryOrganizationStore;
+  /** The shipping in-memory implementation, not a double — CP-5 replaces it. */
+  readonly invites: InviteStore;
+  readonly audit: InMemoryAuditSink;
   /** Test-controlled clock, so expiry is asserted rather than waited for. */
   advance: (milliseconds: number) => void;
   now: () => Date;
@@ -57,18 +65,23 @@ export interface Harness {
 export interface HarnessOptions {
   readonly config?: Partial<AuthConfig>;
   readonly users?: InMemoryUserStore;
+  readonly organizations?: InMemoryOrganizationStore;
 }
 
 /**
- * A fully wired app whose only fakes are the identity provider, the user store
- * and the clock — the session plugin, the routes, the denylist and the device
- * store are the shipping implementations.
+ * A fully wired app whose only fakes are the identity provider, the user store,
+ * the organization store and the clock — the session plugin, the routes, the
+ * RBAC matrix, the denylist, the device store and the invite store are the
+ * shipping implementations.
  */
 export function buildHarness(options: HarnessOptions = {}): Harness {
   const port = new FakeAuthPort();
   const users = options.users ?? new InMemoryUserStore();
+  const organizations = options.organizations ?? new InMemoryOrganizationStore();
   let offset = 0;
   const now = (): Date => new Date(Date.now() + offset);
+  const invites = createInMemoryInviteStore(now);
+  const audit = createInMemoryAuditSink();
 
   const app = buildApp({
     logger: false,
@@ -80,16 +93,65 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       deviceStore: createInMemoryDeviceStore(now),
       now,
     },
+    orgs: { organizations, invites, audit },
   });
 
   return {
     app,
     port,
     users,
+    organizations,
+    invites,
+    audit,
     now,
     advance: (milliseconds: number) => {
       offset += milliseconds;
     },
+  };
+}
+
+/** A signed-in browser: the cookie jar it holds and the header its page sends. */
+export interface TestSession {
+  readonly userId: string;
+  readonly email: string;
+  /** The `Cookie` header alone — for the tests that send it *without* the CSRF header. */
+  readonly cookie: string;
+  readonly csrf: string;
+  readonly headers: Record<string, string>;
+}
+
+/**
+ * Drives the full login → callback handshake and returns what a browser would
+ * then be sending. Route tests go through the real flow rather than minting a
+ * token directly: a session a test manufactured is not the session the service
+ * issues.
+ */
+export async function signIn(built: Harness, identity: AuthIdentity): Promise<TestSession> {
+  const code = `auth-code-${identity.email}`;
+  const start = await built.app.inject({ method: 'GET', url: '/v1/auth/login' });
+  const state = new URL(start.headers.location as string).searchParams.get('state') ?? '';
+  built.port.issueCode(code, identity);
+
+  const callback = await built.app.inject({
+    method: 'GET',
+    url: `/v1/auth/callback?code=${code}&state=${encodeURIComponent(state)}`,
+    headers: { cookie: cookieJar(cookiesOf(start.headers['set-cookie'])) },
+  });
+
+  const cookies = cookiesOf(callback.headers['set-cookie']);
+  const user = [...built.users.users.values()].find((row) => row.email === identity.email);
+  if (user === undefined) {
+    throw new Error(`sign-in did not create a user for ${identity.email}`);
+  }
+
+  const cookie = cookieJar(cookies);
+  const csrf = cookies.get(CSRF_COOKIE) ?? '';
+  return {
+    userId: user.id,
+    email: user.email,
+    cookie,
+    csrf,
+    headers: { cookie, [CSRF_HEADER]: csrf },
   };
 }
 
