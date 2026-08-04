@@ -76,7 +76,7 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         throw runNotFound();
       }
 
-      const stored = await deps.tenantDb(first.organizationId).events.ingest({
+      const result = await deps.tenantDb(first.organizationId).events.ingest({
         runId: request.params.runId,
         projectId: first.projectId,
         events: request.body,
@@ -94,7 +94,15 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
           });
         },
       });
-      if (stored === undefined) throw runNotFound();
+      if (result.kind === 'run_not_found') throw runNotFound();
+      if (result.kind === 'payload_too_large') {
+        throw new ApiError(
+          'payload_too_large',
+          413,
+          'Event payloads larger than 65,536 bytes must be stored as artifacts.',
+        );
+      }
+      const { events: stored } = result;
 
       return await reply.status(201).send({
         events: stored.map((event) =>

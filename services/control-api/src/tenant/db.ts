@@ -15,6 +15,7 @@ import {
   branches,
   environments,
   forOrg,
+  MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
   projects,
   repositories,
@@ -458,9 +459,15 @@ export interface IngestEventBatchInput {
   readonly audit: AuditHook<readonly AgentEventRow[]>;
 }
 
+/** An ingest rejection that must not allocate a sequence or write an audit row. */
+export type IngestEventBatchResult =
+  | { readonly kind: 'stored'; readonly events: readonly AgentEventRow[] }
+  | { readonly kind: 'run_not_found' }
+  | { readonly kind: 'payload_too_large' };
+
 export interface TenantEventRepository extends EventRepository {
   /** The only production writer for the immutable event log. */
-  ingest(input: IngestEventBatchInput): Promise<readonly AgentEventRow[] | undefined>;
+  ingest(input: IngestEventBatchInput): Promise<IngestEventBatchResult>;
 }
 
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
@@ -537,8 +544,19 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
       events: {
         ...base.events,
-        async ingest(input: IngestEventBatchInput): Promise<readonly AgentEventRow[] | undefined> {
+        async ingest(input: IngestEventBatchInput): Promise<IngestEventBatchResult> {
           return await db.transaction(async (tx) => {
+            // The route rejects oversized serialized JSON cheaply. This exact
+            // PostgreSQL check is still required: jsonb's datum overhead can
+            // exceed the CHECK limit even when JSON.stringify is 65,536 bytes.
+            for (const event of input.events) {
+              const [payload] = await tx.execute<{ size: number }>(
+                sql`select pg_column_size(${JSON.stringify(event.payload)}::jsonb) as size`,
+              );
+              if (payload === undefined) throw new Error('failed to measure event payload');
+              if (payload.size > MAX_EVENT_PAYLOAD_BYTES) return { kind: 'payload_too_large' };
+            }
+
             // This is deliberately the first statement in the transaction. The
             // allocator has no tenant argument, so looking the run up afterward
             // would create a gap for a foreign or malformed request.
@@ -547,7 +565,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .from(agentRuns)
               .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
               .limit(1);
-            if (run === undefined || run.projectId !== input.projectId) return undefined;
+            if (run === undefined || run.projectId !== input.projectId) return { kind: 'run_not_found' };
 
             for (const event of input.events) {
               if (event.phaseId !== undefined) {
@@ -562,11 +580,11 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                     ),
                   )
                   .limit(1);
-                if (phase === undefined) return undefined;
+                if (phase === undefined) return { kind: 'run_not_found' };
               }
               if (event.taskId !== undefined) {
                 const [task] = await tx
-                  .select({ id: agentTasks.id })
+                  .select({ phaseId: agentTasks.phaseId })
                   .from(agentTasks)
                   .innerJoin(agentPhases, eq(agentPhases.id, agentTasks.phaseId))
                   .where(
@@ -577,7 +595,9 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                     ),
                   )
                   .limit(1);
-                if (task === undefined) return undefined;
+                if (task === undefined || (event.phaseId !== undefined && task.phaseId !== event.phaseId)) {
+                  return { kind: 'run_not_found' };
+                }
               }
             }
 
@@ -601,7 +621,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             const inserted = await tx.insert(agentEvents).values(pending).returning();
             await tx.execute(sql`select pg_notify('agent_events', ${input.runId})`);
             await input.audit(tx, inserted);
-            return inserted;
+            return { kind: 'stored', events: inserted };
           });
         },
       },

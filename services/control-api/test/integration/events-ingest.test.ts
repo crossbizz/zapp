@@ -41,6 +41,8 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
   let runId: string;
   let phaseId: string;
   let taskId: string;
+  let secondPhaseId: string;
+  let secondTaskId: string;
   let auditFails = false;
 
   beforeAll(async () => {
@@ -89,6 +91,8 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     runId = newId('run');
     phaseId = newId('phase');
     taskId = newId('task');
+    secondPhaseId = newId('phase');
+    secondTaskId = newId('task');
 
     await database.db.insert(users).values({
       id: userId,
@@ -142,6 +146,29 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       parentTaskId: null,
       title: 'Persist event batch',
       status: 'running',
+      riskLevel: 'low',
+      baseCommitSha: null,
+      outputCommitSha: null,
+      acceptanceCriteriaJson: [],
+      dependenciesJson: [],
+      assignedAgentRole: 'builder',
+    });
+    await database.db.insert(agentPhases).values({
+      id: secondPhaseId,
+      organizationId,
+      runId,
+      sequence: 2,
+      title: 'Verify event semantics',
+      status: 'queued',
+      acceptanceCriteriaJson: [],
+    });
+    await database.db.insert(agentTasks).values({
+      id: secondTaskId,
+      organizationId,
+      phaseId: secondPhaseId,
+      parentTaskId: null,
+      title: 'Reject mismatched event context',
+      status: 'queued',
       riskLevel: 'low',
       baseCommitSha: null,
       outputCommitSha: null,
@@ -205,6 +232,65 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       select last_sequence::text from run_event_counters where run_id = ${run}
     `;
     return row === undefined ? undefined : Number(row.last_sequence);
+  }
+
+  async function jsonbPayloadBytes(payload: unknown): Promise<number> {
+    const [row] = await database.sql<{ size: string }[]>`
+      select pg_column_size(${JSON.stringify(payload)}::jsonb)::text as size
+    `;
+    return Number(row?.size ?? '-1');
+  }
+
+  async function expectRunNotFoundWithoutEffects(
+    body: readonly z.input<typeof EventInputSchema>[],
+    key: string,
+  ): Promise<void> {
+    const listener = createDb(database.url);
+    const notifications: string[] = [];
+    await listener.sql.listen('agent_events', (payload) => {
+      notifications.push(payload);
+    });
+    try {
+      const response = await post(body, { key });
+      expect(response.statusCode, response.body).toBe(404);
+      const error = response.json<{ error: { code: string; message: string; requestId: string } }>().error;
+      expect(error.code).toBe('run_not_found');
+      expect(error.message).toBe('That run does not exist.');
+      expect(error.requestId.length).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await count('agent_events')).toBe(0);
+      expect(await count('audit_events')).toBe(0);
+      expect(await counter()).toBeUndefined();
+      expect(notifications).toEqual([]);
+    } finally {
+      await listener.close();
+    }
+  }
+
+  async function expectPayloadTooLargeWithoutEffects(
+    payload: unknown,
+    key: string,
+  ): Promise<void> {
+    const listener = createDb(database.url);
+    const notifications: string[] = [];
+    await listener.sql.listen('agent_events', (value) => {
+      notifications.push(value);
+    });
+    try {
+      const response = await post([event({ payload })], { key });
+      expect(response.statusCode, response.body).toBe(413);
+      expect(response.json<{ error: { code: string; message: string } }>().error).toMatchObject({
+        code: 'payload_too_large',
+      });
+      expect(response.body).toContain('artifacts');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await count('agent_events')).toBe(0);
+      expect(await count('audit_events')).toBe(0);
+      expect(await counter()).toBeUndefined();
+      expect(notifications).toEqual([]);
+    } finally {
+      await listener.close();
+    }
   }
 
   it('registers the service-only route and persists a complete committed batch', async () => {
@@ -372,6 +458,89 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     expect(await count('agent_events')).toBe(0);
   });
 
+  it('rejects an over-cap JSON payload before opening a tenant transaction', async () => {
+    // Break caught: removing the cheap JavaScript cap would reach the tenant
+    // writer; a closed real database makes that mistake observable as a 500.
+    const unavailableDb = createDb(database.url);
+    const unavailableApp = buildApp({
+      logger: false,
+      auth: {
+        port: new FakeAuthPort(),
+        users: createDbUserStore(unavailableDb.db),
+        config: TEST_AUTH_CONFIG,
+      },
+      orgs: {
+        organizations: createDbOrganizationStore(unavailableDb.db),
+        invites: createInMemoryInviteStore(),
+        audit: createDbAuditSink(unavailableDb.db),
+      },
+      tenant: {
+        tenantDb: () => {
+          throw new Error('the route must reject before opening the tenant writer');
+        },
+      },
+      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens: tokens.verifier },
+      limits: { config: TEST_RATE_LIMITS },
+    });
+    await unavailableApp.ready();
+    await unavailableDb.close();
+    try {
+      const response = await unavailableApp.inject({
+        method: 'POST',
+        url: `/internal/runs/${runId}/events`,
+        headers: {
+          [SERVICE_TOKEN_HEADER]: await tokens.issue('orchestrator-worker', {
+            aud: EVENTS_INGEST_AUDIENCE,
+          }),
+          'idempotency-key': 'events-js-cap-before-tenant-01',
+        },
+        payload: [event({ payload: { blob: 'é'.repeat(32_769) } })],
+      });
+      expect(response.statusCode, response.body).toBe(413);
+      expect(response.body).toContain('artifacts');
+    } finally {
+      await unavailableApp.close();
+    }
+  });
+
+  it('rejects a 65,536-byte JSON payload whose PostgreSQL JSONB datum exceeds the cap', async () => {
+    // Break caught: measuring only JSON.stringify bytes allows PostgreSQL's
+    // larger jsonb datum to hit the CHECK as a 500 after entering the writer.
+    const payload = { blob: 'x'.repeat(65_525) };
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBe(65_536);
+    expect(await jsonbPayloadBytes(payload)).toBeGreaterThan(65_536);
+
+    await expectPayloadTooLargeWithoutEffects(payload, 'events-jsonb-exact-boundary-01');
+  });
+
+  it('rejects a structured payload by PostgreSQL JSONB size, not JSON string length', async () => {
+    // Break caught: applying only a JavaScript string cap misses jsonb object
+    // and array representation overhead that the database CHECK enforces.
+    const payload = {
+      records: Array.from({ length: 1000 }, (_, index) => ({ index, value: 'x'.repeat(40) })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(65_536);
+    expect(await jsonbPayloadBytes(payload)).toBeGreaterThan(65_536);
+
+    await expectPayloadTooLargeWithoutEffects(payload, 'events-jsonb-structured-boundary-01');
+  });
+
+  it('commits an at-or-under-cap structured JSONB payload', async () => {
+    // Break caught: a conservative preflight that rejects based on serialized
+    // JSON bytes rather than PostgreSQL's actual JSONB datum size.
+    const payload = {
+      records: Array.from({ length: 775 }, (_, index) => ({ index, value: 'x'.repeat(40) })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(65_536);
+    expect(await jsonbPayloadBytes(payload)).toBeLessThanOrEqual(65_536);
+
+    const response = await post([event({ payload })], { key: 'events-jsonb-structured-valid-01' });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(await count('agent_events')).toBe(1);
+    expect(await count('audit_events')).toBe(1);
+    expect(await counter()).toBe(1);
+  });
+
   it('rejects foreign, wrong-project, and path/body run identities before allocation', async () => {
     // Break caught: calling nextEventSequence before tenant/run/project/path
     // validation creates an invisible counter gap for a rejected request.
@@ -434,6 +603,74 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       expect(await counter(foreignRunId), label).toBeUndefined();
       expect(await count('agent_events'), label).toBe(0);
     }
+  });
+
+  it('rejects an event whose task belongs to another phase of the same run', async () => {
+    // Break caught: validating phase and task separately accepts an impossible
+    // event context and lets a task be replayed under the wrong phase.
+    await expectRunNotFoundWithoutEffects(
+      [event({ phaseId, taskId: secondTaskId })],
+      'events-task-phase-mismatch-01',
+    );
+  });
+
+  it('accepts a task-only event when the task phase belongs to the path run', async () => {
+    // Break caught: requiring an explicit phase would reject the valid
+    // task-only form, even though the task's own phase binds it to the run.
+    const response = await post([event({ taskId })], { key: 'events-task-only-valid-01' });
+    expect(response.statusCode, response.body).toBe(201);
+    const body = EventResponseSchema.parse(response.json());
+    expect(body.events[0]).toMatchObject({ runId, taskId, sequence: 1 });
+    expect(body.events[0]).not.toHaveProperty('phaseId');
+  });
+
+  it('rejects a task-only event whose task phase belongs to another run', async () => {
+    // Break caught: removing the task-phase-to-run predicate permits a task
+    // from a different run while the event claims this path run.
+    const otherRunId = newId('run');
+    const otherPhaseId = newId('phase');
+    const otherTaskId = newId('task');
+    const [owner] = await database.sql<{ id: string }[]>`select id from users limit 1`;
+    await database.db.insert(agentRuns).values({
+      id: otherRunId,
+      organizationId,
+      projectId,
+      branchId: null,
+      mode: 'build',
+      status: 'running',
+      specificationId: null,
+      temporalWorkflowId: otherRunId,
+      startedBy: owner?.id ?? '',
+      budgetJson: null,
+    });
+    await database.db.insert(agentPhases).values({
+      id: otherPhaseId,
+      organizationId,
+      runId: otherRunId,
+      sequence: 1,
+      title: 'Other run phase',
+      status: 'running',
+      acceptanceCriteriaJson: [],
+    });
+    await database.db.insert(agentTasks).values({
+      id: otherTaskId,
+      organizationId,
+      phaseId: otherPhaseId,
+      parentTaskId: null,
+      title: 'Other run task',
+      status: 'running',
+      riskLevel: 'low',
+      baseCommitSha: null,
+      outputCommitSha: null,
+      acceptanceCriteriaJson: [],
+      dependenciesJson: [],
+      assignedAgentRole: 'builder',
+    });
+
+    await expectRunNotFoundWithoutEffects(
+      [event({ taskId: otherTaskId })],
+      'events-task-only-foreign-run-01',
+    );
   });
 
   it('allows only an orchestrator token minted for this route and never a browser credential', async () => {
