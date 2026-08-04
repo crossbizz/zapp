@@ -6,17 +6,24 @@
  * pulls Electron/IPC modules in transitively.
  *
  * Written from scratch against the call signatures used by the Apache-2.0 code
- * that remains. Every entry point is inert; IPC channels that the UI touches on
+ * that remains. Most entry points are inert; IPC channels that the UI touches on
  * boot are registered with empty results so the app renders instead of throwing
  * "No handler registered".
+ *
+ * The exception is built-in theme selection (`registerThemesHandlers`), which is
+ * fully implemented here because the data and prompt plumbing it needs never
+ * lived in Pro — see the comment on that function.
  *
  * See docs/adr/0002-dyad-fork.md for the full inventory of stubbed sites.
  */
 
 import type { ModelMessage } from "ai";
+import { eq } from "drizzle-orm";
 import type { IpcMainInvokeEvent } from "electron";
 import log from "electron-log";
 
+import { db } from "@/db";
+import { apps } from "@/db/schema";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { createTypedHandler } from "@/ipc/handlers/base";
 import { registerTrustedIpcHandler } from "@/ipc/handlers/trusted_handle";
@@ -25,6 +32,7 @@ import { agentContracts } from "@/ipc/types/agent";
 import { templateContracts } from "@/ipc/types/templates";
 import type { MentionedAppReference } from "@/ipc/utils/mention_apps";
 import type { UserSettings } from "@/lib/schemas";
+import { themesData } from "@/shared/themes";
 
 const logger = log.scope("zapp_pro_stubs");
 
@@ -35,26 +43,59 @@ function unavailable(feature: string): never {
   );
 }
 
+/**
+ * Resolves an app row or fails with NotFound.
+ *
+ * A bare `db.update(...).where(id = ?)` on a missing app updates zero rows and
+ * resolves, so an unknown appId would look like a successful theme change.
+ */
+async function requireApp(appId: number) {
+  const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+  if (!app) {
+    throw new DyadError(`App ${appId} not found`, DyadErrorKind.NotFound);
+  }
+  return app;
+}
+
 // ---------------------------------------------------------------------------
 // Replaces `../pro/main/ipc/handlers/themes_handlers`
 // ---------------------------------------------------------------------------
 
 /**
- * Themes (built-in + custom + AI theme generation) shipped entirely in Pro.
- * Read paths answer with empty collections; mutating paths reject with a typed
- * precondition error rather than an opaque IPC failure.
+ * Only *authoring* themes was Pro. Selecting a built-in one is not: `themesData`,
+ * `getBuiltinThemeById` and `getThemePromptById` all survive in the Apache-2.0
+ * tree, `apps.theme_id` is in the retained schema, and `chat_stream_handlers`
+ * reads that column on every turn. So `get-themes` serves the built-ins and the
+ * per-app get/set persist against the column.
+ *
+ * This started as an inert stub, which turned out to break app creation
+ * outright: `selectedThemeId` defaults to "default", so `applyTheme` fires for
+ * every first prompt, and rejecting it failed postCreate before the prompt was
+ * ever dispatched. See ADR 0002 §"Themes are selectable, not authorable".
+ *
+ * Custom-theme CRUD and AI theme generation genuinely lived in Pro and stay
+ * unavailable — with no way to create one, `get-custom-themes` is honestly empty.
  */
 export function registerThemesHandlers(): void {
-  createTypedHandler(templateContracts.getThemes, async () => []);
+  createTypedHandler(templateContracts.getThemes, async () => themesData);
   createTypedHandler(templateContracts.getCustomThemes, async () => []);
   createTypedHandler(
     templateContracts.getThemeGenerationModelOptions,
     async () => [],
   );
-  createTypedHandler(templateContracts.getAppTheme, async () => null);
-  createTypedHandler(templateContracts.setAppTheme, async () => {
-    unavailable("Themes");
-  });
+  createTypedHandler(
+    templateContracts.getAppTheme,
+    async (_event, { appId }) => {
+      return (await requireApp(appId)).themeId ?? null;
+    },
+  );
+  createTypedHandler(
+    templateContracts.setAppTheme,
+    async (_event, { appId, themeId }) => {
+      await requireApp(appId);
+      await db.update(apps).set({ themeId }).where(eq(apps.id, appId));
+    },
+  );
   createTypedHandler(templateContracts.createCustomTheme, async () => {
     unavailable("Custom themes");
   });
