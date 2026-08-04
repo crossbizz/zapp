@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { test, testSkipIfWindows, Timeout } from "./helpers/test_helper";
+import { DYAD_LEGACY } from "./zapp-preserve-constants";
 
 function resolveDockerGate(): { available: boolean; reason: string } {
   if (process.env.DOCKER_AVAILABLE !== "1") {
@@ -39,6 +40,19 @@ function resolveDockerGate(): { available: boolean; reason: string } {
 
 const dockerGate = resolveDockerGate();
 
+// File scope, not inside the test body: the `electronApp` / `po` fixtures are
+// `auto: true`, so a body-level skip would still launch and tear down a whole
+// Electron instance first — and an unrelated launch failure would then turn an
+// intended skip red. Skipping here means the test is never entered at all.
+//
+// The reason rides along as a Playwright annotation (visible in the HTML / blob
+// report); log it too so a plain line-reporter CI log says *why* the Docker
+// capability went unverified instead of just "1 skipped".
+if (!dockerGate.available) {
+  console.log(`[preserve:docker] SKIPPED — ${dockerGate.reason}`);
+}
+test.skip(!dockerGate.available, dockerGate.reason);
+
 function docker(...args: string[]): string {
   return execFileSync("docker", args, { encoding: "utf8" }).trim();
 }
@@ -54,13 +68,6 @@ function removeContainer(name: string) {
 testSkipIfWindows(
   "preserve: docker runtime — the app builds and runs inside a container",
   async ({ po }) => {
-    // The reason rides along as a Playwright annotation (visible in the HTML /
-    // blob report); log it too so a plain line-reporter CI log says *why* the
-    // Docker capability went unverified instead of just "1 skipped".
-    if (!dockerGate.available) {
-      console.log(`[preserve:docker] SKIPPED — ${dockerGate.reason}`);
-    }
-    test.skip(!dockerGate.available, dockerGate.reason);
     // Image build + in-container install is far slower than a host run.
     test.setTimeout(15 * 60_000);
 
@@ -87,7 +94,7 @@ testSkipIfWindows(
         );
         return result.apps[0].id as number;
       });
-      containerName = `dyad-app-${appId}`;
+      containerName = DYAD_LEGACY.dockerContainerName(appId);
 
       // The Docker runtime path materializes its own build recipe next to the
       // app source (app_runtime_service executeAppInDocker).

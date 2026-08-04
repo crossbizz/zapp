@@ -1,7 +1,8 @@
 name: Desktop
 
-# Packages the macOS app (@zapp/desktop). Split from ci.yml because it needs a
-# macOS runner, a standalone hoisted install, and ~30 minutes -- none of which
+# Packages the macOS app (@zapp/desktop) and runs the PRD §21.1 capability
+# preservation suite against that package. Split from ci.yml because both need a
+# macOS runner, a standalone hoisted install, and real time -- none of which
 # should sit in front of every PR that does not touch the desktop app.
 on:
   pull_request:
@@ -9,8 +10,18 @@ on:
       - 'apps/desktop/**'
       - '.github/workflows/desktop.yml'
   push:
+    # main is included so the preserve suite actually guards the branch: work
+    # lands on main directly here, so a PR-only trigger would leave the
+    # regression net inert. `paths` gates the branch pushes; per GitHub's
+    # workflow syntax reference, "path filters are not evaluated for pushes of
+    # tags", so the v* release trigger below is unaffected by it.
+    branches:
+      - main
     tags:
       - 'v*'
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
     inputs:
       sign:
@@ -240,3 +251,97 @@ jobs:
         run: |
           security list-keychains -d user -s login.keychain-db
           security delete-keychain "$RUNNER_TEMP/zapp-signing.keychain-db" || true
+
+  # MAC-3. The preserve suite is a regression net for the §21.1 capabilities the
+  # fork must not lose while MAC-4+ swaps Dyad's local agent internals for zapp
+  # WorkspaceRuntime contracts -- so it has to run on every change to the app,
+  # not on request. Deliberately a separate job from package-macos: this one
+  # needs an unsigned E2E build and nothing else, so it must not wait on (or be
+  # blocked by) signing, notarization or artifact upload.
+  e2e-preserve:
+    name: preserve suite (macOS)
+    runs-on: macos-14
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop
+
+    steps:
+      # persist-credentials: false for the same reason as the packaging job:
+      # this runs repo code plus package postinstall scripts (native rebuilds).
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Must run before setup-node: `cache: pnpm` shells out to `pnpm store
+      # path`, so a pnpm binary has to be on PATH first.
+      - name: Enable corepack
+        run: corepack enable
+
+      # Unlike package-macos, `cache: pnpm` earns its keep here. The install
+      # below uses its own --store-dir and is not what this caches; the *apps
+      # under test* are. The preview and process-management specs boot a real
+      # dev server, which makes the app run `pnpm install` for the imported
+      # template against the default store -- the slowest part of the suite.
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Cache Electron and node-gyp downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/node-gyp
+          key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/package.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
+      # The same standalone hoisted install package-macos gets via make:mac:
+      # electron-forge cannot package from the workspace's linked layout (see
+      # scripts/zapp/install-packaging.mjs). @playwright/test and
+      # electron-playwright-helpers come along with it, so this one install
+      # serves both the build and the test run.
+      - name: Install desktop dependencies
+        run: pnpm run install:packaging
+
+      # playwright.config.ts starts this as a `webServer`, but its command only
+      # builds and starts -- installing its deps is on us.
+      - name: Prepare fake LLM server
+        working-directory: apps/desktop/testing/fake-llm-server
+        run: npm install && npm run build
+
+      # E2E_TEST_BUILD=true (set by pre:e2e) skips the singleton lock and the
+      # "Move to Applications Folder?" modal, so the app launches unattended.
+      - name: Package E2E build
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+        run: npm run pre:e2e
+
+      # Docker specs skip here -- hosted macOS runners have no daemon -- and the
+      # suite logs why. That is the designed behaviour, not a hidden gap. To
+      # cover Docker, run this on a runner with Docker and DOCKER_AVAILABLE=1.
+      #
+      # Step-level timeout so a hung suite is killed with a clear signal instead
+      # of silently eating the job budget; if the *job* ever times out, the cold
+      # packaging step above is the thing to give more room, not this.
+      - name: Run preserve suite
+        timeout-minutes: 12
+        run: pnpm --filter @zapp/desktop run test:preserve
+
+      # CI selects Playwright's blob reporter (playwright.config.ts), so the
+      # useful failure artifacts are that zip plus test-results/, which holds
+      # the traces and failure screenshots the fixtures attach.
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: preserve-playwright-report-${{ github.sha }}
+          path: |
+            apps/desktop/blob-report/
+            apps/desktop/test-results/
+          if-no-files-found: warn
+          retention-days: 7

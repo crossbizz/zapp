@@ -45,6 +45,7 @@ import {
   getActiveEditorModelContent,
   selectFileAndWaitForEditor,
 } from "./helpers/monaco_editor";
+import { DYAD_LEGACY } from "./zapp-preserve-constants";
 
 /**
  * Run a git command against an app repo, tolerating `index.lock` contention.
@@ -116,10 +117,39 @@ async function typeIntoEditor(
     .toBe(content.replace(/\r\n?/g, "\n"));
 }
 
+/**
+ * Waits until the preview panel's width stops moving.
+ *
+ * `PreviewPanel.selectPreviewMode()` samples `#preview-panel[data-panel-size]`
+ * once and clicks the collapse/expand toggle when it reads `< 5`. Sampling that
+ * mid-animation flips an *opening* panel into a closing one — and the toggle's
+ * own `size >= 5` wait is satisfied on the way down — leaving a zero-width panel
+ * and an iframe that stays `hidden` forever. Settling first removes the race.
+ */
+async function waitForSettledPreviewPanel(
+  page: import("@playwright/test").Page,
+) {
+  let previous: string | null = null;
+  await expect
+    .poll(
+      async () => {
+        const current = await page
+          .locator("#preview-panel")
+          .getAttribute("data-panel-size");
+        const settled =
+          current !== null && current === previous && parseFloat(current) >= 5;
+        previous = current;
+        return settled;
+      },
+      { timeout: Timeout.LONG, intervals: [250] },
+    )
+    .toBe(true);
+}
+
 /** Reads the xterm buffer the terminal panel exposes for e2e. */
 async function terminalText(page: import("@playwright/test").Page) {
-  return page.evaluate(() => {
-    const terminal = (window as any).__DYAD_TERMINAL__;
+  return page.evaluate((terminalGlobal) => {
+    const terminal = (window as any)[terminalGlobal];
     if (!terminal) return "";
     const buffer = terminal.buffer.active;
     const lines: string[] = [];
@@ -127,7 +157,7 @@ async function terminalText(page: import("@playwright/test").Page) {
       lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
     }
     return lines.join("\n");
-  });
+  }, DYAD_LEGACY.terminalGlobal);
 }
 
 /**
@@ -168,7 +198,7 @@ testSkipIfWindows(
     await po.chatActions.waitForChatCompletion({ timeout: Timeout.LONG });
 
     const appPath = await po.appManagement.getCurrentAppPath();
-    const appsDir = path.join(po.userDataDir, "dyad-apps");
+    const appsDir = path.join(po.userDataDir, DYAD_LEGACY.appsDirName);
 
     // The app owns a real directory on the local filesystem, inside the
     // managed apps root (not a temp scratch dir, not a remote handle).
@@ -194,7 +224,11 @@ testSkipIfWindows(
 
     // Write path: an edit made in the in-app editor must hit the same bytes on
     // disk. This is the half that a runtime swap is most likely to break.
-    await po.previewPanel.clickTogglePreviewPanel();
+    //
+    // No `clickTogglePreviewPanel()` first: importing already expands the
+    // panel, so toggling only re-opens the animation window that
+    // `selectPreviewMode` then mis-samples. Settle, then switch tabs.
+    await waitForSettledPreviewPanel(po.page);
     await po.previewPanel.selectPreviewMode("code");
     await expect(
       po.page.getByText("Loading files...", { exact: false }),
@@ -227,9 +261,9 @@ testSkipIfWindows(
   async ({ po }) => {
     // The terminal panel is gated behind dev mode or this e2e flag
     // (TerminalPanel.tsx). Set it before setUp so the toggle renders.
-    await po.page.evaluate(() => {
-      (window as any).__DYAD_E2E__ = true;
-    });
+    await po.page.evaluate((flag) => {
+      (window as any)[flag] = true;
+    }, DYAD_LEGACY.e2eFlag);
     await po.setUp();
     await po.importApp("minimal");
 
@@ -335,10 +369,14 @@ testSkipIfWindows(
     expect(await git(appPath, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
       "main",
     );
-    expect(await git(appPath, "log", "-1", "--format=%an")).toBe("[dyad]");
-    expect(await git(appPath, "log", "-1", "--format=%ae")).toBe("git@dyad.sh");
+    expect(await git(appPath, "log", "-1", "--format=%an")).toBe(
+      DYAD_LEGACY.gitAuthorName,
+    );
+    expect(await git(appPath, "log", "-1", "--format=%ae")).toBe(
+      DYAD_LEGACY.gitAuthorEmail,
+    );
     expect(await git(appPath, "log", "-1", "--format=%s")).toContain(
-      "Init Dyad app",
+      DYAD_LEGACY.initialCommitSubject,
     );
 
     // The imported tree is tracked, not just sitting untracked next to a repo.
@@ -378,8 +416,16 @@ testSkipIfWindows(
       return result.apps[0].id as number;
     });
 
-    // Stopped: `stop-app` kills the dev server process and terminates the
-    // preview proxy worker, so the port stops answering entirely.
+    // Stopped: `stop-app` kills the dev server process *and* terminates the
+    // preview proxy worker (process_manager.stopAppByInfo does both), so the
+    // port stops answering entirely.
+    //
+    // Caveat for future readers: the origin probed here is the *proxy's* port,
+    // so a null response proves the app is no longer reachable — it does not
+    // distinguish "dev server child was killed" from "only the proxy worker was
+    // torn down". If a refactor ever needs to prove the child process itself
+    // died, that needs a separate PID/port assertion against the dev server, not
+    // a stronger read of this one.
     await po.page.evaluate(
       async (id) =>
         (window as any).electron.ipcRenderer.invoke("stop-app", { appId: id }),
