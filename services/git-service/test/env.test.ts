@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadArtifactEnv, loadEnv, loadForgejoEnv } from '../src/env.js';
+import { ArtifactEnvSchema, loadArtifactEnv, loadEnv, loadForgejoEnv } from '../src/env.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from '../src/sweep.js';
 
 const FORGEJO = {
@@ -97,6 +97,21 @@ describe('loadArtifactEnv', () => {
     ARTIFACT_SECRET: 'secret-access-key',
     ARTIFACT_BUCKET: 'zapp-artifacts',
   };
+
+  it('derives the normalized consumer shape directly from its schema', () => {
+    expect(
+      ArtifactEnvSchema.parse({
+        ...artifact,
+        ARTIFACT_ENDPOINT: 'https://account.r2.cloudflarestorage.com/',
+      }),
+    ).toEqual({
+      endpoint: 'https://account.r2.cloudflarestorage.com',
+      accessKeyId: 'access-key-id',
+      secretAccessKey: 'secret-access-key',
+      bucket: 'zapp-artifacts',
+      region: 'auto',
+    });
+  });
 
   it('requires the existing artifact endpoint, credential, and bucket names', () => {
     expect(() => loadArtifactEnv({})).toThrow(

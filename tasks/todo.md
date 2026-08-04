@@ -61,7 +61,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WS-11 Secret injection + network profiles + redaction
 - [ ] WS-12 Preview tokens + share records
 ### Plan 06
-- [x] GIT-4 Nightly bundle backups + restore
+- [ ] GIT-4 Nightly bundle backups + restore
 ### Plan 04 — Agent runtime core
 - [ ] AR-1 model-gateway streaming API
 - [ ] AR-2 Routing/retry/fallback

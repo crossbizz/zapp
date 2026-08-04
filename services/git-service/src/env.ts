@@ -111,36 +111,31 @@ export function loadForgejoEnv(source: unknown = process.env): ForgejoEnv {
   };
 }
 
-const ArtifactEnvSchema = z.object({
-  ARTIFACT_ENDPOINT: z.string().url(),
-  ARTIFACT_KEY: z.string().min(1),
-  ARTIFACT_SECRET: z.string().min(1),
-  ARTIFACT_BUCKET: z
-    .string()
-    .min(3)
-    .max(63)
-    .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/),
-  ARTIFACT_REGION: z.string().min(1).default('auto'),
-});
-
-export interface ArtifactEnv {
-  readonly endpoint: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-  readonly bucket: string;
-  readonly region: string;
-}
-
-/** Cloudflare R2 in production and the S3-compatible MinIO stack in development. */
-export function loadArtifactEnv(source: unknown = process.env): ArtifactEnv {
-  const env = defineEnv(ArtifactEnvSchema, source);
-  return {
+export const ArtifactEnvSchema = z
+  .object({
+    ARTIFACT_ENDPOINT: z.string().url(),
+    ARTIFACT_KEY: z.string().min(1),
+    ARTIFACT_SECRET: z.string().min(1),
+    ARTIFACT_BUCKET: z
+      .string()
+      .min(3)
+      .max(63)
+      .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/),
+    ARTIFACT_REGION: z.string().min(1).default('auto'),
+  })
+  .transform((env) => ({
     endpoint: env.ARTIFACT_ENDPOINT.replace(/\/+$/, ''),
     accessKeyId: env.ARTIFACT_KEY,
     secretAccessKey: env.ARTIFACT_SECRET,
     bucket: env.ARTIFACT_BUCKET,
     region: env.ARTIFACT_REGION,
-  };
+  }));
+
+export type ArtifactEnv = z.infer<typeof ArtifactEnvSchema>;
+
+/** Cloudflare R2 in production and the S3-compatible MinIO stack in development. */
+export function loadArtifactEnv(source: unknown = process.env): ArtifactEnv {
+  return defineEnv(ArtifactEnvSchema, source);
 }
 
 /**

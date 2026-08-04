@@ -12,6 +12,7 @@
 export { buildApp, type AppDeps, type AppInstance } from './app.js';
 export { GIT_AUDIT_ACTIONS, type GitAuditAction, type GitAuditEvent } from './audit.js';
 export {
+  BackupDateSchema,
   backupKey,
   createDbBackupInventory,
   createGitBundleCommands,
@@ -30,9 +31,11 @@ export {
   type ExpectedBranch,
   type NightlyBackupReport,
   type RepositoryBackupResult,
+  type RestoreRepositoryResult,
 } from './backup.js';
 export { composeApp, type ServiceComposition, type ServiceRuntime } from './compose.js';
 export {
+  ArtifactEnvSchema,
   loadArtifactEnv,
   loadDatabaseUrl,
   loadEnv,

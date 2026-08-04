@@ -23,7 +23,7 @@ import {
 import { and, asc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 
-const BackupDateSchema = z
+export const BackupDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .refine((value) => new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value);
@@ -66,6 +66,11 @@ const RefNameSchema = z
         .some((part) => part === '' || part.startsWith('.') || part.endsWith('.lock')),
   );
 
+const FullRefNameSchema = z
+  .string()
+  .startsWith('refs/')
+  .refine((value) => RefNameSchema.safeParse(value.slice('refs/'.length)).success);
+
 const BackupRepositorySchema = z
   .object({
     organizationId: idSchema('org'),
@@ -97,6 +102,31 @@ const ExpectedBranchSchema = z
   .strict();
 
 export type ExpectedBranch = z.infer<typeof ExpectedBranchSchema>;
+
+const BranchRestoreEvidenceSchema = z
+  .object({
+    name: RefNameSchema,
+    expectedSha: z.string().regex(/^[0-9a-f]{40}$/i),
+    actualSha: z.string().regex(/^[0-9a-f]{40}$/i),
+  })
+  .strict();
+
+const RestoredRefEvidenceSchema = z
+  .object({
+    name: FullRefNameSchema,
+    sha: z.string().regex(/^[0-9a-f]{40}$/i),
+  })
+  .strict();
+
+const RestoreRepositoryResultSchema = z
+  .object({
+    checkedBranches: z.number().int().nonnegative(),
+    branches: z.array(BranchRestoreEvidenceSchema),
+    refs: z.array(RestoredRefEvidenceSchema),
+  })
+  .strict();
+
+export type RestoreRepositoryResult = z.infer<typeof RestoreRepositoryResultSchema>;
 
 const BackupObjectSchema = z
   .object({
@@ -288,7 +318,7 @@ export interface BackupGit {
   createBundle(cloneUrl: string, bundlePath: string): Promise<void>;
   verifyBundle(bundlePath: string): Promise<void>;
   mirrorPush(bundlePath: string, targetCloneUrl: string): Promise<void>;
-  remoteHeads(targetCloneUrl: string): Promise<ReadonlyMap<string, string>>;
+  remoteRefs(targetCloneUrl: string): Promise<ReadonlyMap<string, string>>;
 }
 
 export interface GitCommandCall {
@@ -448,32 +478,30 @@ export function createGitBundleCommands(options: {
       }
     },
 
-    async remoteHeads(targetCloneUrl: string): Promise<ReadonlyMap<string, string>> {
+    async remoteRefs(targetCloneUrl: string): Promise<ReadonlyMap<string, string>> {
       const url = safeGitUrl(targetCloneUrl);
       let stdout: string;
       try {
-        stdout = await withAskpass(
-          async (env) => await execute(['ls-remote', '--heads', url], env),
-        );
+        stdout = await withAskpass(async (env) => await execute(['ls-remote', '--refs', url], env));
       } catch {
-        throw new Error('Git remote branch listing failed');
+        throw new Error('Git remote ref listing failed');
       }
-      const heads = new Map<string, string>();
+      const refs = new Map<string, string>();
       for (const line of stdout.split('\n')) {
         if (line === '') {
           continue;
         }
-        const match = /^([0-9a-f]{40})\trefs\/heads\/(.+)$/i.exec(line);
+        const match = /^([0-9a-f]{40})\t(.+)$/i.exec(line);
         if (
           match?.[1] === undefined ||
           match[2] === undefined ||
-          !RefNameSchema.safeParse(match[2]).success
+          !FullRefNameSchema.safeParse(match[2]).success
         ) {
-          throw new Error('Git remote branch listing was invalid');
+          throw new Error('Git remote ref listing was invalid');
         }
-        heads.set(match[2], match[1]);
+        refs.set(match[2], match[1]);
       }
-      return heads;
+      return refs;
     },
   };
 }
@@ -634,7 +662,7 @@ export async function enforceBackupRetention(
     undefined,
   );
   const startOfToday = Date.parse(`${utcDate(input.now)}T00:00:00.000Z`);
-  const cutoff = startOfToday - 30 * DAY_MS;
+  const cutoff = startOfToday - 29 * DAY_MS;
 
   for (const object of dated) {
     const objectTime = Date.parse(`${object.date}T00:00:00.000Z`);
@@ -817,24 +845,25 @@ export async function runNightlyBackups(deps: {
 const RestoreInputSchema = z
   .object({
     key: z.string().min(1),
-    targetCloneUrl: SafeCloneUrlSchema.optional(),
     expectedBranches: z.array(ExpectedBranchSchema),
   })
   .strict();
+
+export interface CreatedRestoreTarget {
+  readonly cloneUrl: string;
+  readonly compensate: () => Promise<void>;
+}
 
 export async function restoreRepositoryBackup(
   deps: {
     readonly store: BackupObjectStore;
     readonly git: BackupGit;
-    readonly createTarget?: () => Promise<string>;
+    readonly createTarget: () => Promise<CreatedRestoreTarget>;
   },
   input: z.input<typeof RestoreInputSchema>,
-): Promise<{ readonly checkedBranches: number }> {
+): Promise<RestoreRepositoryResult> {
   const parsed = RestoreInputSchema.safeParse(input);
   if (!parsed.success) {
-    throw new Error('Invalid restore input');
-  }
-  if ((deps.createTarget === undefined) === (parsed.data.targetCloneUrl === undefined)) {
     throw new Error('Invalid restore input');
   }
   const directory = await mkdtemp(join(tmpdir(), 'zapp-git-restore-'));
@@ -854,33 +883,62 @@ export async function restoreRepositoryBackup(
     } catch {
       throw new Error('Git bundle verification failed');
     }
-    let targetCloneUrl = parsed.data.targetCloneUrl;
-    if (deps.createTarget !== undefined) {
-      try {
-        targetCloneUrl = safeGitUrl(await deps.createTarget());
-      } catch {
-        throw new Error('Fresh restore target creation failed');
+    let createdTarget: CreatedRestoreTarget;
+    let compensate: (() => Promise<void>) | undefined;
+    try {
+      createdTarget = await deps.createTarget();
+      compensate = createdTarget.compensate;
+      createdTarget = { ...createdTarget, cloneUrl: safeGitUrl(createdTarget.cloneUrl) };
+    } catch {
+      if (compensate !== undefined) {
+        try {
+          await compensate();
+        } catch {
+          throw new Error('Fresh restore target creation and compensation failed');
+        }
       }
-    }
-    if (targetCloneUrl === undefined) {
-      throw new Error('Invalid restore input');
+      throw new Error('Fresh restore target creation failed');
     }
     try {
-      await deps.git.mirrorPush(bundlePath, targetCloneUrl);
-    } catch {
-      throw new Error('Bundle mirror push failed');
+      try {
+        await deps.git.mirrorPush(bundlePath, createdTarget.cloneUrl);
+      } catch {
+        throw new Error('Bundle mirror push failed');
+      }
+      let actual: ReadonlyMap<string, string>;
+      try {
+        actual = await deps.git.remoteRefs(createdTarget.cloneUrl);
+      } catch {
+        throw new Error('Restored branch listing failed');
+      }
+      const expected = parsed.data.expectedBranches.filter(
+        (branch) => branch.headCommitSha !== null,
+      );
+      const branchEvidence = expected
+        .map((branch) => ({
+          name: branch.name,
+          expectedSha: branch.headCommitSha ?? '',
+          actualSha: actual.get(`refs/heads/${branch.name}`) ?? '',
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      if (branchEvidence.some((branch) => branch.actualSha !== branch.expectedSha)) {
+        throw new Error('Restored branch heads do not match the database');
+      }
+      return RestoreRepositoryResultSchema.parse({
+        checkedBranches: branchEvidence.length,
+        branches: branchEvidence,
+        refs: [...actual]
+          .map(([name, sha]) => ({ name, sha }))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+      });
+    } catch (error) {
+      try {
+        await createdTarget.compensate();
+      } catch {
+        throw new Error('Restore failed and exact target compensation failed');
+      }
+      throw error;
     }
-    let actual: ReadonlyMap<string, string>;
-    try {
-      actual = await deps.git.remoteHeads(targetCloneUrl);
-    } catch {
-      throw new Error('Restored branch listing failed');
-    }
-    const expected = parsed.data.expectedBranches.filter((branch) => branch.headCommitSha !== null);
-    if (expected.some((branch) => actual.get(branch.name) !== branch.headCommitSha)) {
-      throw new Error('Restored branch heads do not match the database');
-    }
-    return { checkedBranches: expected.length };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

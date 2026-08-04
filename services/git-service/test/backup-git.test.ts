@@ -102,11 +102,14 @@ describe('createGitBundleCommands', () => {
     }
   });
 
-  it('parses only remote branch heads and refuses malformed output', async () => {
-    const executor: GitCommandExecutor = () =>
-      Promise.resolve({
-        stdout: `${'a'.repeat(40)}\trefs/heads/main\n${'b'.repeat(40)}\trefs/heads/feature/x\n`,
+  it('collects every actual remote ref and refuses malformed output', async () => {
+    const calls: string[][] = [];
+    const executor: GitCommandExecutor = (call) => {
+      calls.push([...call.args]);
+      return Promise.resolve({
+        stdout: `${'a'.repeat(40)}\trefs/heads/main\n${'b'.repeat(40)}\trefs/heads/feature/x\n${'c'.repeat(40)}\trefs/tags/v1\n${'d'.repeat(40)}\trefs/notes/restore\n`,
       });
+    };
     const git = createGitBundleCommands({
       username: USERNAME,
       password: PASSWORD,
@@ -114,12 +117,15 @@ describe('createGitBundleCommands', () => {
       executor,
     });
 
-    await expect(git.remoteHeads('https://git.test/org/repository.git')).resolves.toEqual(
+    await expect(git.remoteRefs('https://git.test/org/repository.git')).resolves.toEqual(
       new Map([
-        ['main', 'a'.repeat(40)],
-        ['feature/x', 'b'.repeat(40)],
+        ['refs/heads/main', 'a'.repeat(40)],
+        ['refs/heads/feature/x', 'b'.repeat(40)],
+        ['refs/tags/v1', 'c'.repeat(40)],
+        ['refs/notes/restore', 'd'.repeat(40)],
       ]),
     );
+    expect(calls).toEqual([['ls-remote', '--refs', 'https://git.test/org/repository.git']]);
 
     const malformed = createGitBundleCommands({
       username: USERNAME,
@@ -127,8 +133,8 @@ describe('createGitBundleCommands', () => {
       timeoutMs: 5_000,
       executor: () => Promise.resolve({ stdout: 'not-a-sha\trefs/heads/main\n' }),
     });
-    await expect(malformed.remoteHeads('https://git.test/org/repository.git')).rejects.toThrow(
-      'Git remote branch listing was invalid',
+    await expect(malformed.remoteRefs('https://git.test/org/repository.git')).rejects.toThrow(
+      'Git remote ref listing was invalid',
     );
   });
 

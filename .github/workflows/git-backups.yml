@@ -30,14 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      DATABASE_URL: ${{ secrets.GIT_BACKUP_DATABASE_URL }}
-      FORGEJO_URL: ${{ secrets.GIT_BACKUP_FORGEJO_URL }}
-      FORGEJO_ADMIN_TOKEN: ${{ secrets.GIT_BACKUP_FORGEJO_ADMIN_TOKEN }}
       FORGEJO_TIMEOUT_MS: '5000'
-      ARTIFACT_ENDPOINT: ${{ secrets.GIT_BACKUP_R2_ENDPOINT }}
-      ARTIFACT_KEY: ${{ secrets.GIT_BACKUP_R2_ACCESS_KEY_ID }}
-      ARTIFACT_SECRET: ${{ secrets.GIT_BACKUP_R2_SECRET_ACCESS_KEY }}
-      ARTIFACT_BUCKET: ${{ secrets.GIT_BACKUP_R2_BUCKET }}
       ARTIFACT_REGION: auto
       COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
       TURBO_TELEMETRY_DISABLED: '1'
@@ -62,6 +55,13 @@ jobs:
 
       - name: Run backup or restore drill
         env:
+          DATABASE_URL: ${{ secrets.GIT_BACKUP_DATABASE_URL }}
+          FORGEJO_URL: ${{ secrets.GIT_BACKUP_FORGEJO_URL }}
+          FORGEJO_ADMIN_TOKEN: ${{ secrets.GIT_BACKUP_FORGEJO_ADMIN_TOKEN }}
+          ARTIFACT_ENDPOINT: ${{ secrets.GIT_BACKUP_R2_ENDPOINT }}
+          ARTIFACT_KEY: ${{ secrets.GIT_BACKUP_R2_ACCESS_KEY_ID }}
+          ARTIFACT_SECRET: ${{ secrets.GIT_BACKUP_R2_SECRET_ACCESS_KEY }}
+          ARTIFACT_BUCKET: ${{ secrets.GIT_BACKUP_R2_BUCKET }}
           OPERATION: ${{ github.event.schedule == '29 4 1 */3 *' && 'restore-drill' || inputs.mode || 'nightly' }}
         run: |
           if [ "$OPERATION" = 'restore-drill' ]; then

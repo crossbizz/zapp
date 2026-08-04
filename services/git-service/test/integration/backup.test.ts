@@ -250,6 +250,8 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     ) {
       throw new Error('live backup test was not initialized');
     }
+    const activeClient = client;
+    const activeProvider = provider;
     const token = adminToken();
     const before = refs(await authenticatedGit(tmpdir(), token, ['ls-remote', cloneUrl]));
     const repository = (await inventory.listProvisionedRepositories()).find(
@@ -267,41 +269,103 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     backupObjectKey = backedUp.key;
     expect(await store.exists(backedUp.key)).toBe(true);
 
-    await provider.deleteRepository(ref);
+    await activeProvider.deleteRepository(ref);
     const [owner, name] = ref.split('/');
-    const missing = await client.send({
+    const missing = await activeClient.send({
       method: 'GET',
       path: `/repos/${owner ?? ''}/${name ?? ''}`,
       allow: [404],
     });
     expect(missing.status).toBe(404);
 
-    const restoredTarget = await provider.createRepository({
-      organizationId,
-      projectId,
-      defaultBranch: 'main',
-    });
     const expectedBranches = await inventory.expectedBranches(organizationId, projectId);
+    let failedTargetRef: string | undefined;
     await expect(
       restoreRepositoryBackup(
-        { store, git },
+        {
+          store,
+          git,
+          createTarget: async () => {
+            const created = await activeProvider.createRepository({
+              organizationId,
+              projectId,
+              defaultBranch: 'main',
+            });
+            failedTargetRef = created.internalRepoRef;
+            return {
+              cloneUrl: created.cloneUrl,
+              compensate: async () => {
+                await activeProvider.deleteRepository(created.internalRepoRef);
+              },
+            };
+          },
+        },
         {
           key: backedUp.key,
-          targetCloneUrl: restoredTarget.cloneUrl,
-          expectedBranches: [...expectedBranches],
+          expectedBranches: expectedBranches.map((branch) =>
+            branch.name === 'main' ? { ...branch, headCommitSha: 'f'.repeat(40) } : branch,
+          ),
         },
       ),
-    ).resolves.toEqual({ checkedBranches: 2 });
+    ).rejects.toThrow('Restored branch heads do not match the database');
+    const [failedOwner, failedName] = (failedTargetRef ?? '').split('/');
+    const compensatedTarget = await activeClient.send({
+      method: 'GET',
+      path: `/repos/${failedOwner ?? ''}/${failedName ?? ''}`,
+      allow: [404],
+    });
+    expect(compensatedTarget.status).toBe(404);
 
-    const after = refs(
-      await authenticatedGit(tmpdir(), token, ['ls-remote', restoredTarget.cloneUrl]),
+    let restoredCloneUrl: string | undefined;
+    const restoreResult = await restoreRepositoryBackup(
+      {
+        store,
+        git,
+        createTarget: async () => {
+          const created = await activeProvider.createRepository({
+            organizationId,
+            projectId,
+            defaultBranch: 'main',
+          });
+          restoredCloneUrl = created.cloneUrl;
+          return {
+            cloneUrl: created.cloneUrl,
+            compensate: async () => {
+              await activeProvider.deleteRepository(created.internalRepoRef);
+            },
+          };
+        },
+      },
+      { key: backedUp.key, expectedBranches: [...expectedBranches] },
     );
+    expect(restoreResult.checkedBranches).toBe(2);
+    expect(restoreResult.branches).toEqual(
+      expectedBranches
+        .filter(
+          (branch): branch is { readonly name: string; readonly headCommitSha: string } =>
+            branch.headCommitSha !== null,
+        )
+        .map((branch) => ({
+          name: branch.name,
+          expectedSha: branch.headCommitSha,
+          actualSha: branch.headCommitSha,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    );
+    if (restoredCloneUrl === undefined) {
+      throw new Error('live restore target was not created');
+    }
+
+    const after = refs(await authenticatedGit(tmpdir(), token, ['ls-remote', restoredCloneUrl]));
     expect(after).toEqual(before);
+    expect(new Map(restoreResult.refs.map((entry) => [entry.name, entry.sha]))).toEqual(
+      new Map([...before].filter(([name]) => name.startsWith('refs/'))),
+    );
     expect(after.get('refs/tags/restore-proof-v1')).toBe(before.get('refs/tags/restore-proof-v1'));
 
     const cloneRoot = await mkdtemp(join(tmpdir(), 'zapp-backup-live-clone-'));
     scratch.push(cloneRoot);
-    await authenticatedGit(cloneRoot, token, ['clone', restoredTarget.cloneUrl, 'repository']);
+    await authenticatedGit(cloneRoot, token, ['clone', restoredCloneUrl, 'repository']);
     const clone = join(cloneRoot, 'repository');
     expect((await authenticatedGit(clone, token, ['rev-parse', 'origin/main'])).trim()).toBe(
       before.get('refs/heads/main'),

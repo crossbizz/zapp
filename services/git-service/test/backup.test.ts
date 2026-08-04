@@ -106,6 +106,7 @@ class FakeGit implements BackupGit {
   readonly verified: string[] = [];
   readonly pushed: { bundlePath: string; targetCloneUrl: string }[] = [];
   readonly heads = new Map<string, string>();
+  readonly refs = new Map<string, string>();
   fail: 'create' | 'verify' | 'push' | undefined;
 
   async createBundle(cloneUrl: string, bundlePath: string): Promise<void> {
@@ -132,8 +133,13 @@ class FakeGit implements BackupGit {
     return Promise.resolve();
   }
 
-  remoteHeads(): Promise<ReadonlyMap<string, string>> {
-    return Promise.resolve(this.heads);
+  remoteRefs(): Promise<ReadonlyMap<string, string>> {
+    return Promise.resolve(
+      new Map([
+        ...[...this.heads].map(([name, sha]) => [`refs/heads/${name}`, sha] as const),
+        ...this.refs,
+      ]),
+    );
   }
 }
 
@@ -235,10 +241,10 @@ describe('runRepositoryBackup', () => {
 });
 
 describe('enforceBackupRetention', () => {
-  it('paginates one project prefix, removes objects older than 30 days, and preserves the newest', async () => {
+  it('paginates one project prefix and keeps exactly today through the prior 29 UTC dates', async () => {
     const store = new MemoryStore();
     store.pageSize = 2;
-    for (const date of ['2026-01-01', '2026-06-01', '2026-07-05', '2026-08-04']) {
+    for (const date of ['2026-01-01', '2026-06-01', '2026-07-05', '2026-07-06', '2026-08-04']) {
       store.values.set(keyFor(PROJECT_ID, date), {
         body: Buffer.from(date),
         lastModified: new Date(`${date}T00:00:00.000Z`),
@@ -263,12 +269,18 @@ describe('enforceBackupRetention', () => {
         prefix: `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/`,
         continuationToken: '2',
       },
+      {
+        prefix: `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/`,
+        continuationToken: '4',
+      },
     ]);
     expect(store.deletes).toEqual([
       keyFor(PROJECT_ID, '2026-01-01'),
       keyFor(PROJECT_ID, '2026-06-01'),
+      keyFor(PROJECT_ID, '2026-07-05'),
     ]);
-    expect(store.values.has(keyFor(PROJECT_ID, '2026-07-05'))).toBe(true);
+    expect(store.values.has(keyFor(PROJECT_ID, '2026-07-05'))).toBe(false);
+    expect(store.values.has(keyFor(PROJECT_ID, '2026-07-06'))).toBe(true);
     expect(store.values.has(keyFor(PROJECT_ID, '2026-08-04'))).toBe(true);
     expect(store.values.has(keyFor(SECOND_PROJECT_ID, '2025-01-01'))).toBe(true);
   });
@@ -375,17 +387,40 @@ describe('restoreRepositoryBackup', () => {
     store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
     git.heads.set('main', 'a'.repeat(40));
     git.heads.set('feature/x', 'b'.repeat(40));
+    git.refs.set('refs/heads/main', 'a'.repeat(40));
+    git.refs.set('refs/heads/feature/x', 'b'.repeat(40));
+    git.refs.set('refs/tags/restore-v1', 'c'.repeat(40));
+    const compensated: string[] = [];
 
     const result = await restoreRepositoryBackup(
-      { store, git },
       {
-        key,
-        targetCloneUrl: 'https://git.test/drill/repository.git',
-        expectedBranches: branches,
+        store,
+        git,
+        createTarget: () =>
+          Promise.resolve({
+            cloneUrl: 'https://git.test/drill/repository.git',
+            compensate: () => {
+              compensated.push('exact-created-target');
+              return Promise.resolve();
+            },
+          }),
       },
+      { key, expectedBranches: branches },
     );
 
-    expect(result).toEqual({ checkedBranches: 2 });
+    expect(result).toEqual({
+      checkedBranches: 2,
+      branches: [
+        { name: 'feature/x', expectedSha: 'b'.repeat(40), actualSha: 'b'.repeat(40) },
+        { name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) },
+      ],
+      refs: [
+        { name: 'refs/heads/feature/x', sha: 'b'.repeat(40) },
+        { name: 'refs/heads/main', sha: 'a'.repeat(40) },
+        { name: 'refs/tags/restore-v1', sha: 'c'.repeat(40) },
+      ],
+    });
+    expect(compensated).toEqual([]);
     expect(git.verified).toHaveLength(1);
     expect(git.pushed).toEqual([
       {
@@ -412,7 +447,10 @@ describe('restoreRepositoryBackup', () => {
         createTarget: () => {
           expect(git.verified).toHaveLength(1);
           creates += 1;
-          return Promise.resolve('https://git.test/drill/fresh.git');
+          return Promise.resolve({
+            cloneUrl: 'https://git.test/drill/fresh.git',
+            compensate: () => Promise.resolve(),
+          });
         },
       },
       { key, expectedBranches: branches },
@@ -429,6 +467,7 @@ describe('restoreRepositoryBackup', () => {
     store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
     git.fail = 'verify';
     let creates = 0;
+    let compensations = 0;
 
     await expect(
       restoreRepositoryBackup(
@@ -437,13 +476,20 @@ describe('restoreRepositoryBackup', () => {
           git,
           createTarget: () => {
             creates += 1;
-            return Promise.resolve('https://git.test/drill/fresh.git');
+            return Promise.resolve({
+              cloneUrl: 'https://git.test/drill/fresh.git',
+              compensate: () => {
+                compensations += 1;
+                return Promise.resolve();
+              },
+            });
           },
         },
         { key, expectedBranches: branches },
       ),
     ).rejects.toThrow('Git bundle verification failed');
     expect(creates).toBe(0);
+    expect(compensations).toBe(0);
   });
 
   it.each([
@@ -463,36 +509,54 @@ describe('restoreRepositoryBackup', () => {
     for (const [name, sha] of heads) {
       git.heads.set(name, sha);
     }
+    const compensated: string[] = [];
 
     await expect(
       restoreRepositoryBackup(
-        { store, git },
         {
-          key,
-          targetCloneUrl: 'https://git.test/drill/repository.git',
-          expectedBranches: branches,
+          store,
+          git,
+          createTarget: () =>
+            Promise.resolve({
+              cloneUrl: 'https://git.test/drill/repository.git',
+              compensate: () => {
+                compensated.push('exact-created-target');
+                return Promise.resolve();
+              },
+            }),
         },
+        { key, expectedBranches: branches },
       ),
     ).rejects.toThrow('Restored branch heads do not match the database');
+    expect(compensated).toEqual(['exact-created-target']);
   });
 
-  it('reports a failed mirror push as failure and removes the downloaded bundle', async () => {
+  it('reports a failed mirror push, compensates only its exact created target, and removes scratch', async () => {
     const store = new MemoryStore();
     const git = new FakeGit();
     const key = keyFor(PROJECT_ID, '2026-08-04');
     store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
     git.fail = 'push';
+    const compensated: string[] = [];
 
     await expect(
       restoreRepositoryBackup(
-        { store, git },
         {
-          key,
-          targetCloneUrl: 'https://git.test/drill/repository.git',
-          expectedBranches: branches,
+          store,
+          git,
+          createTarget: () =>
+            Promise.resolve({
+              cloneUrl: 'https://git.test/drill/repository.git',
+              compensate: () => {
+                compensated.push('exact-created-target');
+                return Promise.resolve();
+              },
+            }),
         },
+        { key, expectedBranches: branches },
       ),
     ).rejects.toThrow('Bundle mirror push failed');
+    expect(compensated).toEqual(['exact-created-target']);
     await expect(access(dirname(git.verified[0] ?? ''))).rejects.toThrow();
   });
 
@@ -501,17 +565,30 @@ describe('restoreRepositoryBackup', () => {
     const git = new FakeGit();
     const key = keyFor(PROJECT_ID, '2026-08-04');
     store.values.set(key, { body: Buffer.alloc(0), lastModified: NOW });
+    let creates = 0;
+    let compensations = 0;
 
     await expect(
       restoreRepositoryBackup(
-        { store, git },
         {
-          key,
-          targetCloneUrl: 'https://git.test/drill/repository.git',
-          expectedBranches: branches,
+          store,
+          git,
+          createTarget: () => {
+            creates += 1;
+            return Promise.resolve({
+              cloneUrl: 'https://git.test/drill/repository.git',
+              compensate: () => {
+                compensations += 1;
+                return Promise.resolve();
+              },
+            });
+          },
         },
+        { key, expectedBranches: branches },
       ),
     ).rejects.toThrow('Downloaded bundle is empty');
     expect(git.verified).toHaveLength(0);
+    expect(creates).toBe(0);
+    expect(compensations).toBe(0);
   });
 });
