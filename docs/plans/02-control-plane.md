@@ -98,9 +98,9 @@ Routes: `POST /v1/organizations`, `GET /v1/organizations`, `PATCH /v1/organizati
 **Interfaces produced:** `ctx.audit(action, target, metadata)`; idempotency: first POST with key stores response hash 24 h (Redis), replay returns stored response with `x-idempotent-replay: true`, mismatched body → 422 `idempotency_conflict`; rate limit: token bucket per org+route class (Redis), 429 with `retry-after`.
 **Effort:** M
 
-- [ ] **Step 1:** Failing tests for all three behaviors (audit row written in same tx — verify rollback removes it; replay; bucket exhaustion).
-- [ ] **Step 2:** Implement. Default limits config: `mutations: 60/min/org`, `reads: 600/min/org`, `auth: 10/min/ip` (config file, not code constants).
-- [ ] **Step 3:** Commit: `feat(control-api): audit emit, idempotency keys, org rate limits`
+- [x] **Step 1:** Failing tests for all three behaviors (audit row written in same tx — verify rollback removes it; replay; bucket exhaustion).
+- [x] **Step 2:** Implement. Default limits config: `mutations: 60/min/org`, `reads: 600/min/org`, `auth: 10/min/ip` (config file, not code constants).
+- [x] **Step 3:** Commit: `feat(control-api): audit emit, idempotency keys, org rate limits`
 
 ### Task CP-6: Projects, repositories, branches, environments CRUD
 
@@ -253,3 +253,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
   2. **Important** — the record-only repositories row is indistinguishable in DATA from a GIT-2-provisioned one (comments aren't queryable). Add a nullable `provisioned_at` (or provider `internal_pending`) so plan 06 can find exactly the rows it must retrofit. Needs a small additive packages/db migration.
   3. **Important (contract, before GIT-2 implements it)** — `GitServicePort.createRepository` is awaited inside an open Postgres transaction; instantaneous for the record-only impl, but under Forgejo HTTP a hung provider pins a connection and an open transaction for the duration. Keep the placement (atomicity is right); ADD a bounded deadline to the port's contract + document pool implications.
   4. Minors: scan response `status: 'queued'` → `'accepted'` (nothing is enqueued; a client polling on `queued` waits forever); add index (organization_id, id DESC) for the keyset order; make CreateProjectBody `.strict()` so a stale `supportLevel` 400s like a stale `sourceType` does; log the git failure cause server-side behind redaction; narrow `isUniqueViolation` to the slug constraint; move `drizzle-orm` from devDependencies to dependencies (imported at runtime — a --prod install fails at boot).
+- 2026-08-04: CP-5 fully done (8f11304 + fix 715b4f1, review Approved). Rate-limit proxy trust cannot return `true` by construction (config → false|number|string[]); device-poll budget test derives from the constants so the files cannot drift; idempotency degrades to at-least-once after commit. Residual: ~5 concurrent device logins behind ONE address still share the 60/min ip bucket — inherent to an ip-scoped class, trustedProxies is the lever.
