@@ -158,7 +158,7 @@ it("event type list matches PRD count", () => {
 - `ResourceProfileSchema`: small | standard | large with the PRD §18.10 cpu/mem table as `RESOURCE_PROFILES` const
 - `ProjectAdapter` — exactly PRD §17.3
 - `DeploymentProvider` — exactly PRD §27.1
-- `ExecutionContractSchema` — PRD §17.2 YAML shape (version, package_manager, workspace_root, install/develop/build/typecheck/lint/test/health blocks with commands, timeouts, port), **strict at every level** (stored versioned document — unknown/misspelled keys must reject loudly, never drop silently), plus optional `start { command, timeout_seconds? }` block for the PRD §17.1 production start command *(both amendments 2026-08-03, FND-4 review)*
+- `ExecutionContractSchema` — PRD §17.2 YAML shape (version, package_manager, workspace_root, install/develop/build/typecheck/lint/test/health blocks with commands, timeouts, port), **strict at every level** (stored versioned document — unknown/misspelled keys must reject loudly, never drop silently), plus optional `start { command }` block (strict, no timeout — long-lived process like `develop`) for the PRD §17.1 production start command *(amendments 2026-08-03, FND-4 review; start timeout removed in FND-10 fold per FND-4 re-review)*
 - `ToolDefinition<I, O>`: `{ name, description, inputSchema, outputSchema, classification: "read_only"|"mutating", riskLevel: "low"|"medium"|"high", approvalPolicy: "auto"|"policy"|"human", idempotent: boolean, timeoutMs, retryPolicy: {maxAttempts, backoffMs}, redactOutput: boolean, userSummary(input, output): string, auditPayload(input, output): Record<string, string|number|boolean> }` (PRD §16.2 — *auditPayload added 2026-08-03: original list lossily omitted the PRD-mandated audit payload; scalar-valued so audit rows never carry raw output*)
 - `TOOL_NAMES` — exactly the PRD §16.1 list (read/mutation/execution/git/release groups)
 **Effort:** M
@@ -242,9 +242,9 @@ export const memberships = pgTable("memberships", {
 **Files:** Create: `.github/workflows/ci.yml`, `.github/workflows/security.yml`
 **Effort:** M
 
-- [ ] **Step 1:** `ci.yml`: on PR + main push → pnpm install (cache), `turbo run lint typecheck build test` (turbo remote cache via GitHub artifacts or Vercel cache), then `test:integration` job with service containers (postgres, redis) running FND-5/6 integration suites. Matrix not needed (single Node 22).
-- [ ] **Step 2:** `security.yml`: gitleaks action (secret scan, fails on findings), `osv-scanner` on lockfile (advisory in M0: `continue-on-error: true` with report, flips to blocking in M5/OPS-13).
-- [ ] **Step 3:** Verify: push branch, both workflows green. Commit: `ci: lint/typecheck/test/integration + secret/dependency scanning`
+- [x] **Step 1:** `ci.yml`: on PR + main push → pnpm install (cache), `turbo run lint typecheck build test` (turbo remote cache via GitHub artifacts or Vercel cache), then `test:integration` job with service containers (postgres, redis) running FND-5/6 integration suites. Matrix not needed (single Node 22).
+- [x] **Step 2:** `security.yml`: gitleaks action (secret scan, fails on findings), `osv-scanner` on lockfile (advisory in M0: `continue-on-error: true` with report, flips to blocking in M5/OPS-13).
+- [x] **Step 3:** Verify: push branch, both workflows green. Commit: `ci: lint/typecheck/test/integration + secret/dependency scanning`
 
 ### Task FND-9: License boundary & ADR scaffold
 
@@ -264,9 +264,9 @@ export const memberships = pgTable("memberships", {
 ```ts
 export const ApiErrorSchema = z.object({
   error: z.object({
-    code: z.string(),            // machine code: "project_not_found", "budget_exceeded", ...
-    message: z.string(),         // human, tenant-safe, no secrets/internals
-    requestId: z.string(),
+    code: z.string().min(1),     // machine code: "project_not_found", "budget_exceeded", ...
+    message: z.string().min(1),  // human, tenant-safe, no secrets/internals
+    requestId: z.string().min(1),
     details: z.record(z.unknown()).optional(),
   }),
 });
@@ -277,7 +277,7 @@ export const IdempotencyHeader = "idempotency-key";
 
 **Effort:** S
 
-- [ ] **Step 1:** Failing test: error schema round-trips; page schema generic works. **Step 2:** implement. **Step 3:** Commit: `feat(contracts): API error envelope + keyset pagination conventions`
+- [x] **Step 1:** Failing test: error schema round-trips; page schema generic works. **Step 2:** implement. **Step 3:** Commit: `feat(contracts): API error envelope + keyset pagination conventions`
 
 ---
 
@@ -304,3 +304,5 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-4 done (f38e808 + fix cc08adf, review clean; 86 tests). ADR-0003 filed (workspace-binding + preview revocation for plan 03). Deferred to FND-10: hoist httpsUrlSchema+shared primitives to src/primitives.ts; start block loses timeout_seconds.
 - 2026-08-03: FND-7 done pending amendment round (5e5fe17, Approved; Important: preserve admin password on re-mint).
 - 2026-08-03: FND-7 done (5e5fe17 + fix 0a5eb86, review clean; 7 services, LocalStack queues+DLQs, password-preserving re-mint). LocalStack host port 4566 default; this machine tested on 4567 (unrelated squatter).
+- 2026-08-03: FND-8 done (fa910aa + 0e648a2 + 3d535b2; CI+Security live-green runs 2-4, v5 pins, dependabot, turbo cache job-scoped). Desktop-present guard branch proven on run 3.
+- 2026-08-03: FND-10 done (b20372e + close-out d980cf1, 106 tests; primitives module, min(1)+trim envelope).
