@@ -211,3 +211,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 ## Execution log
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
+- 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
