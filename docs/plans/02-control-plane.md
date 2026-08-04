@@ -48,9 +48,9 @@ packages/api-client/        # generated SDK (CP-16)
 **Interfaces produced:** `buildApp(deps: { db, redis, auth: AuthPort }): FastifyInstance`; `RequestContext` type.
 **Effort:** M
 
-- [ ] **Step 1:** Failing test: `GET /healthz` → `{ status: "ok" }`; every response carries `x-request-id`; unknown route → 404 with FND-10 error envelope (`code: "route_not_found"`).
-- [ ] **Step 2:** Implement `buildApp` with zod type provider, global error handler mapping thrown `ApiError(code, status, message)` to the envelope (unexpected errors → 500 `internal_error`, message redacted, stack to logs only), request-id plugin, pino logger with tenant-safe serializers (never log headers.authorization, request bodies on secret routes).
-- [ ] **Step 3:** Tests pass. Also add migration revoking UPDATE/DELETE on `usage_ledger`, `audit_events` from the app role (FND note). Commit: `feat(control-api): fastify skeleton, error envelope, request context`
+- [x] **Step 1:** Failing test: `GET /healthz` → `{ status: "ok" }`; every response carries `x-request-id`; unknown route → 404 with FND-10 error envelope (`code: "route_not_found"`).
+- [x] **Step 2:** Implement `buildApp` with zod type provider, global error handler mapping thrown `ApiError(code, status, message)` to the envelope (unexpected errors → 500 `internal_error`, message redacted, stack to logs only), request-id plugin, pino logger with tenant-safe serializers (never log headers.authorization, request bodies on secret routes).
+- [x] **Step 3:** Tests pass. Also add migration revoking UPDATE/DELETE on `usage_ledger`, `audit_events` from the app role (FND note). Commit: `feat(control-api): fastify skeleton, error envelope, request context`
 
 ### Task CP-2: AuthPort + Stytch B2B integration
 
@@ -228,3 +228,7 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 ## Execution log
 
 - (empty)
+
+## Execution log
+- 2026-08-04: CP-1 done pending review (9bc70a8). DEFERRED INTO CP-2 SCOPE: migration revoking UPDATE/DELETE on usage_ledger + audit_events from the app role (was CP-1 note; FND-6 was mid-flight). Forward flags: fastify-type-provider-zod pinned ^4 (Zod-3 API — revisit at Zod 4 migration); no direct pino dep (fastify bundles it).
+- 2026-08-04: CP-1 done (9bc70a8, review Approved; 12 tests + 20 reviewer edge-probes clean). buildApp deps narrowed to growing AppDeps (sanctioned). Folded into CP-2: branch-4 + hook-throw tests, errorHandler serializer bypass (template hardening), dev script (tsx watch convention), @zapp/db first import, grants migration.
