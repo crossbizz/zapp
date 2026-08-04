@@ -22,6 +22,7 @@ class RecordingIntegrationPort implements IntegrationPort {
   readonly auditMetadata: Array<Record<string, unknown>> = [];
   fail = false;
   resultOverride: Partial<IntegrationConnectionView> | undefined;
+  skipAudit = false;
 
   async connect(input: IntegrationMutationInput): Promise<IntegrationConnectionView> {
     const configuration = input.configuration;
@@ -36,6 +37,7 @@ class RecordingIntegrationPort implements IntegrationPort {
       configuration,
       ...this.resultOverride,
     };
+    if (this.skipAudit) return result;
     await input.audit(NO_TRANSACTION, result);
     this.calls.push(input);
     this.auditMetadata.push({ provider: input.provider, projectId: input.projectId ?? null, configuration });
@@ -162,6 +164,23 @@ describe('integration route shells', () => {
     wired.integrations.resultOverride = wrong;
     const request = requestFor('stripe', wired.projectId);
     const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, 'integration-wrong-result-01'), payload: request.body });
+    expect(response.statusCode).toBe(502);
+    for (const value of Object.values(wrong)) expect(response.body).not.toContain(value);
+    expect(wired.integrations.calls).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'integration.connected')).toEqual([]);
+  });
+
+  it('rejects an unaudited wrong-identity integration result at the final-result guard', async () => {
+    const wired = await wire();
+    const wrong = {
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      provider: 'neon' as const,
+    };
+    wired.integrations.resultOverride = wrong;
+    wired.integrations.skipAudit = true;
+    const request = requestFor('stripe', wired.projectId);
+    const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, 'integration-unaudited-result-01'), payload: request.body });
     expect(response.statusCode).toBe(502);
     for (const value of Object.values(wrong)) expect(response.body).not.toContain(value);
     expect(wired.integrations.calls).toEqual([]);

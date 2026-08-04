@@ -50,6 +50,8 @@ class RecordingReleasePort implements ReleasePort {
   invalid = false;
   createResultOverride: Partial<ReleaseRow> | undefined;
   approveResultOverride: Partial<ReleaseRow> | undefined;
+  skipCreateAudit = false;
+  skipApproveAudit = false;
   readonly releaseId = newId('rel');
   readonly releases = new Map<string, ReleaseRow>();
 
@@ -84,6 +86,7 @@ class RecordingReleasePort implements ReleasePort {
       createdBy: input.actorId,
       ...this.createResultOverride,
     };
+    if (this.skipCreateAudit) return row;
     await this.record(input, row);
     this.creates.push(input);
     this.releases.set(row.id, row);
@@ -111,6 +114,7 @@ class RecordingReleasePort implements ReleasePort {
     const release = this.releases.get(input.releaseId);
     const row = release === undefined ? undefined : { ...release, ...this.approveResultOverride };
     if (row === undefined) throw new Error('release missing');
+    if (this.skipApproveAudit) return row;
     await this.record(input, row);
     this.approvals.push(input);
     return row;
@@ -380,6 +384,43 @@ describe('release route shells', () => {
     wired.releases.approveResultOverride = wrong;
     const response = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${selectedReleaseId}/approve`, headers: mutationHeaders(wired, wired.owner, 'release-wrong-approve-01') });
     expect(response.statusCode, response.body).toBe(502);
+    for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
+    expect(wired.releases.approvals).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'release.approved')).toEqual([]);
+  });
+
+  it('rejects an unaudited wrong-identity release create result at the final-result guard', async () => {
+    const wired = await wire();
+    const wrong = {
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      environmentId: newId('env'),
+      specificationId: newId('spec'),
+    };
+    wired.releases.createResultOverride = wrong;
+    wired.releases.skipCreateAudit = true;
+    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-create-01'), payload: candidateBody(wired) });
+    expect(response.statusCode).toBe(502);
+    for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
+    expect(wired.releases.creates).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
+  });
+
+  it('rejects an unaudited wrong-identity release approval result at the final-result guard', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-approval-source-01'), payload: candidateBody(wired) });
+    expect(created.statusCode, created.body).toBe(201);
+    const wrong = {
+      id: newId('rel'),
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      environmentId: newId('env'),
+      specificationId: newId('spec'),
+    };
+    wired.releases.approveResultOverride = wrong;
+    wired.releases.skipApproveAudit = true;
+    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${created.json<{ release: { id: string } }>().release.id}/approve`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-approve-01') });
+    expect(response.statusCode).toBe(502);
     for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
     expect(wired.releases.approvals).toEqual([]);
     expect(wired.built.audit.events.filter((event) => event.action === 'release.approved')).toEqual([]);
