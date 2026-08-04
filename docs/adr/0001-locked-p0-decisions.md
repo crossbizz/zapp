@@ -1,6 +1,11 @@
 # 0001 — Locked P0 product and stack decisions
 
-Status: accepted (product owner, 2026-08-03)
+Status: accepted, 2026-08-03 — mixed authority, see below
+Authority: the additional-stack table and the identity choice (row 3) are **product-owner
+directives**. The thirteen PRD §43 rows are **controller-locked planning decisions**:
+binding on execution, but engineering judgement rather than owner mandate, and each
+carries its own gate at which it is confirmed or superseded. Per-row attributions in the
+tables are authoritative where they differ from this line.
 Affects: every plan in `docs/plans/`; `packages/config` (model and pricing defaults); all
 service and adapter boundaries
 References: PRD §35, §38.1, §43; master plan §2 (`docs/plans/00-master-plan.md`);
@@ -93,7 +98,14 @@ internal Git (lost to Forgejo on licence and operational weight).
   At the gate, the owner either confirms the row or supersedes it.
 - Row 13 is enforced mechanically, not by review: the `zapp/no-dyad-pro-imports` ESLint
   rule (`packages/eslint-rules`) plus the `license-boundary` job in
-  `.github/workflows/security.yml`. See ADR-0002 and the root `NOTICE`.
+  `.github/workflows/security.yml`, which also asserts that the root `NOTICE` exists and
+  still attributes `apps/desktop`. See ADR-0002 and the root `NOTICE`.
+- **What that enforcement does not prove.** Both gates reason about *import specifiers*,
+  and the CI grep filters comment lines because a comment cannot import anything. A
+  pasted, commented-out block of Pro source would therefore pass mechanically. The
+  stronger claim the `NOTICE` makes — that no Pro code or derived logic exists here at
+  all — is a human obligation carried on the quarterly upstream-merge checklist (row 13),
+  not something grep establishes. Treat a green `license-boundary` job as a floor.
 - Single-vendor concentration is accepted twice over (Grafana Cloud for all telemetry,
   AWS for all queues and email). Both sit behind adapters, but neither has a tested
   second implementation in P0; a migration would be real work.

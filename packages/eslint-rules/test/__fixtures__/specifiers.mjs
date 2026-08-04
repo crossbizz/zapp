@@ -36,6 +36,7 @@ export const banned = [
   ['star re-export', 'export * from "src/pro/shared/y";'],
   ['type-only import', 'import type { T } from "src/pro/types";'],
   ['inline import type', 'type T = import("src/pro/types").T;'],
+  ['import-equals', 'import pro = require("src/pro/main/foo");'],
   ['directory import', 'import x from "@/pro";'],
 ];
 
@@ -50,6 +51,7 @@ export const allowed = [
   ['a package whose name starts with pro', 'import x from "@dyad-sh/desktop/promises";'],
   ['a src/production directory', 'import x from "src/production/config";'],
   ['a pro-prefixed filename', 'import x from "./providers/pro-tier";'],
+  ['an import-equals onto a sibling pro module', 'import pro = require("./main/pro");'],
   ['a marketing URL in a string', 'const url = "https://dyad.sh/pro";'],
   ['a call that is not require', 'const x = load("src/pro/main/foo");'],
   ['a non-literal require', 'const x = require(somePath);'],

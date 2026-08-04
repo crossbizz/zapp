@@ -60,14 +60,22 @@ jobs:
       # `zapp/no-dyad-pro-imports` ESLint rule (packages/eslint-rules), which is precise
       # but only sees what the root ESLint config lints -- and the vendored tree is not
       # in the root lint graph. Neither half is redundant.
+      #
+      # Scope caveat: this gate proves no *import* of Pro code survives. It filters
+      # comment lines (a comment cannot import anything), so a commented-out block of
+      # pasted Pro source would pass it. The stronger "no derived Pro code at all" claim
+      # is a human obligation on the quarterly upstream-merge checklist, not something
+      # grep establishes. See docs/adr/0001-locked-p0-decisions.md.
       - name: No imports of Dyad `src/pro`
         run: |
           set -euo pipefail
 
-          # Four specifier shapes, all segment-anchored so that legitimate neighbours
-          # stay quiet: `./main/pro` (src/main/pro.ts), `src/production/`, `pro_stubs/`,
+          # Four specifier shapes. Each ends `pro(/|["'])` so a directory import
+          # (`from "@/pro"`, `"src/pro"`, `"./pro"`) is caught as well as a subpath, and
+          # each is segment-anchored so legitimate neighbours stay quiet: `./main/pro`
+          # (src/main/pro.ts), `src/production/`, `src/prompts/`, `pro_stubs/`,
           # `@dyad-sh/desktop/promises` and the https://dyad.sh/pro marketing URL.
-          pattern="(^|[^A-Za-z0-9_.-])src/pro/|[\"'](\.\.?/)+pro/|[\"']@/pro/|@dyad[^\"']*/pro/"
+          pattern="(^|[^A-Za-z0-9_.-])src/pro(/|[\"'])|[\"'](\.\.?/)+pro(/|[\"'])|[\"']@/pro(/|[\"'])|@dyad[^\"']*/pro(/|[\"'])"
 
           # Self-test the pattern before trusting a clean result: a typo that matches
           # nothing would otherwise pass this job silently, forever.
@@ -77,11 +85,20 @@ jobs:
             'import { x } from "./pro/main/foo";'
             'import { x } from "@/pro/shared/foo";'
             'const x = require("@dyad-sh/desktop/pro/main/foo");'
+            'import "src/pro/main/register";'
+            'export { y } from "@/pro/shared/y";'
+            "import x = require('src/pro/y');"
+            'import x from "@/pro";'
+            'import x from "src/pro";'
+            'import x from "./pro";'
+            'import x from "../pro";'
+            'const x = require("@dyad-sh/desktop/pro");'
           )
           must_not_match=(
             'import { handleDyadProReturn } from "./main/pro";'
             'import { x } from "@/zapp/pro_stubs/shared";'
             'import { x } from "src/production/config";'
+            'import { x } from "src/prompts/guides/foo";'
             'import { x } from "@dyad-sh/desktop/promises";'
             'ipc.system.openExternalUrl("https://dyad.sh/pro");'
           )
@@ -99,10 +116,14 @@ jobs:
           done
           echo "pattern self-test: $(( ${#must_match[@]} + ${#must_not_match[@]} )) cases OK"
 
-          # Presence-guarded: services/ and sandbox/ do not exist yet, and `grep` on a
-          # missing directory is an error, not an empty result.
+          # Whole top-level trees, not hand-picked subdirectories: `apps` covers the
+          # vendored app's e2e-tests, testing, scripts, tools, its own packages/ (incl.
+          # the vendored @dyad-sh ones) and its root-level *.ts configs, and picks up
+          # future apps/* automatically. Presence-guarded because services/ and sandbox/
+          # do not exist yet, and `grep` on a missing directory is an error rather than
+          # an empty result.
           roots=()
-          for dir in apps/desktop/src apps/desktop/shared packages services sandbox; do
+          for dir in apps packages services sandbox; do
             if [ -d "$dir" ]; then roots+=("$dir"); fi
           done
           # An empty root list means the layout moved and this gate went blind, which
@@ -117,17 +138,20 @@ jobs:
           #  - `//`, `*`, `/*`, `{/*` line prefixes: a comment cannot import anything,
           #    and the vendored tree documents each removed Pro module in a comment.
           #  - `zapp: pro-removed`: the marker MAC-1 leaves at every stubbed call site.
-          #  - `__fixtures__`: the ESLint rule's own test fixture is a real banned
-          #    import on purpose (packages/eslint-rules/test/__fixtures__).
+          #  - the ESLint rule's own fixtures, which are real banned imports on purpose.
+          #    Anchored to the exact directory: an unanchored `__fixtures__` would also
+          #    drop real source whose trailing comment happens to say "__fixtures__".
+          # -I skips binary files: `apps` contains assets, and "Binary file X matches"
+          # is not an actionable offender line.
           matches=$(
-            grep -rnE \
+            grep -rnEI \
               --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=out \
               --exclude-dir=.turbo --exclude-dir=coverage --exclude-dir=.next \
               --exclude='*.md' \
               "$pattern" "${roots[@]}" \
               | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(//|\*|/\*|\{/\*)' \
               | grep -v 'zapp: pro-removed' \
-              | grep -v '__fixtures__' \
+              | grep -v '^packages/eslint-rules/test/__fixtures__/' \
               || true
           )
 

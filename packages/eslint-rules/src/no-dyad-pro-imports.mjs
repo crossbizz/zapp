@@ -108,6 +108,15 @@ const rule = {
         if (arg && arg.type === 'Literal') check(arg, arg.value);
       },
 
+      // `import x = require('...')` -- TypeScript's own import-equals form, which is
+      // neither an ImportDeclaration nor a CallExpression.
+      TSImportEqualsDeclaration(node) {
+        const ref = node.moduleReference;
+        if (ref.type === 'TSExternalModuleReference' && ref.expression.type === 'Literal') {
+          check(ref.expression, ref.expression.value);
+        }
+      },
+
       // `type T = import('...').T` -- a type-only reference is still a reference to the
       // Pro source. typescript-eslint renamed this property `argument` -> `source` and
       // has both wrapped and unwrapped it in a TSLiteralType across major versions, so
