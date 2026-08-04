@@ -7,61 +7,16 @@ import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
+import {
+  SpecificationContentSchema,
+  SpecificationResponseSchema,
+  toSpecification,
+} from '../tenant/view.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') });
 const SpecificationParams = ProjectParams.extend({
   version: z.coerce.number().int().positive(),
 });
-
-const TextSchema = z.string().trim().min(1).max(20_000);
-const TextListSchema = z.array(TextSchema).min(1).max(200);
-const AcceptanceCriterionSchema = z
-  .object({
-    id: z.string().regex(/^AC-[1-9][0-9]*$/, 'Acceptance criterion ids must be AC-n.'),
-    text: TextSchema,
-    priority: z.enum(['critical', 'high', 'medium', 'low']),
-    criticalFlow: z.boolean(),
-  })
-  .strict();
-
-/**
- * Temporary CP-10 boundary schema for PRD §12.2. AR-16 owns the shared
- * SpecificationSchema; until it lands this local schema is intentionally
- * concrete and strict, rather than allowing JSON through the public API.
- */
-const SpecificationContentSchema = z
-  .object({
-    problem: TextSchema,
-    targetUsers: TextListSchema,
-    goals: TextListSchema,
-    nonGoals: TextListSchema,
-    journeys: TextListSchema,
-    pagesRoutes: TextListSchema,
-    rolesPermissions: TextListSchema,
-    dataModel: TextListSchema,
-    integrations: TextListSchema,
-    functionalRequirements: TextListSchema,
-    nonfunctionalRequirements: TextListSchema,
-    acceptanceCriteria: z.array(AcceptanceCriterionSchema).min(1).max(200),
-    assumptions: TextListSchema,
-    risks: TextListSchema,
-    definitionOfDone: TextListSchema,
-  })
-  .strict();
-
-const SpecificationSchema = z.object({
-  id: z.string(),
-  organizationId: z.string(),
-  projectId: z.string(),
-  version: z.number().int().positive(),
-  status: z.enum(['draft', 'approved']),
-  content: SpecificationContentSchema,
-  createdBy: z.string(),
-  approvedBy: z.string().nullable(),
-  approvedAt: z.string().datetime().nullable(),
-});
-
-const SpecificationResponseSchema = z.object({ specification: SpecificationSchema });
 
 export interface SpecificationRoutesDeps {
   readonly now: () => Date;
@@ -136,16 +91,18 @@ export function registerSpecificationRoutes(app: AppInstance, deps: Specificatio
       const existing = await ctx.db.specifications.getByProjectVersion(project.id, request.params.version);
       if (existing === undefined) throw specificationNotFound();
       authorize(ctx, 'edit_code');
+      const operationKey = operationOf(request);
       const updated = await ctx.db.specifications.update({
         projectId: project.id,
         version: existing.version,
         content: request.body,
+        operationKey,
         audit: async (tx, row) => {
           await request.audit(tx, {
             organizationId: ctx.organizationId,
             action: 'specification.updated',
             target: { type: 'specification', id: row.id },
-            metadata: { projectId: row.projectId, version: row.version },
+            metadata: { projectId: row.projectId, version: row.version, operationKey },
           });
         },
       });
@@ -168,17 +125,19 @@ export function registerSpecificationRoutes(app: AppInstance, deps: Specificatio
       const existing = await ctx.db.specifications.getByProjectVersion(project.id, request.params.version);
       if (existing === undefined) throw specificationNotFound();
       authorize(ctx, 'edit_code');
+      const operationKey = operationOf(request);
       const approved = await ctx.db.specifications.approve({
         projectId: project.id,
         version: existing.version,
         approvedBy: actorOf(request),
         approvedAt: deps.now(),
+        operationKey,
         audit: async (tx, row) => {
           await request.audit(tx, {
             organizationId: ctx.organizationId,
             action: 'specification.approved',
             target: { type: 'specification', id: row.id },
-            metadata: { projectId: row.projectId, version: row.version },
+            metadata: { projectId: row.projectId, version: row.version, operationKey },
           });
         },
       });
@@ -213,30 +172,6 @@ function stableSpecificationId(operation: string): string {
     if (output.length === 26) break;
   }
   return `spec_${output}`;
-}
-
-function toSpecification(row: {
-  id: string;
-  organizationId: string;
-  projectId: string;
-  version: number;
-  status: string;
-  contentJson: unknown;
-  createdBy: string;
-  approvedBy: string | null;
-  approvedAt: Date | null;
-}): z.infer<typeof SpecificationSchema> {
-  return SpecificationSchema.parse({
-    id: row.id,
-    organizationId: row.organizationId,
-    projectId: row.projectId,
-    version: row.version,
-    status: row.status,
-    content: row.contentJson,
-    createdBy: row.createdBy,
-    approvedBy: row.approvedBy,
-    approvedAt: row.approvedAt?.toISOString() ?? null,
-  });
 }
 
 function projectNotFound(): ApiError {

@@ -220,6 +220,7 @@ export interface UpdateSpecificationInput {
   readonly projectId: string;
   readonly version: number;
   readonly content: unknown;
+  readonly operationKey: string;
   readonly audit: AuditHook<Specification>;
 }
 
@@ -228,6 +229,7 @@ export interface ApproveSpecificationInput {
   readonly version: number;
   readonly approvedBy: string;
   readonly approvedAt: Date;
+  readonly operationKey: string;
   readonly audit: AuditHook<Specification>;
 }
 
@@ -353,6 +355,12 @@ function durableOperation(metadata: unknown): DurableOperation | undefined {
     return undefined;
   }
   return { key: value['operationKey'], state: value['operationState'], metadata };
+}
+
+function specificationOperationKey(metadata: unknown): string | undefined {
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const key = (metadata as Record<string, unknown>)['operationKey'];
+  return typeof key === 'string' ? key : undefined;
 }
 
 /**
@@ -765,6 +773,13 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               )
               .returning();
             if (locked === undefined) return undefined;
+            const [latestAudit] = await tx
+              .select({ metadata: auditEvents.metadataJson })
+              .from(auditEvents)
+              .where(scoped(auditEvents.organizationId, eq(auditEvents.targetId, locked.id)))
+              .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+              .limit(1);
+            if (specificationOperationKey(latestAudit?.metadata) === input.operationKey) return locked;
             if (locked.status !== 'draft') return 'immutable';
             const [updated] = await tx
               .update(specifications)

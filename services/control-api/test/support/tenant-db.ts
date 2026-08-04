@@ -75,6 +75,7 @@ export class InMemoryTenantData {
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
   yieldSpecificationCreates = false;
   readonly specificationLocks = new Map<string, Promise<void>>();
+  readonly specificationOperations = new Map<string, string>();
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
   readonly workspaces: Workspace[] = [];
@@ -313,30 +314,37 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         });
       },
       async update(input: UpdateSpecificationInput) {
-        const existing = mine(orgId, data.specifications).find(
-          (row) => row.projectId === input.projectId && row.version === input.version,
-        );
-        if (existing === undefined) return undefined;
-        if (existing.status !== 'draft') return 'immutable' as const;
-        const updated: Specification = { ...existing, contentJson: input.content };
-        await input.audit(NO_TRANSACTION, updated);
-        data.specifications.splice(data.specifications.indexOf(existing), 1, updated);
-        return updated;
+        return await withSpecificationLock(data, `${orgId}:${input.projectId}:${String(input.version)}`, async () => {
+          const existing = mine(orgId, data.specifications).find(
+            (row) => row.projectId === input.projectId && row.version === input.version,
+          );
+          if (existing === undefined) return undefined;
+          const operationId = `${orgId}:${input.projectId}:${String(input.version)}`;
+          if (data.specificationOperations.get(operationId) === input.operationKey) return existing;
+          if (existing.status !== 'draft') return 'immutable' as const;
+          const updated: Specification = { ...existing, contentJson: input.content };
+          await input.audit(NO_TRANSACTION, updated);
+          data.specifications.splice(data.specifications.indexOf(existing), 1, updated);
+          data.specificationOperations.set(operationId, input.operationKey);
+          return updated;
+        });
       },
       async approve(input: ApproveSpecificationInput): Promise<Specification | undefined> {
-        const existing = mine(orgId, data.specifications).find(
-          (row) => row.projectId === input.projectId && row.version === input.version,
-        );
-        if (existing === undefined || existing.status === 'approved') return existing;
-        const approved: Specification = {
-          ...existing,
-          status: 'approved',
-          approvedBy: input.approvedBy,
-          approvedAt: input.approvedAt,
-        };
-        await input.audit(NO_TRANSACTION, approved);
-        data.specifications.splice(data.specifications.indexOf(existing), 1, approved);
-        return approved;
+        return await withSpecificationLock(data, `${orgId}:${input.projectId}:${String(input.version)}`, async () => {
+          const existing = mine(orgId, data.specifications).find(
+            (row) => row.projectId === input.projectId && row.version === input.version,
+          );
+          if (existing === undefined || existing.status === 'approved') return existing;
+          const approved: Specification = {
+            ...existing,
+            status: 'approved',
+            approvedBy: input.approvedBy,
+            approvedAt: input.approvedAt,
+          };
+          await input.audit(NO_TRANSACTION, approved);
+          data.specifications.splice(data.specifications.indexOf(existing), 1, approved);
+          return approved;
+        });
       },
     },
 

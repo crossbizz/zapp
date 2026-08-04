@@ -14,6 +14,7 @@ import type {
   ProjectContract,
   Repository,
   SecretMetadata,
+  Specification,
   Workspace,
 } from '@zapp/db';
 import { z } from 'zod';
@@ -104,6 +105,58 @@ export const ProjectContractSchema = z.object({
   contract: z.unknown(),
   createdAt: z.string().datetime(),
 });
+
+/**
+ * Temporary CP-10 local schema for PRD §12.2. AR-16 owns the shared schema;
+ * this remains strict until that replacement is available.
+ */
+const SpecificationTextSchema = z.string().trim().min(1).max(20_000);
+const SpecificationTextListSchema = z.array(SpecificationTextSchema).min(1).max(200);
+const AcceptanceCriterionSchema = z
+  .object({
+    id: z.string().regex(/^AC-[1-9][0-9]*$/, 'Acceptance criterion ids must be AC-n.'),
+    text: SpecificationTextSchema,
+    priority: z.enum(['critical', 'high', 'medium', 'low']),
+    criticalFlow: z.boolean(),
+  })
+  .strict();
+
+export const SpecificationContentSchema = z
+  .object({
+    problem: SpecificationTextSchema,
+    targetUsers: SpecificationTextListSchema,
+    goals: SpecificationTextListSchema,
+    nonGoals: SpecificationTextListSchema,
+    journeys: SpecificationTextListSchema,
+    pagesRoutes: SpecificationTextListSchema,
+    rolesPermissions: SpecificationTextListSchema,
+    dataModel: SpecificationTextListSchema,
+    integrations: SpecificationTextListSchema,
+    functionalRequirements: SpecificationTextListSchema,
+    nonfunctionalRequirements: SpecificationTextListSchema,
+    acceptanceCriteria: z.array(AcceptanceCriterionSchema).min(1).max(200),
+    assumptions: SpecificationTextListSchema,
+    risks: SpecificationTextListSchema,
+    definitionOfDone: SpecificationTextListSchema,
+  })
+  .strict();
+
+export const SpecificationSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  version: z.number().int().positive(),
+  status: z.enum(['draft', 'approved']),
+  content: SpecificationContentSchema,
+  createdBy: z.string(),
+  approvedBy: z.string().nullable(),
+  approvedAt: z.string().datetime().nullable(),
+});
+
+export const SpecificationResponseSchema = z.object({ specification: SpecificationSchema });
+export type SpecificationContent = z.infer<typeof SpecificationContentSchema>;
+export type SpecificationView = z.infer<typeof SpecificationSchema>;
+export type SpecificationResponse = z.infer<typeof SpecificationResponseSchema>;
 
 /**
  * A secret, as every API response is allowed to describe one: its name, its
@@ -245,6 +298,20 @@ export function toProjectContract(
     contract: contract.contractJson,
     createdAt: contract.createdAt.toISOString(),
   };
+}
+
+export function toSpecification(specification: Specification): SpecificationView {
+  return SpecificationSchema.parse({
+    id: specification.id,
+    organizationId: specification.organizationId,
+    projectId: specification.projectId,
+    version: specification.version,
+    status: specification.status,
+    content: specification.contentJson,
+    createdBy: specification.createdBy,
+    approvedBy: specification.approvedBy,
+    approvedAt: specification.approvedAt?.toISOString() ?? null,
+  });
 }
 
 export function toSecretMetadata(secret: SecretMetadata): z.infer<typeof SecretMetadataSchema> {

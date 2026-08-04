@@ -1,9 +1,10 @@
-import { ApiErrorSchema, newId } from '@zapp/contracts';
+import { ApiErrorSchema } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import type { IdempotencyStore } from '../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
+import type { SpecificationContent, SpecificationResponse } from '../src/tenant/view.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
@@ -29,29 +30,6 @@ const VIEWER: AuthIdentity = {
   displayName: 'Vera Viewer',
 };
 
-interface SpecificationContent {
-  readonly problem: string;
-  readonly targetUsers: readonly string[];
-  readonly goals: readonly string[];
-  readonly nonGoals: readonly string[];
-  readonly journeys: readonly string[];
-  readonly pagesRoutes: readonly string[];
-  readonly rolesPermissions: readonly string[];
-  readonly dataModel: readonly string[];
-  readonly integrations: readonly string[];
-  readonly functionalRequirements: readonly string[];
-  readonly nonfunctionalRequirements: readonly string[];
-  readonly acceptanceCriteria: readonly {
-    readonly id: string;
-    readonly text: string;
-    readonly priority: string;
-    readonly criticalFlow: boolean;
-  }[];
-  readonly assumptions: readonly string[];
-  readonly risks: readonly string[];
-  readonly definitionOfDone: readonly string[];
-}
-
 const CONTENT = {
   problem: 'Teams cannot find approved delivery requirements.',
   targetUsers: ['Product managers', 'Engineers'],
@@ -74,18 +52,6 @@ const CONTENT = {
 
 function errorOf(response: { json: () => unknown }): string {
   return ApiErrorSchema.parse(response.json()).error.code;
-}
-
-interface SpecificationView {
-  readonly id: string;
-  readonly organizationId: string;
-  readonly projectId: string;
-  readonly version: number;
-  readonly status: string;
-  readonly content: SpecificationContent;
-  readonly createdBy: string;
-  readonly approvedBy: string | null;
-  readonly approvedAt: string | null;
 }
 
 interface Wired {
@@ -162,11 +128,12 @@ async function createSpecification(
   session = wired.owner,
   projectId = wired.projectId,
   content: SpecificationContent = CONTENT,
+  organizationId = wired.organizationId,
 ) {
   return await wired.built.app.inject({
     method: 'POST',
     url: `/v1/projects/${projectId}/specifications`,
-    headers: { ...wired.as(session), 'idempotency-key': key },
+    headers: { ...wired.as(session, organizationId), 'idempotency-key': key },
     payload: content,
   });
 }
@@ -176,7 +143,7 @@ describe('specification routes', () => {
     const wired = await wire();
     const first = await createSpecification(wired, 'spec-create-0001');
     expect(first.statusCode, first.body).toBe(201);
-    const firstSpecification = first.json<{ specification: SpecificationView }>().specification;
+    const firstSpecification = first.json<SpecificationResponse>().specification;
     expect(firstSpecification).toMatchObject({
       projectId: wired.projectId,
       organizationId: wired.organizationId,
@@ -190,11 +157,11 @@ describe('specification routes', () => {
     const replay = await createSpecification(wired, 'spec-create-0001');
     expect(replay.statusCode, replay.body).toBe(201);
     expect(replay.headers['x-idempotent-replay']).toBe('true');
-    expect(replay.json<{ specification: SpecificationView }>().specification.id).toBe(firstSpecification.id);
+    expect(replay.json<SpecificationResponse>().specification.id).toBe(firstSpecification.id);
 
     const second = await createSpecification(wired, 'spec-create-0002');
     expect(second.statusCode, second.body).toBe(201);
-    expect(second.json<{ specification: SpecificationView }>().specification.version).toBe(2);
+    expect(second.json<SpecificationResponse>().specification.version).toBe(2);
 
     const missing = await wired.built.app.inject({
       method: 'GET',
@@ -218,7 +185,7 @@ describe('specification routes', () => {
       anotherProject.json<{ project: { id: string } }>().project.id,
     );
     expect(independent.statusCode, independent.body).toBe(201);
-    expect(independent.json<{ specification: SpecificationView }>().specification.version).toBe(1);
+    expect(independent.json<SpecificationResponse>().specification.version).toBe(1);
   });
 
   it('recovers one stable specification when post-commit idempotency persistence is unavailable', async () => {
@@ -234,11 +201,73 @@ describe('specification routes', () => {
     const second = await createSpecification(wired, 'spec-ambiguous-replay-01');
     expect(second.statusCode, second.body).toBe(201);
     expect(second.headers['x-idempotent-replay']).toBeUndefined();
-    expect(second.json<{ specification: SpecificationView }>().specification.id).toBe(
-      first.json<{ specification: SpecificationView }>().specification.id,
+    expect(second.json<SpecificationResponse>().specification.id).toBe(
+      first.json<SpecificationResponse>().specification.id,
     );
     expect(
       wired.built.audit.events.filter((event) => event.action === 'specification.created'),
+    ).toHaveLength(1);
+  });
+
+  it('requires an Idempotency-Key for draft edits and approval before mutating state', async () => {
+    const wired = await wire();
+    const created = await createSpecification(wired, 'spec-required-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const version = created.json<SpecificationResponse>().specification.version;
+
+    const unkeyedPatch = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: wired.as(wired.owner),
+      payload: { ...CONTENT, goals: ['This must not be written.'] },
+    });
+    expect(unkeyedPatch.statusCode, unkeyedPatch.body).toBe(400);
+    expect(errorOf(unkeyedPatch)).toBe('idempotency_key_required');
+
+    const unkeyedApproval = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}/approve`,
+      headers: wired.as(wired.owner),
+    });
+    expect(unkeyedApproval.statusCode, unkeyedApproval.body).toBe(400);
+    expect(errorOf(unkeyedApproval)).toBe('idempotency_key_required');
+    expect(wired.data.specifications[0]).toMatchObject({ status: 'draft', contentJson: CONTENT });
+    expect(
+      wired.built.audit.events.filter(
+        (event) => event.action === 'specification.updated' || event.action === 'specification.approved',
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not append a second draft-edit audit event when Redis loses a completed PATCH response', async () => {
+    const unavailableAfterCommit: IdempotencyStore = {
+      reserve: () => Promise.resolve(undefined),
+      complete: () => Promise.reject(new Error('redis unavailable after commit')),
+      release: () => Promise.resolve(),
+    };
+    const wired = await wire({ idempotency: unavailableAfterCommit });
+    const created = await createSpecification(wired, 'spec-patch-retry-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const version = created.json<SpecificationResponse>().specification.version;
+    const content = { ...CONTENT, goals: ['Persist one edit despite a lost response.'] };
+
+    const first = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-patch-retry-01' },
+      payload: content,
+    });
+    expect(first.statusCode, first.body).toBe(200);
+    const replay = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-patch-retry-01' },
+      payload: content,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json<SpecificationResponse>().specification.content).toEqual(content);
+    expect(
+      wired.built.audit.events.filter((event) => event.action === 'specification.updated'),
     ).toHaveLength(1);
   });
 
@@ -253,17 +282,57 @@ describe('specification routes', () => {
     expect(right.statusCode, right.body).toBe(201);
     expect(
       [
-        left.json<{ specification: SpecificationView }>().specification.version,
-        right.json<{ specification: SpecificationView }>().specification.version,
+        left.json<SpecificationResponse>().specification.version,
+        right.json<SpecificationResponse>().specification.version,
       ].sort(),
     ).toEqual([1, 2]);
+  });
+
+  it('serializes a concurrent draft edit and approval into one legal final specification', async () => {
+    const wired = await wire();
+    const created = await createSpecification(wired, 'spec-lock-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const version = created.json<SpecificationResponse>().specification.version;
+    const patchedContent = { ...CONTENT, goals: ['The row lock preserves this edit.'] };
+
+    const [patched, approved] = await Promise.all([
+      wired.built.app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-lock-patch-01' },
+        payload: patchedContent,
+      }),
+      wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${wired.projectId}/specifications/${String(version)}/approve`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-lock-approve-01' },
+      }),
+    ]);
+    const final = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(version)}`,
+      headers: wired.as(wired.owner),
+    });
+    expect(final.statusCode, final.body).toBe(200);
+    const specification = final.json<SpecificationResponse>().specification;
+    expect(specification.status).toBe('approved');
+
+    if (patched.statusCode === 200) {
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(specification.content).toEqual(patchedContent);
+    } else {
+      expect(patched.statusCode, patched.body).toBe(409);
+      expect(errorOf(patched)).toBe('specification_immutable');
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(specification.content).toEqual(CONTENT);
+    }
   });
 
   it('edits drafts, approves exactly once, and preserves an approved version when a later draft is created', async () => {
     const wired = await wire();
     const created = await createSpecification(wired, 'spec-life-create-01');
     expect(created.statusCode, created.body).toBe(201);
-    const specification = created.json<{ specification: SpecificationView }>().specification;
+    const specification = created.json<SpecificationResponse>().specification;
     const editedContent = { ...CONTENT, goals: ['Make draft edits durable'] };
     const edited = await wired.built.app.inject({
       method: 'PATCH',
@@ -272,7 +341,7 @@ describe('specification routes', () => {
       payload: editedContent,
     });
     expect(edited.statusCode, edited.body).toBe(200);
-    expect(edited.json<{ specification: SpecificationView }>().specification.content.goals).toEqual([
+    expect(edited.json<SpecificationResponse>().specification.content.goals).toEqual([
       'Make draft edits durable',
     ]);
 
@@ -282,7 +351,7 @@ describe('specification routes', () => {
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-life-approve-01' },
     });
     expect(approved.statusCode, approved.body).toBe(200);
-    const approvedSpecification = approved.json<{ specification: SpecificationView }>().specification;
+    const approvedSpecification = approved.json<SpecificationResponse>().specification;
     expect(approvedSpecification).toMatchObject({
       status: 'approved',
       approvedBy: wired.owner.userId,
@@ -296,7 +365,7 @@ describe('specification routes', () => {
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-life-approve-02' },
     });
     expect(approvedAgain.statusCode, approvedAgain.body).toBe(200);
-    expect(approvedAgain.json<{ specification: SpecificationView }>().specification.approvedAt).toBe(
+    expect(approvedAgain.json<SpecificationResponse>().specification.approvedAt).toBe(
       approvedSpecification.approvedAt,
     );
 
@@ -311,7 +380,7 @@ describe('specification routes', () => {
 
     const successor = await createSpecification(wired, 'spec-life-create-02');
     expect(successor.statusCode, successor.body).toBe(201);
-    expect(successor.json<{ specification: SpecificationView }>().specification).toMatchObject({
+    expect(successor.json<SpecificationResponse>().specification).toMatchObject({
       version: 2,
       status: 'draft',
       approvedAt: null,
@@ -322,7 +391,7 @@ describe('specification routes', () => {
       headers: wired.as(wired.owner),
     });
     expect(readApproved.statusCode, readApproved.body).toBe(200);
-    expect(readApproved.json<{ specification: SpecificationView }>().specification).toMatchObject(
+    expect(readApproved.json<SpecificationResponse>().specification).toMatchObject(
       approvedSpecification,
     );
     expect(
@@ -343,7 +412,7 @@ describe('specification routes', () => {
     expect(created.statusCode, created.body).toBe(201);
     const builderCreated = await createSpecification(wired, 'spec-rbac-builder-01', builder);
     expect(builderCreated.statusCode, builderCreated.body).toBe(201);
-    const builderVersion = builderCreated.json<{ specification: SpecificationView }>().specification.version;
+    const builderVersion = builderCreated.json<SpecificationResponse>().specification.version;
     const builderPatched = await wired.built.app.inject({
       method: 'PATCH',
       url: `/v1/projects/${wired.projectId}/specifications/${String(builderVersion)}`,
@@ -382,12 +451,45 @@ describe('specification routes', () => {
       expect(errorOf(denied)).toBe('permission_denied');
     }
 
-    const foreignProjectId = newId('proj');
+    const foreignOrganization = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: wired.owner.headers,
+      payload: { name: 'Foreign Specification Factory' },
+    });
+    expect(foreignOrganization.statusCode, foreignOrganization.body).toBe(201);
+    const foreignOrganizationId = foreignOrganization.json<{ organization: { id: string } }>().organization.id;
+    const foreignProject = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner, foreignOrganizationId),
+      payload: { name: 'Foreign Specification Target' },
+    });
+    expect(foreignProject.statusCode, foreignProject.body).toBe(201);
+    const foreignProjectId = foreignProject.json<{ project: { id: string } }>().project.id;
+    const foreignSpecification = await createSpecification(
+      wired,
+      'spec-foreign-seed-01',
+      wired.owner,
+      foreignProjectId,
+      CONTENT,
+      foreignOrganizationId,
+    );
+    expect(foreignSpecification.statusCode, foreignSpecification.body).toBe(201);
+    const foreignVersion = foreignSpecification.json<SpecificationResponse>().specification.version;
+    const ownerLookup = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${foreignProjectId}/specifications/${String(foreignVersion)}`,
+      headers: wired.as(wired.owner, foreignOrganizationId),
+    });
+    expect(ownerLookup.statusCode, ownerLookup.body).toBe(200);
+    const stateBeforeForeign = [...wired.data.specifications];
+    const auditBeforeForeign = [...wired.built.audit.events];
     for (const [method, suffix, payload] of [
       ['POST', '', CONTENT],
-      ['PATCH', '/1', CONTENT],
-      ['POST', '/1/approve', undefined],
-      ['GET', '/1', undefined],
+      ['PATCH', `/${String(foreignVersion)}`, CONTENT],
+      ['POST', `/${String(foreignVersion)}/approve`, undefined],
+      ['GET', `/${String(foreignVersion)}`, undefined],
     ] as const) {
       const foreign = await wired.built.app.inject({
         method,
@@ -398,6 +500,8 @@ describe('specification routes', () => {
       expect(foreign.statusCode, foreign.body).toBe(404);
       expect(errorOf(foreign)).toBe('project_not_found');
     }
+    expect(wired.data.specifications).toEqual(stateBeforeForeign);
+    expect(wired.built.audit.events).toEqual(auditBeforeForeign);
   });
 
   it('rejects unkeyed or malformed specification content before durable state changes', async () => {
@@ -422,7 +526,7 @@ describe('specification routes', () => {
     const unrecognisedField = await createSpecification(wired, 'spec-invalid-content-02', wired.owner, wired.projectId, {
       ...CONTENT,
       unreviewedField: 'must not be silently stored',
-    } as SpecificationContent);
+    } as unknown as SpecificationContent);
     expect(unrecognisedField.statusCode, unrecognisedField.body).toBe(400);
     expect(errorOf(unrecognisedField)).toBe('validation_failed');
     expect(wired.built.audit.events.filter((event) => event.action === 'specification.created')).toEqual([]);
