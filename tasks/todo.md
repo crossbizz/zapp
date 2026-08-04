@@ -19,7 +19,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ### Plan 02 — Control plane (part 1)
 - [x] CP-1 Fastify skeleton + request context
-- [ ] CP-2 Stytch B2B auth + device flow (AuthPort)
+- [x] CP-2 Stytch B2B auth + device flow (AuthPort)
 - [ ] CP-3 Orgs, memberships, invites, RBAC matrix
 - [ ] CP-4 Tenant context + isolation suite v1
 - [ ] CP-5 Audit + idempotency + rate limits
