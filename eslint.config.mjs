@@ -39,6 +39,30 @@ export default tseslint.config(
     },
   },
   {
+    // Tenant isolation is enforced by the request-scoped `ctx.db` handle from
+    // CP-4's tenant plugin, which puts `organization_id` in every WHERE clause
+    // itself. A route module that reaches for the raw db handle or the unscoped
+    // schema bypasses that entirely, so the import is banned rather than left to
+    // per-handler discipline. This is the recursive, resolver-aware half of the
+    // guard; services/control-api/test/route-isolation.test.ts is the belt that
+    // also covers dynamic imports.
+    files: ['services/*/src/routes/**/*.ts', 'services/*/src/events/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@zapp/db',
+              message:
+                'Route modules must query through the request-scoped ctx.db (tenant plugin), never the raw db handle. See CP-4.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Config files sit outside every package's tsconfig `include`, so the project
     // service cannot type them. Lint them without type information instead.
     files: ['**/*.{js,cjs,mjs}', '**/*.config.{ts,mts,cts}', 'vitest.workspace.ts'],
