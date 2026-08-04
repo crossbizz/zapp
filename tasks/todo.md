@@ -1,0 +1,199 @@
+# zapp.build P0 Master Tracker
+
+Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; check here **and** in the owning plan file when done. Milestone gates: run the exit-criteria checklist in [00-master-plan.md §4](../docs/plans/00-master-plan.md) before starting the next milestone.
+
+## M0 — Foundation (Weeks 1–3)
+
+### Plan 01 — Foundation
+- [ ] FND-0 Repository initialization
+- [ ] FND-1 Monorepo scaffold (pnpm/turbo/tsconfig/eslint/vitest)
+- [ ] FND-2 packages/config env validation
+- [ ] FND-3 contracts: ids, agent events, run/task enums
+- [ ] FND-4 contracts: sandbox/adapter/deployment/tool interfaces
+- [ ] FND-5 db: identity + billing schema
+- [ ] FND-6 db: full PRD §23 schema + event partitioning + tenant repos
+- [ ] FND-7 docker-compose dev env + bootstrap
+- [ ] FND-8 CI pipeline + security scans
+- [ ] FND-9 NOTICE, src/pro import ban, ADRs
+- [ ] FND-10 API error envelope + pagination conventions
+
+### Plan 02 — Control plane (part 1)
+- [ ] CP-1 Fastify skeleton + request context
+- [ ] CP-2 Stytch B2B auth + device flow (AuthPort)
+- [ ] CP-3 Orgs, memberships, invites, RBAC matrix
+- [ ] CP-4 Tenant context + isolation suite v1
+- [ ] CP-5 Audit + idempotency + rate limits
+- [ ] CP-6 Projects/repos/branches/environments CRUD
+- [ ] CP-7 Secrets vault (envelope encryption, audited decrypt)
+- [ ] CP-8 Internal service tokens
+
+### Plan 06 — Internal Git
+- [ ] GIT-1 Forgejo deployment + bootstrap
+- [ ] GIT-2 git-service GitProvider
+- [ ] GIT-3 Repo-scoped short-lived tokens
+### Plan 09 — Desktop fork prep
+- [ ] MAC-1 Dyad fork builds without src/pro
+- [ ] MAC-2 Rebrand + signing/notarization CI
+- [ ] MAC-3 Dyad capability preservation suite
+
+## M1 — Walking skeleton: prompt → preview (Weeks 3–8)
+
+### Plan 02 — Control plane (part 2)
+- [ ] CP-9 Run + workspace routes
+- [ ] CP-10 Specification routes
+- [ ] CP-11 Release/integration route shells + RBAC
+- [ ] CP-12 Audit reads + org settings
+- [ ] CP-13 Sequenced event ingest
+- [ ] CP-14 LISTEN/NOTIFY → Redis fanout
+- [ ] CP-15 Resumable SSE stream
+- [ ] CP-16 OpenAPI + generated SDK
+### Plan 03 — Workspace/sandbox core
+- [ ] WS-1 workspace-runtime interface + path safety
+- [ ] WS-2 Modal images (forge-node-base, forge-web-test)
+- [ ] WS-3 workspace-agent daemon
+- [ ] WS-4 Modal provider create/exec/terminate/attach
+- [ ] WS-5 Scoped-token git clone/push
+- [ ] WS-6 Lifecycle state machine + reaper + reconciler
+- [ ] WS-7 Checkpoints + snapshot-free restore
+- [ ] WS-8 Resource profiles + cost recorder
+- [ ] WS-9 Cache volumes + branch locks
+- [ ] WS-10 Preview proxy + capture client
+- [ ] WS-11 Secret injection + network profiles + redaction
+- [ ] WS-12 Preview tokens + share records
+### Plan 06
+- [ ] GIT-4 Nightly bundle backups + restore
+### Plan 04 — Agent runtime core
+- [ ] AR-1 model-gateway streaming API
+- [ ] AR-2 Routing/retry/fallback
+- [ ] AR-3 Usage telemetry + budget cutoff
+- [ ] AR-4 agent-tools registry (PRD §16.1 complete)
+- [ ] AR-5 agent-policies + injection defense + role prompts
+- [ ] AR-6 Session loop
+- [ ] AR-7 Context builder + compaction
+- [ ] AR-8 M1 durable chat run on Temporal
+### Plan 08 — Web core
+- [ ] WEB-1 Next scaffold + session + org context
+- [ ] WEB-2 packages/ui design system (Next+Vite)
+- [ ] WEB-3 Home screen (Emergent-modeled)
+- [ ] WEB-4 Dashboard + org switcher + import entry
+- [ ] WEB-5 Builder two-pane shell
+- [ ] WEB-6 Event-sourced conversation thread
+
+## M2 — Agentic core + Mission Control (Weeks 8–14)
+
+- [ ] AR-9 Worker/queues/idempotency hardening
+- [ ] AR-10 Pause/resume/cancel/redirect signals
+- [ ] AR-11 planning-engine schema + scheduler
+- [ ] AR-12 Isolated task workflows + merge/conflict tasks
+- [ ] AR-13 Mission Control read model
+- [ ] AR-14 Run budgets + approval loop
+- [ ] AR-15 Ask + Prototype modes
+- [ ] VF-1 Adapter framework + generic node
+- [ ] VF-2 Framework adapters (P0 set)
+- [ ] VF-3 Capability scan pipeline
+- [ ] VF-4 Gate registry + §24.2 policy matrix
+- [ ] VF-5 Deterministic gates (build/type/lint/unit/secret/dev-server)
+- [ ] WS-13 Dev-server supervisor + logs
+- [ ] WS-14 Nightly Modal E2E suite
+- [ ] WS-15 Runaway-compute governor
+- [ ] WEB-7 Preview panel + states + capture drawer
+- [ ] WEB-8 Element selection attachments
+- [ ] WEB-9 Mission Control drawer
+- [ ] WEB-10 Interview/spec/plan approval cards
+- [ ] WEB-11 Code/Logs/Tests surfaces
+- [ ] WEB-17 Template gallery + detail with demo preview & Remix
+- [ ] OPS-1 Ledger + Flexprice metering pipeline
+- [ ] OPS-2 Metering coverage + three-way reconciliation
+- [ ] OPS-3 Plan quotas + budget enforcement
+- [ ] MAC-4 Platform auth + Keychain
+- [ ] MAC-5 Unified local+cloud dashboard
+- [ ] MAC-6 Local WorkspaceRuntime + local sessions
+
+## M3 — Verification-first + Autonomous (Weeks 12–18)
+
+- [ ] VF-6 Preview health + browser smoke gates
+- [ ] VF-7 Playwright runner + evidence artifacts
+- [ ] VF-8 Smoke + acceptance test generation
+- [ ] VF-9 Criteria traceability
+- [ ] VF-10 Verifier decision engine (rejection authority)
+- [ ] VF-11 Browser agent (exploratory)
+- [ ] VF-12 Accessibility gate
+- [ ] VF-13 Classified repair loop (hard budgets)
+- [ ] VF-14 Anti-slop detectors
+- [ ] VF-15 Evidence manifest + report renderer
+- [ ] VF-16 Dependency + migration gates
+- [ ] AR-16 specification-engine (interview + spec)
+- [ ] AR-17 Autonomous mode workflow
+- [ ] AR-18 Build mode
+- [ ] AR-19 Fix mode (reproduce-first)
+- [ ] AR-20 Redirect + plan diff
+- [ ] AR-21 Forking (project/branch/conversation/run)
+- [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
+- [ ] WEB-13 Releases + evidence viewer
+- [ ] OPS-12 Security suites (start; complete M5)
+- [ ] OPS-13 Injection evals + Semgrep gates (start; complete M5)
+
+## M4 — Integrations & deployment (Weeks 16–22)
+
+- [ ] INT-1 GitHub App + webhooks
+- [ ] INT-2 GitHub import
+- [ ] INT-3 Sync engine (stale-base, conflicts)
+- [ ] INT-4 GitHub export
+- [ ] INT-5 Supabase connect/provision/schema/types
+- [ ] INT-6 Supabase migrations + RLS gen/tests
+- [ ] INT-7 Neon branch workflows
+- [ ] INT-8 Generated-app Stripe adapter
+- [ ] INT-9 Stripe E2E integration tests
+- [ ] DEP-1 Release records + ReleasePort
+- [ ] DEP-2 Three-state readiness check
+- [ ] DEP-3 Deployment type classification
+- [ ] DEP-4 Fly.io container adapter
+- [ ] DEP-5 Vercel adapter
+- [ ] DEP-6 Staged deploy workflow (safe go-live)
+- [ ] DEP-7 Production health + prod-safe smoke
+- [ ] DEP-8 Success contract + release annotations
+- [ ] DEP-9 Rollback with DB-compatibility gating
+- [ ] DEP-10 Custom domains + SSL
+- [ ] DEP-11 Synthetic checks
+- [ ] DEP-12 E2E release lifecycle + fork-to-repair
+- [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
+- [ ] WEB-15 Production health + guarded rollback UI
+- [ ] MAC-7 Docker runtime mode
+- [ ] MAC-8 Cloud builder + Mission Control parity
+- [ ] MAC-9 Commit-boundary sync + guided merge
+- [ ] MAC-10 Local→cloud promotion
+
+## M5 — SaaS hardening (Weeks 20–26)
+
+- [ ] OPS-4 Stripe platform billing
+- [ ] OPS-5 Top-ups + trial
+- [ ] OPS-6 PostHog analytics + feature flags + dashboards
+- [ ] OPS-7 Notification service
+- [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
+- [ ] OPS-9 SLO dashboards + k6 at 10× + capacity model
+- [ ] OPS-10 Managed-app observability templates
+- [ ] OPS-11 Incident → Fix run closed loop
+- [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
+- [ ] OPS-13 Injection evals + policy scans blocking
+- [ ] OPS-14 Retention archival + rehydration
+- [ ] OPS-15 Backup/DR runbooks + drills
+- [ ] OPS-16 SOC 2 Type I readiness pack
+- [ ] OPS-17 Support/admin console
+- [ ] OPS-18 Incident response + status page
+- [ ] CP-17 Retention & deletion pipeline
+- [ ] CP-18 Export APIs
+- [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
+- [ ] MAC-11 Notifications + auto-update
+- [ ] MAC-12 Dyad project migration
+
+## M6 — Private beta validation (Weeks 26–30)
+
+- [ ] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
+- [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics
+- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links
+- [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4)
+- [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/
+
+## Review
+
+_(Populated at execution time: outcomes, deviations, lessons per the user's workflow. See each plan's `## Execution log`.)_
