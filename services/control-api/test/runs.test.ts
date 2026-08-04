@@ -206,6 +206,28 @@ async function joinViewer(wired: Wired): Promise<TestSession> {
   return viewer;
 }
 
+async function joinBuilder(wired: Wired): Promise<TestSession> {
+  const invited = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/organizations/${wired.organizationId}/invites`,
+    headers: wired.owner.headers,
+    payload: { email: 'builder@runs.test', role: 'builder' },
+  });
+  expect(invited.statusCode, invited.body).toBe(201);
+  const builder = await signIn(wired.built, {
+    externalId: 'runs-test-builder',
+    email: 'builder@runs.test',
+    displayName: 'Bea Builder',
+  });
+  const accepted = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/invites/${invited.json<{ token: string }>().token}/accept`,
+    headers: builder.headers,
+  });
+  expect(accepted.statusCode, accepted.body).toBe(200);
+  return builder;
+}
+
 describe('POST /v1/projects/:projectId/runs', () => {
   it('creates a queued run and starts one workflow keyed by the run id', async () => {
     const wired = await wire();
@@ -813,5 +835,193 @@ describe('workspace passthrough routes', () => {
     expect(retry.statusCode, retry.body).toBe(201);
     expect(wired.data.workspaces).toHaveLength(1);
     expect(sandbox.calls).toEqual(['create', 'create']);
+  });
+
+  it('permits a Builder on every run and workspace mutation route', async () => {
+    const sandbox = new FakeSandboxServicePort();
+    const wired = await wire({ sandbox });
+    const project = await createProject(wired);
+    const builder = await joinBuilder(wired);
+
+    const runCreated = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(builder), 'idempotency-key': 'builder-run-create-01' },
+      payload: { mode: 'build', prompt: 'Builder starts a run' },
+    });
+    expect(runCreated.statusCode, runCreated.body).toBe(201);
+
+    for (const [action, status, payload] of [
+      ['pause', 'queued', undefined],
+      ['resume', 'paused', undefined],
+      ['cancel', 'queued', undefined],
+      ['redirect', 'queued', { prompt: 'Builder redirects' }],
+    ] as const) {
+      const created = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${project.id}/runs`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': `builder-${action}-seed` },
+        payload: { mode: 'build', prompt: `Seed ${action}` },
+      });
+      const runId = created.json<{ run: { id: string } }>().run.id;
+      const run = wired.data.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined) throw new Error('seed run missing');
+      run.status = status;
+      const response = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/runs/${runId}/${action}`,
+        headers: { ...wired.as(builder), 'idempotency-key': `builder-${action}-01` },
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    }
+
+    const workspaceCreated = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/workspaces`,
+      headers: { ...wired.as(builder), 'idempotency-key': 'builder-workspace-create-01' },
+      payload: {},
+    });
+    expect(workspaceCreated.statusCode, workspaceCreated.body).toBe(201);
+
+    for (const [action, status, payload] of [
+      ['start', 'provisioning', undefined],
+      ['checkpoint', 'started', { kind: 'active' }],
+      ['terminate', 'provisioning', undefined],
+      ['preview', 'started', { port: 3000, ttlSeconds: 60 }],
+    ] as const) {
+      const created = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${project.id}/workspaces`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': `builder-workspace-${action}-seed` },
+        payload: {},
+      });
+      const workspaceId = created.json<{ workspace: { id: string } }>().workspace.id;
+      const workspace = wired.data.workspaces.find((candidate) => candidate.id === workspaceId);
+      if (workspace === undefined) throw new Error('seed workspace missing');
+      workspace.status = status;
+      const callsBefore = sandbox.calls.length;
+      const response = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/workspaces/${workspaceId}/${action}`,
+        headers: { ...wired.as(builder), 'idempotency-key': `builder-workspace-${action}-01` },
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(sandbox.calls.slice(callsBefore)).toContain(action);
+    }
+  });
+
+  it('denies a Viewer on every run and workspace mutation route without dispatching', async () => {
+    const sandbox = new FakeSandboxServicePort();
+    const wired = await wire({ sandbox });
+    const project = await createProject(wired);
+    const viewer = await joinViewer(wired);
+
+    const runCreate = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: wired.as(viewer),
+      payload: { mode: 'build', prompt: 'Viewer must not start' },
+    });
+    expect(runCreate.statusCode, runCreate.body).toBe(403);
+
+    for (const [action, status, payload] of [
+      ['pause', 'queued', undefined],
+      ['resume', 'paused', undefined],
+      ['cancel', 'queued', undefined],
+      ['redirect', 'queued', { prompt: 'No redirect' }],
+    ] as const) {
+      const seeded: AgentRun = {
+        id: newId('run'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
+        mode: 'build', status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
+        startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
+      };
+      wired.data.runs.push(seeded);
+      const callsBefore = wired.orchestrator.signals.length;
+      const response = await wired.built.app.inject({
+        method: 'POST', url: `/v1/runs/${seeded.id}/${action}`, headers: wired.as(viewer),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(403);
+      expect(wired.orchestrator.signals).toHaveLength(callsBefore);
+    }
+
+    const workspaceCreate = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/workspaces`, headers: wired.as(viewer), payload: {},
+    });
+    expect(workspaceCreate.statusCode, workspaceCreate.body).toBe(403);
+
+    for (const [action, status, payload] of [
+      ['start', 'provisioning', undefined],
+      ['checkpoint', 'started', { kind: 'active' }],
+      ['terminate', 'provisioning', undefined],
+      ['preview', 'started', { port: 3000, ttlSeconds: 60 }],
+    ] as const) {
+      const seeded: Workspace = {
+        id: newId('ws'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
+        provider: 'modal', providerWorkspaceId: `viewer-${action}`, status, resourceProfile: 'standard',
+        snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+      };
+      wired.data.workspaces.push(seeded);
+      const callsBefore = sandbox.calls.length;
+      const response = await wired.built.app.inject({
+        method: 'POST', url: `/v1/workspaces/${seeded.id}/${action}`, headers: wired.as(viewer),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(403);
+      expect(sandbox.calls).toHaveLength(callsBefore);
+    }
+  });
+
+  it('returns 404 for foreign project and resource mutations before denying a Viewer', async () => {
+    const sandbox = new FakeSandboxServicePort();
+    const wired = await wire({ sandbox });
+    const viewer = await joinViewer(wired);
+    const foreignOrganizationId = newId('org');
+    const foreignProjectId = newId('proj');
+    const foreignRun: AgentRun = {
+      id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
+      mode: 'build', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
+      startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
+    };
+    const foreignWorkspace: Workspace = {
+      id: newId('ws'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
+      provider: 'modal', providerWorkspaceId: 'foreign-workspace', status: 'active', resourceProfile: 'standard',
+      snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+    };
+    wired.data.runs.push(foreignRun);
+    wired.data.workspaces.push(foreignWorkspace);
+
+    for (const [kind, payload] of [
+      ['runs', { mode: 'build', prompt: 'Foreign project' }],
+      ['workspaces', {}],
+    ] as const) {
+      const response = await wired.built.app.inject({
+        method: 'POST', url: `/v1/projects/${foreignProjectId}/${kind}`, headers: wired.as(viewer), payload,
+      });
+      expect(response.statusCode, response.body).toBe(404);
+    }
+    for (const [action, payload] of [
+      ['pause', undefined], ['resume', undefined], ['cancel', undefined], ['redirect', { prompt: 'No oracle' }],
+    ] as const) {
+      const response = await wired.built.app.inject({
+        method: 'POST', url: `/v1/runs/${foreignRun.id}/${action}`, headers: wired.as(viewer),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(404);
+    }
+    for (const [action, payload] of [
+      ['start', undefined], ['checkpoint', { kind: 'active' }], ['terminate', undefined], ['preview', { port: 3000, ttlSeconds: 60 }],
+    ] as const) {
+      const response = await wired.built.app.inject({
+        method: 'POST', url: `/v1/workspaces/${foreignWorkspace.id}/${action}`, headers: wired.as(viewer),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(response.statusCode, response.body).toBe(404);
+    }
+    expect(wired.orchestrator.starts).toEqual([]);
+    expect(wired.orchestrator.signals).toEqual([]);
+    expect(sandbox.calls).toEqual([]);
   });
 });
