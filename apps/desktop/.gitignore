@@ -125,3 +125,8 @@ benchmarks/code-explorer/repos/
 # lockfile it emits is a packaging artifact — the workspace root
 # pnpm-lock.yaml is the source of truth. See docs/adr/0002-dyad-fork.md.
 /pnpm-lock.yaml
+
+# zapp: `install:packaging` keeps its own pnpm store so the Electron-ABI
+# native rebuild cannot hard-link back onto the workspace copies. Disposable
+# cache, ~2 GB. See scripts/zapp/make-mac.mjs.
+/.packaging-store

@@ -1,0 +1,232 @@
+name: Desktop
+
+# Packages the macOS app (@zapp/desktop). Split from ci.yml because it needs a
+# macOS runner, a standalone hoisted install, and ~30 minutes -- none of which
+# should sit in front of every PR that does not touch the desktop app.
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop.yml'
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Sign and notarize (requires the Apple secrets to be set)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  package-macos:
+    name: package macOS app
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/desktop
+
+    steps:
+      # persist-credentials: false -- this job runs repo code and package
+      # postinstall scripts (native rebuilds), so no push-capable token is left
+      # behind in .git/config for them to pick up.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      # No `cache: pnpm` here, unlike ci.yml: this job never does a workspace
+      # install. `install:packaging` uses its own --store-dir (see below), which
+      # is deliberately not cached -- it is a full copy of a ~2 GB dependency
+      # tree and would dominate the repo's 10 GB cache budget. The Electron
+      # binary and node-gyp headers are the expensive, stable part, so those are
+      # cached instead.
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+
+      - name: Cache Electron and node-gyp downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/node-gyp
+          key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/package.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
+      # A release build is a v* tag, or a manual run that explicitly asked to
+      # sign. Everything else (every PR) is an unsigned E2E-flavoured build:
+      # E2E_TEST_BUILD also skips the "Move to Applications Folder?" modal, so
+      # the artifact can be launched unattended.
+      - name: Resolve build mode
+        id: mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SIGN_INPUT: ${{ inputs.sign }}
+        run: |
+          release=false
+          case "$EVENT_NAME:$REF" in
+            push:refs/tags/v*) release=true ;;
+          esac
+          if [ "$SIGN_INPUT" = "true" ]; then
+            release=true
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "release build: $release"
+
+      # Secrets cannot be referenced from a job/step `if:`, so presence is
+      # resolved here into plain outputs. Absent credentials are a visible skip,
+      # never a failure: the Developer ID cert is still pending (AGENTS.md §10),
+      # and PR builds are unsigned by design.
+      - name: Check signing credentials
+        id: creds
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          RELEASE: ${{ steps.mode.outputs.release }}
+        run: |
+          sign=false
+          notarize=false
+          if [ -n "$MACOS_CERT_P12" ] && [ -n "$MACOS_CERT_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            sign=true
+          fi
+          if [ "$sign" = "true" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            notarize=true
+          fi
+
+          if [ "$RELEASE" != "true" ]; then
+            echo "::notice title=Unsigned build::PR and non-release builds are unsigned by design."
+            sign=false
+            notarize=false
+          elif [ "$sign" != "true" ]; then
+            echo "::notice title=Code signing skipped::MACOS_CERT_P12 / MACOS_CERT_PASSWORD / APPLE_TEAM_ID are not set. Producing an UNSIGNED build."
+          elif [ "$notarize" != "true" ]; then
+            echo "::notice title=Notarization skipped::APPLE_ID / APPLE_APP_PASSWORD are not set. The app is signed but NOT notarized, so Gatekeeper will block it."
+          fi
+
+          echo "sign=$sign" >> "$GITHUB_OUTPUT"
+          echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
+          echo "sign=$sign notarize=$notarize"
+
+      # Developer ID cert into a throwaway keychain. Its path is handed to
+      # @electron/osx-sign via forge.config.ts so codesign cannot pick up some
+      # other identity from the runner's default search list.
+      - name: Import Developer ID certificate
+        if: steps.creds.outputs.sign == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain_path="$RUNNER_TEMP/zapp-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          cert_path="$RUNNER_TEMP/zapp-developer-id.p12"
+
+          printf '%s' "$MACOS_CERT_P12" | openssl base64 -d -A -out "$cert_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -k "$keychain_path" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # Without this, codesign prompts for keychain access and hangs.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path" > /dev/null
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          rm -f "$cert_path"
+
+          security find-identity -v -p codesigning "$keychain_path"
+          echo "MACOS_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      # make:mac = install:packaging (standalone hoisted install into its own
+      # pnpm store) + electron-forge make. --skip-restore because this runner's
+      # workspace is thrown away afterwards; locally the script restores the
+      # workspace install and verifies the native modules are back on node's ABI.
+      - name: Package
+        env:
+          E2E_TEST_BUILD: ${{ steps.mode.outputs.release == 'true' && 'false' || 'true' }}
+          ZAPP_MACOS_SIGN: ${{ steps.creds.outputs.sign }}
+          ZAPP_MACOS_NOTARIZE: ${{ steps.creds.outputs.notarize }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: pnpm run make:mac --skip-restore
+
+      # Identity is the deliverable of MAC-2, so it is asserted rather than
+      # eyeballed: a later upstream merge that resurrects Dyad's bundle id,
+      # product name or URL scheme fails here.
+      - name: Verify bundle identity
+        run: |
+          app="$(find out -maxdepth 2 -name 'zapp.app' -print -quit)"
+          if [ -z "$app" ]; then
+            echo "No zapp.app under apps/desktop/out" >&2
+            exit 1
+          fi
+          echo "app: $app"
+          plist="$app/Contents/Info.plist"
+
+          check() {
+            actual="$(plutil -extract "$1" raw -o - "$plist")"
+            if [ "$actual" != "$2" ]; then
+              echo "$1: expected '$2', got '$actual'" >&2
+              exit 1
+            fi
+            echo "$1 = $actual"
+          }
+
+          check CFBundleIdentifier build.zapp.desktop
+          check CFBundleName zapp
+          check CFBundleExecutable zapp
+          check CFBundleURLTypes.0.CFBundleURLSchemes.0 zapp
+
+      - name: Verify signature
+        if: steps.creds.outputs.sign == 'true'
+        run: |
+          app="$(find out -maxdepth 2 -name 'zapp.app' -print -quit)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=4 "$app" 2>&1 | grep -E 'Authority|TeamIdentifier'
+
+      # The Gatekeeper assessment only means anything once the app is notarized
+      # and stapled; on a merely signed build it fails by design.
+      - name: Verify Gatekeeper acceptance
+        if: steps.creds.outputs.notarize == 'true'
+        run: |
+          app="$(find out -maxdepth 2 -name 'zapp.app' -print -quit)"
+          xcrun stapler validate "$app"
+          spctl --assess --type exec -vvv "$app"
+
+      # v5 to match the pins in ci.yml / security.yml (FND-8); newer majors
+      # exist and upgrading them is a repo-wide sweep, not this workflow's job.
+      - name: Upload macOS zip
+        uses: actions/upload-artifact@v5
+        with:
+          name: zapp-macos-${{ github.sha }}
+          path: apps/desktop/out/make/zip/darwin/**/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove signing keychain
+        if: always() && steps.creds.outputs.sign == 'true'
+        run: |
+          security list-keychains -d user -s login.keychain-db
+          security delete-keychain "$RUNNER_TEMP/zapp-signing.keychain-db" || true

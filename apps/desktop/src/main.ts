@@ -97,6 +97,13 @@ import {
 } from "./paths/paths";
 import { createDeepLinkQueue } from "./main/deep_link_queue";
 import { registerDyadProtocolLinux } from "./main/linux_protocol_registration";
+// zapp: product identity + the deep-link routes this fork owns (MAC-2).
+import {
+  ZAPP_PROTOCOL_PREFIX,
+  ZAPP_PROTOCOL_SCHEME,
+  ZAPP_USER_DATA_DIR_NAME,
+} from "@/zapp/branding";
+import { handleZappDeepLink } from "@/zapp/deep_link";
 import {
   applyManagedPnpmToProcessPath,
   getManagedPnpmBinDir,
@@ -120,6 +127,26 @@ import {
   shouldBlockMainWindowNavigation,
 } from "./main/window_security";
 import { pathToFileURL } from "node:url";
+
+// zapp: pin the production userData directory to the zapp identity (MAC-2).
+// Electron derives it from the app name, so the rebrand moved it from `dyad`
+// to `zapp`. Naming it here means the location is stated in one place instead
+// of trailing whatever productName happens to be, so a later display-name
+// change cannot silently orphan a user's state a second time. Nothing reads
+// the Dyad-era directory — importing that state is MAC-12's job.
+//
+// Only when nothing has overridden it: `--user-data-dir` (which every E2E test
+// passes to get an isolated profile) makes the current value differ from
+// Electron's default, and that must win. Runs before any path is resolved.
+{
+  const defaultUserData = path.join(app.getPath("appData"), app.getName());
+  if (app.getPath("userData") === defaultUserData) {
+    app.setPath(
+      "userData",
+      path.join(app.getPath("appData"), ZAPP_USER_DATA_DIR_NAME),
+    );
+  }
+}
 
 log.errorHandler.startCatching();
 log.eventLogger.startLogging();
@@ -320,14 +347,17 @@ if (fs.existsSync(gitDir)) {
 }
 
 // https://www.electronjs.org/docs/latest/tutorial/launch-app-from-url-in-another-app#main-process-mainjs
+// zapp: claim `zapp://`. The `dyad://` registration is removed outright rather
+// than aliased — two builds claiming one scheme is a coin toss for which one
+// the OS launches, and this fork must never intercept a Dyad install's links.
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient("dyad", process.execPath, [
+    app.setAsDefaultProtocolClient(ZAPP_PROTOCOL_SCHEME, process.execPath, [
       path.resolve(process.argv[1]),
     ]);
   }
 } else {
-  app.setAsDefaultProtocolClient("dyad");
+  app.setAsDefaultProtocolClient(ZAPP_PROTOCOL_SCHEME);
 }
 
 export async function onReady() {
@@ -604,7 +634,8 @@ const createWindow = () => {
       preload: path.join(__dirname, "preload.js"),
       // transparent: true,
     },
-    icon: path.join(app.getAppPath(), "assets/icon/logo.png"),
+    // zapp: window/taskbar icon follows the app icon set (MAC-2).
+    icon: path.join(app.getAppPath(), "assets/zapp/icon.png"),
     // backgroundColor: "#00000001",
     // frame: false,
   });
@@ -999,8 +1030,9 @@ if (IS_TEST_BUILD) {
     // drain the initial argv here. The queue holds it until the app is ready.
     // This runs on every launch, so match by dyad:// prefix to ignore the
     // normal (no-deep-link) startup args.
+    // zapp: the scheme is zapp:// here.
     const initialDeepLink = process.argv.find((arg) =>
-      arg.startsWith("dyad://"),
+      arg.startsWith(ZAPP_PROTOCOL_PREFIX),
     );
     if (initialDeepLink) {
       deepLinkQueue.handle(initialDeepLink);
@@ -1048,11 +1080,27 @@ async function handleDeepLinkReturn(url: string) {
     "hostname",
     parsed.hostname,
   );
-  if (parsed.protocol !== "dyad:") {
+  // zapp: the scheme is zapp:// here; the routes below are inherited unchanged.
+  if (parsed.protocol !== `${ZAPP_PROTOCOL_SCHEME}:`) {
     dialog.showErrorBox(
       "Invalid Protocol",
-      `Expected dyad://, got ${parsed.protocol}. Full URL: ${url}`,
+      `Expected ${ZAPP_PROTOCOL_PREFIX}, got ${parsed.protocol}. Full URL: ${url}`,
     );
+    return;
+  }
+  // zapp: routes this fork owns (zapp://auth/callback, zapp://project/{id}).
+  // Handled before the inherited routes so they can never be shadowed.
+  if (
+    handleZappDeepLink(parsed, {
+      focusWindow: () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.focus();
+        }
+      },
+      log: (message, meta) => log.log(message, meta),
+    })
+  ) {
     return;
   }
   if (parsed.hostname === "neon-oauth-return") {

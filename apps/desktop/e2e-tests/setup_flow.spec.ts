@@ -408,7 +408,8 @@ async function triggerDyadProReturnDeepLink(electronApp: ElectronApplication) {
     app.emit(
       "open-url",
       { preventDefault: () => {} },
-      "dyad://dyad-pro-return?key=test-dyad-pro-key",
+      // zapp: the app is registered for zapp:// (MAC-2).
+      "zapp://dyad-pro-return?key=test-dyad-pro-key",
     );
   });
 }

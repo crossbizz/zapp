@@ -33,6 +33,12 @@ const TRANSIENT_NAME_PREFIXES = [
   "Singleton",
 ];
 
+// zapp: the packaged app is named after productName, so its userData directory
+// and Windows executable follow this fork's identity, not Dyad's (MAC-2). Kept
+// as a literal because this file is plain ESM run by node, outside the TS
+// build that owns src/zapp/branding.ts.
+const PRODUCT_NAME = "zapp";
+
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -48,7 +54,7 @@ export function getProductionUserDataPath({
   }
 
   if (platform === "darwin") {
-    return path.join(homeDir, "Library", "Application Support", "dyad");
+    return path.join(homeDir, "Library", "Application Support", PRODUCT_NAME);
   }
 
   if (platform === "win32") {
@@ -57,12 +63,12 @@ export function getProductionUserDataPath({
         "APPDATA is not set; cannot locate Dyad's production data.",
       );
     }
-    return path.join(env.APPDATA, "dyad");
+    return path.join(env.APPDATA, PRODUCT_NAME);
   }
 
   return path.join(
     env.XDG_CONFIG_HOME || path.join(homeDir, ".config"),
-    "dyad",
+    PRODUCT_NAME,
   );
 }
 
@@ -91,7 +97,7 @@ export function getProcessesUsingDataDirectories(
     try {
       const output = runSync(
         "tasklist",
-        ["/FI", "IMAGENAME eq dyad.exe", "/FO", "CSV", "/NH"],
+        ["/FI", `IMAGENAME eq ${PRODUCT_NAME}.exe`, "/FO", "CSV", "/NH"],
         {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
@@ -99,7 +105,12 @@ export function getProcessesUsingDataDirectories(
       );
       return output
         .split(/\r?\n/)
-        .map((line) => line.match(/^"dyad\.exe","(\d+)"/i)?.[1])
+        .map(
+          (line) =>
+            line.match(
+              new RegExp(`^"${PRODUCT_NAME}\\.exe","(\\d+)"`, "i"),
+            )?.[1],
+        )
         .filter(Boolean);
     } catch (error) {
       throw new Error(

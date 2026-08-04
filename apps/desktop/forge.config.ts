@@ -15,6 +15,13 @@ import { FuseV1Options, FuseVersion } from "@electron/fuses";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 import { readFileSync } from "fs";
 import { createRequire } from "module";
+// zapp: product identity (MAC-2). Shared with the main process so the bundle
+// id, product name and URL scheme cannot drift apart.
+import {
+  ZAPP_APP_BUNDLE_ID,
+  ZAPP_PROTOCOL_NAME,
+  ZAPP_PROTOCOL_SCHEME,
+} from "./src/zapp/branding";
 
 console.log("AZURE_CODE_SIGNING_DLIB", process.env.AZURE_CODE_SIGNING_DLIB);
 
@@ -121,6 +128,11 @@ const ignore = (file: string) => {
   return true;
 };
 
+// zapp: Squirrel embeds this URL in the installer, so it has to be reachable
+// on the public web rather than a repo-relative path (MAC-2).
+const ZAPP_SQUIRREL_ICON_URL =
+  "https://raw.githubusercontent.com/crossbizz/zapp/main/apps/desktop/assets/zapp/icon.ico";
+
 const isEndToEndTestBuild = process.env.E2E_TEST_BUILD === "true";
 const isWindowsSigningEnabled = process.env.WINDOWS_SIGN === "true";
 const shouldSkipNativeRebuild = process.env.DYAD_SKIP_NATIVE_REBUILD === "true";
@@ -136,6 +148,38 @@ if (isWindowsSigningEnabled && !process.env.AZURE_CODE_SIGNING_DLIB) {
     "WINDOWS_SIGN is enabled but AZURE_CODE_SIGNING_DLIB is not set. " +
       "Ensure Azure Trusted Signing tools are installed.",
   );
+}
+
+// zapp: macOS signing and notarization are opt-in (MAC-2).
+//
+// Upstream signs every build that is not an E2E build, so a build without
+// credentials fails outright. Here the credentials are not guaranteed to
+// exist: PR builds are deliberately unsigned, and the Developer ID cert is
+// still pending (AGENTS.md §10). CI sets these two flags only after it has
+// verified the corresponding secrets are present, so "no cert" produces an
+// unsigned app rather than a failed pipeline. E2E builds are never signed.
+const isMacSigningEnabled =
+  !isEndToEndTestBuild && process.env.ZAPP_MACOS_SIGN === "true";
+const isMacNotarizationEnabled =
+  isMacSigningEnabled && process.env.ZAPP_MACOS_NOTARIZE === "true";
+
+// Fail loudly at config load rather than after a 10-minute package step.
+if (isMacNotarizationEnabled) {
+  const missing = [
+    ["APPLE_ID", process.env.APPLE_ID],
+    ["APPLE_TEAM_ID", process.env.APPLE_TEAM_ID],
+    [
+      "APPLE_APP_PASSWORD",
+      process.env.APPLE_APP_PASSWORD ?? process.env.APPLE_PASSWORD,
+    ],
+  ]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `ZAPP_MACOS_NOTARIZE is enabled but ${missing.join(", ")} is not set.`,
+    );
+  }
 }
 
 const config: ForgeConfig = {
@@ -162,32 +206,45 @@ const config: ForgeConfig = {
         );
       },
     ],
+    // zapp: product identity (MAC-2). appBundleId is set explicitly because
+    // @electron/packager otherwise derives `com.electron.<name>`.
+    appBundleId: ZAPP_APP_BUNDLE_ID,
     protocols: [
       {
-        name: "Dyad",
-        schemes: ["dyad"],
+        name: ZAPP_PROTOCOL_NAME,
+        schemes: [ZAPP_PROTOCOL_SCHEME],
       },
     ],
-    icon: "./assets/icon/logo",
+    icon: "./assets/zapp/icon",
 
-    osxSign: isEndToEndTestBuild
-      ? undefined
-      : ({
-          identity: process.env.APPLE_TEAM_ID,
+    osxSign: isMacSigningEnabled
+      ? ({
+          // zapp: an explicit identity wins; otherwise the team id is matched
+          // against the keychain's Developer ID certs, as upstream does.
+          identity:
+            process.env.MACOS_SIGN_IDENTITY ?? process.env.APPLE_TEAM_ID,
+          // zapp: CI imports the Developer ID cert into a throwaway keychain
+          // and points here, so codesign cannot resolve some other identity
+          // from the runner's default search list. Unset locally.
+          keychain: process.env.MACOS_KEYCHAIN_PATH,
           // Surface the actual signing error instead of silently continuing
           // (@electron/packager defaults continueOnError to true, which masks failures)
           continueOnError: false,
           // Skip provisioning profile search (not needed for Developer ID distribution,
           // and the cwd scan crashes on broken symlinks like CLAUDE.md)
           preEmbedProvisioningProfile: false,
-        } as Record<string, unknown>),
-    osxNotarize: isEndToEndTestBuild
-      ? undefined
-      : {
+        } as Record<string, unknown>)
+      : undefined,
+    // zapp: @electron/notarize submits with notarytool and staples the ticket
+    // to the .app before the makers run, so the .zip ships stapled.
+    osxNotarize: isMacNotarizationEnabled
+      ? {
           appleId: process.env.APPLE_ID!,
-          appleIdPassword: process.env.APPLE_PASSWORD!,
+          appleIdPassword: (process.env.APPLE_APP_PASSWORD ??
+            process.env.APPLE_PASSWORD)!,
           teamId: process.env.APPLE_TEAM_ID!,
-        },
+        }
+      : undefined,
     asar: {
       // Native modules and node-pty helper binaries must be loadable from disk.
       unpackDir:
@@ -203,46 +260,48 @@ const config: ForgeConfig = {
         extraModules: nativeRebuildModules,
         force: true,
       },
+  // zapp: every maker below points at the zapp icon set and registers the
+  // zapp:// scheme (MAC-2). Only MakerZIP/darwin is exercised by CI today.
   makers: [
     new MakerSquirrel(
       // @ts-expect-error - incorrect types exported by MakerSquirrel
       isWindowsSigningEnabled
         ? {
             windowsSign,
-            iconUrl:
-              "https://raw.githubusercontent.com/dyad-sh/dyad/main/assets/icon/logo.ico",
-            setupIcon: "./assets/icon/logo.ico",
+            iconUrl: ZAPP_SQUIRREL_ICON_URL,
+            setupIcon: "./assets/zapp/icon.ico",
           }
         : {
-            iconUrl:
-              "https://raw.githubusercontent.com/dyad-sh/dyad/main/assets/icon/logo.ico",
-            setupIcon: "./assets/icon/logo.ico",
+            iconUrl: ZAPP_SQUIRREL_ICON_URL,
+            setupIcon: "./assets/zapp/icon.ico",
           },
     ),
     new MakerZIP({}, ["darwin"]),
     new MakerRpm({
       options: {
-        mimeType: ["x-scheme-handler/dyad"],
-        icon: "./assets/icon/logo.png",
+        mimeType: [`x-scheme-handler/${ZAPP_PROTOCOL_SCHEME}`],
+        icon: "./assets/zapp/icon.png",
       },
     }),
     new MakerDeb({
       options: {
-        mimeType: ["x-scheme-handler/dyad"],
-        icon: "./assets/icon/logo.png",
+        mimeType: [`x-scheme-handler/${ZAPP_PROTOCOL_SCHEME}`],
+        icon: "./assets/zapp/icon.png",
       },
     }),
     new MakerAppImage({
-      icon: "./assets/icon/logo.png",
+      icon: "./assets/zapp/icon.png",
     }),
   ],
   publishers: [
     {
       name: "@electron-forge/publisher-github",
       config: {
+        // zapp: this fork's repository. Left pointing at dyad-sh/dyad, a
+        // `publish` run would try to attach zapp artifacts to Dyad's releases.
         repository: {
-          owner: "dyad-sh",
-          name: "dyad",
+          owner: "crossbizz",
+          name: "zapp",
         },
         draft: true,
         force: true,

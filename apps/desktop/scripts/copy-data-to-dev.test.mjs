@@ -12,14 +12,15 @@ import {
 test("resolves Electron's production user data path on each platform", () => {
   assert.equal(
     getProductionUserDataPath({ platform: "darwin", homeDir: "/home/me" }),
-    path.join("/home/me", "Library", "Application Support", "dyad"),
+    // zapp: userData follows this fork's productName (MAC-2).
+    path.join("/home/me", "Library", "Application Support", "zapp"),
   );
   assert.equal(
     getProductionUserDataPath({
       platform: "win32",
       env: { APPDATA: "C:\\Users\\me\\AppData\\Roaming" },
     }),
-    path.join("C:\\Users\\me\\AppData\\Roaming", "dyad"),
+    path.join("C:\\Users\\me\\AppData\\Roaming", "zapp"),
   );
   assert.equal(
     getProductionUserDataPath({
@@ -27,7 +28,7 @@ test("resolves Electron's production user data path on each platform", () => {
       env: { XDG_CONFIG_HOME: "/config" },
       homeDir: "/home/me",
     }),
-    path.join("/config", "dyad"),
+    path.join("/config", "zapp"),
   );
 });
 
@@ -49,7 +50,7 @@ test("reports the production Dyad process on Windows", () => {
     getProcessesUsingDataDirectories([], {
       platform: "win32",
       runSync: () =>
-        '"dyad.exe","789","Console","1","123,456 K"\r\nINFO: No other tasks',
+        '"zapp.exe","789","Console","1","123,456 K"\r\nINFO: No other tasks',
     }),
     ["789"],
   );

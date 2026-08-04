@@ -6,6 +6,8 @@ import {
   removeUnusedAppPackageFiles,
   removeUnusedCopiedResources,
 } from "@/lib/packaging_cleanup";
+// zapp: the macOS bundle directory follows productName (MAC-2).
+import { ZAPP_MAC_APP_DIR_NAME } from "@/zapp/branding";
 
 const tempDirectories: string[] = [];
 
@@ -198,11 +200,11 @@ describe("removeUnusedCopiedResources", () => {
 
     const appResourcesPath = path.join(
       buildPath,
-      "dyad.app/Contents/Resources",
+      `${ZAPP_MAC_APP_DIR_NAME}/Contents/Resources`,
     );
     const electronResourcesPath = path.join(
       buildPath,
-      "dyad.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources",
+      `${ZAPP_MAC_APP_DIR_NAME}/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources`,
     );
     const keptLocale = path.join(
       electronResourcesPath,
@@ -235,7 +237,7 @@ describe("removeUnusedCopiedResources", () => {
 
     const gitCorePath = path.join(
       buildPath,
-      "dyad.app/Contents/Resources/git/libexec/git-core",
+      `${ZAPP_MAC_APP_DIR_NAME}/Contents/Resources/git/libexec/git-core`,
     );
 
     const removedFiles = [
@@ -284,7 +286,7 @@ describe("removeUnusedCopiedResources", () => {
 
     const gitCorePath = path.join(
       buildPath,
-      "dyad.app/Contents/Resources/git/libexec/git-core",
+      `${ZAPP_MAC_APP_DIR_NAME}/Contents/Resources/git/libexec/git-core`,
     );
     await writeFixtureFile(
       path.join(gitCorePath, "ja/System.CommandLine.resources.dll"),

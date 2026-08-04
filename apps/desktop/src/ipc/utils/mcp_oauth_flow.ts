@@ -9,6 +9,8 @@ import { auth } from "@ai-sdk/mcp";
 import { eq } from "drizzle-orm";
 import { db } from "../../db";
 import { mcpServers } from "../../db/schema";
+// zapp: product identity (MAC-2).
+import { ZAPP_PROTOCOL_PREFIX } from "../../zapp/branding";
 import {
   DyadOAuthClientProvider,
   decryptFromString,
@@ -42,7 +44,9 @@ function renderCallbackPage(options: {
   const accent = isSuccess ? "#10b981" : "#ef4444";
   const safeTitle = escapeHtml(options.title);
   const safeMessage = escapeHtml(options.message);
-  const returnUrl = "dyad://mcp-oauth-return";
+  // zapp: the app is registered for zapp://, so the hand-back link must use it
+  // or the callback page opens nothing (MAC-2).
+  const returnUrl = `${ZAPP_PROTOCOL_PREFIX}mcp-oauth-return`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

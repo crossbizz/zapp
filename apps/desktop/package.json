@@ -1,7 +1,7 @@
 {
   "name": "@zapp/desktop",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.9.0-zapp.0",
   "description": "Free, local, open-source AI app builder",
   "keywords": [],
   "license": "MIT",
@@ -27,7 +27,9 @@
     "dev:electron": "cross-env NODE_ENV=development npm start",
     "dev:engine": "cross-env DYAD_ENGINE_URL=http://localhost:8080/v1 npm start",
     "staging:engine": "cross-env DYAD_ENGINE_URL=https://staging---dyad-llm-engine-kq7pivehnq-uc.a.run.app/v1 npm start",
-    "install:packaging": "pnpm install --ignore-workspace --config.node-linker=hoisted",
+    "install:packaging": "node scripts/zapp/install-packaging.mjs",
+    "make:mac": "node scripts/zapp/make-mac.mjs",
+    "icons:generate": "node scripts/zapp/generate-icons.mjs",
     "package": "npm run rebuild:keychain-reader && npm run clean && electron-forge package",
     "make": "npm run rebuild:keychain-reader && npm run clean && electron-forge make",
     "publish": "npm run rebuild:keychain-reader && npm run clean && electron-forge publish",
@@ -232,5 +234,5 @@
   "engines": {
     "node": ">=22"
   },
-  "productName": "dyad"
+  "productName": "zapp"
 }

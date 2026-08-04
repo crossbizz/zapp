@@ -4,6 +4,7 @@ import {
   buildDesktopFile,
   computeExecCommand,
 } from "@/main/linux_protocol_registration";
+import { ZAPP_PROTOCOL_SCHEME } from "@/zapp/branding";
 
 describe("computeExecCommand", () => {
   it("pins NODE_ENV and the absolute userData for the dev relaunch", () => {
@@ -122,7 +123,10 @@ describe("buildDesktopFile", () => {
       tryExec: "/opt/dyad/dyad",
     });
 
-    expect(contents).toContain("MimeType=x-scheme-handler/dyad;");
+    // zapp: the fork registers zapp://, not dyad:// (MAC-2).
+    expect(contents).toContain(
+      `MimeType=x-scheme-handler/${ZAPP_PROTOCOL_SCHEME};`,
+    );
     expect(contents).toContain(`Exec="/opt/dyad/dyad" %u`);
     expect(contents).toContain("TryExec=/opt/dyad/dyad");
     expect(contents).toContain("NoDisplay=true");

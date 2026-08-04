@@ -5,11 +5,16 @@ import path from "node:path";
 import { promisify } from "node:util";
 import log from "electron-log";
 import { IS_TEST_BUILD } from "../ipc/utils/test_utils";
+// zapp: product identity (MAC-2).
+import { ZAPP_PROTOCOL_NAME, ZAPP_PROTOCOL_SCHEME } from "../zapp/branding";
 
 const logger = log.scope("linux_protocol");
 const execFileAsync = promisify(execFile);
 
-const SCHEME = "dyad";
+// zapp: the OS-registered scheme and the .desktop entry name follow the fork's
+// identity (MAC-2). Keep in step with forge.config.ts's MakerDeb/MakerRpm
+// mimeType, which registers the same handler for a system install.
+const SCHEME = ZAPP_PROTOCOL_SCHEME;
 const MIME_TYPE = `x-scheme-handler/${SCHEME}`;
 const DESKTOP_FILENAME = `${SCHEME}-url-handler.desktop`;
 
@@ -119,7 +124,8 @@ export function buildDesktopFile(command: ExecCommand): string {
   return [
     "[Desktop Entry]",
     "Type=Application",
-    "Name=Dyad",
+    // zapp: product identity (MAC-2).
+    `Name=${ZAPP_PROTOCOL_NAME}`,
     `Exec=${command.exec}`,
     // TryExec is a bare path; the spec doesn't allow it to be quoted or escaped.
     `TryExec=${command.tryExec}`,

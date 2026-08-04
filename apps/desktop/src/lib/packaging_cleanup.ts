@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+// zapp: the macOS bundle directory is named after productName, which this fork
+// renamed (MAC-2). Hardcoding "dyad.app" here would make every darwin prune
+// below a silent no-op — the paths simply would not exist.
+import { ZAPP_MAC_APP_DIR_NAME } from "../zapp/branding";
 
 type PackagerPlatform = "darwin" | "linux" | "mas" | "win32" | string;
 type PackagerArch = "arm64" | "x64" | "ia32" | string;
@@ -456,14 +460,14 @@ function getResourcePaths(
     return {
       appResourcesPath: path.join(
         buildPath,
-        "dyad.app",
+        ZAPP_MAC_APP_DIR_NAME,
         "Contents",
         "Resources",
       ),
       electronLocaleResourcePaths: [
         path.join(
           buildPath,
-          "dyad.app",
+          ZAPP_MAC_APP_DIR_NAME,
           "Contents",
           "Frameworks",
           "Electron Framework.framework",
