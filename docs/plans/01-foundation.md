@@ -14,7 +14,7 @@
 
 See master plan §Global Constraints. Specific to this plan:
 - Types are inferred from Zod schemas (`z.infer`) — never hand-written duplicates.
-- `packages/contracts` has zero runtime dependencies besides `zod`.
+- `packages/contracts` has zero runtime dependencies besides `zod` and `ulid`. *(Amended 2026-08-03: FND-3 mandates the ulid package; original "zod only" line contradicted it.)*
 - Table and column names match PRD §23 exactly (snake_case in SQL, camelCase in TS via Drizzle mapping).
 - All IDs are prefixed TypeIDs: `org_`, `user_`, `proj_`, `run_`, `task_`, `ws_`, `rel_`, `dep_`, `evt_`, `art_`, `spec_`, `sec_` (ULID suffix, sortable).
 
@@ -86,7 +86,7 @@ packages:
 **Interfaces produced:** `defineEnv(schema)` helper; per-service env schemas colocated with services.
 **Effort:** S
 
-- [ ] **Step 1:** Failing test `env.test.ts`:
+- [x] **Step 1:** Failing test `env.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -104,9 +104,9 @@ describe("defineEnv", () => {
 });
 ```
 
-- [ ] **Step 2:** Run `pnpm --filter @zapp/config test` → FAIL (module not found).
-- [ ] **Step 3:** Implement `defineEnv(schema, source = process.env)`: parse, on error throw `new Error("Invalid environment: " + issues.map(i => i.path.join(".")).join(", "))` — key names only, never values.
-- [ ] **Step 4:** Test passes. Commit: `feat(config): typed environment validation`
+- [x] **Step 2:** Run `pnpm --filter @zapp/config test` → FAIL (module not found).
+- [x] **Step 3:** Implement `defineEnv(schema, source = process.env)`: parse, on error throw `new Error("Invalid environment: " + names.join(", "))` where `names = [...new Set(issues.map(i => i.path.join(".")).filter(Boolean))]`, falling back to `"<schema>"` when no issue carries a path — key names only, never values. *(Amended 2026-08-03 from the original per-issue formula: empty-path issues (top-level refine, non-object source) previously produced a nameless error; controller-approved deviation, see FND-2 review.)*
+- [x] **Step 4:** Test passes. Commit: `feat(config): typed environment validation`
 
 ### Task FND-3: `packages/contracts` — identifiers, events, task states
 
@@ -142,7 +142,7 @@ it("accepts a valid tool.completed event", () => {
 });
 it("rejects unknown event types and negative sequence", () => { /* parse failures asserted */ });
 it("event type list matches PRD count", () => {
-  expect(AGENT_EVENT_TYPES).toHaveLength(30);
+  expect(AGENT_EVENT_TYPES).toHaveLength(34);
 });
 ```
 
@@ -291,7 +291,7 @@ export const IdempotencyHeader = "idempotency-key";
 
 ## Self-review checklist (run after all tasks)
 - [ ] Every table in PRD §23 exists in `packages/db` with matching columns.
-- [ ] `AGENT_EVENT_TYPES` matches PRD §14.4 exactly (30 types).
+- [ ] `AGENT_EVENT_TYPES` matches PRD §14.4 exactly (34 types).
 - [ ] `TOOL_NAMES` matches PRD §16.1 exactly.
 - [ ] No package besides contracts is imported by both a service and a client without going through contracts/api-client.
 
@@ -299,3 +299,4 @@ export const IdempotencyHeader = "idempotency-key";
 
 - (empty — plan not yet executed)
 - 2026-08-03: FND-0 done (repo init, 8edc125). FND-1 done (b1de22a, review approved; Important fix applied in follow-up commit: turbo globalDependencies + .prettierignore). Minors deferred to final review: test:integration dependsOn (resolve FND-8), lib ES2023 note, decorative @ts-check.
+- 2026-08-03: FND-2 done (49e5ebe + fix ab0362c, review clean; error-formula deviation approved). Plan amendments: AGENT_EVENT_TYPES count corrected 30→34 vs PRD §14.4; contracts dep constraint now zod+ulid.

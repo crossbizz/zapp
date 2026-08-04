@@ -78,7 +78,7 @@ At each milestone boundary, STOP feature work and run the milestone's exit check
 
 ## 9. Git
 
-- Trunk-based: branch `task/<TASK-ID>` → verify green → merge to `main` (fast-forward preferred). After FND-8 lands, CI must be green before merge.
+- Trunk-based. Serial execution commits directly to `main` (controller decision 2026-08-03); `task/<TASK-ID>` branches become mandatory once parallel agents start. After FND-8 lands, CI must be green before push.
 - Small commits, prescribed messages. Never rewrite published history. Never commit `.env`, keys, or generated secrets.
 
 ## 10. External credentials by milestone
