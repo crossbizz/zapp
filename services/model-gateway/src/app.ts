@@ -25,7 +25,7 @@ const SAFE_PROVIDER_ERROR = {
   type: 'error',
   code: 'provider_error',
   message: 'The model provider request failed.',
-} as const;
+} as const satisfies GatewayStreamEvent;
 
 const logSerializers = {
   req(request: { id: string; method: string; url: string }) {
@@ -85,8 +85,45 @@ function carriesUserCredential(headers: Record<string, string | string[] | undef
   return (headers.authorization ?? '') !== '' || (headers.cookie ?? '') !== '';
 }
 
-function writeSse(response: NodeJS.WritableStream, event: unknown): void {
-  response.write(`data: ${JSON.stringify(event)}\n\n`);
+function waitForDrain(response: NodeJS.WritableStream, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (canContinue: boolean): void => {
+      if (settled) return;
+      settled = true;
+      response.off('drain', onDrain);
+      response.off('close', onClose);
+      signal.removeEventListener('abort', onAbort);
+      resolve(canContinue);
+    };
+    const onDrain = (): void => {
+      settle(true);
+    };
+    const onClose = (): void => {
+      settle(false);
+    };
+    const onAbort = (): void => {
+      settle(false);
+    };
+
+    response.once('drain', onDrain);
+    response.once('close', onClose);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) settle(false);
+  });
+}
+
+async function writeSse(
+  response: NodeJS.WritableStream,
+  event: unknown,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const parsed = GatewayStreamEventSchema.parse(event);
+  if (signal.aborted) return false;
+  const accepted = response.write(`data: ${JSON.stringify(parsed)}\n\n`);
+  return accepted ? true : waitForDrain(response, signal);
 }
 
 export function buildApp(options: BuildAppOptions) {
@@ -186,17 +223,19 @@ export function buildApp(options: BuildAppOptions) {
         const stream = options.completion.stream(request.body, abortController.signal);
         for await (const event of stream) {
           if (abortController.signal.aborted || reply.raw.destroyed) return;
-          writeSse(reply.raw, GatewayStreamEventSchema.parse(event));
+          if (!(await writeSse(reply.raw, event, abortController.signal))) return;
         }
         if (!abortController.signal.aborted && !reply.raw.destroyed) {
-          writeSse(reply.raw, { type: 'done' });
-          reply.raw.end();
+          if (await writeSse(reply.raw, { type: 'done' }, abortController.signal)) {
+            reply.raw.end();
+          }
         }
       } catch {
         if (!abortController.signal.aborted && !reply.raw.destroyed) {
           request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
-          writeSse(reply.raw, SAFE_PROVIDER_ERROR);
-          reply.raw.end();
+          if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, abortController.signal)) {
+            reply.raw.end();
+          }
         }
       } finally {
         reply.raw.off('close', abortOnDisconnect);

@@ -56,9 +56,9 @@ export const CompleteRequestSchema = z.object({
 Providers: anthropic, openai, google, openai-compatible (base-url configurable) via Vercel AI SDK; neutral tool schema converted per provider inside adapters only.
 **Effort:** L
 
-- [x] **Step 1:** Failing tests with mocked provider SDKs: request validation; tool schema conversion produces provider-correct shape (snapshot per provider); stream passthrough preserves order; provider error surfaces as typed `provider_error` event, never a thrown 500 mid-stream.
-- [x] **Step 2:** Implement; config `config/models.json`: `{ roles: { planner: { primary: "anthropic/claude-sonnet-5", fallbacks: ["openai/gpt-5"] }, ... }, providers: {...keys from env} }`.
-- [x] **Step 3:** Commit: `feat(model-gateway): provider-neutral streaming completion API`
+- [ ] **Step 1:** Failing tests with mocked provider SDKs: request validation; tool schema conversion produces provider-correct shape (snapshot per provider); stream passthrough preserves order; provider error surfaces as typed `provider_error` event, never a thrown 500 mid-stream.
+- [ ] **Step 2:** Implement; config `config/models.json`: `{ roles: { planner: { primary: "anthropic/claude-sonnet-5", fallbacks: ["openai/gpt-5"] }, ... }, providers: {...keys from env} }`.
+- [ ] **Step 3:** Commit: `feat(model-gateway): provider-neutral streaming completion API`
 
 ### Task AR-2: Routing, retry, fallback policy
 
@@ -265,3 +265,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 ## Execution log
 
 - 2026-08-04 AR-1 done — Added the authenticated provider-neutral streaming gateway and four AI SDK adapters with primary-only role selection; fallback execution remains AR-2.
+- 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, so controller/human architectural resolution is required.

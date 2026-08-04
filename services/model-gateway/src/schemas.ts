@@ -225,6 +225,14 @@ export const GatewayStreamEventSchema = z.discriminatedUnion('type', [
       cachedInputTokens: z.number().int().nonnegative().optional(),
     })
     .strict(),
+  z.object({ type: z.literal('done') }).strict(),
+  z
+    .object({
+      type: z.literal('error'),
+      code: z.literal('provider_error'),
+      message: z.string(),
+    })
+    .strict(),
 ]);
 
 export type GatewayStreamEvent = z.infer<typeof GatewayStreamEventSchema>;

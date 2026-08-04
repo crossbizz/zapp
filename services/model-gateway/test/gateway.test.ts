@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http';
 import { Writable } from 'node:stream';
 
 import { createServiceTokenSigner, type ServiceAudience, type ServiceName } from '@zapp/config';
@@ -10,6 +11,7 @@ import {
   type CompletionBackend,
   type GatewayStreamEvent,
 } from '../src/app.js';
+import { GatewayStreamEventSchema } from '../src/schemas.js';
 import { loadModelsConfig } from '../src/models.js';
 import { createAnthropicAdapter } from '../src/providers/anthropic.js';
 import { createCompatibleAdapter } from '../src/providers/compatible.js';
@@ -93,6 +95,25 @@ function deferred<T = void>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function blockFirstResponseWrite(app: ReturnType<typeof buildApp>) {
+  const blocked = deferred<ServerResponse>();
+  app.addHook('onRequest', (_request, reply, done) => {
+    const originalWrite = reply.raw.write.bind(reply.raw) as (...args: unknown[]) => boolean;
+    let writeCount = 0;
+    reply.raw.write = ((...args: unknown[]) => {
+      const accepted = originalWrite(...args);
+      writeCount += 1;
+      if (writeCount === 1) {
+        blocked.resolve(reply.raw);
+        return false;
+      }
+      return accepted;
+    }) as typeof reply.raw.write;
+    done();
+  });
+  return blocked.promise;
 }
 
 afterEach(async () => {
@@ -181,6 +202,44 @@ describe('strict request schemas', () => {
     ['unknown budget key', { ...validRequest, budget: { remainingCredits: 5, currency: 'USD' } }],
   ])('rejects %s', (_name, input) => {
     expect(CompleteRequestSchema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe('strict gateway stream event schema', () => {
+  const terminalEvents = [
+    { type: 'done' },
+    {
+      type: 'error',
+      code: 'provider_error',
+      message: 'The model provider request failed.',
+    },
+  ] as const satisfies readonly GatewayStreamEvent[];
+
+  it.each(terminalEvents)('accepts the terminal $type event', (event) => {
+    expect(GatewayStreamEventSchema.parse(event)).toEqual(event);
+  });
+
+  it('parses every event before writing successful and failed streams', async () => {
+    const parse = vi.spyOn(GatewayStreamEventSchema, 'parse');
+    const success = await appFor(backend([{ type: 'text-delta', text: 'complete' }])).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+    const failure = await appFor({
+      stream: () => {
+        throw new Error('private provider failure');
+      },
+    }).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+    const emitted = [...parseSse(success.payload), ...parseSse(failure.payload)];
+
+    expect(parse.mock.calls.map(([event]) => event)).toEqual(emitted);
   });
 });
 
@@ -457,6 +516,103 @@ describe('neutral SSE stream', () => {
         setTimeout(() => { reject(new Error('provider did not observe client abort')); }, 1_000),
       ),
     ]);
+  });
+
+  it('does not advance a completion iterator while an SSE write is backpressured', async () => {
+    const events = [
+      { type: 'text-delta', text: 'first' },
+      { type: 'text-delta', text: 'second' },
+    ] as const satisfies readonly GatewayStreamEvent[];
+    let nextCalls = 0;
+    const completion: CompletionBackend = {
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            next() {
+              const value = events[nextCalls];
+              nextCalls += 1;
+              return Promise.resolve(
+                value === undefined
+                  ? { done: true as const, value: undefined }
+                  : { done: false as const, value },
+              );
+            },
+          };
+        },
+      }),
+    };
+    const app = appFor(completion);
+    const blockedResponse = blockFirstResponseWrite(app);
+    const responsePromise = app.inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+
+    const raw = await blockedResponse;
+    await Promise.resolve();
+    expect(nextCalls).toBe(1);
+
+    raw.emit('drain');
+    const response = await responsePromise;
+    expect(parseSse(response.payload)).toEqual([...events, { type: 'done' }]);
+  });
+
+  it('stops a backpressured completion iterator when the client disconnects', async () => {
+    let nextCalls = 0;
+    const providerReturned = deferred();
+    const completion: CompletionBackend = {
+      stream: (_request, signal) => ({
+        [Symbol.asyncIterator]() {
+          return {
+            next() {
+              nextCalls += 1;
+              if (nextCalls === 1) {
+                return Promise.resolve({
+                  done: false as const,
+                  value: { type: 'text-delta', text: 'first' } as const,
+                });
+              }
+              return new Promise<IteratorResult<GatewayStreamEvent>>((resolve) => {
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    resolve({ done: true, value: undefined });
+                  },
+                  { once: true },
+                );
+              });
+            },
+            return() {
+              providerReturned.resolve();
+              return Promise.resolve({ done: true as const, value: undefined });
+            },
+          };
+        },
+      }),
+    };
+    const app = appFor(completion);
+    const blockedResponse = blockFirstResponseWrite(app);
+    const responsePromise = app.inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+
+    const raw = await blockedResponse;
+    try {
+      await Promise.resolve();
+      expect(nextCalls).toBe(1);
+
+      raw.destroy();
+      await providerReturned.promise;
+      expect(nextCalls).toBe(1);
+    } finally {
+      raw.destroy();
+      void responsePromise.catch(() => undefined);
+    }
   });
 });
 
