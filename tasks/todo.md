@@ -107,7 +107,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-3 Plan quotas + budget enforcement
 - [ ] MAC-4 Platform auth + Keychain
 - [ ] MAC-5 Unified local+cloud dashboard
-- [ ] MAC-5.5 Triage 51 Pro-dependent integration test files (spec source: 13 local_agent_* files; before/with MAC-6)
+- [ ] MAC-5.5 Triage 51 Pro-dependent integration test files + fix upstream monaco replaceEditorContent helper (aria-hidden ime-text-area breaks edit_code + editor_commit_menu) (spec source: 13 local_agent_* files; before/with MAC-6)
 - [ ] MAC-6 Local WorkspaceRuntime + local sessions
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
