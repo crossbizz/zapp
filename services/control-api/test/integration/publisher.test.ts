@@ -330,6 +330,78 @@ describe('event publisher failure and recovery', () => {
     expect(closeState).toBe('closed');
   });
 
+  it('coalesces 10,000 malformed diagnostics without blocking delivery or close', async () => {
+    // Break caught: a stalled diagnostic sink retains one promise/error closure
+    // per malformed hint instead of one bounded, payload-free summary.
+    const currentRunId = runId();
+    const firstReport = deferred<undefined>();
+    const summaryReport = deferred<undefined>();
+    const delivered = deferred<undefined>();
+    const malformedPayload = 'malformed-payload-marker';
+    let notify: ((payload: string) => void) | undefined;
+    let reports = 0;
+    let summaryMessage: string | undefined;
+    const publisher = createEventPublisher(
+      {
+        listen(_channel, onNotification) {
+          notify = onNotification;
+          return Promise.resolve({ unlisten: () => Promise.resolve() });
+        },
+        readLatestSequence: () => Promise.resolve({ sequence: 1 }),
+        publish() {
+          delivered.resolve(undefined);
+          return Promise.resolve();
+        },
+      },
+      {
+        onError(error) {
+          reports += 1;
+          if (reports === 1) return firstReport.promise;
+          summaryMessage = error.message;
+          return summaryReport.promise;
+        },
+      },
+    );
+
+    publisher.start();
+    await publisher.ready();
+    for (let index = 0; index < 10_000; index += 1) notify?.(malformedPayload);
+
+    expect(reports).toBe(1);
+    notify?.(currentRunId);
+    const deliveryState = await Promise.race([
+      delivered.promise.then(() => 'delivered' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+
+    firstReport.resolve(undefined);
+    await vi.waitFor(() => {
+      expect(reports).toBe(2);
+    });
+    expect(summaryMessage).toBe('event publisher diagnostics suppressed (1000 or more)');
+    expect(summaryMessage).not.toContain(malformedPayload);
+
+    const closing = publisher.close();
+    const closeState = await Promise.race([
+      closing.then(() => 'closed' as const),
+      new Promise<'blocked'>((resolve) => {
+        setImmediate(() => {
+          resolve('blocked');
+        });
+      }),
+    ]);
+    summaryReport.resolve(undefined);
+    await closing;
+
+    expect(deliveryState).toBe('delivered');
+    expect(closeState).toBe('closed');
+    expect(reports).toBe(2);
+  });
+
   it('ignores malformed notifications and valid runs with no committed event', async () => {
     // Break caught: unvalidated input creates a Redis channel, or a missing row
     // is turned into an invented sequence ping.

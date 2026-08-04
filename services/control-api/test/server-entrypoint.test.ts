@@ -108,8 +108,8 @@ describe('control-api production entrypoint', () => {
   });
 
   it('bootstraps the composed app with the lifecycle assembled from production handles', async () => {
-    // Break caught: server.ts bypasses bootstrap, omits it, or supplies a
-    // lifecycle other than the one assembled from its publisher, DB and Redis.
+    // Break caught: server.ts listens outside the lifecycle, bypasses bootstrap,
+    // omits it, or supplies a lifecycle other than the production assembly.
     const processOnce = vi.spyOn(process, 'once').mockReturnValue(process);
     const processExit = vi.spyOn(process, 'exit').mockImplementation((code) => {
       throw new Error(`unexpected process.exit(${String(code)})`);
@@ -117,6 +117,7 @@ describe('control-api production entrypoint', () => {
 
     await import('../src/server.js');
 
+    expect(production.app.listen).not.toHaveBeenCalled();
     expect(production.createEventPublisherLifecycle).toHaveBeenCalledOnce();
     const lifecycleInput = production.createEventPublisherLifecycle.mock.calls[0]?.[0];
     expect(lifecycleInput?.publisher).toBe(production.eventPublisher);
@@ -130,6 +131,7 @@ describe('control-api production entrypoint', () => {
     });
 
     await lifecycleInput?.listen();
+    expect(production.app.listen).toHaveBeenCalledOnce();
     expect(production.app.listen).toHaveBeenCalledWith({ host: '127.0.0.1', port: 4_321 });
     expect(processOnce).toHaveBeenCalledTimes(2);
     expect(processExit).not.toHaveBeenCalled();

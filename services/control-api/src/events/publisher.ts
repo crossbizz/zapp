@@ -5,6 +5,7 @@ const LISTEN_CHANNEL = 'agent_events';
 const DEFAULT_RETRY_DELAY_MS = 100;
 const MAXIMUM_RETRY_DELAY_MS = 5_000;
 const DEFAULT_MAXIMUM_PENDING_RUNS = 256;
+const MAXIMUM_SUPPRESSED_DIAGNOSTICS = 1_000;
 
 const NotificationSchema = idSchema('run');
 const SequenceRowSchema = z
@@ -110,18 +111,46 @@ export function createEventPublisher(
   let listenerLoop: Promise<void> | undefined;
   const pendingRuns = new Map<string, { pending: boolean }>();
   let overloadReported = false;
+  let reporterInFlight = false;
+  let suppressedDiagnostics = 0;
   let markReady!: () => void;
   const isClosed = (): boolean => closed;
   const readySignal = new Promise<void>((resolve) => {
     markReady = resolve;
   });
 
-  const report = (error: unknown): void => {
+  function finishReport(): void {
+    reporterInFlight = false;
+    if (suppressedDiagnostics === 0) return;
+    const suppressed = suppressedDiagnostics;
+    suppressedDiagnostics = 0;
+    const count =
+      suppressed === MAXIMUM_SUPPRESSED_DIAGNOSTICS
+        ? `${String(MAXIMUM_SUPPRESSED_DIAGNOSTICS)} or more`
+        : String(suppressed);
+    invokeReport(new Error(`event publisher diagnostics suppressed (${count})`));
+  }
+
+  function invokeReport(error: Error): void {
+    reporterInFlight = true;
     try {
-      void Promise.resolve(options.onError?.(asError(error))).catch(() => {});
+      void Promise.resolve(options.onError?.(error)).then(finishReport, finishReport);
     } catch {
       // Diagnostics must not become another publisher failure.
+      finishReport();
     }
+  }
+
+  const report = (error: unknown): void => {
+    if (options.onError === undefined) return;
+    if (reporterInFlight) {
+      suppressedDiagnostics = Math.min(
+        MAXIMUM_SUPPRESSED_DIAGNOSTICS,
+        suppressedDiagnostics + 1,
+      );
+      return;
+    }
+    invokeReport(asError(error));
   };
 
   const releaseSubscription = async (candidate: EventSubscription): Promise<void> => {
