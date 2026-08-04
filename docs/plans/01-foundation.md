@@ -251,10 +251,10 @@ export const memberships = pgTable("memberships", {
 **Files:** Create: `NOTICE`, `docs/adr/0000-template.md`, `docs/adr/0001-locked-p0-decisions.md`, `eslint-rules/no-dyad-pro-imports.mjs` (flat-config custom rule), CI grep step
 **Effort:** S
 
-- [ ] **Step 1:** `NOTICE`: Apache 2.0 attribution block for Dyad-derived code, listing `apps/desktop` + any `packages/dyad-*` as derived; maintenance instruction (update on every upstream merge).
-- [ ] **Step 2:** ESLint rule + CI step: fail on any import path matching `/src\/pro|@dyad.*\/pro/` anywhere in repo. Test: fixture file with such an import fails lint.
-- [ ] **Step 3:** `docs/adr/0001-locked-p0-decisions.md`: copy the master plan §2 decision table (source of truth for deviations).
-- [ ] **Step 4:** Commit: `chore: license NOTICE, src/pro import ban, ADR scaffold`
+- [x] **Step 1:** `NOTICE`: Apache 2.0 attribution block for Dyad-derived code, listing `apps/desktop` + any `packages/dyad-*` as derived; maintenance instruction (update on every upstream merge).
+- [x] **Step 2:** ESLint rule + CI step: fail on any import path matching `/src\/pro|@dyad.*\/pro/` anywhere in repo. Test: fixture file with such an import fails lint.
+- [x] **Step 3:** `docs/adr/0001-locked-p0-decisions.md`: copy the master plan §2 decision table (source of truth for deviations).
+- [x] **Step 4:** Commit: `chore: license NOTICE, src/pro import ban, ADR scaffold`
 
 ### Task FND-10: Shared error envelope & API conventions
 
@@ -307,3 +307,4 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-8 done (fa910aa + 0e648a2 + 3d535b2; CI+Security live-green runs 2-4, v5 pins, dependabot, turbo cache job-scoped). Desktop-present guard branch proven on run 3.
 - 2026-08-03: FND-10 done (b20372e + close-out d980cf1, 106 tests; primitives module, min(1)+trim envelope).
 - 2026-08-03: FND-5 done (d1cb938, review Approved; 14 unit + 9 integration tests, CI-visible execution proven). Minors 1/2/5 folded into FND-6 dispatch; Minor 3 (stale ci.yml comment) fixed by controller; Minor 4 deferred. subscriptions sub_ prefix + memberships PK noted → sub_ lands in FND-6 IdPrefix extension.
+- 2026-08-03: FND-9 done (fadc872 + fix 8197e8e, review Approved; eslint rule 29 tests + CI gate w/ 19-case self-test over apps+packages roots). Commented-import tradeoff documented in ADR-0001 + job header.

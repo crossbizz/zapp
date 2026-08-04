@@ -14,7 +14,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] FND-6 db: full PRD §23 schema + event partitioning + tenant repos
 - [x] FND-7 docker-compose dev env + bootstrap
 - [x] FND-8 CI pipeline + security scans
-- [ ] FND-9 NOTICE, src/pro import ban, ADRs
+- [x] FND-9 NOTICE, src/pro import ban, ADRs
 - [x] FND-10 API error envelope + pagination conventions
 
 ### Plan 02 — Control plane (part 1)
