@@ -9,6 +9,11 @@
 //
 //   node scripts/zapp/generate-icons.mjs
 //
+// The rasteriser is deterministic, but the encoder is not byte-reproducible
+// across environments: PNG payloads come from zlib, whose output can differ
+// between node/zlib versions. Re-running may therefore produce different bytes
+// for a pixel-identical image -- diff the rendering, not the file hash.
+//
 // Writes assets/zapp/{icon.icns,icon.png,icon.ico}. forge.config.ts points at
 // `./assets/zapp/icon`; @electron/packager appends the per-platform extension.
 
@@ -198,7 +203,6 @@ function encodeIco(entries) {
     directory[at + 3] = 0; // reserved
     directory.writeUInt16LE(1, at + 4); // colour planes
     directory.writeUInt16LE(32, at + 6); // bits per pixel
-    directory.writeUInt32BE(0, at + 8);
     directory.writeUInt32LE(entry.png.length, at + 8);
     directory.writeUInt32LE(offset, at + 12);
     offset += entry.png.length;

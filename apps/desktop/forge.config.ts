@@ -215,6 +215,8 @@ const config: ForgeConfig = {
         schemes: [ZAPP_PROTOCOL_SCHEME],
       },
     ],
+    // zapp: the zapp icon set, replacing Dyad's assets/icon/logo (MAC-2).
+    // Extension-less: @electron/packager appends .icns/.ico/.png per platform.
     icon: "./assets/zapp/icon",
 
     osxSign: isMacSigningEnabled

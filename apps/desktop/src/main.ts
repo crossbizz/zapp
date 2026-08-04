@@ -17,7 +17,7 @@ import { registerIpcHandlers } from "./ipc/ipc_host";
 import dotenv from "dotenv";
 // @ts-ignore
 import started from "electron-squirrel-startup";
-import { updateElectronApp, UpdateSourceType } from "update-electron-app";
+// zapp: `updateElectronApp`/`UpdateSourceType` moved to src/zapp/auto_update.
 import log from "electron-log";
 import {
   getSettingsFilePath,
@@ -104,6 +104,7 @@ import {
   ZAPP_USER_DATA_DIR_NAME,
 } from "@/zapp/branding";
 import { handleZappDeepLink } from "@/zapp/deep_link";
+import { startAutoUpdate } from "@/zapp/auto_update";
 import {
   applyManagedPnpmToProcessPath,
   getManagedPnpmBinDir,
@@ -523,12 +524,6 @@ export async function onReady() {
 
   logger.info("Auto-update enabled=", settings.enableAutoUpdate);
   if (settings.enableAutoUpdate) {
-    // Technically we could just pass the releaseChannel directly to the host,
-    // but this is more explicit and falls back to stable if there's an unknown
-    // release channel.
-    const postfix = settings.releaseChannel === "beta" ? "beta" : "stable";
-    const host = `https://api.dyad.sh/v1/update/${postfix}`;
-    logger.info("Auto-update release channel=", postfix);
     // update-electron-app logs updater errors at info level, which the
     // warn-filtered bug-report logs drop — leaving only the orphaned stack
     // trace tail. Log at error level and record for debug bundles.
@@ -536,15 +531,10 @@ export async function onReady() {
       logger.error("Auto-updater error:", error);
       recordUpdaterError(error);
     });
-    updateElectronApp({
-      logger,
-      updateInterval: "60 minutes",
-      updateSource: {
-        type: UpdateSourceType.ElectronPublicUpdateService,
-        repo: "dyad-sh/dyad",
-        host,
-      },
-    }); // additional configuration options available
+    // zapp: upstream pointed this at Dyad's own update service, which would let
+    // a zapp build install Dyad over itself. The feed now has to be named by
+    // ZAPP_UPDATE_FEED, and MAC-11 owns providing it. See src/zapp/auto_update.
+    startAutoUpdate({ settings, logger });
   }
 }
 

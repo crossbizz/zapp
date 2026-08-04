@@ -4,6 +4,7 @@ import {
   buildDesktopFile,
   computeExecCommand,
 } from "@/main/linux_protocol_registration";
+// zapp: product identity (MAC-2).
 import { ZAPP_PROTOCOL_SCHEME } from "@/zapp/branding";
 
 describe("computeExecCommand", () => {

@@ -49,6 +49,7 @@ test("reports the production Dyad process on Windows", () => {
   assert.deepEqual(
     getProcessesUsingDataDirectories([], {
       platform: "win32",
+      // zapp: the packaged Windows executable is named after productName.
       runSync: () =>
         '"zapp.exe","789","Console","1","123,456 K"\r\nINFO: No other tasks',
     }),

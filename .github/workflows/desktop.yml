@@ -115,14 +115,17 @@ jobs:
             notarize=true
           fi
 
+          # A skip on a PR is the design; a skip on a release build means an
+          # unsigned or un-notarized artifact would ship from a green run, so
+          # that one is a warning and is meant to be noticed.
           if [ "$RELEASE" != "true" ]; then
             echo "::notice title=Unsigned build::PR and non-release builds are unsigned by design."
             sign=false
             notarize=false
           elif [ "$sign" != "true" ]; then
-            echo "::notice title=Code signing skipped::MACOS_CERT_P12 / MACOS_CERT_PASSWORD / APPLE_TEAM_ID are not set. Producing an UNSIGNED build."
+            echo "::warning title=Code signing skipped on a RELEASE build::MACOS_CERT_P12 / MACOS_CERT_PASSWORD / APPLE_TEAM_ID are not set. This release artifact is UNSIGNED and Gatekeeper will block it."
           elif [ "$notarize" != "true" ]; then
-            echo "::notice title=Notarization skipped::APPLE_ID / APPLE_APP_PASSWORD are not set. The app is signed but NOT notarized, so Gatekeeper will block it."
+            echo "::warning title=Notarization skipped on a RELEASE build::APPLE_ID / APPLE_APP_PASSWORD are not set. This release artifact is signed but NOT notarized, so Gatekeeper will block it."
           fi
 
           echo "sign=$sign" >> "$GITHUB_OUTPUT"
@@ -162,15 +165,22 @@ jobs:
       # pnpm store) + electron-forge make. --skip-restore because this runner's
       # workspace is thrown away afterwards; locally the script restores the
       # workspace install and verifies the native modules are back on node's ABI.
+      #
+      # The Apple secrets are gated on the credential check rather than passed
+      # unconditionally: on every PR build -- which is every build until certs
+      # exist -- this step runs the repo's own code plus hundreds of package
+      # postinstall scripts, and none of them should have the signing
+      # credentials in their environment merely because the build is unsigned.
       - name: Package
         env:
           E2E_TEST_BUILD: ${{ steps.mode.outputs.release == 'true' && 'false' || 'true' }}
           ZAPP_MACOS_SIGN: ${{ steps.creds.outputs.sign }}
           ZAPP_MACOS_NOTARIZE: ${{ steps.creds.outputs.notarize }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: pnpm run make:mac --skip-restore
+          APPLE_ID: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_TEAM_ID: ${{ steps.creds.outputs.sign == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_APP_PASSWORD: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_APP_PASSWORD || '' }}
+        # `--` so pnpm forwards the flag to the script instead of parsing it.
+        run: pnpm run make:mac -- --skip-restore
 
       # Identity is the deliverable of MAC-2, so it is asserted rather than
       # eyeballed: a later upstream merge that resurrects Dyad's bundle id,

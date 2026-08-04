@@ -230,6 +230,31 @@ pnpm --filter @zapp/desktop run install:packaging   # standalone, node-linker=ho
 cd apps/desktop && E2E_TEST_BUILD=true pnpm exec electron-forge make
 ```
 
+> **Superseded by MAC-2.** The whole sequence is now one command:
+>
+> ```sh
+> E2E_TEST_BUILD=true pnpm --filter @zapp/desktop make:mac
+> ```
+>
+> `scripts/zapp/make-mac.mjs` runs the packaging install, `electron-forge make`, restores
+> the workspace install, and then *verifies* the native modules are back on node's ABI by
+> `dlopen`-ing the workspace `better_sqlite3.node` (repairing with `pnpm rebuild` only if
+> that fails). `--skip-install` / `--skip-restore` skip the ends; CI uses `--skip-restore`.
+>
+> `install:packaging` is now `scripts/zapp/install-packaging.mjs`, which adds two things a
+> flag string cannot:
+>
+> 1. **It wipes `node_modules` first.** pnpm reconciles installs incrementally, and
+>    converging a workspace (isolated, linked) tree onto a hoisted `--ignore-workspace`
+>    one silently leaves a **broken hybrid** — observed as `Packages: +109 -220`, a tree
+>    with no top-level `vite`, and Forge dying with `Cannot start service: Host version
+>    "0.21.5" does not match binary version "0.19.12"`. The install is only deterministic
+>    from a clean tree.
+> 2. **It uses a packaging-only `--store-dir`** (`apps/desktop/.packaging-store`,
+>    gitignored, ~1.8 GB). This resolves the shared-store poisoning below at its source:
+>    the Electron-ABI rebuild has nothing to hard-link back onto. Verified across three
+>    full builds.
+
 This is scoped to `apps/desktop/node_modules` — it does not touch the root store or any
 other package. `pnpm install` from the root restores the workspace layout afterwards.
 The lockfile it emits is gitignored: the root `pnpm-lock.yaml` stays the source of
@@ -247,6 +272,12 @@ pnpm rebuild -r better-sqlite3 node-pty
 
 MAC-3 should either isolate the packaging tree from the shared store (`pnpm deploy`) or
 make the rebuild part of a packaging script that restores Node ABI afterwards.
+
+> **Done in MAC-2, by the first route.** `install:packaging` gives the packaging tree its
+> own `--store-dir`, so the rebuild cannot reach the workspace copies at all, and
+> `make:mac` proves it after every build. The `pnpm rebuild` above is retained only as the
+> self-healing fallback. Neither of the two "permanent alternatives" below was needed: the
+> root `.npmrc` is untouched and no `pnpm deploy` step was introduced.
 
 Two permanent alternatives, both **deferred to MAC-3** (which owns packaging and
 signing): set `node-linker=hoisted` in the *root* `.npmrc`, or build the packaging tree
@@ -276,12 +307,20 @@ merge of a new tag into `apps/desktop/`, then:
    git ls-files apps/desktop | sed 's#^apps/desktop/##' | sort > /tmp/ours.txt
    comm -23 /tmp/up.txt /tmp/ours.txt   # upstream has, we do not — every line must be
                                         # an intentional deletion listed in this ADR
-   comm -13 /tmp/up.txt /tmp/ours.txt   # ours only — expect just src/zapp/**
+   comm -13 /tmp/up.txt /tmp/ours.txt   # ours only — expect just src/zapp/**,
+                                        # assets/zapp/** and scripts/zapp/**
    ```
 
    Baseline at `282591c`: upstream 2415 tracked files excluding `src/pro`; we track
    2344 = 2415 − 66 (`.claude/**`) − 1 (`package-lock.json`) − 6 (Pro-only tests)
    + 2 (`src/zapp/pro_stubs/*`). **Zero unexplained.**
+
+   MAC-2 moves that baseline to **2355**, all zapp-authored: `src/zapp/{branding,
+   deep_link,deep_link.test,auto_update,auto_update.test}.ts` (+5),
+   `assets/zapp/icon.{icns,ico,png}` (+3), and
+   `scripts/zapp/{generate-icons,install-packaging,make-mac}.mjs` (+3). Non-code zapp
+   assets and scripts cannot live under `src/`, so the "ours only" expectation covers
+   three directories rather than one.
 3. **Expect conflicts only where marked.** Every intentional divergence is one of:
    a `// zapp: pro-removed` comment, an additive `package.json` entry, a renamed script,
    or the `preserveSymlinks` block. Grep `// zapp:` to enumerate them.
