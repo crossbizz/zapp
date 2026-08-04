@@ -1,0 +1,7 @@
+docs/
+tasks/
+README.md
+AGENTS.md
+CLAUDE.md
+pnpm-lock.yaml
+.superpowers/
