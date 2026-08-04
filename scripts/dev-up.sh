@@ -77,7 +77,30 @@ docker info >/dev/null 2>&1 || die "the Docker daemon is not running — start D
 
 if [ ! -f "$REPO_ROOT/.env" ]; then
   cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
-  log "created .env from .env.example (fill in real keys as you need them)"
+  # The template ships `replace-me` placeholders for the platform secrets. They
+  # are below the services' length floors, so a copied-verbatim .env cannot boot
+  # the control plane -- the developer's first `pnpm dev` fails on a variable
+  # they were never told to change. Generate them here instead: local-only
+  # values, regenerated whenever .env is deleted, never committed.
+  #
+  # SECRETS_MASTER_KEY is the odd one out: the vault decodes it as base64 of
+  # exactly 32 bytes (`openssl rand -base64 32`), while the JWT secrets are hex.
+  seed_secret() {
+    # $1 = variable name, $2 = generated value. Portable in-place edit: BSD sed
+    # (macOS) and GNU sed disagree about `-i`, so write through a temp file.
+    local name="$1" value="$2" tmp
+    tmp="$(mktemp)"
+    awk -v n="$name" -v v="$value" \
+      'index($0, n "=") == 1 { print n "=" v; next } { print }' \
+      "$REPO_ROOT/.env" > "$tmp"
+    mv "$tmp" "$REPO_ROOT/.env"
+  }
+  seed_secret SESSION_JWT_SECRET "$(openssl rand -hex 32)"
+  seed_secret SERVICE_TOKEN_SECRET "$(openssl rand -hex 32)"
+  seed_secret SECRETS_MASTER_KEY "$(openssl rand -base64 32)"
+  chmod 600 "$REPO_ROOT/.env"
+  log "created .env from .env.example with generated local secrets"
+  log "  (add real provider keys — Stytch, Modal, model providers — as you need them)"
 fi
 
 # ------------------------------------------------------------------ compose --
