@@ -287,3 +287,34 @@ North star (PRD §37.1): **verified production releases per active org per month
 
 - 2026-08-03: Plan set authored from PRD v1.1. Not yet executed.
 - 2026-08-03: Stack decisions finalized by product owner: **Stytch** (auth, supersedes WorkOS rec), **Neon** (confirmed), **Stripe** (confirmed), **Flexprice** (metering/credits/rating), **OTel → Grafana Cloud** incl. Faro + OnCall (supersedes Sentry), **PostHog** (analytics + feature flags). Plans 00/01/02/03/04/05/07/08/10, README, and tracker updated accordingly.
+
+## M0 gate sign-off — 2026-08-04
+
+**Verdict: PASSED.** All six exit criteria met and verified against the running system by an
+adversarial gate check (not from task reports), with the four blockers it raised closed and
+re-verified live.
+
+| Criterion | How it was verified |
+|---|---|
+| Monorepo + CI green | Nine jobs across three workflows green on HEAD: checks, integration, **tenant isolation (M0 exit criterion)**, **git isolation (repository-scoped tokens)**, package macOS app, preserve suite (macOS), gitleaks, osv-scanner, license boundary |
+| contracts/db packages | Built and consumed as `workspace:*`; suites run cold; `packages/db`'s conformance test genuinely parses PRD §23 and diffs 28 tables both directions |
+| control-api boots with auth/orgs/projects/audit | Real compiled `dist/server.js` booted against the live stack; all 30 composed routes probed — zero 404s; audit rows written in-transaction and DB-rejected on update/delete |
+| Two orgs cannot see each other's rows | Isolation suite 46/46 against real Postgres; the 8 negative controls proved load-bearing by suppression (guard fails `expected +0 to be 8`) |
+| Forgejo + repo-per-project + scoped tokens | Repo created through the deployed git-service HTTP surface; cross-repo denial proven by a **refused `git clone`** (same-tenant and cross-tenant) + API 404; token sweep wired into the real entrypoint |
+| Dyad fork without `src/pro` | Zero `src/pro` across all history and tree; two independent CI enforcements (eslint rule + self-testing grep job); packaged app's identity assertions green |
+
+**Closed at the gate:** Desktop workflow green for the first time (0/4 → passing; cause was
+`setup-node`'s `package-manager-cache` defaulting true, not the `cache:` input); Stytch gate
+now rejects placeholder credentials and skips loudly (it previously passed with a garbage
+secret); dependabot scan permissions; non-vendored dependency tree now vulnerability-free.
+
+**Explicitly unverified — no credentials exist yet (do not read the green board as covering these):**
+Stytch against a real IdP · macOS signing + notarization (steps skip on every run; MAC-2's core
+claim has never executed) · Docker runtime preservation · Modal/Temporal/LocalStack (no test
+reads `MODAL_*`).
+
+**Carried into M1 as known scope:** GATE-5 no control-api→git-service→Forgejo join test (CP-9
+needs it the moment a project provisions for real) · GATE-6 desktop's own suites unwired from CI
+(363 vitest files, 123/125 Playwright specs) · GATE-7 orphaned dev Forgejo repos · electron 40.8.5
+blocked on a real PTY-test failure (18 findings, OPS-13) · release/* branch protection refuses even
+the admin token (blocks DEP-1 — recorded in plan 07).
