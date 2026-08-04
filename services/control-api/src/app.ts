@@ -20,6 +20,7 @@ import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
 import { loadRateLimits, type RateLimitConfig } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
+import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -90,6 +91,13 @@ export interface OrgDeps {
  */
 export interface TenantDeps {
   readonly tenantDb: TenantDbFactory;
+  /**
+   * Creates a project's internal repository, inside the transaction that creates
+   * the project (CP-6). Defaults to the record-only stand-in, which names the
+   * repository and contacts nothing — plan 06's GIT-2 binds the Forgejo client
+   * in `src/compose.ts`, and a test binds one that fails on demand.
+   */
+  readonly git?: GitServicePort;
 }
 
 /**
@@ -312,7 +320,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
-          registerProjectRoutes(app, { now });
+          registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
           registerRunRoutes(app);
         }
       });

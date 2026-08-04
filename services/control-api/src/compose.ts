@@ -7,6 +7,7 @@ import { createRedisDeviceStore } from './auth/device.js';
 import { createStytchAuthPort } from './auth/stytch.js';
 import { createDbUserStore } from './auth/users.js';
 import type { RateLimitConfig } from './config/rate-limits.js';
+import { createRecordOnlyGitService } from './git/port.js';
 import type { LoggerConfig } from './logging.js';
 import { createRedisInviteStore } from './orgs/invites.js';
 import { createDbOrganizationStore } from './orgs/store.js';
@@ -63,7 +64,15 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // Not optional in a deployment, and `buildApp` says so: without it the
     // tenant plugin is unregistered and every tenant-scoped route is simply
     // absent.
-    tenant: { tenantDb: createTenantDbFactory(database) },
+    tenant: {
+      tenantDb: createTenantDbFactory(database),
+      // Named here rather than left to `buildApp`'s default, because this file
+      // is where a port's shipping binding is supposed to be legible: today the
+      // record-only stand-in, which writes the `repositories` row and its
+      // `internal_repo_ref` and contacts nothing. Plan 06's GIT-2 swaps in the
+      // Forgejo client on this line and nothing else moves.
+      git: createRecordOnlyGitService(),
+    },
     limits: {
       config: runtime.rateLimits,
       limiter: createRedisRateLimiter(redis),

@@ -50,6 +50,14 @@ export const AUDIT_ACTIONS = [
   'member.role_changed',
   'member.removed',
   'project.created',
+  'project.updated',
+  /**
+   * A capability scan was asked for. Recorded even though nothing is enqueued
+   * yet (plan 05 VF-3 owns the pipeline): the request is what a support question
+   * asks about, and a trail that starts only once the feature is finished has a
+   * hole in exactly the period people ask about.
+   */
+  'project.scan_requested',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

@@ -12,6 +12,7 @@ import {
   createInMemoryIdempotencyStore,
   type IdempotencyStore,
 } from '../../src/plugins/idempotency.js';
+import type { GitServicePort } from '../../src/git/port.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from './fake-auth-port.js';
@@ -108,6 +109,12 @@ export interface HarnessOptions {
    * (`test/integration/tenant-isolation.test.ts`).
    */
   readonly tenantDb?: TenantDbFactory;
+  /**
+   * Substitutes the git service the project-creation transaction calls. The
+   * suites that assert the rollback bind one that refuses; everything else gets
+   * the shipping record-only implementation.
+   */
+  readonly git?: GitServicePort;
 }
 
 /**
@@ -137,7 +144,14 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       now,
     },
     orgs: { organizations, invites, audit },
-    ...(options.tenantDb === undefined ? {} : { tenant: { tenantDb: options.tenantDb } }),
+    ...(options.tenantDb === undefined
+      ? {}
+      : {
+          tenant: {
+            tenantDb: options.tenantDb,
+            ...(options.git === undefined ? {} : { git: options.git }),
+          },
+        }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       limiter: options.limiter ?? createInMemoryRateLimiter(now),

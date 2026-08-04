@@ -3,6 +3,7 @@ import { memberships, organizations, type Database, type Executor } from '@zapp/
 import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
+import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
 import type { Role } from '../policy/permissions.js';
 
@@ -113,17 +114,11 @@ export type MemberUpdate = 'updated' | 'member_not_found' | 'last_owner';
  */
 export type RoleUpdate = MembershipRecord | 'member_not_found' | 'last_owner';
 
-/** One keyset page. `nextCursor` is null on the last one — never absent (FND-10). */
-export interface StorePage<T> {
-  readonly items: T[];
-  readonly nextCursor: string | null;
-}
-
-export interface PageRequest {
-  readonly limit: number;
-  /** The last id of the previous page; rows strictly after it are returned. */
-  readonly cursor?: string;
-}
+/**
+ * Pagination is one shape for the whole service (`src/pagination.ts`), re-exported
+ * here so a caller of this store does not have to know which module owns it.
+ */
+export type { PageRequest, StorePage };
 
 export interface OrganizationStore {
   /** @throws {SlugTakenError} when `slug` is taken; rolls back if `link` or `audit` rejects. */

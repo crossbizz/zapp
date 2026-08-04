@@ -68,7 +68,7 @@ function errorOf(response: { json: () => unknown }): string {
 const emptyTenantDb: TenantDbFactory = (organizationId) =>
   ({
     organizationId,
-    projects: { list: () => Promise.resolve([]) },
+    projects: { list: () => Promise.resolve({ items: [], nextCursor: null }) },
   }) as unknown as TenantDatabase;
 
 /** One rule, spelled for a test that wants a specific class tightened. */

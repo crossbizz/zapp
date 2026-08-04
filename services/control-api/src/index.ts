@@ -48,10 +48,10 @@ export {
   type OrganizationMembership,
   type OrganizationRecord,
   type OrganizationStore,
-  type PageRequest,
   type RoleUpdate,
-  type StorePage,
 } from './orgs/store.js';
+/** One pagination shape for every list endpoint (master plan §7). */
+export type { PageRequest, StorePage } from './pagination.js';
 export {
   createInMemoryInviteStore,
   createRedisInviteStore,
@@ -124,4 +124,32 @@ export {
   type NewProjectInput,
   type TenantDatabase,
   type TenantDbFactory,
+} from './tenant/db.js';
+// CP-6 — the project lifecycle. The git service is a port so the transaction
+// that creates a project (project + repository + branch + environments + audit,
+// or none of them) can be exercised against a fake that refuses; plan 06's
+// GIT-2 binds the Forgejo implementation in `composeApp`.
+export {
+  createRecordOnlyGitService,
+  GitServiceError,
+  type CreatedRepository,
+  type CreateRepositoryInput,
+  type GitServicePort,
+} from './git/port.js';
+export {
+  BRANCH_ACTIVE,
+  DEFAULT_BRANCH,
+  DEFAULT_ENVIRONMENTS,
+  INTERNAL_PROVIDER,
+  NO_SYNC,
+  SOURCE_TYPES,
+  type SourceType,
+} from './tenant/vocabulary.js';
+export type {
+  ProjectListRequest,
+  ProjectPatch,
+  ProjectResources,
+  RepositoryRequest,
+  UpdatedProject,
+  UpdateProjectInput,
 } from './tenant/db.js';

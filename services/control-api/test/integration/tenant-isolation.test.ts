@@ -1,5 +1,12 @@
 import { ApiErrorSchema, newId } from '@zapp/contracts';
-import { agentEvents, agentRuns, branches, nextEventSequence, projects } from '@zapp/db';
+import {
+  agentEvents,
+  agentRuns,
+  branches,
+  nextEventSequence,
+  projectContracts,
+  projects,
+} from '@zapp/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -142,7 +149,7 @@ describe('the isolation suite itself', () => {
  * exactly that, silently and with a green tick. See the guard at the end of the
  * file.
  */
-const NEGATIVE_CONTROLS = 6;
+const NEGATIVE_CONTROLS = 7;
 let negativeControlsRun = 0;
 
 describe.skipIf(!hasDatabase)('tenant isolation', () => {
@@ -255,6 +262,19 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         .insert(branches)
         .values({ id: branchId, organizationId, projectId, name: 'main', status: 'active' });
 
+      // Written directly for the same reason the runs and events above are:
+      // plan 05's scan pipeline (VF-3) is what produces these, and the rule that
+      // one tenant cannot read another's execution contract has to be pinned
+      // before it does.
+      await database.db.insert(projectContracts).values({
+        id: newId('pc'),
+        organizationId,
+        projectId,
+        version: 1,
+        detectedFramework: 'next',
+        contractJson: { version: 1, package_manager: 'pnpm', workspace_root: '.' },
+      });
+
       const runId = newId('run');
       await database.db.insert(agentRuns).values({
         id: runId,
@@ -360,6 +380,53 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(a.owner, a.organizationId),
       });
       expectRefusal(response, 404, 'run_not_found');
+    });
+
+    it('does not find the execution contract of B’s project', async () => {
+      // A contract carries the commands that build and test a project — the
+      // shape of somebody else's codebase. It is seeded for both tenants, so
+      // this 404 is a refusal rather than an absence.
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${b.projectIds[0] ?? ''}/contract`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'project_not_found');
+    });
+
+    it('cannot edit B’s project', async () => {
+      // The write half of the cross-tenant attack on CP-6's own surface: A's
+      // Owner — who is refused by no role check — naming B's project in the
+      // path and A's organization in the header.
+      const projectId = b.projectIds[0] ?? '';
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}`,
+        headers: as(a.owner, a.organizationId),
+        payload: { name: 'Mine Now', slug: 'mine-now', archived: true },
+      });
+      expectRefusal(response, 404, 'project_not_found');
+
+      // Confirmed in the table rather than in the answer: B's project is
+      // untouched, and no row was planted under A either.
+      const [row] = await database.sql<{ name: string; archived_at: Date | null }[]>`
+        select name, archived_at from projects where id = ${projectId}
+      `;
+      expect(row?.name).toBe('beta alpha');
+      expect(row?.archived_at).toBe(null);
+      const planted = await database.sql<{ id: string }[]>`
+        select id from projects where slug = 'mine-now'
+      `;
+      expect(planted).toEqual([]);
+    });
+
+    it('cannot request a scan of B’s project', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${b.projectIds[0] ?? ''}/scan`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'project_not_found');
     });
 
     it('does not find the runs of B’s project', async () => {
@@ -638,6 +705,23 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       expect(rows).toEqual([]);
     });
 
+    it('refuses a Viewer’s edit of a project they can read', async () => {
+      const projectId = a.projectIds[0] ?? '';
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}`,
+        headers: as(a.viewer, a.organizationId),
+        payload: { name: 'Viewer Renamed' },
+      });
+
+      expectRefusal(response, 403, 'permission_denied');
+      expect(ApiErrorSchema.parse(response.json()).error.details).toEqual({ action: 'edit_code' });
+      const [row] = await database.sql<{ name: string }[]>`
+        select name from projects where id = ${projectId}
+      `;
+      expect(row?.name).toBe('acme alpha');
+    });
+
     it('refuses a Builder on an Owner-only route', async () => {
       const response = await app.inject({
         method: 'PATCH',
@@ -825,6 +909,42 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(b.owner, b.organizationId),
       });
       expectRefusal(fromB, 404, 'project_not_found');
+      negativeControlsRun += 1;
+    });
+
+    it('lets B edit, scan and read the contract of B’s own project', async () => {
+      // The mirror of the three CP-6 refusals above. Without this, "PATCH,
+      // contract and scan are isolated" would be satisfied by a service where
+      // all three are broken for everybody.
+      const projectId = b.projectIds[1] ?? '';
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}`,
+        headers: as(b.builder, b.organizationId),
+        payload: { name: 'Beta Beta Renamed' },
+      });
+      expect(patched.statusCode, patched.body).toBe(200);
+      expect(patched.json<{ project: { name: string } }>().project.name).toBe('Beta Beta Renamed');
+
+      const contract = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/contract`,
+        headers: as(b.viewer, b.organizationId),
+      });
+      expect(contract.statusCode, contract.body).toBe(200);
+      expect(
+        contract.json<{ contract: { projectId: string; organizationId: string } }>().contract,
+      ).toMatchObject({ projectId, organizationId: b.organizationId });
+
+      const scan = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/scan`,
+        headers: as(b.builder, b.organizationId),
+      });
+      expect(scan.statusCode, scan.body).toBe(202);
+      expect(scan.json<{ scan: { projectId: string } }>().scan.projectId).toBe(projectId);
+
       negativeControlsRun += 1;
     });
 

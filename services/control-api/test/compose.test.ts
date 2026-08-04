@@ -99,6 +99,10 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],
   ['GET', '/v1/runs/:runId/events'],
+  // CP-6's additions to it (PRD §32.1).
+  ['PATCH', '/v1/projects/:projectId'],
+  ['GET', '/v1/projects/:projectId/contract'],
+  ['POST', '/v1/projects/:projectId/scan'],
 ];
 
 describe('the composition server.ts performs', () => {
@@ -117,6 +121,7 @@ describe('the composition server.ts performs', () => {
     const urls = [
       '/v1/projects',
       `/v1/projects/${newId('proj')}`,
+      `/v1/projects/${newId('proj')}/contract`,
       `/v1/projects/${newId('proj')}/runs`,
       `/v1/runs/${newId('run')}`,
       `/v1/runs/${newId('run')}/events`,
