@@ -7,7 +7,7 @@ import type { ForgejoEnv } from './env.js';
 import { createForgejoClient } from './forgejo/client.js';
 import type { LoggerConfig } from './logging.js';
 import { createForgejoGitProvider } from './provider/forgejo.js';
-import { createTokenService } from './tokens.js';
+import { createTokenService, type TokenService } from './tokens.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -45,20 +45,42 @@ export interface ServiceRuntime {
   readonly logger?: LoggerConfig;
 }
 
-export function composeApp(runtime: ServiceRuntime): AppInstance {
+/**
+ * What the deployment gets back.
+ *
+ * An object rather than the app alone — which is where the control plane's
+ * `composeApp` stops — because this service has one thing to do that is not a
+ * request: expiring tokens (`src/sweep.ts`). The entrypoint needs the same token
+ * service the routes are bound to, and handing it back here is how it gets one
+ * without `server.ts` constructing a second Forgejo client and a second binding
+ * that could differ from the first.
+ */
+export interface ServiceComposition {
+  readonly app: AppInstance;
+  /** Bound to the same Forgejo client the routes use. `server.ts` sweeps with it. */
+  readonly tokens: TokenService;
+}
+
+export function composeApp(runtime: ServiceRuntime): ServiceComposition {
   // One client for both bindings: the provider and the token service act on the
   // same instance with the same admin credential and the same deadline, and two
   // clients would be two places for those to drift apart.
   const client = createForgejoClient(runtime.forgejo);
+  // One token service, bound to the routes *and* handed to the sweep. Two would
+  // be two Forgejo clients and two chances for them to disagree about which
+  // instance, which credential and which deadline.
+  const tokens = createTokenService({ client, audit: createDbGitAuditSink(runtime.database) });
 
-  return buildApp({
+  const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
     // Named here rather than left to a default, because this file is where a
     // port's shipping binding is supposed to be legible: Forgejo, reached
     // through the one client that gives every call a deadline and keeps the
     // admin token out of every error it raises.
     provider: createForgejoGitProvider({ client }),
-    tokens: createTokenService({ client, audit: createDbGitAuditSink(runtime.database) }),
+    tokens,
     signer: createServiceTokenSigner(runtime.serviceTokens),
   });
+
+  return { app, tokens };
 }

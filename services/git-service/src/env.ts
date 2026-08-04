@@ -2,6 +2,7 @@ import { defineEnv, type ServiceTokenConfig } from '@zapp/config';
 import { z } from 'zod';
 
 import { LOG_LEVELS } from './logging.js';
+import { DEFAULT_SWEEP_INTERVAL_MS } from './sweep.js';
 
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
@@ -25,6 +26,21 @@ const EnvSchema = z.object({
   /** 4500 — plan 06's port for this service. */
   PORT: z.coerce.number().int().min(1).max(65535).default(4500),
   LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+  /**
+   * How often the process expires repository-scoped tokens (`src/sweep.ts`).
+   *
+   * Has a default because the safe value is the one that runs, and is
+   * configurable because an incident is exactly when somebody wants it faster.
+   * Capped at ten minutes — the token TTL ceiling — since a sweep interval
+   * longer than the longest token's life would let *every* token outlive its
+   * deadline, which is the failure the timer exists to prevent.
+   */
+  TOKEN_SWEEP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(DEFAULT_SWEEP_INTERVAL_MS),
 });
 
 export type ServiceEnv = z.infer<typeof EnvSchema>;

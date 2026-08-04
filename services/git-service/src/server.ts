@@ -3,6 +3,7 @@ import { createDb } from '@zapp/db';
 import { composeApp } from './compose.js';
 import { loadDatabaseUrl, loadEnv, loadForgejoEnv, loadServiceTokenConfig } from './env.js';
 import { loggerOptions } from './logging.js';
+import { scheduleTokenSweep } from './sweep.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, hand it to
@@ -23,15 +24,32 @@ const serviceTokens = loadServiceTokenConfig();
 // variable is missing than not starting.
 const database = createDb(loadDatabaseUrl());
 
-const app = composeApp({
+const { app, tokens } = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   forgejo,
   serviceTokens,
   database: database.db,
 });
 
-// The handle is opened here, so it is closed here.
+/**
+ * What makes a repository token short-lived (GIT-3, fix round 1).
+ *
+ * Forgejo has no expiring token, so a deadline is only a deadline if something
+ * enforces it — and the deployed instance is on a public address with a public
+ * certificate (`infra/terraform/forgejo.tf`), so "enforced whenever ops
+ * remembers" is a credential reachable from the internet for an unbounded time.
+ * The sweep is idempotent and cheap by construction, which is why every replica
+ * running it is redundancy rather than contention. See `src/sweep.ts`.
+ */
+const sweep = scheduleTokenSweep({
+  tokens,
+  log: app.log,
+  intervalMs: env.TOKEN_SWEEP_INTERVAL_MS,
+});
+
+// The handle and the timer are opened here, so they are released here.
 app.addHook('onClose', async () => {
+  sweep.stop();
   await database.close();
 });
 

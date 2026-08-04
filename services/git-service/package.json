@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:integration": "vitest run --dir test/integration --no-file-parallelism",
+    "test:integration": "node --env-file-if-exists=../../.env.local.forgejo ./node_modules/vitest/vitest.mjs run --dir test/integration --no-file-parallelism",
     "bootstrap": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/bootstrap.ts",
     "dev": "tsx watch --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo src/server.ts",
     "start": "node --enable-source-maps dist/server.js"

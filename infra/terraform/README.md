@@ -56,7 +56,8 @@ fly secrets set --app zapp-forgejo-staging \
   FORGEJO__server__DOMAIN=git-staging.zapp.build \
   FORGEJO__server__ROOT_URL=https://git-staging.zapp.build/ \
   FORGEJO__server__SSH_DOMAIN=git-staging.zapp.build \
-  FORGEJO__webhook__ALLOWED_HOST_LIST=zapp-control-api-staging.internal
+  FORGEJO__webhook__ALLOWED_HOST_LIST=zapp-control-api-staging.internal \
+  FORGEJO__metrics__TOKEN="$(openssl rand -hex 32)"
 
 fly deploy --config infra/fly/forgejo/fly.toml \
            --dockerfile infra/fly/forgejo/Dockerfile \
@@ -67,6 +68,13 @@ FORGEJO_URL=https://git-staging.zapp.build FORGEJO_ADMIN_TOKEN=… \
 ```
 
 `bootstrap` is idempotent: a second run changes nothing and says so.
+
+**`FORGEJO__metrics__TOKEN` is not optional.** `app.ini.prod` sets
+`[metrics] ENABLED = true`, and with an empty token Forgejo serves `/metrics`
+to *anyone* — which, on an app that terraform gives a public IPv4, a public IPv6
+and a TLS certificate, means the internet. It leaks repository counts, user
+counts and instance internals. Set it in the same command as the rest, or turn
+metrics off.
 
 ## Backups
 
@@ -91,20 +99,23 @@ A restore needs both, from the same point in time. A volume restored alone has
 repositories the database has never heard of; a database restored alone has rows
 pointing at objects that are not on disk.
 
-## Ops: the token sweep
+## The token sweep — in the service, not in this runbook
 
 GIT-3's repository-scoped tokens expire because something deletes them, not
-because Forgejo knows how to. Schedule a call to the git service:
+because Forgejo knows how to. **The git service does that itself**, every
+`TOKEN_SWEEP_INTERVAL_MS` (default 60s), from `src/sweep.ts` — nothing here has to
+be scheduled.
 
-```
-POST /internal/git/tokens/sweep    (service token, audience `git-service`)
-```
+That is a correction rather than a convenience. The first cut of GIT-3 left the
+schedule to this file, which made a security bound depend on somebody reading a
+README; since terraform gives this app a public IPv4, a public IPv6 and a TLS
+certificate, an unswept token is reachable from anywhere on the internet until
+someone does (GIT review). The sweep is idempotent and cheap, so every replica
+running it is redundancy rather than contention.
 
-Every minute is fine — it is idempotent, it reads a page of accounts and deletes
-only the ones whose deadline is in their own name, and it does nothing when there
-is nothing to do. Until it is scheduled, a token remains usable between its stated
-expiry and the next call. That is the one bounded exposure this design carries,
-and it is bounded by the schedule rather than by chance.
+`POST /internal/git/tokens/sweep` (service token, audience `git-service`) stays
+for an operator who wants to force one immediately — during an incident, or after
+raising a suspicion about a leaked credential.
 
 ## `prevent_destroy` on the volume
 

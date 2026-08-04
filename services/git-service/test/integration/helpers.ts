@@ -24,8 +24,15 @@ import { createForgejoClient, type ForgejoClient } from '../../src/forgejo/clien
  *   ./scripts/dev-up.sh
  *   pnpm --filter @zapp/git-service test:integration
  *
- * (`scripts/dev-up.sh` writes both variables into `.env.local.forgejo`; the
- * command above loads them — see the package script.)
+ * `scripts/dev-up.sh` writes both variables into `.env.local.forgejo`, and the
+ * package script loads that file itself (`node --env-file-if-exists=…`) rather
+ * than relying on the caller having exported them. That is not convenience: for
+ * a whole task this comment claimed the command above worked and it did not.
+ * turbo 2 runs tasks in strict env mode, `turbo.json` did not name `FORGEJO_*`
+ * in `test:integration`'s `env` list, and the variables were stripped — so the
+ * documented workflow reported 15 skipped tests and looked like a pass (GIT
+ * review). Both halves are fixed; the assertion below is the half that makes it
+ * stay fixed.
  *
  * Everything these suites create is namespaced by a random suffix and removed in
  * `afterAll`, because they run against a developer's *actual* dev instance.
@@ -36,6 +43,40 @@ const FORGEJO_URL = process.env['FORGEJO_URL'] ?? '';
 const FORGEJO_ADMIN_TOKEN = process.env['FORGEJO_ADMIN_TOKEN'] ?? '';
 
 export const hasForgejo = FORGEJO_URL !== '' && FORGEJO_ADMIN_TOKEN !== '';
+
+/**
+ * Whether this run is a CI run — for any value CI sets, not the one GitHub
+ * happens to use.
+ *
+ * Copied from `services/control-api/test/integration/tenant-isolation.test.ts`
+ * along with its reason: `CI === 'true'` was a hole with a very short fuse,
+ * because every other CI system spells it `1`, `yes` or the name of the
+ * provider, and on any of them the guard below would have quietly stopped
+ * guarding.
+ */
+export function inContinuousIntegration(): boolean {
+  const flag = (process.env['CI'] ?? '').trim().toLowerCase();
+  return flag !== '' && flag !== 'false' && flag !== '0';
+}
+
+/**
+ * These suites carry the cross-repo denial property (`tokens.test.ts`), so they
+ * must not be able to pass by not running.
+ *
+ * A module-level throw rather than a test, and deliberately: it fires while the
+ * file is being imported, so there is no arrangement of `skipIf` that can route
+ * around it. In CI the git suites run in exactly one job — `git-isolation` in
+ * `.github/workflows/ci.yml`, which is the only job that starts a Forgejo — and
+ * the broader `integration` job filters this package out for precisely that
+ * reason. If either of those wirings is ever changed so that a CI job runs these
+ * suites without a Forgejo, this line fails that job instead of letting a
+ * security property lapse into a permanent silent skip.
+ */
+if (!hasForgejo && inContinuousIntegration()) {
+  throw new Error(
+    'refusing to skip: CI is set but FORGEJO_URL / FORGEJO_ADMIN_TOKEN are not. These suites carry the cross-repo denial property; a CI run that skips them proves nothing. See the git-isolation job in .github/workflows/ci.yml.',
+  );
+}
 
 if (!hasForgejo) {
   console.warn(

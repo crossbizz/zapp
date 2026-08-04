@@ -11,7 +11,7 @@
  */
 export { buildApp, type AppDeps, type AppInstance } from './app.js';
 export { GIT_AUDIT_ACTIONS, type GitAuditAction, type GitAuditEvent } from './audit.js';
-export { composeApp, type ServiceRuntime } from './compose.js';
+export { composeApp, type ServiceComposition, type ServiceRuntime } from './compose.js';
 export {
   loadDatabaseUrl,
   loadEnv,
@@ -22,6 +22,7 @@ export {
 } from './env.js';
 export { GIT_SERVICE_AUDIENCE, SERVICE_TOKEN_HEADER } from './internal/service-auth.js';
 export { GIT_CALLERS } from './routes.js';
+export { DEFAULT_SWEEP_INTERVAL_MS, scheduleTokenSweep, type TokenSweep } from './sweep.js';
 export {
   DEFAULT_TOKEN_TTL_SECONDS,
   MAX_TOKEN_TTL_SECONDS,

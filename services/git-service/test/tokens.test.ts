@@ -236,7 +236,7 @@ describe('mint', () => {
 describe('revokeForProject', () => {
   it('deletes every ephemeral collaborator and nothing else', async () => {
     const harness = service({
-      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=100`]: {
+      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=50&page=1`]: {
         status: 200,
         body: [
           { login: 'zt-1900000000-0123456789ab' },
@@ -269,10 +269,48 @@ describe('revokeForProject', () => {
     });
   });
 
+  it('pages, rather than capping at one request', async () => {
+    // The first cut asked for `limit=100` once and stopped, which is a cap and
+    // not a page: a project with more outstanding grants than that would have
+    // had the surplus survive its own deletion (GIT review). A hundred is not
+    // far-fetched for a project minting one token per operation.
+    const first = Array.from({ length: 50 }, (_unused, index) =>
+      ephemeralUsername(new Date(NOW.getTime() + index * 1_000)),
+    );
+    const second = [ephemeralUsername(new Date(NOW.getTime() + 99_000))];
+    const harness = service({
+      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=50&page=1`]: {
+        status: 200,
+        body: first.map((login) => ({ login })),
+      },
+      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=50&page=2`]: {
+        status: 200,
+        body: second.map((login) => ({ login })),
+      },
+    });
+
+    expect(
+      await harness.tokens.revokeForProject({
+        organizationId: ORGANIZATION,
+        projectId: PROJECT,
+        requestingService: 'control-api',
+        reason: 'project deleted',
+      }),
+    ).toBe(51);
+
+    // Read every page before deleting anything: removing a collaborator shifts
+    // the rest one place earlier, so a delete-while-paging loop skips whichever
+    // entry moved onto a page it had already read.
+    const order = harness.forgejo.calls.map((call) => `${call.method} ${call.path}`);
+    const lastRead = order.lastIndexOf(`GET /repos/${OWNER}/${NAME}/collaborators?limit=50&page=2`);
+    const firstDelete = order.findIndex((entry) => entry.startsWith('DELETE /admin/users/'));
+    expect(lastRead).toBeLessThan(firstDelete);
+  });
+
   it('treats a repository that is already gone as nothing to revoke', async () => {
     // Which is exactly when this is called: the project was deleted.
     const harness = service({
-      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=100`]: { status: 404 },
+      [`GET /repos/${OWNER}/${NAME}/collaborators?limit=50&page=1`]: { status: 404 },
     });
 
     expect(

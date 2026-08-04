@@ -36,7 +36,12 @@ templates/stripe/*  (generated-app billing templates)
 **Effort:** M
 
 - [x] Binding behavior: Fly app `zapp-forgejo-{env}` with volume; app.ini: registrations disabled, API-only admin, webhooks allowed to control-api host, LFS enabled; bootstrap script creates admin token + org `zapp-projects`; health check wired.
-- [x] Verify: terraform plan clean; bootstrap idempotent (second run no-ops).
+- [ ] Verify: terraform plan clean — **not done.** Terraform is not installed on
+      the machine this was authored on and `plan`/`validate` need `terraform init`
+      to fetch the provider first. Left unchecked rather than ticked with a
+      footnote: a checkbox is what somebody scans, and one that claims a
+      verification the prose retracts is worse than an empty one (GIT review).
+- [x] Verify: bootstrap idempotent (second run no-ops).
 - [x] Commit: `feat(infra): forgejo internal git deployment`
 
 **Delivered against a dev stack that already runs Forgejo.** FND-7's compose file

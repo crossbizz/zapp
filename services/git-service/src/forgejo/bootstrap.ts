@@ -50,8 +50,19 @@ export type StepOutcome =
   | 'created'
   /** The thing was already there. This step made no write. */
   | 'present'
-  /** A check, not a change. Always this. */
-  | 'ok';
+  /** A check that passed. */
+  | 'ok'
+  /**
+   * A check that could not be made, and therefore did not pass.
+   *
+   * Its own word rather than `ok`, because the difference is the whole value of
+   * the check. The anonymous-visibility step compares what an anonymous caller
+   * can list against what the admin can: on an instance with no repositories at
+   * all, "anonymous listed nothing" is true of a wide-open instance too, and
+   * reporting that as `ok` is a green tick for a question nobody asked (GIT
+   * review). Saying `unproven` puts the gap in the deploy log instead.
+   */
+  | 'unproven';
 
 export interface BootstrapStep {
   readonly name: string;
@@ -179,10 +190,22 @@ export async function bootstrapForgejo(
     steps.push({ name: 'platform-org', outcome: 'present', detail: platformOrg });
   }
 
-  // 5. What anonymity can see: nothing. A 401 or 403 is the strongest form of
-  //    that answer (REQUIRE_SIGNIN_VIEW), and an empty result set is the weaker
-  //    one that dev's configuration produces. Any repository listed here is a
-  //    tenant's source code on the public internet.
+  /**
+   * 5. What anonymity can see: nothing. Any repository listed here is a tenant's
+   *    source code on the public internet, and the deployed instance is on a
+   *    public address with a public certificate (`infra/terraform/forgejo.tf`).
+   *
+   *    Three answers, and the third is the fix for a check that used to be
+   *    vacuous (GIT review). A **refusal** (401/403) is the strongest: that is
+   *    `REQUIRE_SIGNIN_VIEW`, and it holds whatever any repository's own
+   *    visibility says. An **empty list on an instance that has repositories** is
+   *    the weaker answer dev's configuration gives, and it is still a real one —
+   *    the admin can see them and anonymity cannot. An **empty list on an
+   *    instance with no repositories at all** proves nothing whatsoever, and a
+   *    freshly deployed instance is exactly that: the old code reported it as a
+   *    pass, which was a green tick that could not go red on the one run where
+   *    it mattered most.
+   */
   const anonymous = await client.send<RepoSearchResponse>({
     method: 'GET',
     path: '/repos/search?limit=1',
@@ -195,12 +218,30 @@ export async function bootstrapForgejo(
       `an anonymous caller can list ${String(visible)} repository(ies) — check REQUIRE_SIGNIN_VIEW and DEFAULT_PRIVATE`,
     );
   }
-  steps.push({
-    name: 'anonymous-visibility',
-    outcome: 'ok',
-    detail:
-      anonymous.status === 200 ? 'no repositories listed' : `refused (${String(anonymous.status)})`,
-  });
+
+  if (anonymous.status !== 200) {
+    steps.push({
+      name: 'anonymous-visibility',
+      outcome: 'ok',
+      detail: `anonymous callers refused (${String(anonymous.status)})`,
+    });
+  } else {
+    // The control: what the *admin* can list. Only a difference between the two
+    // says anything, so this is what turns "anonymous saw nothing" from a
+    // tautology into a comparison.
+    const asAdmin = await client.send<RepoSearchResponse>({
+      method: 'GET',
+      path: '/repos/search?limit=1',
+    });
+    const exists = (asAdmin.body?.data?.length ?? 0) > 0;
+    steps.push({
+      name: 'anonymous-visibility',
+      outcome: exists ? 'ok' : 'unproven',
+      detail: exists
+        ? 'repositories exist and anonymous callers list none'
+        : 'no repositories exist yet, so nothing was proven — set REQUIRE_SIGNIN_VIEW for an answer that does not depend on that',
+    });
+  }
 
   return { steps, unchanged: steps.every((step) => step.outcome !== 'created') };
 }

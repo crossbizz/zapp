@@ -149,7 +149,47 @@ describe('bootstrapForgejo', () => {
 
     expect(report.steps.at(-1)).toMatchObject({
       name: 'anonymous-visibility',
-      detail: 'refused (401)',
+      outcome: 'ok',
+      detail: 'anonymous callers refused (401)',
+    });
+  });
+
+  it('reports the anonymous check as unproven when there is nothing to hide', async () => {
+    // A fresh instance: anonymous lists nothing, and so does the admin. "Nobody
+    // saw a repository" is true of a wide-open instance too, so reporting it as
+    // a pass was a green tick that could not go red on the one run where it
+    // mattered most (GIT review).
+    const forgejo = createFakeForgejo({
+      ...bootstrapped(),
+      'GET /repos/search?limit=1': { status: 200, body: { data: [] } },
+    });
+
+    const report = await bootstrapForgejo(forgejo);
+
+    expect(report.steps.at(-1)).toMatchObject({
+      name: 'anonymous-visibility',
+      outcome: 'unproven',
+    });
+  });
+
+  it('passes the anonymous check only when the admin can see what anonymity cannot', async () => {
+    const forgejo = createFakeForgejo({
+      ...bootstrapped(),
+      'GET /repos/search?limit=1': {
+        // Anonymous first, then the admin's control request against the same
+        // path: the fake's `then` is what lets one route answer twice.
+        status: 200,
+        body: { data: [] },
+        then: { status: 200, body: { data: [{ full_name: 'org_x/proj_y' }] } },
+      },
+    });
+
+    const report = await bootstrapForgejo(forgejo);
+
+    expect(report.steps.at(-1)).toMatchObject({
+      name: 'anonymous-visibility',
+      outcome: 'ok',
+      detail: 'repositories exist and anonymous callers list none',
     });
   });
 });

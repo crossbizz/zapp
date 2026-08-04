@@ -43,9 +43,15 @@ import { ForgejoError, type ForgejoClient } from './forgejo/client.js';
  * that can disagree with the first, and the disagreement would be in the
  * direction of a credential nobody knows about.
  *
- * The exposure this leaves is honest and bounded: a token remains usable between
- * its stated expiry and the next sweep. That is a scheduling property, not a hole
- * that widens — the sweep is idempotent, cheap, and safe to run every minute.
+ * The exposure this leaves is a token that remains usable between its stated
+ * expiry and the next sweep — so **the service sweeps itself**, on a timer, once
+ * a minute (`src/sweep.ts`, started in `src/server.ts`). The first cut of this
+ * task shipped the sweep as a route and left the schedule to an ops runbook,
+ * which the review refused and was right to: the deployed Forgejo has a public
+ * IPv4, a public IPv6 and a TLS certificate (`infra/terraform/forgejo.tf`), so
+ * an unswept token is reachable from the internet for as long as nobody reads
+ * the runbook. A bound nothing enforces is not a bound. The route stays, for an
+ * operator who wants to force one now.
  */
 
 /** What a caller may ask for. Anything else is not expressible. */
@@ -82,6 +88,15 @@ export const DEFAULT_TOKEN_TTL_SECONDS = 300;
 const EPHEMERAL_USER = /^zt-(\d{10,12})-[0-9a-f]{12}$/;
 
 const EPHEMERAL_PREFIX = 'zt-';
+
+/**
+ * How many accounts to read per request, everywhere this file pages.
+ *
+ * One constant, because the loop condition is `batch.length < PAGE_SIZE` — a
+ * page size that disagreed with the number in the query string would stop the
+ * loop one page early on a full page, silently.
+ */
+const PAGE_SIZE = 50;
 
 export function ephemeralUsername(expiresAt: Date): string {
   const epoch = Math.floor(expiresAt.getTime() / 1000);
@@ -310,17 +325,46 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
 
     async revokeForProject(input): Promise<number> {
       const ref = internalRepoRef(input);
-      const collaborators = await client.send<readonly UserResponse[]>({
-        method: 'GET',
-        path: `${repoPath(ref)}/collaborators?limit=100`,
-        // A repository that is already gone has no collaborators to revoke, and
-        // "the project was deleted" is precisely when this is called.
-        allow: [404],
-      });
+      const ephemeral: string[] = [];
 
-      const ephemeral = (collaborators.body ?? [])
-        .map((user) => user.login ?? '')
-        .filter((login) => expiryOf(login) !== undefined);
+      /**
+       * Paginated, and reading every page before deleting anything — the same
+       * shape as {@link TokenService.sweepExpired} and for both of its reasons.
+       *
+       * The first cut asked for `limit=100` once and stopped, which is a cap
+       * rather than a page: a project with more than a hundred outstanding
+       * grants would have had the surplus survive this call, and "revoked when
+       * the project was deleted" would have been true of some of its
+       * credentials. A hundred is not far-fetched for a project minting one
+       * token per operation. (GIT review.)
+       *
+       * Reading first also matters here for the same reason it does in the
+       * sweep: removing a collaborator shifts the rest one place earlier, so a
+       * delete-while-paging loop skips whichever entry moved onto a page it had
+       * already read.
+       */
+      for (let page = 1; ; page += 1) {
+        const collaborators = await client.send<readonly UserResponse[]>({
+          method: 'GET',
+          path: `${repoPath(ref)}/collaborators?limit=${String(PAGE_SIZE)}&page=${String(page)}`,
+          // A repository that is already gone has no collaborators to revoke,
+          // and "the project was deleted" is precisely when this is called.
+          allow: [404],
+        });
+        const batch = collaborators.body ?? [];
+        for (const user of batch) {
+          const login = user.login ?? '';
+          // Only accounts this service minted. A human collaborator on the
+          // repository is not a credential to revoke, and deleting one would be
+          // deleting a person.
+          if (expiryOf(login) !== undefined) {
+            ephemeral.push(login);
+          }
+        }
+        if (batch.length < PAGE_SIZE) {
+          break;
+        }
+      }
 
       for (const username of ephemeral) {
         await deleteUser(username);
@@ -345,7 +389,6 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
 
     async sweepExpired(at?: Date): Promise<number> {
       const deadline = at ?? now();
-      const PAGE = 50;
       const expired: string[] = [];
 
       /**
@@ -361,7 +404,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
       for (let page = 1; ; page += 1) {
         const users = await client.send<readonly UserResponse[]>({
           method: 'GET',
-          path: `/admin/users?limit=${String(PAGE)}&page=${String(page)}`,
+          path: `/admin/users?limit=${String(PAGE_SIZE)}&page=${String(page)}`,
         });
         const batch = users.body ?? [];
         for (const user of batch) {
@@ -374,7 +417,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
             expired.push(login);
           }
         }
-        if (batch.length < PAGE) {
+        if (batch.length < PAGE_SIZE) {
           break;
         }
       }

@@ -27,7 +27,22 @@
       // than skipping.
       "dependsOn": ["^build"],
       "cache": false,
-      "env": ["DATABASE_URL", "REDIS_URL", "STYTCH_PROJECT_ID", "STYTCH_SECRET"]
+      // turbo 2 runs tasks in strict env mode: a variable not named here is not
+      // in the task's environment at all. A missing name is therefore not a
+      // cache-key detail, it is a suite that skips — silently, because every
+      // env-gated suite in this repository is written to skip rather than fail
+      // when its credential is absent. `FORGEJO_*` were omitted when GIT-2/GIT-3
+      // landed, so `turbo run test:integration --filter=@zapp/git-service`
+      // reported 15 skipped with both variables exported (GIT review).
+      "env": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "STYTCH_PROJECT_ID",
+        "STYTCH_SECRET",
+        "FORGEJO_URL",
+        "FORGEJO_ADMIN_TOKEN",
+        "CI"
+      ]
     },
     "dev": {
       "cache": false,

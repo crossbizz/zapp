@@ -327,17 +327,33 @@ export function createForgejoGitProvider(options: ForgejoProviderOptions): GitPr
            * all — not merely "no force push": a release branch records what was
            * released, and a commit landing on it afterwards makes the release
            * evidence describe code that is no longer there. Forgejo has no
-           * separate force-push flag; refusing every push covers both, and
-           * `test/integration/forgejo.test.ts` proves a scoped *write* token is
-           * refused by it.
+           * separate force-push flag, so refusing every push covers both.
            *
-           * `apply_to_admins` is deliberately left at its default of false. The
-           * platform admin token is what *creates* release branches and tags on
-           * behalf of plan 07's release service, and it is held by this service
-           * alone — it never reaches a workspace, an agent or a generated app.
-           * What the rule has to stop is a repository-scoped token (GIT-3),
-           * which is never an administrator and is therefore always subject to
-           * it.
+           * **What the test actually shows, and what that implies.**
+           * `test/integration/forgejo.test.ts` pushes to `release/1` with the
+           * *platform admin* token and Forgejo refuses it (`pre-receive hook
+           * declined`), then pushes the same commit to `feature/x` and it
+           * succeeds — so the refusal is the rule rather than the credential. An
+           * earlier version of this comment claimed the test used a scoped write
+           * token; it does not, and the correction matters because the observed
+           * behaviour also contradicts what this comment used to say next (GIT
+           * review).
+           *
+           * `apply_to_admins` is left at its default of false, and that default
+           * turns out **not** to exempt the platform admin from a git push:
+           * Forgejo's pre-receive hook refuses it anyway. The consequence is for
+           * plan 07 to design around rather than for this task to paper over —
+           * **the release service cannot create or advance a `release/*` branch
+           * over git.** It has to use the API (`POST /branches`, `POST /tags`,
+           * which this provider already exposes and which do not go through the
+           * hook), or the rule needs a push allowlist naming the admin. Flagged
+           * here because the wrong assumption is cheap to inherit and expensive
+           * to discover during a release.
+           *
+           * None of that weakens the property this rule exists for: a
+           * repository-scoped token (GIT-3) is never an administrator, and
+           * `test/integration/tokens.test.ts` is where a scoped token is proved
+           * unable to reach anything it was not granted.
            */
           enable_push: false,
         },

@@ -21,6 +21,8 @@ import { SERVICE_SECRET, newProject, serviceHeaders, serviceToken } from './supp
  */
 
 function deployed() {
+  // `composeApp` hands back the app *and* the token service the sweep needs
+  // (`src/compose.ts`); this suite is about the app.
   return composeApp({
     logger: false,
     forgejo: {
@@ -54,7 +56,7 @@ function unusedDatabase(): Database {
 
 describe('the deployed composition', () => {
   it('serves /healthz without a credential', async () => {
-    const app = deployed();
+    const { app } = deployed();
     try {
       const response = await app.inject({ method: 'GET', url: '/healthz' });
       expect(response.statusCode).toBe(200);
@@ -64,7 +66,7 @@ describe('the deployed composition', () => {
   });
 
   it('serves the git surface, and closes it to an unauthenticated caller', async () => {
-    const app = deployed();
+    const { app } = deployed();
     const project = newProject();
     try {
       const response = await app.inject({
@@ -83,7 +85,7 @@ describe('the deployed composition', () => {
   });
 
   it('has no user-facing surface at all', async () => {
-    const app = deployed();
+    const { app } = deployed();
     try {
       for (const url of ['/v1/projects', '/internal/git', '/api/v1/repos']) {
         const response = await app.inject({ method: 'GET', url });
@@ -96,13 +98,13 @@ describe('the deployed composition', () => {
   });
 
   it('verifies tokens against the configured secret and no other', async () => {
-    const app = deployed();
+    const { app } = deployed();
     const project = newProject();
     try {
       // A well-formed token signed with a different secret: the shape is right
       // and the signature is not, which is the only interesting negative.
       const forged = await serviceToken();
-      const wrongSecretApp = composeApp({
+      const { app: wrongSecretApp } = composeApp({
         logger: false,
         forgejo: { baseUrl: 'http://127.0.0.1:1', adminToken: 'x', timeoutMs: 100 },
         serviceTokens: { secret: `${SERVICE_SECRET}-different` },

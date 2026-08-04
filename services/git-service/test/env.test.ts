@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadEnv, loadForgejoEnv } from '../src/env.js';
+import { DEFAULT_SWEEP_INTERVAL_MS } from '../src/sweep.js';
 
 const FORGEJO = {
   FORGEJO_URL: 'http://localhost:3300',
@@ -17,6 +18,9 @@ describe('loadEnv', () => {
       HOST: '0.0.0.0',
       PORT: 4500,
       LOG_LEVEL: 'info',
+      // The safe value is the one that runs: a deployment that says nothing
+      // about the sweep still expires its repository tokens (GIT-3 fix round 1).
+      TOKEN_SWEEP_INTERVAL_MS: DEFAULT_SWEEP_INTERVAL_MS,
     });
   });
 
@@ -25,6 +29,15 @@ describe('loadEnv', () => {
     // its production position, and an unset variable must never be what turns a
     // relaxation on.
     expect(loadEnv({}).NODE_ENV).toBe('production');
+  });
+
+  it('refuses a sweep interval longer than the longest token lives', () => {
+    // A sweep slower than `MAX_TOKEN_TTL_SECONDS` would let *every* token
+    // outlive its deadline, which is the failure the timer exists to prevent.
+    expect(() => loadEnv({ TOKEN_SWEEP_INTERVAL_MS: '900000' })).toThrow(
+      'Invalid environment: TOKEN_SWEEP_INTERVAL_MS',
+    );
+    expect(loadEnv({ TOKEN_SWEEP_INTERVAL_MS: '5000' }).TOKEN_SWEEP_INTERVAL_MS).toBe(5_000);
   });
 
   it('names an invalid variable and never its value', () => {
