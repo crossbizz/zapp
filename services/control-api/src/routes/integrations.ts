@@ -36,9 +36,11 @@ export function registerIntegrationRoutes(app: AppInstance, deps: IntegrationRou
     const ctx = tenantOf(request);
     authorize(ctx, 'manage_organization');
     const operationKey = operationOf(request);
+    const input = IntegrationInputSchema.parse({ provider: 'github', organizationId: ctx.organizationId, projectId: null, actorId: actorOf(request), operationKey, credential: request.body.code, state: request.body.state, configuration: { installationId: request.body.installationId } });
     const connection = await connect(deps.port, {
-      ...IntegrationInputSchema.parse({ provider: 'github', organizationId: ctx.organizationId, projectId: null, actorId: actorOf(request), operationKey, credential: request.body.code, state: request.body.state, configuration: { installationId: request.body.installationId } }),
+      ...input,
       audit: async (tx, connection) => {
+        assertIntegrationIdentity(connection, input);
         await request.audit(tx, {
           organizationId: ctx.organizationId,
           action: 'integration.connected',
@@ -63,9 +65,11 @@ function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps
     authorize(ctx, 'edit_code');
     const credential = 'accessToken' in parsed ? parsed.accessToken : parsed.apiKey;
     const operationKey = operationOf(request);
+    const input = IntegrationInputSchema.parse({ provider, organizationId: ctx.organizationId, projectId: project.id, actorId: actorOf(request), operationKey, credential, configuration: parsed.configuration });
     const connection = await connect(deps.port, {
-      ...IntegrationInputSchema.parse({ provider, organizationId: ctx.organizationId, projectId: project.id, actorId: actorOf(request), operationKey, credential, configuration: parsed.configuration }),
+      ...input,
       audit: async (tx, connection) => {
+        assertIntegrationIdentity(connection, input);
         await request.audit(tx, {
           organizationId: ctx.organizationId,
           action: 'integration.connected',
@@ -79,7 +83,22 @@ function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps
 }
 
 async function connect(port: IntegrationPort, input: IntegrationMutationInput): Promise<z.infer<typeof IntegrationConnectionSchema>> {
-  try { return IntegrationConnectionSchema.parse(await port.connect(input)); } catch { throw integrationServiceFailed(); }
+  try {
+    const result = IntegrationConnectionSchema.parse(await port.connect(input));
+    assertIntegrationIdentity(result, input);
+    return result;
+  } catch { throw integrationServiceFailed(); }
+}
+function assertIntegrationIdentity(
+  result: z.infer<typeof IntegrationConnectionSchema>,
+  expected: Pick<IntegrationInput, 'organizationId' | 'projectId' | 'provider'>,
+): void {
+  if (
+    result.organizationId !== expected.organizationId ||
+    result.projectId !== expected.projectId ||
+    result.provider !== expected.provider
+  )
+    throw new Error('integration identity mismatch');
 }
 function projectNotFound(): ApiError { return new ApiError('project_not_found', 404, 'That project does not exist.'); }
 function integrationServiceFailed(): ApiError { return new ApiError('integration_service_unavailable', 502, 'The integration service could not complete the request.'); }

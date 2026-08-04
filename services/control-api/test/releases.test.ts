@@ -48,6 +48,8 @@ class RecordingReleasePort implements ReleasePort {
   readonly rollbacks: RollbackReleaseMutationInput[] = [];
   fail = false;
   invalid = false;
+  createResultOverride: Partial<ReleaseRow> | undefined;
+  approveResultOverride: Partial<ReleaseRow> | undefined;
   readonly releaseId = newId('rel');
   readonly releases = new Map<string, ReleaseRow>();
 
@@ -80,6 +82,7 @@ class RecordingReleasePort implements ReleasePort {
       environmentId: input.environmentId,
       specificationId: input.specificationId,
       createdBy: input.actorId,
+      ...this.createResultOverride,
     };
     await this.record(input, row);
     this.creates.push(input);
@@ -105,7 +108,8 @@ class RecordingReleasePort implements ReleasePort {
     });
   }
   async approve(input: ApproveReleaseMutationInput): Promise<ReleaseRow> {
-    const row = this.releases.get(input.releaseId);
+    const release = this.releases.get(input.releaseId);
+    const row = release === undefined ? undefined : { ...release, ...this.approveResultOverride };
     if (row === undefined) throw new Error('release missing');
     await this.record(input, row);
     this.approvals.push(input);
@@ -338,6 +342,47 @@ describe('release route shells', () => {
     expect(response.statusCode).toBe(502);
     expect(wired.releases.creates).toEqual([]);
     expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
+  });
+
+  it('rejects a wrong-identity release create result before audit or commit', async () => {
+    const wired = await wire();
+    const wrong = {
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      environmentId: newId('env'),
+      specificationId: newId('spec'),
+    };
+    wired.releases.createResultOverride = wrong;
+    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-wrong-create-01'), payload: candidateBody(wired) });
+    expect(response.statusCode).toBe(502);
+    expect(response.body).not.toContain(wrong.organizationId);
+    expect(response.body).not.toContain(wrong.projectId);
+    expect(response.body).not.toContain(wrong.environmentId);
+    expect(response.body).not.toContain(wrong.specificationId);
+    expect(wired.releases.creates).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
+  });
+
+  it('rejects a wrong-identity release approval result before audit or commit', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-identity-source-01'), payload: candidateBody(wired) });
+    expect(created.statusCode, created.body).toBe(201);
+    const selectedReleaseId = created.json<{ release: { id: string } }>().release.id;
+    expect(wired.releases.releases.has(selectedReleaseId)).toBe(true);
+    expect(wired.releases.releases.get(selectedReleaseId)?.organizationId).toBe(wired.organizationId);
+    const wrong = {
+      id: newId('rel'),
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      environmentId: newId('env'),
+      specificationId: newId('spec'),
+    };
+    wired.releases.approveResultOverride = wrong;
+    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${selectedReleaseId}/approve`, headers: mutationHeaders(wired, wired.owner, 'release-wrong-approve-01') });
+    expect(response.statusCode, response.body).toBe(502);
+    for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
+    expect(wired.releases.approvals).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'release.approved')).toEqual([]);
   });
 
   it('replays a release mutation without a second port call and forwards tenant actor and stable operation key', async () => {

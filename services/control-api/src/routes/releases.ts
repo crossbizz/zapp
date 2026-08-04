@@ -164,7 +164,14 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       throw projectNotFound();
     authorize(ctx, 'edit_code');
     const operationKey = operationOf(request);
-    const row = await portResult(
+    const expected = {
+      organizationId: ctx.organizationId,
+      projectId: project.id,
+      environmentId: request.body.environmentId,
+      specificationId: request.body.specificationId,
+      releaseId: null,
+    };
+    const row = await releaseMutationResult(
       () =>
         deps.port.createReleaseCandidate({
           ...CreateReleaseInputSchema.parse({
@@ -175,6 +182,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
             operationKey,
           }),
           audit: async (tx, release) => {
+            assertReleaseIdentity(release, expected);
             await request.audit(tx, {
               organizationId: ctx.organizationId,
               action: 'release.created',
@@ -187,7 +195,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
             });
           },
         }),
-      ReleaseRowSchema,
+      expected,
     );
     return await reply.status(201).send({ release: releaseView(row) });
   });
@@ -211,7 +219,14 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
     const operationKey = operationOf(request);
-    const approved = await portResult(
+    const expected = {
+      organizationId: row.organizationId,
+      projectId: row.projectId,
+      environmentId: row.environmentId,
+      specificationId: row.specificationId,
+      releaseId: row.id,
+    };
+    const approved = await releaseMutationResult(
       () =>
         deps.port.approve({
           organizationId: ctx.organizationId,
@@ -219,6 +234,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
           actorId: actorOf(request),
           operationKey,
           audit: async (tx, release) => {
+            assertReleaseIdentity(release, expected);
             await request.audit(tx, {
               organizationId: ctx.organizationId,
               action: 'release.approved',
@@ -227,7 +243,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
             });
           },
         }),
-      ReleaseRowSchema,
+      expected,
     );
     return { release: releaseView(approved) };
   });
@@ -331,6 +347,30 @@ async function releaseFor(port: ReleasePort, organizationId: string, releaseId: 
 }
 async function portResult<T>(work: () => Promise<T>, schema: z.ZodType<T>): Promise<T> {
   try { return schema.parse(await work()); } catch { throw releaseServiceFailed(); }
+}
+type ExpectedReleaseIdentity = Pick<
+  ReleaseRow,
+  'organizationId' | 'projectId' | 'environmentId' | 'specificationId'
+> & { readonly releaseId: string | null };
+async function releaseMutationResult(
+  work: () => Promise<ReleaseRow>,
+  expected: ExpectedReleaseIdentity,
+): Promise<ReleaseRow> {
+  return await portResult(async () => {
+    const result = ReleaseRowSchema.parse(await work());
+    assertReleaseIdentity(result, expected);
+    return result;
+  }, ReleaseRowSchema);
+}
+function assertReleaseIdentity(result: ReleaseRow, expected: ExpectedReleaseIdentity): void {
+  if (
+    result.organizationId !== expected.organizationId ||
+    result.projectId !== expected.projectId ||
+    result.environmentId !== expected.environmentId ||
+    result.specificationId !== expected.specificationId ||
+    (expected.releaseId !== null && result.id !== expected.releaseId)
+  )
+    throw new Error('release identity mismatch');
 }
 async function permissionContext(deps: ReleaseRoutesDeps, organizationId: string): Promise<PermissionContext> {
   try { return await deps.permissionContextFor(organizationId); } catch { throw releaseServiceFailed(); }

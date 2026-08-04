@@ -21,6 +21,7 @@ class RecordingIntegrationPort implements IntegrationPort {
   readonly calls: IntegrationMutationInput[] = [];
   readonly auditMetadata: Array<Record<string, unknown>> = [];
   fail = false;
+  resultOverride: Partial<IntegrationConnectionView> | undefined;
 
   async connect(input: IntegrationMutationInput): Promise<IntegrationConnectionView> {
     const configuration = input.configuration;
@@ -33,6 +34,7 @@ class RecordingIntegrationPort implements IntegrationPort {
       status: 'connected',
       credentialRef: 'vault://integration/ref',
       configuration,
+      ...this.resultOverride,
     };
     await input.audit(NO_TRANSACTION, result);
     this.calls.push(input);
@@ -146,6 +148,22 @@ describe('integration route shells', () => {
     const request = requestFor('stripe', wired.projectId);
     const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, 'integration-audit-fail-01'), payload: request.body });
     expect(response.statusCode).toBe(502);
+    expect(wired.integrations.calls).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'integration.connected')).toEqual([]);
+  });
+
+  it('rejects a wrong-identity integration result before audit or commit', async () => {
+    const wired = await wire();
+    const wrong = {
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      provider: 'neon' as const,
+    };
+    wired.integrations.resultOverride = wrong;
+    const request = requestFor('stripe', wired.projectId);
+    const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, 'integration-wrong-result-01'), payload: request.body });
+    expect(response.statusCode).toBe(502);
+    for (const value of Object.values(wrong)) expect(response.body).not.toContain(value);
     expect(wired.integrations.calls).toEqual([]);
     expect(wired.built.audit.events.filter((event) => event.action === 'integration.connected')).toEqual([]);
   });
