@@ -25,16 +25,16 @@ See master plan §Global Constraints. Specific to this plan:
 **Files:** Create: `.gitignore`, `README.md`
 **Effort:** S
 
-- [ ] **Step 1:** `git init` in `/Users/manishmaheshwari/Projects/zapp`; create `.gitignore` with: `node_modules/`, `dist/`, `.turbo/`, `.next/`, `out/`, `*.log`, `.env`, `.env.*`, `!.env.example`, `.DS_Store`, `coverage/`, `drizzle/meta/_journal.json.bak`
-- [ ] **Step 2:** `README.md` with one-paragraph product summary (from PRD §1) and links to `docs/zapp-build-prd.md`, `docs/plans/00-master-plan.md`, `tasks/todo.md`.
-- [ ] **Step 3:** Commit: `chore: initialize repository with PRD and P0 plan set`
+- [x] **Step 1:** `git init` in `/Users/manishmaheshwari/Projects/zapp`; create `.gitignore` with: `node_modules/`, `dist/`, `.turbo/`, `.next/`, `out/`, `*.log`, `.env`, `.env.*`, `!.env.example`, `.DS_Store`, `coverage/`, `drizzle/meta/_journal.json.bak`
+- [x] **Step 2:** `README.md` with one-paragraph product summary (from PRD §1) and links to `docs/zapp-build-prd.md`, `docs/plans/00-master-plan.md`, `tasks/todo.md`.
+- [x] **Step 3:** Commit: `chore: initialize repository with PRD and P0 plan set`
 
 ### Task FND-1: Monorepo scaffold
 
 **Files:** Create: `package.json`, `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `eslint.config.mjs`, `.prettierrc.json`, `vitest.workspace.ts`, `.nvmrc`, `.npmrc`
 **Effort:** M
 
-- [ ] **Step 1:** Root `package.json`:
+- [x] **Step 1:** Root `package.json`:
 
 ```json
 {
@@ -64,7 +64,7 @@ See master plan §Global Constraints. Specific to this plan:
 }
 ```
 
-- [ ] **Step 2:** `pnpm-workspace.yaml`:
+- [x] **Step 2:** `pnpm-workspace.yaml`:
 
 ```yaml
 packages:
@@ -74,11 +74,11 @@ packages:
   - "sandbox/*"
 ```
 
-- [ ] **Step 3:** `turbo.json` with task graph: `build` (dependsOn `^build`, outputs `dist/**`, `.next/**`), `typecheck` (dependsOn `^build`), `lint`, `test` (dependsOn `build`), `test:integration` (cache false, env `DATABASE_URL`, `REDIS_URL`), `dev` (persistent, cache false).
-- [ ] **Step 4:** `tsconfig.base.json`: `strict: true`, `module: NodeNext`, `moduleResolution: NodeNext`, `target: ES2023`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, `verbatimModuleSyntax: true`, path-less (workspace deps via package exports).
-- [ ] **Step 5:** ESLint 9 flat config: typescript-eslint strict-type-checked base; custom rules on: `no-empty` (catch blocks), `@typescript-eslint/no-floating-promises`. Add rule stub package reference for the `src/pro` import ban (implemented FND-9).
-- [ ] **Step 6:** `vitest.workspace.ts` globbing `packages/*/vitest.config.ts`, `services/*/vitest.config.ts`.
-- [ ] **Step 7:** Verify: `pnpm install && pnpm lint && pnpm typecheck` exit 0 (no packages yet — trivially green). Commit: `chore: monorepo scaffold (pnpm, turbo, tsconfig, eslint, vitest)`
+- [x] **Step 3:** `turbo.json` with task graph: `build` (dependsOn `^build`, outputs `dist/**`, `.next/**`), `typecheck` (dependsOn `^build`), `lint`, `test` (dependsOn `build`), `test:integration` (cache false, env `DATABASE_URL`, `REDIS_URL`), `dev` (persistent, cache false).
+- [x] **Step 4:** `tsconfig.base.json`: `strict: true`, `module: NodeNext`, `moduleResolution: NodeNext`, `target: ES2023`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, `verbatimModuleSyntax: true`, path-less (workspace deps via package exports).
+- [x] **Step 5:** ESLint 9 flat config: typescript-eslint strict-type-checked base; custom rules on: `no-empty` (catch blocks), `@typescript-eslint/no-floating-promises`. Add rule stub package reference for the `src/pro` import ban (implemented FND-9).
+- [x] **Step 6:** `vitest.workspace.ts` globbing `packages/*/vitest.config.ts`, `services/*/vitest.config.ts`.
+- [x] **Step 7:** Verify: `pnpm install && pnpm lint && pnpm typecheck` exit 0 (no packages yet — trivially green). Commit: `chore: monorepo scaffold (pnpm, turbo, tsconfig, eslint, vitest)`
 
 ### Task FND-2: `packages/config` — environment validation
 
@@ -298,3 +298,4 @@ export const IdempotencyHeader = "idempotency-key";
 ## Execution log
 
 - (empty — plan not yet executed)
+- 2026-08-03: FND-0 done (repo init, 8edc125). FND-1 done (b1de22a, review approved; Important fix applied in follow-up commit: turbo globalDependencies + .prettierignore). Minors deferred to final review: test:integration dependsOn (resolve FND-8), lib ES2023 note, decorative @ts-check.

@@ -22,6 +22,7 @@ Read master plan **§Global Constraints** (all 20) before your first task. The m
 - Every mutating API/activity is idempotent or keyed. Cross-tenant reads return 404, never 403.
 - No code derived from Dyad `src/pro`, ever.
 - A failed check can never be reported as success — not by generated code, and **not by you** (see §5).
+- **API first** (product-owner directive 2026-08-03): every capability ships as a versioned `/v1` API (+ generated SDK) before or alongside any UI; clients only ever consume the public API/SDK — no UI-private backdoors.
 
 ## 3. The task loop (one task at a time)
 

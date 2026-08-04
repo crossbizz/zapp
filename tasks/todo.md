@@ -5,8 +5,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M0 — Foundation (Weeks 1–3)
 
 ### Plan 01 — Foundation
-- [ ] FND-0 Repository initialization
-- [ ] FND-1 Monorepo scaffold (pnpm/turbo/tsconfig/eslint/vitest)
+- [x] FND-0 Repository initialization
+- [x] FND-1 Monorepo scaffold (pnpm/turbo/tsconfig/eslint/vitest)
 - [ ] FND-2 packages/config env validation
 - [ ] FND-3 contracts: ids, agent events, run/task enums
 - [ ] FND-4 contracts: sandbox/adapter/deployment/tool interfaces
