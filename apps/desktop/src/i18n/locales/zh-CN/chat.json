@@ -74,7 +74,7 @@
     }
   },
   "dismissError": "忽略错误",
-  "askDyadToBuild": "让 Dyad 来构建...",
+  "askDyadToBuild": "让 Zapp 来构建...",
   "cancelGeneration": "取消生成",
   "sendMessage": "发送消息",
   "loadingProposal": "正在加载提案...",

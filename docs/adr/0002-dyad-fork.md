@@ -82,10 +82,38 @@ comment naming the original specifier, so a merge conflict is legible.
 
 IPC channels the UI touches are registered with empty results rather than left
 unregistered, so the renderer degrades instead of throwing "No handler registered":
-`get-themes`, `get-custom-themes`, `get-theme-generation-model-options` and
-`agent-tool:get-tools` return `[]`; `get-app-theme` returns `null`. The mutating theme,
+`get-custom-themes`, `get-theme-generation-model-options` and
+`agent-tool:get-tools` return `[]`. The custom-theme, theme-generation,
 visual-editing and agent-consent channels reject with a typed
 `DyadError(Precondition)`.
+
+#### Themes are selectable, not authorable
+
+**Amended 2026-08-04.** This ADR originally had `get-themes` return `[]`,
+`get-app-theme` return `null`, and `set-app-theme` reject like the other mutating
+theme channels. All three were wrong, and the last was a release blocker.
+
+Wrong, because only theme *authoring* was Pro. `themesData` (the built-in default
+theme, prompt included), `getBuiltinThemeById` and `getThemePromptById` are all in
+the Apache-2.0 tree; `apps.theme_id` is in the retained schema; and
+`chat_stream_handlers` reads that column on every turn to build the system prompt.
+Stubbing the handlers discarded retained, working functionality.
+
+A blocker, because `DEFAULT_SETTINGS.selectedThemeId` is `"default"` — truthy — so
+`FirstPromptProvider.applyTheme` calls `set-app-theme` on **every** app creation.
+The rejection surfaced as `POST_CREATE_FAILED` ("Failed to finish setting up the
+app. Themes is not available in this build.") and the first prompt was never
+dispatched: creating an app from the home screen could not work at all. 92 of the
+125 e2e spec files call `sendPrompt`, most of them through app creation.
+
+So `registerThemesHandlers` now serves `themesData` from `get-themes` and persists
+`get-app-theme`/`set-app-theme` against `apps.theme_id`, with an unknown `appId`
+failing `NotFound` rather than silently updating zero rows. Custom-theme CRUD and
+AI theme generation stay unavailable — those genuinely needed Pro, and with no way
+to create one, `get-custom-themes` returning `[]` is honest rather than lossy.
+
+Covered by `src/zapp/pro_stubs/main.test.ts`, which also pins the Pro boundary
+that remains (generation and custom-theme writes still reject `Precondition`).
 
 #### Pro-dependent tests the import sweep could not see
 

@@ -119,7 +119,7 @@ export const TitleBar = () => {
                 />
               }
             >
-              <img src={logo} alt="Dyad" className="w-5 h-5 shrink-0" />
+              <img src={logo} alt="Zapp" className="w-5 h-5 shrink-0" />
               <span className="hidden @2xl:inline max-w-40 truncate">
                 Manage app
               </span>

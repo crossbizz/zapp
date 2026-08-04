@@ -368,7 +368,7 @@ describe("useAppOutputSubscription", () => {
           type: "package-manager-warning",
           warningKind: "pnpm-migration",
           message:
-            "This app pins an older pnpm that can't read the lockfile Dyad writes.",
+            "This app pins an older pnpm that can't read the lockfile Zapp writes.",
           appId: 1,
         });
       }
@@ -377,7 +377,7 @@ describe("useAppOutputSubscription", () => {
     expect(store.get(currentPackageManagerWarningAtom)).toEqual({
       kind: "pnpm-migration",
       message:
-        "This app pins an older pnpm that can't read the lockfile Dyad writes.",
+        "This app pins an older pnpm that can't read the lockfile Zapp writes.",
       appId: 1,
     });
 

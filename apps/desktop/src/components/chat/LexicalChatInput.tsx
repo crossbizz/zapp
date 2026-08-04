@@ -303,7 +303,7 @@ export function LexicalChatInput({
   onSubmit,
   onPaste,
   excludeCurrentApp,
-  placeholder = "Ask Dyad to build...",
+  placeholder = "Ask Zapp to build...",
   disabled = false,
   disableSendButton,
   messageHistory = [],

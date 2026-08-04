@@ -85,7 +85,7 @@ export function HomeChatInput({
   ]);
   const placeholder = selectedApp
     ? `Send a message to ${selectedApp.name}...`
-    : `Ask Dyad to build ${typingText ?? ""}`;
+    : `Ask Zapp to build ${typingText ?? ""}`;
 
   // Use the attachments hook
   const {

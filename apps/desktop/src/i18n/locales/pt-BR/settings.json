@@ -40,13 +40,13 @@
     "activeRuntime": "Ativo:",
     "nodeRuntimeActiveVersion": "Node {{version}} - {{source}}",
     "nodeRuntimeSource": {
-      "managed": "Gerenciado pelo Dyad",
+      "managed": "Gerenciado pelo Zapp",
       "custom": "Caminho personalizado",
       "system": "Sistema"
     },
     "systemNodeTooOld": "O Node.js do sistema é muito antigo",
     "noUsableNodeFound": "Nenhum Node.js utilizável encontrado",
-    "systemNodeTooOldDescription": "O Dyad requer Node.js do sistema v20 ou mais recente, ou um runtime gerenciado.",
+    "systemNodeTooOldDescription": "O Zapp requer Node.js do sistema v20 ou mais recente, ou um runtime gerenciado.",
     "managedRuntimeVersion": "Runtime gerenciado: Node {{version}}",
     "runtimeSystem": "Sistema",
     "runtimeManaged": "Gerenciado",
@@ -69,10 +69,10 @@
     "resetToSystemNodePath": "Restaurado para o caminho do Node.js do sistema",
     "resetNodePathFailed": "Falha ao restaurar o caminho do Node.js: {{message}}",
     "runtimePreferenceUpdateFailed": "Falha ao atualizar a preferência de runtime do Node.js: {{message}}",
-    "managedNodeInstalled": "Node.js gerenciado pelo Dyad instalado com sucesso",
-    "managedNodeInstallFailed": "Falha ao instalar Node.js gerenciado pelo Dyad",
-    "managedNodeRemoved": "Node.js gerenciado pelo Dyad removido",
-    "managedNodeRemoveFailed": "Falha ao remover Node.js gerenciado pelo Dyad"
+    "managedNodeInstalled": "Node.js gerenciado pelo Zapp instalado com sucesso",
+    "managedNodeInstallFailed": "Falha ao instalar Node.js gerenciado pelo Zapp",
+    "managedNodeRemoved": "Node.js gerenciado pelo Zapp removido",
+    "managedNodeRemoveFailed": "Falha ao remover Node.js gerenciado pelo Zapp"
   },
   "workflow": {
     "title": "Configurações de Fluxo de Trabalho",
@@ -133,7 +133,7 @@
     "privacyNotice": "Usamos dados de telemetria anônimos para melhorar o produto. Nenhum dado pessoal é coletado.",
     "acceptAndContinue": "Aceitar e Continuar",
     "shareAnonymousData": "Compartilhar dados anônimos?",
-    "helpImprove": "Ajude a melhorar o Dyad com dados de uso anônimos.",
+    "helpImprove": "Ajude a melhorar o Zapp com dados de uso anônimos.",
     "noCodeOrMessages": "Observação: isso não registra seu código nem suas mensagens.",
     "learnMore": "Saiba mais",
     "accept": "Aceitar",
@@ -210,7 +210,7 @@
   },
   "azure": {
     "configured": "Azure OpenAI Configurado",
-    "configuredDescription": "O Dyad usará as credenciais salvas nas Configurações para os modelos Azure OpenAI.",
+    "configuredDescription": "O Zapp usará as credenciais salvas nas Configurações para os modelos Azure OpenAI.",
     "usingEnvVars": "Usando Variáveis de Ambiente",
     "usingEnvVarsDescription": "AZURE_API_KEY e AZURE_RESOURCE_NAME estão definidas. Os valores salvos abaixo as substituirão.",
     "configRequired": "Configuração do Azure OpenAI Necessária",
@@ -225,8 +225,8 @@
     "configNeededDescription": "As requisições do Azure OpenAI exigem um nome de recurso e uma chave de API. Insira-os acima ou forneça as variáveis de ambiente.",
     "saveError": "Erro ao Salvar",
     "envVarsOptional": "Variáveis de Ambiente (opcional)",
-    "envVarsHelpText": "Você pode continuar configurando o Azure via variáveis de ambiente. Se ambas as variáveis estiverem presentes e nenhuma configuração estiver salva, o Dyad as usará automaticamente.",
-    "envVarsPrecedence": "Os valores salvos nas Configurações têm prioridade sobre as variáveis de ambiente. Reinicie o Dyad após alterar as variáveis de ambiente."
+    "envVarsHelpText": "Você pode continuar configurando o Azure via variáveis de ambiente. Se ambas as variáveis estiverem presentes e nenhuma configuração estiver salva, o Zapp as usará automaticamente.",
+    "envVarsPrecedence": "Os valores salvos nas Configurações têm prioridade sobre as variáveis de ambiente. Reinicie o Zapp após alterar as variáveis de ambiente."
   },
   "vertex": {
     "projectId": "ID do Projeto",

@@ -74,7 +74,7 @@
     }
   },
   "dismissError": "Dismiss error",
-  "askDyadToBuild": "Ask Dyad to build...",
+  "askDyadToBuild": "Ask Zapp to build...",
   "cancelGeneration": "Cancel generation",
   "sendMessage": "Send message",
   "loadingProposal": "Loading proposal...",

@@ -243,7 +243,7 @@ export function useNotificationHandler() {
       // get app name so user knows which app is making the request
       const appName = chatSummary?.appId
         ? await resolveAppNameForAppId(chatSummary.appId, queryClient)
-        : "Dyad";
+        : "Zapp";
       const title = appName;
 
       // A terminal event can arrive while permission or chat/app metadata is
@@ -346,7 +346,7 @@ export function useNotificationHandler() {
         const chatSummary = await resolveChatSummary(chatId, queryClient);
         const appName = chatSummary?.appId
           ? await resolveAppNameForAppId(chatSummary.appId, queryClient)
-          : "Dyad";
+          : "Zapp";
         const chatTitle = chatSummary?.title ?? null;
 
         const bodyContext = summary || chatTitle || "Chat response completed";
@@ -366,7 +366,7 @@ export function useNotificationHandler() {
         if (!completionDeniedWarningShownRef.current) {
           completionDeniedWarningShownRef.current = true;
           showWarning(
-            "Enable notifications for Dyad in your operating system's notification settings to receive chat completion alerts.",
+            "Enable notifications for Zapp in your operating system's notification settings to receive chat completion alerts.",
           );
         }
         return;
@@ -383,7 +383,7 @@ export function useNotificationHandler() {
           if (permission === "denied") {
             completionDeniedWarningShownRef.current = true;
             showWarning(
-              "Enable notifications for Dyad in your operating system's notification settings to receive chat completion alerts.",
+              "Enable notifications for Zapp in your operating system's notification settings to receive chat completion alerts.",
             );
           }
           return;
@@ -402,7 +402,7 @@ export function useNotificationHandler() {
             const chatSummary = await resolveChatSummary(chatId, queryClient);
             const appName = chatSummary?.appId
               ? await resolveAppNameForAppId(chatSummary.appId, queryClient)
-              : "Dyad";
+              : "Zapp";
             const chatTitle = chatSummary?.title ?? null;
 
             const bodyContext =

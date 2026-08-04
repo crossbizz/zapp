@@ -74,7 +74,7 @@
     }
   },
   "dismissError": "Dispensar erro",
-  "askDyadToBuild": "Peça ao Dyad para construir...",
+  "askDyadToBuild": "Peça ao Zapp para construir...",
   "cancelGeneration": "Cancelar geração",
   "sendMessage": "Enviar mensagem",
   "loadingProposal": "Carregando proposta...",
