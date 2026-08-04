@@ -14,6 +14,13 @@ import type { AppInstance } from './app.js';
 import { ApiError } from './errors.js';
 import { ForgejoError, redactToken } from './forgejo/client.js';
 import { GitProviderConflictError, type GitProvider } from './provider/types.js';
+import {
+  DEFAULT_TOKEN_TTL_SECONDS,
+  MAX_TOKEN_TTL_SECONDS,
+  TOKEN_ACCESS_LEVELS,
+  type TokenService,
+} from './tokens.js';
+import { serviceOf } from './internal/service-auth.js';
 
 /**
  * `/internal/git/*` — the whole surface of this service (plan 06 GIT-2).
@@ -114,14 +121,68 @@ const WireCreatedRepository = CreatedRepositorySchema.extend({
   provisionedAt: z.string().datetime(),
 });
 
+const MintTokenBody = z
+  .object({
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    access: z.enum(TOKEN_ACCESS_LEVELS),
+    /**
+     * Bounded at the schema as well as in `src/tokens.ts`, so an over-long
+     * request is a 400 naming the field rather than a 500 from a thrown Error.
+     * The ceiling is the same number in both places and the constant is shared —
+     * two spellings of a security bound is one spelling too many.
+     */
+    ttlSec: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_TOKEN_TTL_SECONDS)
+      .default(DEFAULT_TOKEN_TTL_SECONDS),
+    /**
+     * Why this credential is being minted. Required, and long enough to be a
+     * sentence rather than a keystroke: the audit row is what an incident is
+     * reconstructed from, and "sandbox-service took a write token" answers a
+     * different question than "sandbox-service took a write token to push
+     * run_01…".
+     */
+    reason: z.string().trim().min(8).max(500),
+    /** Attribution, when the caller has a run or a task to attribute to. */
+    runId: idSchema('run').optional(),
+    taskId: idSchema('task').optional(),
+  })
+  .strict();
+
+const RevokeTokensBody = z
+  .object({
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    reason: z.string().trim().min(8).max(500),
+  })
+  .strict();
+
+const MintedTokenSchema = z.object({
+  /** The credential. The one field in this service's responses that is one. */
+  token: z.string(),
+  /** The ephemeral user it belongs to — an identifier, worth nothing on its own. */
+  username: z.string(),
+  cloneUrl: z.string().url(),
+  expiresAt: z.string().datetime(),
+});
+
 export interface GitRoutesDeps {
   readonly provider: GitProvider;
+  /**
+   * Mints and revokes repository-scoped credentials (GIT-3). A port rather than
+   * a Forgejo client, so the route suite can prove the authorization and the
+   * envelope without an ephemeral user being created anywhere.
+   */
+  readonly tokens: TokenService;
   /** Overridable so a test can prove a caller outside the allowlist is refused. */
   readonly callers?: readonly ServiceName[];
 }
 
 export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
-  const { provider } = deps;
+  const { provider, tokens } = deps;
   const callers = deps.callers ?? GIT_CALLERS;
   const guard = (): ReturnType<AppInstance['requireService']> => app.requireService({ callers });
 
@@ -313,6 +374,101 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
         throw new ApiError('commit_not_found', 404, 'That commit does not exist.');
       }
       return { ...commit, committedAt: commit.committedAt.toISOString() };
+    },
+  );
+
+  app.post(
+    '/internal/git/tokens',
+    {
+      preHandler: [guard()],
+      schema: { body: MintTokenBody, response: { 201: MintedTokenSchema } },
+    },
+    async (request, reply) => {
+      const caller = serviceOf(request);
+      const { organizationId, projectId, access, ttlSec, reason, runId, taskId } = request.body;
+
+      let minted;
+      try {
+        minted = await tokens.mint({
+          organizationId,
+          projectId,
+          access,
+          ttlSec,
+          // From the verified token, never from the body: a caller cannot claim
+          // a credential was some other service's doing, which is the property
+          // that makes the audit row worth reading.
+          requestingService: caller.service,
+          reason,
+          ...(runId === undefined ? {} : { runId }),
+          ...(taskId === undefined ? {} : { taskId }),
+        });
+      } catch (error) {
+        return refuse(request, error, 'mintToken');
+      }
+
+      /**
+       * The response body is a credential, and this is the one route where that
+       * is true. Three consequences, all of them here rather than in a comment
+       * somewhere else:
+       *
+       *   - `no-store`, so nothing between here and the caller keeps a copy.
+       *   - the body is never logged (`src/logging.ts` builds its request log
+       *     from three fields and redacts a `token` key besides), and
+       *   - the username is returned separately so a caller has something it
+       *     *can* log.
+       */
+      void reply.header('cache-control', 'no-store');
+      return await reply.status(201).send({
+        token: minted.token,
+        username: minted.username,
+        cloneUrl: minted.cloneUrl,
+        expiresAt: minted.expiresAt.toISOString(),
+      });
+    },
+  );
+
+  app.post(
+    '/internal/git/tokens/revoke',
+    {
+      preHandler: [guard()],
+      schema: {
+        body: RevokeTokensBody,
+        response: { 200: z.object({ revoked: z.number().int().nonnegative() }) },
+      },
+    },
+    async (request) => {
+      const caller = serviceOf(request);
+      try {
+        // Called when a project is deleted: every credential that could still
+        // reach the repository goes with it rather than waiting out its TTL.
+        const revoked = await tokens.revokeForProject({
+          organizationId: request.body.organizationId,
+          projectId: request.body.projectId,
+          requestingService: caller.service,
+          reason: request.body.reason,
+        });
+        return { revoked };
+      } catch (error) {
+        return refuse(request, error, 'revokeTokens');
+      }
+    },
+  );
+
+  app.post(
+    '/internal/git/tokens/sweep',
+    {
+      preHandler: [guard()],
+      schema: { response: { 200: z.object({ revoked: z.number().int().nonnegative() }) } },
+    },
+    async (request) => {
+      try {
+        // What makes "short-lived" true. Forgejo has no expiring token, so a
+        // deadline is only a deadline if something enforces it; this is that
+        // something, and it is idempotent and cheap enough to run every minute.
+        return { revoked: await tokens.sweepExpired() };
+      } catch (error) {
+        return refuse(request, error, 'sweepTokens');
+      }
     },
   );
 

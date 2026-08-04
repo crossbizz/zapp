@@ -116,6 +116,21 @@ const ServiceTokenEnvSchema = z.object({
   SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
 });
 
+/**
+ * Where the audit trail is written (GIT-3).
+ *
+ * Shared state, and therefore deliberately without a default: `audit_events` is
+ * PRD §23.6's platform-wide append-only ledger, and a git service pointed at the
+ * wrong database — or at none — would mint repository credentials whose only
+ * record is somewhere nobody looks.
+ */
+const DatabaseEnvSchema = z.object({ DATABASE_URL: z.string().min(1) });
+
+/** @throws Error naming the offending variable — never its value. */
+export function loadDatabaseUrl(source: unknown = process.env): string {
+  return defineEnv(DatabaseEnvSchema, source).DATABASE_URL;
+}
+
 /** @throws Error naming the offending variables — never their values. */
 export function loadServiceTokenConfig(source: unknown = process.env): ServiceTokenConfig {
   const env = defineEnv(ServiceTokenEnvSchema, source);

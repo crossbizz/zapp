@@ -1,5 +1,7 @@
+import { createDb } from '@zapp/db';
+
 import { composeApp } from './compose.js';
-import { loadEnv, loadForgejoEnv, loadServiceTokenConfig } from './env.js';
+import { loadDatabaseUrl, loadEnv, loadForgejoEnv, loadServiceTokenConfig } from './env.js';
 import { loggerOptions } from './logging.js';
 
 /**
@@ -15,18 +17,29 @@ const env = loadEnv();
 // caller. Refusing to start says which it is, once, at the right moment.
 const forgejo = loadForgejoEnv();
 const serviceTokens = loadServiceTokenConfig();
+// And cannot record who it handed a repository credential to (GIT-3). A mint
+// with no audit row is refused rather than served, so a service that came up
+// without a database would refuse every mint — which is a worse way to learn the
+// variable is missing than not starting.
+const database = createDb(loadDatabaseUrl());
 
 const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   forgejo,
   serviceTokens,
+  database: database.db,
+});
+
+// The handle is opened here, so it is closed here.
+app.addHook('onClose', async () => {
+  await database.close();
 });
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs
- * every `onClose` hook. This service opens no pool and no cache, so there is
- * nothing else to release — and the day it does, the release belongs in the
- * plugin that opened it rather than in a list here.
+ * every `onClose` hook — which is where the handle above is released. Teardown
+ * therefore stays with whoever created the handle, and this entrypoint does not
+ * grow a list.
  */
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   app.log.info({ signal }, 'shutting down');

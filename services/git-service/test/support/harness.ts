@@ -2,6 +2,7 @@ import { createServiceTokenSigner, type ServiceName } from '@zapp/config';
 import { internalRepoRef, newId } from '@zapp/contracts';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
+import { createRecordingGitAuditSink, type RecordingGitAuditSink } from '../../src/audit.js';
 import { SERVICE_TOKEN_HEADER } from '../../src/internal/service-auth.js';
 import type {
   BranchRef,
@@ -12,6 +13,7 @@ import type {
   CreatedRepository,
   GitProvider,
 } from '../../src/provider/types.js';
+import type { MintedToken, TokenService } from '../../src/tokens.js';
 
 /** Long enough to clear the HS256 floor `loadServiceTokenConfig` enforces. */
 export const SERVICE_SECRET = 'test-service-secret-that-is-long-enough-32';
@@ -138,22 +140,76 @@ export function createFakeProvider(overrides: Partial<GitProvider> = {}): FakeGi
   return fake;
 }
 
+export interface FakeTokenService extends TokenService {
+  readonly calls: readonly RecordedProviderCall[];
+  failNext(method: string, error: Error): void;
+  minted: MintedToken;
+  revoked: number;
+}
+
+/** A token service that records and answers, creating no Forgejo user anywhere. */
+export function createFakeTokenService(): FakeTokenService {
+  const calls: RecordedProviderCall[] = [];
+  const failures = new Map<string, Error>();
+
+  function record(method: string, ...args: unknown[]): void {
+    calls.push({ method, args });
+    const failure = failures.get(method);
+    if (failure !== undefined) {
+      failures.delete(method);
+      throw failure;
+    }
+  }
+
+  const fake: FakeTokenService = {
+    calls,
+    minted: {
+      token: 'forgejo-token-value',
+      username: 'zt-1900000000-0123456789ab',
+      cloneUrl: 'https://git.test/org_x/proj_y.git',
+      expiresAt: new Date('2026-02-01T00:05:00.000Z'),
+    },
+    revoked: 0,
+    failNext(method, error) {
+      failures.set(method, error);
+    },
+    mint(input) {
+      record('mint', input);
+      return Promise.resolve(fake.minted);
+    },
+    revokeForProject(input) {
+      record('revokeForProject', input);
+      return Promise.resolve(fake.revoked);
+    },
+    sweepExpired(now) {
+      record('sweepExpired', now);
+      return Promise.resolve(fake.revoked);
+    },
+  };
+  return fake;
+}
+
 export interface Harness {
   readonly app: AppInstance;
   readonly provider: FakeGitProvider;
+  readonly tokens: FakeTokenService;
+  readonly audit: RecordingGitAuditSink;
 }
 
-/** The app as it ships, with the provider substituted. */
+/** The app as it ships, with the provider and the token service substituted. */
 export function harness(
   options: { readonly callers?: readonly ServiceName[]; readonly now?: () => Date } = {},
 ): Harness {
   const provider = createFakeProvider();
+  const tokens = createFakeTokenService();
+  const audit = createRecordingGitAuditSink();
   const app = buildApp({
     logger: false,
     provider,
+    tokens,
     signer,
     ...(options.callers === undefined ? {} : { callers: options.callers }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
-  return { app, provider };
+  return { app, provider, tokens, audit };
 }

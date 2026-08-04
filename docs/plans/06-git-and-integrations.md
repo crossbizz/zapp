@@ -108,8 +108,35 @@ Where the pieces landed, and the two decisions worth knowing:
 **Interfaces produced:** `POST /internal/git/tokens` `{ projectId, access: "read"|"write", ttlSec ≤ 600 }` → `{ token, expiresAt }`; implementation: Forgejo scoped access token restricted to the single repository (repo-scoped deploy token / access token with repository restriction), audited (`git_token.minted` audit row with requesting service + run/task attribution); revocation on project deletion.
 **Effort:** M
 
-- [ ] Failing tests: token clones only its repo (cross-repo clone → 403/404); expired token rejected; audit row present.
-- [ ] Commit: `feat(git-service): repository-scoped short-lived tokens`
+- [x] Failing tests: token clones only its repo (cross-repo clone → 403/404); expired token rejected; audit row present.
+- [x] Commit: `feat(git-service): repository-scoped short-lived tokens`
+
+**Forgejo has no repository-scoped token and no expiring token**, so both had to
+be built:
+
+- **Scope comes from the identity.** A `restricted` ephemeral user, made a
+  collaborator on exactly one private repository, with a token minted as that
+  user. Every other repository — same tenant included — answers 404 to it, over
+  `git` and over the API. `test/integration/tokens.test.ts` proves it by cloning.
+- **Expiry comes from a sweep**, and the deadline is encoded in the ephemeral
+  username (`zt-<epoch>-<random>`) so the Git host is the only record of which
+  grants exist. `POST /internal/git/tokens/sweep` deletes everything past its
+  deadline; it is idempotent and cheap. **Ops requirement:** something has to
+  call it — every minute is fine. Until it is scheduled, a token remains usable
+  between its stated expiry and the next call, which is the one bounded exposure
+  this design carries.
+- **Revocation on project deletion** is `POST /internal/git/tokens/revoke`, which
+  removes every outstanding grant on the repository rather than waiting out TTLs.
+- **`git_token.minted` is written by this service** into `audit_events`, with
+  `actor_type = 'service'` — the same shape the control plane's `auditService`
+  writes. Posting it to a control-plane route instead would have needed a new
+  audience, a new route and a new entry in the control plane's `AUDIT_ACTIONS`,
+  and would have put a network hop between an action and the record of it. The
+  reasoning is in `services/git-service/src/audit.ts`; revisit when a second
+  service needs to write a row.
+- The mint is compensated: if the audit row cannot be written, the grant is
+  destroyed and the caller gets an error. A credential handed out with no record
+  of it is the outcome the trail exists to prevent.
 
 ### Task GIT-4: Backups + restore
 

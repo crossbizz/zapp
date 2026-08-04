@@ -1,3 +1,4 @@
+import type { Database } from '@zapp/db';
 import { describe, expect, it } from 'vitest';
 
 import { composeApp } from '../src/compose.js';
@@ -30,6 +31,24 @@ function deployed() {
       timeoutMs: 100,
     },
     serviceTokens: { secret: SERVICE_SECRET },
+    // The composition needs a handle; nothing in this suite reaches a query,
+    // because every assertion is answered before a route touches the database.
+    database: unusedDatabase(),
+  });
+}
+
+/**
+ * A database handle that would throw if anything used it.
+ *
+ * `composeApp` binds the audit sink to whatever it is given, and this suite is
+ * about wiring rather than about writing rows: a real pool would make a test of
+ * "the route is registered and closed" need PostgreSQL.
+ */
+function unusedDatabase(): Database {
+  return new Proxy({} as Database, {
+    get() {
+      throw new Error('the compose suite must not reach the database');
+    },
   });
 }
 
@@ -87,6 +106,7 @@ describe('the deployed composition', () => {
         logger: false,
         forgejo: { baseUrl: 'http://127.0.0.1:1', adminToken: 'x', timeoutMs: 100 },
         serviceTokens: { secret: `${SERVICE_SECRET}-different` },
+        database: unusedDatabase(),
       });
       try {
         const response = await wrongSecretApp.inject({

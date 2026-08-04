@@ -50,11 +50,17 @@ describe.skipIf(!hasForgejo)('the Forgejo provider, against a real instance', ()
     // Deletes only what this suite made. The dev instance belongs to a
     // developer, and a test that tidied up more than it created would be a test
     // that deleted their work.
+    // Repositories first, then organizations: Forgejo answers a delete of an
+    // organization that still owns one with a 500.
     for (const { organizationId, projectId } of created) {
-      const ref = internalRepoRef({ organizationId, projectId });
-      const [owner, name] = ref.split('/') as [string, string];
+      const [owner, name] = internalRepoRef({ organizationId, projectId }).split('/') as [
+        string,
+        string,
+      ];
       await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
-      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404, 422] });
+    }
+    for (const owner of new Set(created.map((entry) => entry.organizationId.toLowerCase()))) {
+      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
     }
   });
 

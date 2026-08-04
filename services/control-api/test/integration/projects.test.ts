@@ -297,10 +297,11 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     git.provisionedAt = provisionedAt;
     const created = await create({ name: 'Really Provisioned' });
 
-    const [row] = await database.sql<{ provisioned_at: Date | null }[]>`
+    // postgres.js hands `timestamptz` back in its text form on a raw query.
+    const [row] = await database.sql<{ provisioned_at: string | null }[]>`
       select provisioned_at from repositories where project_id = ${created.project.id}
     `;
-    expect(row?.provisioned_at).toEqual(provisionedAt);
+    expect(new Date(row?.provisioned_at ?? '')).toEqual(provisionedAt);
     git.provisionedAt = undefined;
   });
 

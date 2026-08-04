@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ForgejoError } from '../src/forgejo/client.js';
 import { GitProviderConflictError } from '../src/provider/types.js';
+import { DEFAULT_TOKEN_TTL_SECONDS, MAX_TOKEN_TTL_SECONDS } from '../src/tokens.js';
 import {
   harness,
   newProject,
@@ -444,5 +445,184 @@ describe('the write routes', () => {
     expect(h.provider.calls.at(-1)?.args).toEqual([
       internalRepoRef({ organizationId: other.organizationId, projectId: other.projectId }),
     ]);
+  });
+});
+
+describe('POST /internal/git/tokens', () => {
+  it('mints from the verified caller, not from the body', async () => {
+    const runId = newId('run');
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers: serviceHeaders(await serviceToken('sandbox-service')),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'write',
+        ttlSec: 120,
+        reason: 'push the run branch',
+        runId,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      token: 'forgejo-token-value',
+      username: 'zt-1900000000-0123456789ab',
+      expiresAt: '2026-02-01T00:05:00.000Z',
+    });
+    // The audit row's actor comes from the signature. A caller cannot claim a
+    // credential was some other service's doing.
+    expect(h.tokens.calls.at(-1)?.args[0]).toMatchObject({
+      organizationId: project.organizationId,
+      projectId: project.projectId,
+      access: 'write',
+      ttlSec: 120,
+      requestingService: 'sandbox-service',
+      reason: 'push the run branch',
+      runId,
+    });
+  });
+
+  it('defaults the TTL and refuses one over the ceiling', async () => {
+    const headers = serviceHeaders(await serviceToken());
+    const body = {
+      organizationId: project.organizationId,
+      projectId: project.projectId,
+      access: 'read',
+      reason: 'clone for a run',
+    };
+
+    await h.app.inject({ method: 'POST', url: '/internal/git/tokens', headers, payload: body });
+    expect(h.tokens.calls.at(-1)?.args[0]).toMatchObject({ ttlSec: DEFAULT_TOKEN_TTL_SECONDS });
+
+    const tooLong = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers,
+      payload: { ...body, ttlSec: MAX_TOKEN_TTL_SECONDS + 1 },
+    });
+    // A 400 naming the field, not a 500 from a thrown Error: the bound is part
+    // of the contract, so it belongs in the schema as well as in the service.
+    expect(tooLong.statusCode).toBe(400);
+    expect(tooLong.json()).toMatchObject({ error: { code: 'validation_failed' } });
+  });
+
+  it('requires a reason long enough to be one', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers: serviceHeaders(await serviceToken()),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'read',
+        // A required field that accepts "x" is a required field in name only,
+        // and the audit row is what an incident is reconstructed from.
+        reason: 'x',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('refuses an access level that is not read or write', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers: serviceHeaders(await serviceToken()),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'admin',
+        reason: 'escalate quietly',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(h.tokens.calls).toEqual([]);
+  });
+
+  it('tells nothing between here and the caller to keep the response', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers: serviceHeaders(await serviceToken()),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'read',
+        reason: 'clone for a run',
+      },
+    });
+
+    // The body is a credential — the one response in this service that is.
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('needs a service token like every other route', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'write',
+        reason: 'clone for a run',
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(h.tokens.calls).toEqual([]);
+  });
+});
+
+describe('the revoke and sweep routes', () => {
+  it('revokes every outstanding grant for a project', async () => {
+    h.tokens.revoked = 3;
+
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens/revoke',
+      headers: serviceHeaders(await serviceToken('control-api')),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        reason: 'project deleted',
+      },
+    });
+
+    expect(response.json()).toEqual({ revoked: 3 });
+    expect(h.tokens.calls.at(-1)).toMatchObject({
+      method: 'revokeForProject',
+      args: [
+        {
+          organizationId: project.organizationId,
+          projectId: project.projectId,
+          requestingService: 'control-api',
+          reason: 'project deleted',
+        },
+      ],
+    });
+  });
+
+  it('sweeps expired grants', async () => {
+    h.tokens.revoked = 7;
+
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens/sweep',
+      headers: serviceHeaders(await serviceToken()),
+    });
+
+    // What makes "short-lived" true: Forgejo has no expiring token, so a
+    // deadline is only a deadline if something enforces it.
+    expect(response.json()).toEqual({ revoked: 7 });
+    expect(h.tokens.calls.at(-1)?.method).toBe('sweepExpired');
+  });
+
+  it('does not expose the sweep to an unauthenticated caller', async () => {
+    const response = await h.app.inject({ method: 'POST', url: '/internal/git/tokens/sweep' });
+    expect(response.statusCode).toBe(401);
   });
 });

@@ -2,7 +2,11 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+import { createDb, type Db } from '@zapp/db';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
 
 import { createForgejoClient, type ForgejoClient } from '../../src/forgejo/client.js';
 
@@ -148,4 +152,83 @@ export async function eventually<T>(
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+}
+
+/**
+ * The database rail, for the one suite that needs it.
+ *
+ * `audit_events` is where GIT-3's `git_token.minted` rows land, and that they
+ * land is the half of "audited" a fake sink cannot prove. Gated separately from
+ * Forgejo: a developer with the dev stack up has both, and CI has neither.
+ *
+ * Same two rules as every other suite in this repository: never touch the
+ * database `DATABASE_URL` points at, and never truncate anything whose name does
+ * not end in `_test`. This one goes further and truncates nothing at all — it
+ * writes rows under ids it minted and reads them back by id, because
+ * `audit_events` is append-only by trigger (`packages/db/drizzle/0006`) and a
+ * suite that reached for the documented escape hatch to tidy up after itself
+ * would be a suite that can disarm an audit ledger.
+ */
+const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
+
+export const hasDatabase = DATABASE_URL !== '';
+
+if (!hasDatabase) {
+  console.warn(
+    '[@zapp/git-service] audit integration tests skipped: DATABASE_URL is unset — start the dev stack with ./scripts/dev-up.sh',
+  );
+}
+
+const SAFE_DATABASE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SERVICE_SUFFIX = '_git_service_test';
+
+/** Its own `${name}_git_service_test`, so parallel suites cannot clobber each other. */
+export function testDatabaseUrl(url: string): string {
+  const parsed = new URL(url);
+  const name = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+  if (name === '') {
+    throw new Error('DATABASE_URL names no database — expected something like .../zapp');
+  }
+  const testName = `${name.replace(/(_git_service)?_test$/, '')}${SERVICE_SUFFIX}`;
+  if (!SAFE_DATABASE_NAME.test(testName)) {
+    throw new Error(`refusing to use "${testName}" as a database name`);
+  }
+  parsed.pathname = `/${testName}`;
+  return parsed.toString();
+}
+
+/** Opens (creating and migrating as needed) this service's own test database. */
+export async function setUpTestDatabase(): Promise<Db & { url: string }> {
+  if (!hasDatabase) {
+    throw new Error('setUpTestDatabase requires DATABASE_URL — guard the suite with `hasDatabase`');
+  }
+  const url = testDatabaseUrl(DATABASE_URL);
+  const name = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''));
+
+  const maintenanceUrl = new URL(url);
+  maintenanceUrl.pathname = '/postgres';
+  const admin = createDb(maintenanceUrl.toString());
+  try {
+    const existing = await admin.sql<{ oid: number }[]>`
+      select oid from pg_database where datname = ${name}
+    `;
+    if (existing.length === 0) {
+      await admin.sql.unsafe(`create database "${name}"`);
+    }
+  } catch (error) {
+    // 42P04: another suite created it between the check and the create.
+    if ((error as { code?: unknown }).code !== '42P04') {
+      throw error;
+    }
+  } finally {
+    await admin.close();
+  }
+
+  const handle = createDb(url);
+  // The migrations are @zapp/db's, and the path is relative because they are
+  // data rather than code: nothing imports this directory.
+  await migrate(handle.db, {
+    migrationsFolder: fileURLToPath(new URL('../../../../packages/db/drizzle', import.meta.url)),
+  });
+  return { ...handle, url };
 }

@@ -18,6 +18,7 @@ import { serviceAuth } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import type { GitProvider } from './provider/types.js';
 import { registerGitRoutes } from './routes.js';
+import type { TokenService } from './tokens.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -37,6 +38,13 @@ export interface AppDeps {
    * and the real envelope with no Git host anywhere near it.
    */
   readonly provider: GitProvider;
+  /**
+   * Mints and revokes repository-scoped credentials (GIT-3). A port for the same
+   * reason the provider is: the route suite proves who may ask and what comes
+   * back, and creating an ephemeral Forgejo user to do that would make those
+   * assertions need a Git host.
+   */
+  readonly tokens: TokenService;
   /**
    * Verifies the service tokens every route requires. Not optional: this service
    * has no user-facing surface at all, so a deployment that cannot verify a
@@ -102,6 +110,7 @@ export function buildApp(deps: AppDeps): AppInstance {
     }
     registerGitRoutes(app, {
       provider: deps.provider,
+      tokens: deps.tokens,
       ...(deps.callers === undefined ? {} : { callers: deps.callers }),
     });
   });

@@ -51,6 +51,29 @@ export interface FakeForgejo extends ForgejoClient {
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ * Matches a route key containing `*`, which stands for one path segment.
+ *
+ * Needed because GIT-3's ephemeral usernames are random by construction: the
+ * paths a mint touches (`…/collaborators/zt-…`, `/users/zt-…/tokens`) cannot be
+ * scripted in advance without making the username injectable — and a username a
+ * test chose is a username the production path never produces.
+ */
+function matchPattern(table: Map<string, Route>, key: string): Route | undefined {
+  for (const [pattern, route] of table) {
+    if (!pattern.includes('*')) {
+      continue;
+    }
+    const expression = new RegExp(
+      `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, (char) => (char === '*' ? '[^/]+' : `\\${char}`))}$`,
+    );
+    if (expression.test(key)) {
+      return route;
+    }
+  }
+  return undefined;
+}
+
 export function createFakeForgejo(
   routes: Record<string, Route> = {},
   baseUrl = 'https://git.test',
@@ -77,7 +100,7 @@ export function createFakeForgejo(
       });
 
       const key = `${request.method} ${request.path}`;
-      const route = table.get(key);
+      const route = table.get(key) ?? matchPattern(table, key);
       if (route?.then !== undefined) {
         table.set(key, route.then);
       }

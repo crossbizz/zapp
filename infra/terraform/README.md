@@ -91,6 +91,21 @@ A restore needs both, from the same point in time. A volume restored alone has
 repositories the database has never heard of; a database restored alone has rows
 pointing at objects that are not on disk.
 
+## Ops: the token sweep
+
+GIT-3's repository-scoped tokens expire because something deletes them, not
+because Forgejo knows how to. Schedule a call to the git service:
+
+```
+POST /internal/git/tokens/sweep    (service token, audience `git-service`)
+```
+
+Every minute is fine — it is idempotent, it reads a page of accounts and deletes
+only the ones whose deadline is in their own name, and it does nothing when there
+is nothing to do. Until it is scheduled, a token remains usable between its stated
+expiry and the next call. That is the one bounded exposure this design carries,
+and it is bounded by the schedule rather than by chance.
+
 ## `prevent_destroy` on the volume
 
 `fly_volume` forces replacement on several attribute changes — including `size`,
