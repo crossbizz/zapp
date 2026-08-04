@@ -98,26 +98,31 @@ describe('project state (PRD §23.2)', () => {
     expect(foreignKeys(repositories)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(branches)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
       'base_branch_id -> branches.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(environments)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(projectContracts)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
   });
 
   it('makes the tenant-facing names unique where they are addressable', () => {
     // Slugs and branch/environment names appear in URLs and in git; they are
     // unique per owner, never globally — two tenants may both own "checkout".
-    expect(indexNames(projects)).toEqual(['projects_org_slug_idx']);
+    // projects_id_org_idx is the target of every composite tenant key.
+    expect(indexNames(projects)).toEqual(['projects_org_slug_idx', 'projects_id_org_idx']);
     expect(indexNames(branches)).toEqual(['branches_project_name_idx']);
     expect(indexNames(environments)).toEqual(['environments_project_name_idx']);
     // Detection re-runs append a version rather than overwriting one (PRD §17.2).

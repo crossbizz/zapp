@@ -1,6 +1,7 @@
 import { SupportLevelSchema } from '@zapp/contracts';
 import {
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -50,9 +51,40 @@ export const projects = pgTable(
     // The slug is the tenant-facing handle in URLs, so it is unique per
     // organization rather than globally: two tenants may both own "checkout".
     uniqueIndex('projects_org_slug_idx').on(t.organizationId, t.slug),
+    // Redundant on its own — `id` is already the primary key — and that is the
+    // point: a composite foreign key needs a unique index on exactly the columns
+    // it targets. This is what makes `projectTenantForeignKey` below possible.
+    uniqueIndex('projects_id_org_idx').on(t.id, t.organizationId),
     check('projects_support_level_check', oneOf('support_level', SUPPORT_LEVELS)),
   ],
 );
+
+/**
+ * `(project_id, organization_id) -> projects (id, organization_id)`, carried by
+ * every project-owned table in addition to its plain `project_id` key.
+ *
+ * Without it `organization_id` is a denormalized copy nothing checks, so one
+ * buggy writer can file another tenant's project under this tenant — and every
+ * `forOrg` query would then happily hand it over. With it, the mismatch is a
+ * foreign-key violation at insert time. `MATCH SIMPLE` (Postgres's default)
+ * skips the check when `project_id` is null, which is exactly what keeps
+ * organization-level rows (`secret_metadata`, `integration_connections`) legal.
+ *
+ * The constraint name is explicit because Drizzle's generated one — table, both
+ * columns, target table, both target columns — runs past Postgres's
+ * 63-character identifier limit and would be silently truncated.
+ */
+export function projectTenantForeignKey(
+  table: string,
+  projectIdColumn: AnyPgColumn,
+  organizationIdColumn: AnyPgColumn,
+): ReturnType<typeof foreignKey> {
+  return foreignKey({
+    name: `${table}_project_tenant_fk`,
+    columns: [projectIdColumn, organizationIdColumn],
+    foreignColumns: [projects.id, projects.organizationId],
+  });
+}
 
 export const repositories = pgTable(
   'repositories',
@@ -72,7 +104,10 @@ export const repositories = pgTable(
     /** PRD §19.3 sync rules; plan 06 (GIT-6) fixes the vocabulary. */
     syncPolicy: text('sync_policy').notNull(),
   },
-  (t) => [index('repositories_project_idx').on(t.projectId)],
+  (t) => [
+    index('repositories_project_idx').on(t.projectId),
+    projectTenantForeignKey('repositories', t.projectId, t.organizationId),
+  ],
 );
 
 export const branches = pgTable(
@@ -94,7 +129,10 @@ export const branches = pgTable(
     baseBranchId: text('base_branch_id').references((): AnyPgColumn => branches.id),
     status: text('status').notNull(),
   },
-  (t) => [uniqueIndex('branches_project_name_idx').on(t.projectId, t.name)],
+  (t) => [
+    uniqueIndex('branches_project_name_idx').on(t.projectId, t.name),
+    projectTenantForeignKey('branches', t.projectId, t.organizationId),
+  ],
 );
 
 export const environments = pgTable(
@@ -114,7 +152,10 @@ export const environments = pgTable(
     databaseConnectionId: text('database_connection_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('environments_project_name_idx').on(t.projectId, t.name)],
+  (t) => [
+    uniqueIndex('environments_project_name_idx').on(t.projectId, t.name),
+    projectTenantForeignKey('environments', t.projectId, t.organizationId),
+  ],
 );
 
 export const projectContracts = pgTable(
@@ -133,7 +174,10 @@ export const projectContracts = pgTable(
     contractJson: jsonb('contract_json').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('project_contracts_project_version_idx').on(t.projectId, t.version)],
+  (t) => [
+    uniqueIndex('project_contracts_project_version_idx').on(t.projectId, t.version),
+    projectTenantForeignKey('project_contracts', t.projectId, t.organizationId),
+  ],
 );
 
 export type Project = typeof projects.$inferSelect;

@@ -242,6 +242,47 @@ describe('tenant scoping', () => {
     },
   );
 
+  it.each(
+    TENANT_OWNED_TABLES.filter((table) => columnNames(table).includes('project_id')).map(
+      (table) => [tableName(table), table] as const,
+    ),
+  )('%s checks its tenant column against the project it names', (_name, table) => {
+    // Without this composite key, `organization_id` is a copy nothing verifies:
+    // one buggy writer pairs org A with org B's project, and every forOrg query
+    // then returns it. With it, the mismatch is a foreign-key violation
+    // (integration test: "refuses a child row whose tenant does not match…").
+    expect(foreignKeys(table)).toContain(
+      'project_id, organization_id -> projects.id, organization_id',
+    );
+  });
+
+  it('has a unique index for those composite keys to target', () => {
+    expect(indexNames(projects)).toContain('projects_id_org_idx');
+  });
+
+  it('names the tables whose tenant column is still unchecked', () => {
+    // Honest inventory rather than a silent gap: these hang off a run, phase,
+    // test run or release instead of a project, so the same pattern needs a
+    // unique (id, organization_id) on each of those parents first. Additive
+    // when someone does it — see the 0002 migration comment.
+    const unchecked = TENANT_OWNED_TABLES.filter(
+      // `projects` is the parent the composite keys point at, not a child.
+      (table) => table !== projects && !columnNames(table).includes('project_id'),
+    ).map(tableName);
+
+    expect(unchecked).toEqual([
+      'agent_phases',
+      'agent_tasks',
+      'approvals',
+      'agent_events',
+      'test_runs',
+      'test_cases',
+      'verification_results',
+      'deployments',
+      'audit_events',
+    ]);
+  });
+
   it('leaves the event sequence allocator out of it', () => {
     // run_event_counters is reached only through nextEventSequence(runId) and is
     // never listed, read or joined by tenant, so a tenant column would be dead

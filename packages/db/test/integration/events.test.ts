@@ -7,6 +7,17 @@ import { EVENT_TIME, seedTenant, type SeededTenant } from './fixtures.js';
 import { hasDatabase, only, rejection, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
+ * A partition bound, compared as an instant.
+ *
+ * `pg_get_expr` renders the bound literal in the *reading* session's time zone,
+ * so string-matching it would test the reader's TimeZone rather than the bound.
+ * The comparison therefore happens in SQL, against an explicit UTC instant, and
+ * only a boolean comes back.
+ */
+const boundIsUtc = (edge: 'FROM' | 'TO', instant: string): string =>
+  String.raw`(regexp_match(pg_get_expr(relpartbound, oid), $re$${edge} \('([^']+)'\)$re$))[1]::timestamptz = timestamptz '${instant}'`;
+
+/**
  * `agent_events` is the one physically unusual table in the schema: a
  * range-partitioned parent whose DDL is hand-written (plan 01 FND-6). These
  * tests are what keep the hand-written half honest.
@@ -81,6 +92,42 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
 
       expect(error).toMatchObject({ code: '23514' });
       expect(String((error as { message?: string }).message)).toContain('no partition of relation');
+    });
+
+    it('cuts months at UTC instants, not at the session zone’s midnight', async () => {
+      // `unsafe` because these are SQL fragments, not values: the driver would
+      // otherwise bind the expression itself as a parameter. Nothing here comes
+      // from outside this file.
+      const bounds = await handle.sql.unsafe<{ lower: boolean; upper: boolean }[]>(
+        `select ${boundIsUtc('FROM', '2026-08-01 00:00:00+00')} as lower,
+                ${boundIsUtc('TO', '2026-09-01 00:00:00+00')} as upper
+           from pg_class where relname = 'agent_events_2026_08'`,
+      );
+
+      expect(only(bounds).lower).toBe(true);
+      expect(only(bounds).upper).toBe(true);
+    });
+
+    it('creates UTC-edged partitions even from a New York session', async () => {
+      // A bare date in the DDL is cast to timestamptz with the session's zone,
+      // so before the fix this partition would have started at 05:00 UTC and
+      // swallowed the first five hours of March into February (minor 4).
+      await expect(
+        handle.db.transaction(async (tx) => {
+          // SET LOCAL: the setting dies with the transaction, along with the
+          // partition this creates.
+          await tx.execute(sql`set local timezone = 'America/New_York'`);
+          await tx.execute(sql`select create_event_partition('2028-03-01')`);
+
+          const bounds = await tx.execute<{ lower: boolean }>(
+            sql`select ${sql.raw(boundIsUtc('FROM', '2028-03-01 00:00:00+00'))} as lower
+                  from pg_class where relname = 'agent_events_2028_03'`,
+          );
+          expect(bounds[0]?.lower).toBe(true);
+
+          throw new Error('rollback');
+        }),
+      ).rejects.toThrow('rollback');
     });
 
     it('create_next_partition() extends the runway with its unique index', async () => {

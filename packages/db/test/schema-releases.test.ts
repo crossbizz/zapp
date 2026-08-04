@@ -58,6 +58,7 @@ describe('release state (PRD §23.5)', () => {
       // citable rather than a blob on the release row.
       'evidence_manifest_artifact_id -> artifacts.id',
       'created_by -> users.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(deployments)).toEqual([
       'organization_id -> organizations.id',
@@ -70,6 +71,7 @@ describe('release state (PRD §23.5)', () => {
       'organization_id -> organizations.id',
       'project_id -> projects.id',
       'environment_id -> environments.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
   });
 

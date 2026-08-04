@@ -4,7 +4,7 @@ import { organizationId } from './columns.js';
 import { artifacts } from './execution.js';
 import { users } from './identity.js';
 import { specifications } from './planning.js';
-import { environments, projects } from './projects.js';
+import { environments, projectTenantForeignKey, projects } from './projects.js';
 
 /**
  * PRD §23.5 — release state: the immutable record of what was shipped, the
@@ -44,6 +44,7 @@ export const releases = pgTable(
   (t) => [
     index('releases_project_created_at_idx').on(t.projectId, t.createdAt),
     index('releases_environment_idx').on(t.environmentId),
+    projectTenantForeignKey('releases', t.projectId, t.organizationId),
   ],
 );
 
@@ -94,7 +95,10 @@ export const syntheticChecks = pgTable(
     /** Null until the check has run once. */
     lastRunAt: timestamp('last_run_at', { withTimezone: true }),
   },
-  (t) => [index('synthetic_checks_project_environment_idx').on(t.projectId, t.environmentId)],
+  (t) => [
+    index('synthetic_checks_project_environment_idx').on(t.projectId, t.environmentId),
+    projectTenantForeignKey('synthetic_checks', t.projectId, t.organizationId),
+  ],
 );
 
 export type Release = typeof releases.$inferSelect;

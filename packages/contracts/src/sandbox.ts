@@ -67,8 +67,10 @@ export type NetworkProfile = z.infer<typeof NetworkProfileSchema>;
 export const CreateWorkspaceInputSchema = z.object({
   organizationId: idSchema('org'),
   projectId: idSchema('proj'),
-  // Branches are outside the closed TypeID prefix list, so they carry the git-side
-  // identifier rather than a `br_` id.
+  // Branches do have a `br_` id since FND-6, but this field is the provider-facing
+  // git identifier the sandbox checks out, which is not always a control-plane row
+  // (an imported ref, a detached checkout). Plan 03 (WS-4) decides whether to
+  // narrow it to `idSchema('br')`.
   branchId: z.string().min(1),
   runId: idSchema('run').optional(),
   taskId: idSchema('task').optional(),

@@ -22,8 +22,10 @@ export type EnvVars = z.infer<typeof EnvVarsSchema>;
 export const CommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/, 'Invalid commit sha');
 
 /**
- * Environments are outside the closed TypeID prefix list, so they carry the control
- * plane's own `environments` row identifier.
+ * The control plane's own `environments` row identifier. Environments have had an
+ * `env_` prefix since FND-6; this stays a plain string because provider adapters
+ * (plan 07) also address environments the provider named, and narrowing it to
+ * `idSchema('env')` is plan 07's call to make with its provider registry.
  */
 export const EnvironmentIdSchema = z.string().min(1);
 

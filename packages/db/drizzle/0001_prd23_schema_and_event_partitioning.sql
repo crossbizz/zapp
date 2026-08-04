@@ -403,10 +403,16 @@ CREATE FUNCTION create_event_partition(starts date) RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE
 	partition_name text := format('agent_events_%s', to_char(starts, 'YYYY_MM'));
+	-- Month edges are UTC instants whatever the server's TimeZone GUC says. A bare
+	-- date in the bound would be cast to timestamptz using the session zone, so a
+	-- database migrated under America/New_York would cut its months at 04:00 UTC
+	-- and file the first four hours of each month in the previous partition.
+	starts_at timestamptz := starts::timestamp AT TIME ZONE 'UTC';
+	ends_at timestamptz := (starts + interval '1 month')::timestamp AT TIME ZONE 'UTC';
 BEGIN
 	EXECUTE format(
 		'CREATE TABLE IF NOT EXISTS %I PARTITION OF agent_events FOR VALUES FROM (%L) TO (%L)',
-		partition_name, starts, starts + interval '1 month'
+		partition_name, starts_at, ends_at
 	);
 	-- Unique per partition, not globally: Postgres requires the partition key
 	-- in every unique index on a partitioned table, and (run_id, sequence,
@@ -422,8 +428,12 @@ BEGIN
 END;
 $$;--> statement-breakpoint
 -- Called monthly by the retention job (plan 10 OPS-14 owns the schedule; this
--- migration owns the SQL). Idempotent, so a re-run or an overlapping cron tick
--- is a no-op rather than an error.
+-- migration owns the SQL). Read this before writing that cron: this function
+-- ADVANCES the runway by one month past the newest partition, so calling it
+-- twice creates two months — it is not idempotent. Extra empty months are
+-- harmless, which is why the cron needs no lock, but a caller that means
+-- "ensure the month containing X exists" must call create_event_partition(date)
+-- directly; that one is idempotent.
 CREATE FUNCTION create_next_partition() RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE

@@ -114,12 +114,14 @@ describe('execution and evidence (PRD §23.4)', () => {
       'organization_id -> organizations.id',
       'project_id -> projects.id',
       'branch_id -> branches.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(artifacts)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
       'run_id -> agent_runs.id',
       'task_id -> agent_tasks.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(testRuns)).toEqual([
       'organization_id -> organizations.id',

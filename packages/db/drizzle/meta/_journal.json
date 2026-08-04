@@ -15,6 +15,13 @@
       "when": 1785827201705,
       "tag": "0001_prd23_schema_and_event_partitioning",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785829434721,
+      "tag": "0002_tenant_composite_fks_and_utc_bounds",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,7 @@ import { index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 import { organizationId } from './columns.js';
 import { users } from './identity.js';
-import { environments, projects } from './projects.js';
+import { environments, projectTenantForeignKey, projects } from './projects.js';
 
 /**
  * PRD §23.6 — security and integrations. Columns follow PRD §23.6 in order;
@@ -36,7 +36,10 @@ export const secretMetadata = pgTable(
     /** Null until the secret has been rotated at least once. */
     rotatedAt: timestamp('rotated_at', { withTimezone: true }),
   },
-  (t) => [index('secret_metadata_org_project_idx').on(t.organizationId, t.projectId)],
+  (t) => [
+    index('secret_metadata_org_project_idx').on(t.organizationId, t.projectId),
+    projectTenantForeignKey('secret_metadata', t.projectId, t.organizationId),
+  ],
 );
 
 export const integrationConnections = pgTable(
@@ -54,7 +57,10 @@ export const integrationConnections = pgTable(
     /** Non-secret provider settings: account ids, project refs, chosen region. */
     configurationJson: jsonb('configuration_json').notNull(),
   },
-  (t) => [index('integration_connections_org_project_idx').on(t.organizationId, t.projectId)],
+  (t) => [
+    index('integration_connections_org_project_idx').on(t.organizationId, t.projectId),
+    projectTenantForeignKey('integration_connections', t.projectId, t.organizationId),
+  ],
 );
 
 /**

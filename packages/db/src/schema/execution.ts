@@ -18,7 +18,7 @@ import {
 
 import { oneOf, organizationId } from './columns.js';
 import { agentRuns, agentTasks } from './planning.js';
-import { branches, projects } from './projects.js';
+import { branches, projectTenantForeignKey, projects } from './projects.js';
 
 /**
  * PRD §23.4 — execution and evidence: where work ran, what it emitted, and the
@@ -64,6 +64,7 @@ export const workspaces = pgTable(
     // index serves "which sandboxes does this project have running".
     index('workspaces_org_status_idx').on(t.organizationId, t.status),
     index('workspaces_project_idx').on(t.projectId),
+    projectTenantForeignKey('workspaces', t.projectId, t.organizationId),
   ],
 );
 
@@ -73,8 +74,8 @@ export const workspaces = pgTable(
  * This object maps the **parent** of a range-partitioned table: the physical
  * `PARTITION BY RANGE (occurred_at)` clause, the monthly partitions and the
  * per-partition `unique (run_id, sequence)` indexes live in the hand-written
- * migration `0001_agent_events_partitioning.sql`, because drizzle-kit cannot
- * author partitioning. Two consequences are visible here:
+ * half of `0001_prd23_schema_and_event_partitioning.sql`, because drizzle-kit
+ * cannot author partitioning. Two consequences are visible here:
  *
  * - the primary key is `(id, occurred_at)`, since Postgres requires every
  *   unique constraint on a partitioned table to contain the partition key;
@@ -96,6 +97,14 @@ export const agentEvents = pgTable(
       .references(() => agentRuns.id),
     /** 1-based, gapless per run, allocated by `nextEventSequence` — clients resume from it (plan 02 CP-15). */
     sequence: bigint('sequence', { mode: 'number' }).notNull(),
+    /**
+     * Typed in TypeScript, unconstrained in the database on purpose: the 34-value
+     * PRD §14.4 vocabulary is owned by `AGENT_EVENT_TYPES` in `@zapp/contracts`,
+     * plan 04 extends it as the runtime grows, and a CHECK on the hottest table
+     * would turn each addition into an `ALTER TABLE` on every partition. The five
+     * value sets that *are* enforced here are the ones a wrong value would let
+     * through silently — states and visibility, not an event's name.
+     */
     type: text('type', { enum: AGENT_EVENT_TYPES }).notNull(),
     payloadJson: jsonb('payload_json').notNull(),
     visibility: text('visibility', { enum: EVENT_VISIBILITIES }).notNull(),
@@ -160,6 +169,7 @@ export const artifacts = pgTable(
   (t) => [
     index('artifacts_project_created_at_idx').on(t.projectId, t.createdAt),
     index('artifacts_run_idx').on(t.runId),
+    projectTenantForeignKey('artifacts', t.projectId, t.organizationId),
   ],
 );
 

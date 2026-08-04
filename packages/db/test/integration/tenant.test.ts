@@ -4,9 +4,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { nextEventSequence } from '../../src/events.js';
 import { runEventCounters } from '../../src/schema/execution.js';
+import { agentRuns } from '../../src/schema/planning.js';
+import { branches } from '../../src/schema/projects.js';
+import { integrationConnections } from '../../src/schema/security.js';
 import { forOrg } from '../../src/tenant.js';
 import { seedTenant, type SeededTenant } from './fixtures.js';
-import { hasDatabase, only, setUpTestDatabase, type TestDatabase } from './helpers.js';
+import { hasDatabase, only, rejection, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
  * The isolation proof for plan 01 FND-6, and the contract plan 02 (CP-4) builds
@@ -117,6 +120,77 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           toSequence: 1_000,
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe('composite tenant keys', () => {
+    it('refuses a child row whose tenant does not match the project it names', async () => {
+      // The isolation hole this closes: alpha's organization id on beta's
+      // project would make the row visible to alpha through every forOrg query.
+      // The denormalized column is now checked against its parent, so the write
+      // fails instead of the read leaking.
+      const error = await rejection(
+        handle.db.insert(agentRuns).values({
+          id: newId('run'),
+          organizationId: alpha.organizationId,
+          projectId: beta.projectId,
+          mode: 'build',
+          status: 'running',
+          startedBy: alpha.userId,
+        }),
+      );
+
+      expect(error).toMatchObject({
+        code: '23503', // foreign_key_violation
+        constraint_name: 'agent_runs_project_tenant_fk',
+      });
+    });
+
+    it('refuses the same mismatch on a branch, and accepts the matching pair', async () => {
+      expect(
+        await rejection(
+          handle.db.insert(branches).values({
+            id: newId('br'),
+            organizationId: alpha.organizationId,
+            projectId: beta.projectId,
+            name: 'smuggled',
+            status: 'active',
+          }),
+        ),
+      ).toMatchObject({ code: '23503', constraint_name: 'branches_project_tenant_fk' });
+
+      const id = newId('br');
+      await handle.db.insert(branches).values({
+        id,
+        organizationId: beta.organizationId,
+        projectId: beta.projectId,
+        name: 'legitimate',
+        status: 'active',
+      });
+      expect(only(await handle.db.select().from(branches).where(eq(branches.id, id))).name).toBe(
+        'legitimate',
+      );
+    });
+
+    it('still allows an organization-level row with no project', async () => {
+      // MATCH SIMPLE skips the check when project_id is null, which is what
+      // keeps org-wide secrets and GitHub App installations legal.
+      const id = newId('intc');
+      await handle.db.insert(integrationConnections).values({
+        id,
+        organizationId: alpha.organizationId,
+        provider: 'github',
+        status: 'active',
+        configurationJson: { installationId: 42 },
+      });
+
+      const row = only(
+        await handle.db
+          .select()
+          .from(integrationConnections)
+          .where(eq(integrationConnections.id, id)),
+      );
+      expect(row.projectId).toBeNull();
     });
   });
 

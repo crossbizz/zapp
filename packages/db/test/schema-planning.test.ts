@@ -115,6 +115,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'project_id -> projects.id',
       'created_by -> users.id',
       'approved_by -> users.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     // `made_by` is deliberately absent: PRD §12.1 has the agent record an
     // assumption when the user delegates a decision, so it is an actor
@@ -123,6 +124,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'organization_id -> organizations.id',
       'project_id -> projects.id',
       'specification_id -> specifications.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(agentRuns)).toEqual([
       'organization_id -> organizations.id',
@@ -130,6 +132,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'branch_id -> branches.id',
       'specification_id -> specifications.id',
       'started_by -> users.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(agentPhases)).toEqual([
       'organization_id -> organizations.id',

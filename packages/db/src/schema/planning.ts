@@ -13,7 +13,7 @@ import {
 
 import { oneOf, organizationId } from './columns.js';
 import { users } from './identity.js';
-import { branches, projects } from './projects.js';
+import { branches, projectTenantForeignKey, projects } from './projects.js';
 
 /**
  * PRD §23.3 — specification and planning: what the user asked for, what was
@@ -49,7 +49,10 @@ export const specifications = pgTable(
     approvedBy: text('approved_by').references(() => users.id),
     approvedAt: timestamp('approved_at', { withTimezone: true }),
   },
-  (t) => [uniqueIndex('specifications_project_version_idx').on(t.projectId, t.version)],
+  (t) => [
+    uniqueIndex('specifications_project_version_idx').on(t.projectId, t.version),
+    projectTenantForeignKey('specifications', t.projectId, t.organizationId),
+  ],
 );
 
 export const decisions = pgTable(
@@ -73,7 +76,10 @@ export const decisions = pgTable(
     madeBy: text('made_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('decisions_project_specification_idx').on(t.projectId, t.specificationId)],
+  (t) => [
+    index('decisions_project_specification_idx').on(t.projectId, t.specificationId),
+    projectTenantForeignKey('decisions', t.projectId, t.organizationId),
+  ],
 );
 
 export const agentRuns = pgTable(
@@ -106,6 +112,7 @@ export const agentRuns = pgTable(
     // index serves the cross-project dashboard and every tenant-scoped read.
     index('agent_runs_project_started_at_idx').on(t.projectId, t.startedAt),
     index('agent_runs_org_started_at_idx').on(t.organizationId, t.startedAt),
+    projectTenantForeignKey('agent_runs', t.projectId, t.organizationId),
   ],
 );
 

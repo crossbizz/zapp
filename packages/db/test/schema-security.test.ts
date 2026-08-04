@@ -59,10 +59,12 @@ describe('security and integrations (PRD §23.6)', () => {
       'project_id -> projects.id',
       'environment_id -> environments.id',
       'created_by -> users.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(integrationConnections)).toEqual([
       'organization_id -> organizations.id',
       'project_id -> projects.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
     // Organization-level secrets and installations exist, so these are nullable.
     expect(requiredColumns(secretMetadata)).not.toContain('project_id');

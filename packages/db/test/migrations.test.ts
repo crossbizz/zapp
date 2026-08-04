@@ -101,6 +101,23 @@ describe('agent_events partitioning', () => {
     );
   });
 
+  it('pins month edges to UTC instead of the session time zone', () => {
+    // A bare date in the bound would be cast to timestamptz with whatever
+    // TimeZone the migration ran under (FND-6 review, minor 4).
+    expect(partitioningSql).toContain("starts::timestamp AT TIME ZONE 'UTC'");
+    expect(partitioningSql).toContain(
+      "(starts + interval '1 month')::timestamp AT TIME ZONE 'UTC'",
+    );
+    // …and the same text is what 0002 replays onto databases that already
+    // applied the earlier version, so the two cannot drift.
+    const converge = readFileSync(
+      new URL('../drizzle/0002_tenant_composite_fks_and_utc_bounds.sql', import.meta.url),
+      'utf8',
+    );
+    expect(converge).toContain('CREATE OR REPLACE FUNCTION create_event_partition(starts date)');
+    expect(converge).toContain("starts::timestamp AT TIME ZONE 'UTC'");
+  });
+
   it('creates no DEFAULT partition', () => {
     // Deliberate: a row parked in a default partition would outlive its
     // retention window and stay invisible to the month-at-a-time archiver, so
