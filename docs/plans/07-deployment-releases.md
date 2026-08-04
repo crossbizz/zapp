@@ -168,3 +168,7 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 ## Execution log
 
 - (empty)
+
+## Execution log
+
+- 2026-08-04: **BLOCKER SURFACED BY GIT-2/3 (before DEP-1 starts).** Forgejo's `release/*` branch protection refuses pushes from the platform **admin** token too — proven by `services/git-service/test/integration/forgejo.test.ts` (an admin push to `release/1` is rejected by the hook). So the release service CANNOT create or move `release/*` branches over git with the credentials it was assumed to have. Resolve before DEP-1: either (a) set `apply_to_admins = false` and confirm the API branch-create path is likewise ungated (the git hook and the API may differ — verify, don't assume), (b) create release branches through the Forgejo API rather than a push, or (c) tag-only releases (PRD §27.3 requires an exact commit SHA, which a tag satisfies without a protected branch). Whichever is chosen, add an integration test that actually creates a release ref through the intended path — this was found because a test pushed for real rather than trusting the config.
