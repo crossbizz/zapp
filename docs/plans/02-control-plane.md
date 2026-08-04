@@ -88,9 +88,9 @@ Routes: `POST /v1/organizations`, `GET /v1/organizations`, `PATCH /v1/organizati
 **Files:** Create: `src/plugins/tenant.ts`, `test/integration/tenant-isolation.test.ts`
 **Effort:** M
 
-- [ ] **Step 1:** Failing integration tests (the permanent suite, CI job `tenant-isolation`): user in org A with session → `GET /v1/projects/:idOfOrgB` → 404 `project_not_found`; list endpoints never return org B rows; `x-organization-id` header selects among the user's orgs, non-member org id → 404 `organization_not_found`; Viewer calling `POST /v1/projects` → 403 `forbidden`.
-- [ ] **Step 2:** Implement plugin: resolve org from header (web) or route param, verify membership + status=active, attach `ctx.db = forOrg(db, orgId)`, `ctx.role`.
-- [ ] **Step 3:** Commit: `feat(control-api): tenant context + permanent isolation test suite`
+- [x] **Step 1:** Failing integration tests (the permanent suite, CI job `tenant-isolation`): user in org A with session → `GET /v1/projects/:idOfOrgB` → 404 `project_not_found`; list endpoints never return org B rows; `x-organization-id` header selects among the user's orgs, non-member org id → 404 `organization_not_found`; Viewer calling `POST /v1/projects` → 403 `forbidden`.
+- [x] **Step 2:** Implement plugin: resolve org from header (web) or route param, verify membership + status=active, attach `ctx.db = forOrg(db, orgId)`, `ctx.role`.
+- [x] **Step 3:** Commit: `feat(control-api): tenant context + permanent isolation test suite`
 
 ### Task CP-5: Audit + idempotency + rate limiting plugins
 
@@ -242,3 +242,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
   2. Invite claim + membership write must share one transaction (today `claim()` spends the invite before `addMember`, so a failure strands the invitee on 410 with no self-service recovery).
   3. `setRole` should return the updated record (route currently re-reads outside the store call → spurious 404 + skipped audit row on a concurrent removal; audit metadata records the re-read role, not the requested one).
   4. Minors: `builderCanDeploy` consulted for any 'configurable' cell (scope to the builder cell); derived slugs bypass SlugSchema min(2); `GET /v1/organizations` promises `nextCursor` it never paginates; rate-limit `POST /v1/organizations` (each success mints a Stytch org); Stytch-org reconciliation note wherever the org-id column lands.
+- 2026-08-04: CP-4 done (2408820, review Approved; 33-test isolation suite + 169 unit + 61 integration; wired as CI job "tenant isolation (M0 exit criterion)" — verified to fail if the suite file is deleted AND if DATABASE_URL is missing under CI). Negative controls verified load-bearing by the reviewer (reject-everything mutation fails them). **M0 SIGN-OFF BLOCKER folded into CP-5:** server.ts never wired `tenant`, so the criterion was proven only against a test-only composition — CP-5 wires it + adds a composition test + makes the orgs-without-tenant combination an explicit refusal. Known residual for CP-6+ authors: routes taking an unscoped store (orgs.ts) bypass ctx.db by construction; isolation there depends on every handler calling membershipOf first.

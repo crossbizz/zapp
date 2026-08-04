@@ -21,7 +21,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-1 Fastify skeleton + request context
 - [x] CP-2 Stytch B2B auth + device flow (AuthPort)
 - [x] CP-3 Orgs, memberships, invites, RBAC matrix
-- [ ] CP-4 Tenant context + isolation suite v1
+- [x] CP-4 Tenant context + isolation suite v1
 - [ ] CP-5 Audit + idempotency + rate limits
 - [ ] CP-6 Projects/repos/branches/environments CRUD
 - [ ] CP-7 Secrets vault (envelope encryption, audited decrypt)
