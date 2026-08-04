@@ -496,6 +496,9 @@ importers:
 
   packages/config:
     dependencies:
+      jose:
+        specifier: ^5.10.0
+        version: 5.10.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76

@@ -1,3 +1,4 @@
+import type { ServiceName } from '@zapp/config';
 import { ApiErrorSchema, IdempotencyHeader, newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -86,7 +87,7 @@ interface Wired {
   as: (member: TestSession, organizationId?: string) => Record<string, string>;
 }
 
-async function wire(options: { decryptCallers?: readonly string[] } = {}): Promise<Wired> {
+async function wire(options: { decryptCallers?: readonly ServiceName[] } = {}): Promise<Wired> {
   const data = new InMemoryTenantData();
   const built = buildHarness({
     tenantDb: data.factory,
@@ -683,7 +684,7 @@ describe('the internal decrypt route', () => {
       value: PLAINTEXT,
       environmentId: wired.environmentIds[0],
     });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
+    const token = await wired.built.serviceTokens.issue(SANDBOX);
     const before = wired.built.audit.events.length;
 
     const response = await decrypt(
@@ -725,7 +726,7 @@ describe('the internal decrypt route', () => {
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
     // A token that *would* work, presented alongside the session: the session is
     // what disqualifies the request, before the token is even read.
-    const token = wired.built.serviceTokens.issue(SANDBOX);
+    const token = await wired.built.serviceTokens.issue(SANDBOX);
     const before = wired.built.audit.events.length;
 
     const body = {
@@ -768,7 +769,7 @@ describe('the internal decrypt route', () => {
   it('refuses a verified service that is not on the route’s allowlist', async () => {
     const wired = await wire({ decryptCallers: ['release-service'] });
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
+    const token = await wired.built.serviceTokens.issue(SANDBOX);
     const before = wired.built.audit.events.length;
 
     const response = await decrypt(
@@ -810,8 +811,6 @@ describe('the internal decrypt route', () => {
   it('requires a reason, and refuses a body carrying anything else', async () => {
     const wired = await wire();
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
-    const headers = { [SERVICE_TOKEN_HEADER]: token };
 
     for (const body of [
       { organizationId: wired.organizationId, secretId: secret.id },
@@ -825,7 +824,12 @@ describe('the internal decrypt route', () => {
         pretendToBeAnotherService: 'release-service',
       },
     ]) {
-      const response = await decrypt(wired, body, headers);
+      // A fresh token each time: the decrypt route is single-use (CP-8), so a
+      // suite that reused one would be asserting the gate's ordering by
+      // accident rather than the body schema on purpose.
+      const response = await decrypt(wired, body, {
+        [SERVICE_TOKEN_HEADER]: await wired.built.serviceTokens.issue(SANDBOX),
+      });
       expect(response.statusCode, JSON.stringify(body)).toBe(400);
       expect(errorOf(response)).toBe('validation_failed');
     }
@@ -837,7 +841,7 @@ describe('the internal decrypt route', () => {
   it('answers 404 for another organization’s secret, whatever the caller names', async () => {
     const wired = await wire();
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
+    const token = await wired.built.serviceTokens.issue(SANDBOX);
 
     const response = await decrypt(
       wired,
@@ -870,7 +874,7 @@ describe('the internal decrypt route', () => {
      */
     const wired = await wire();
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
+    const token = await wired.built.serviceTokens.issue(SANDBOX);
 
     const sink = wired.built.audit as unknown as {
       record: (...args: unknown[]) => Promise<void>;
@@ -897,19 +901,22 @@ describe('the internal decrypt route', () => {
     // the same key therefore both run the handler — and both write a row.
     const wired = await wire();
     const secret = await setSecret(wired, { name: 'DATABASE_URL', value: PLAINTEXT });
-    const token = wired.built.serviceTokens.issue(SANDBOX);
-    const headers = {
-      [SERVICE_TOKEN_HEADER]: token,
+    // One idempotency key, two tokens — because the token is single-use and the
+    // key is not the credential. A real caller retrying a decrypt mints again;
+    // what must not happen is the *second* call being answered from a stored
+    // copy of the first response, which is what this asserts.
+    const headers = async (): Promise<Record<string, string>> => ({
+      [SERVICE_TOKEN_HEADER]: await wired.built.serviceTokens.issue(SANDBOX),
       [IdempotencyHeader]: 'decrypt-twice-please',
-    };
+    });
     const body = {
       organizationId: wired.organizationId,
       secretId: secret.id,
       reason: 'called twice with one key',
     };
 
-    const first = await decrypt(wired, body, headers);
-    const second = await decrypt(wired, body, headers);
+    const first = await decrypt(wired, body, await headers());
+    const second = await decrypt(wired, body, await headers());
 
     expect(first.statusCode, first.body).toBe(200);
     expect(second.statusCode, second.body).toBe(200);

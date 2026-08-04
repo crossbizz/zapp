@@ -1,3 +1,4 @@
+import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
 import type { Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
@@ -15,7 +16,7 @@ import { createDbAuditSink } from './plugins/audit.js';
 import { createRedisIdempotencyStore } from './plugins/idempotency.js';
 import { createRedisRateLimiter } from './plugins/rate-limit.js';
 import type { RedisCommands } from './redis/client.js';
-import { createDenyAllServiceTokenVerifier } from './internal/service-auth.js';
+import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
 
@@ -46,6 +47,13 @@ export interface ServiceRuntime {
    * boot.
    */
   readonly masterKey: MasterKeyPort;
+  /**
+   * The secret `/internal/*` verifies service tokens against, from
+   * `loadServiceTokenConfig` (`src/env.ts`). Required for the same reason the
+   * master key is: with no secret there is no internal surface, and a control
+   * plane that discovered that from a 401 in staging discovered it too late.
+   */
+  readonly serviceTokens: ServiceTokenConfig;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
@@ -54,6 +62,15 @@ export interface ServiceRuntime {
 
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
+  /**
+   * One denylist for both credential kinds.
+   *
+   * A session `jti`, a login family and a service token's `jti` all mean the
+   * same thing to it — "this must stop working now" — and one store is one
+   * place to look during an incident. They cannot collide: sessions are keyed
+   * by hex ids and `sid:`, service tokens by `svc:` (`serviceTokenKey`).
+   */
+  const denylist = createRedisTokenDenylist(redis);
 
   return buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -61,7 +78,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       port: createStytchAuthPort(runtime.auth.stytch),
       users: createDbUserStore(database),
       config: runtime.auth.config,
-      denylist: createRedisTokenDenylist(redis),
+      denylist,
       deviceStore: createRedisDeviceStore(redis),
     },
     orgs: {
@@ -86,14 +103,20 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     secrets: {
       masterKey: runtime.masterKey,
       /**
-       * Deny-all until CP-8 lands the HMAC verifier, and named here rather than
-       * defaulted for the same reason the git port is: this file is where a
-       * port's shipping binding is supposed to be legible. `/internal/*` is
-       * therefore deployed, documented and reachable — and answers 401 to
-       * everything, which is the right posture for a surface whose credentials
-       * do not exist yet. Swapping this line is the whole of CP-8's wiring.
+       * The HMAC verifier CP-7 left a deny-all stand-in for (CP-8).
+       *
+       * Two collaborators and nothing else: the shared HS256 implementation
+       * every zapp service signs with (`@zapp/config`), and the denylist above,
+       * which is what makes a single-use token single-use. Both are named here
+       * rather than defaulted, because this file is where a port's shipping
+       * binding is supposed to be legible — and because a verifier that
+       * defaulted its replay store to a process-local one would enforce single
+       * use per replica, which is not enforcing it.
        */
-      serviceTokens: createDenyAllServiceTokenVerifier(),
+      serviceTokens: createServiceTokenVerifier({
+        signer: createServiceTokenSigner(runtime.serviceTokens),
+        denylist,
+      }),
     },
     limits: {
       config: runtime.rateLimits.classes,

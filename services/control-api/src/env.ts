@@ -1,4 +1,4 @@
-import { defineEnv } from '@zapp/config';
+import { defineEnv, type ServiceTokenConfig } from '@zapp/config';
 import { z } from 'zod';
 
 import { LOG_LEVELS } from './logging.js';
@@ -65,8 +65,17 @@ const SecretsEnvSchema = z.object({
   SECRETS_MASTER_KEY: z.string().min(1),
   /** Which generation `SECRETS_MASTER_KEY` is. Moves forward on rotation; new secrets are wrapped under it. */
   SECRETS_MASTER_KEY_VERSION: z.coerce.number().int().min(1).default(1),
-  /** The generation before it, kept readable while a re-wrap sweep runs. */
-  SECRETS_PREVIOUS_MASTER_KEY: z.string().min(1).optional(),
+  /**
+   * The generation before it, kept readable while a re-wrap sweep runs.
+   *
+   * Empty is the steady state, exactly as `SESSION_JWT_SECRET_PREVIOUS` is in
+   * `src/auth/config.ts`: the variable exists in `.env.example` — and therefore
+   * in the `.env` `scripts/dev-up.sh` copies from it — so that a rotation is a
+   * value change rather than a schema change. Accepting only "absent or
+   * non-empty" made the shipped template refuse to boot on a fresh checkout,
+   * which is what `test/env.test.ts` now pins.
+   */
+  SECRETS_PREVIOUS_MASTER_KEY: z.union([z.string().min(1), z.literal('')]).optional(),
 });
 
 /** Decodes base64 and checks the length, naming the variable and never its contents. */
@@ -84,7 +93,12 @@ function masterKeyBytes(name: string, encoded: string): Buffer {
 export function loadMasterKey(source: unknown = process.env): MasterKeyPort {
   const env = defineEnv(SecretsEnvSchema, source);
   const version = env.SECRETS_MASTER_KEY_VERSION;
-  if (env.SECRETS_PREVIOUS_MASTER_KEY !== undefined && version < 2) {
+  // Empty means "not rotating", the same as absent — the schema accepts it
+  // because the template ships it, and everything below reads one value for
+  // both rather than two spellings of no key.
+  const previous =
+    env.SECRETS_PREVIOUS_MASTER_KEY === '' ? undefined : env.SECRETS_PREVIOUS_MASTER_KEY;
+  if (previous !== undefined && version < 2) {
     // Version 1 has nothing before it. A deployment that supplied a previous key
     // anyway has almost certainly forgotten to move the version forward, and
     // would then be wrapping new secrets under the generation it is retiring.
@@ -95,11 +109,11 @@ export function loadMasterKey(source: unknown = process.env): MasterKeyPort {
   return createEnvMasterKey({
     key: masterKeyBytes('SECRETS_MASTER_KEY', env.SECRETS_MASTER_KEY),
     version,
-    ...(env.SECRETS_PREVIOUS_MASTER_KEY === undefined
+    ...(previous === undefined
       ? {}
       : {
           previous: {
-            key: masterKeyBytes('SECRETS_PREVIOUS_MASTER_KEY', env.SECRETS_PREVIOUS_MASTER_KEY),
+            key: masterKeyBytes('SECRETS_PREVIOUS_MASTER_KEY', previous),
             // One generation back, by construction: a scheme where the previous
             // version is also configurable is a scheme where a deployment can
             // claim the current key is older than the one it replaced.
@@ -107,4 +121,42 @@ export function loadMasterKey(source: unknown = process.env): MasterKeyPort {
           },
         }),
   });
+}
+
+/**
+ * The secret every zapp service signs its inter-service calls with (CP-8), and
+ * the one this deployment verifies them against.
+ *
+ * No default, for the reason `loadAuthEnv` refuses to default a session secret:
+ * a control plane that invented its own would reject every internal call, and
+ * one that shared a published default would accept anybody's. Nothing else in
+ * the system can reach `/internal/*` — a route with no user-facing form — so
+ * "the variable is missing" has to be a refusal to start rather than a surface
+ * that quietly admits nobody or, worse, everybody.
+ *
+ * `SERVICE_TOKEN_SECRET_PREVIOUS` is verification-only, and empty is the steady
+ * state: rotation sets it to the outgoing secret, the new one moves in as
+ * current, and it is emptied again once no token older than a few minutes can
+ * still be in flight — which for a credential that lives five minutes is
+ * essentially immediately.
+ */
+const ServiceTokenEnvSchema = z.object({
+  /**
+   * Long enough that HS256 is not the weak link, matching `AuthEnvSchema`'s
+   * floor: `.env.example` documents `openssl rand -hex 32` (64 characters), and
+   * the floor is low enough that a base64 secret of adequate entropy is not
+   * rejected on a technicality while `replace-me` still is.
+   */
+  SERVICE_TOKEN_SECRET: z.string().min(32),
+  SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
+});
+
+/** @throws Error naming the offending variables — never their values. */
+export function loadServiceTokenConfig(source: unknown = process.env): ServiceTokenConfig {
+  const env = defineEnv(ServiceTokenEnvSchema, source);
+  const previous = env.SERVICE_TOKEN_SECRET_PREVIOUS;
+  return {
+    secret: env.SERVICE_TOKEN_SECRET,
+    ...(previous === undefined || previous === '' ? {} : { previousSecret: previous }),
+  };
 }

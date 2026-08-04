@@ -146,7 +146,7 @@ export {
 //
 //   - `MasterKeyPort`, so plan 09's KMS binding replaces `createEnvMasterKey`
 //     without a caller changing.
-//   - `ServiceTokenVerifier`, which CP-8 implements and `composeApp` binds.
+//   - `ServiceTokenVerifier`, implemented by CP-8 below.
 //   - `redactSecrets`, because PRD §18.12's redaction requirement belongs to
 //     plans 03, 04 and 05 as much as to this one, and three implementations of
 //     it is three chances to write a subtly wrong one.
@@ -178,15 +178,28 @@ export {
   type SecretVault,
   type SecretVaultDeps,
 } from './secrets/vault.js';
+export { loadMasterKey } from './env.js';
+
+// CP-8 — service-to-service auth. The primitive itself lives in `@zapp/config`
+// (`createServiceTokenSigner`), because a calling service needs to *sign* and
+// only this one needs to verify; what is exported here is the gate around it,
+// the header a caller sends on, and the audience the decrypt route demands —
+// which together are everything plans 03 and 08 need to call `/internal/*`.
 export {
   SERVICE_TOKEN_HEADER,
-  createDenyAllServiceTokenVerifier,
+  createServiceTokenVerifier,
   serviceOf,
+  serviceTokenKey,
+  type RequireServiceOptions,
+  type ServiceAuthRejection,
   type ServiceIdentity,
+  type ServiceTokenExpectations,
   type ServiceTokenVerifier,
+  type ServiceTokenVerifierDeps,
+  type ServiceVerdict,
 } from './internal/service-auth.js';
-export { SECRET_DECRYPT_CALLERS } from './internal/secrets.js';
-export { loadMasterKey } from './env.js';
+export { SECRET_DECRYPT_AUDIENCE, SECRET_DECRYPT_CALLERS } from './internal/secrets.js';
+export { loadServiceTokenConfig } from './env.js';
 export type {
   CreatedSecret,
   DeleteSecretInput,

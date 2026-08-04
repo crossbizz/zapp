@@ -535,10 +535,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
       secrets: {
         async list(request: SecretListRequest): Promise<StorePage<SecretMetadata>> {
-          // Column by column rather than `select()`, and that is the whole
-          // metadata-only guarantee in one place: the ciphertext lives on
-          // another table, and this statement names neither it nor a join to
-          // it. There is no `select *` here for a later schema change to widen.
+          // The metadata-only guarantee is the *table*, not this projection.
+          // `select()` here is `select *` over `secret_metadata` — which has no
+          // ciphertext column to widen into, because the envelope lives on
+          // `secret_ciphertexts` and this statement names neither it nor a join
+          // to it (`packages/db/src/schema/security.ts`). The one column that
+          // even points at the vault, `encrypted_value_ref`, is a pointer rather
+          // than key material, and the route's response schema drops it on the
+          // way out (`src/routes/secrets.ts`).
+          //
+          // What that leaves for a later schema change: a sensitive column
+          // added to `secret_metadata` would be selected here. The guard is
+          // that adding one is a migration against a table whose whole purpose
+          // is to hold what a value is *not*, and `test/secrets.test.ts` asserts
+          // recursively that no response body contains a plaintext.
           const rows = await db
             .select()
             .from(secretMetadata)

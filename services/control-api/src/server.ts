@@ -3,7 +3,7 @@ import { createDb } from '@zapp/db';
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
-import { loadEnv, loadMasterKey, loadRedisUrl } from './env.js';
+import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from './env.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
 
@@ -24,6 +24,10 @@ const rateLimits = loadRateLimitSettings();
 // would serve every secrets route as a 500 at the first write, which is a worse
 // way to learn the key is missing than not starting.
 const masterKey = loadMasterKey();
+// And cannot tell one of its own services from anybody else. `/internal/*` is
+// the surface with no user-facing form at all, so a deployment that cannot
+// verify a service token must not come up serving it (CP-8).
+const serviceTokens = loadServiceTokenConfig();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -42,6 +46,7 @@ const app = composeApp({
   redis,
   auth,
   masterKey,
+  serviceTokens,
   rateLimits,
 });
 

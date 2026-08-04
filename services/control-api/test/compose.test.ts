@@ -10,6 +10,7 @@ import type { RedisCommands } from '../src/redis/client.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
 import { InMemoryUserStore, TEST_AUTH_CONFIG, TEST_MASTER_KEY } from './support/harness.js';
 import { InMemoryOrganizationStore } from './support/org-store.js';
+import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
 /**
  * What `server.ts` actually composes.
@@ -63,6 +64,7 @@ function composed(): AppInstance {
       },
     },
     masterKey: TEST_MASTER_KEY,
+    serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
     rateLimits: loadRateLimitSettings(),
   });
   apps.push(app);
@@ -215,7 +217,7 @@ describe('the startup guards', () => {
           orgs,
           secrets: {
             masterKey: TEST_MASTER_KEY,
-            serviceTokens: { verify: () => Promise.resolve(undefined) },
+            serviceTokens: { verify: () => Promise.resolve({ ok: false, reason: 'malformed' }) },
           },
         });
       }),

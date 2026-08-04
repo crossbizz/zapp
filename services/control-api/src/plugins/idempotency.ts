@@ -49,6 +49,25 @@ import type { RedisCommands } from '../redis/client.js';
  * 24 hours in the same store that already holds this service's session denylist
  * and invite hashes. Anything with a longer life than that does not belong in a
  * response body in the first place.
+ *
+ * **And so may the fingerprint, indirectly.** The fingerprint in rule 2 is a
+ * plain SHA-256 over method, path and *request body* — and the request body of
+ * `POST /v1/projects/:id/secrets` and its `/rotate` sibling is a secret value in
+ * the clear. The hash sits in Redis for 24 hours under a key derived from the
+ * tenant and the client's `Idempotency-Key`, so an attacker who can read Redis
+ * but not the database holds an offline oracle: guess a candidate body, hash it,
+ * compare. Against a 32-byte API key that is nothing; against `hunter2` it is a
+ * dictionary away. Nothing here stores the value itself — the vault's ciphertext
+ * is in PostgreSQL and the 201 response carries metadata only (CP-7) — so this
+ * is the only path from a Redis read to a plaintext.
+ *
+ * Stated rather than closed, because closing it means keying the hash with a
+ * deployment secret (an HMAC under, say, a label derived from
+ * `SESSION_JWT_SECRET`), and that secret has to be identical on every instance
+ * or two replicas compute two fingerprints for one request and answer 422 to
+ * each other's retries. Worth doing when the threat model admits a Redis read;
+ * not worth a cross-instance failure mode before it does. The residual is
+ * bounded by the record's 24-hour life and by the value's own entropy.
  */
 
 /** Set on a replayed response, and only on one. Absence means the handler ran. */

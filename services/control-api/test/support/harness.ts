@@ -1,3 +1,5 @@
+import type { ServiceName } from '@zapp/config';
+
 import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
@@ -18,8 +20,8 @@ import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/r
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from './fake-auth-port.js';
-import { FakeServiceTokens } from './fake-service-tokens.js';
 import { InMemoryOrganizationStore } from './org-store.js';
+import { TestServiceTokens } from './service-tokens.js';
 
 /** 32 bytes of nothing, in the shape the config demands. Never a real key. */
 export const TEST_SECRET = 'a'.repeat(64);
@@ -62,6 +64,7 @@ export const TEST_RATE_LIMITS: RateLimitConfig = {
   device: { ...OUT_OF_THE_WAY, scope: 'ip', whenUnavailable: 'deny' },
   reads: { ...OUT_OF_THE_WAY, scope: 'organization', whenUnavailable: 'allow' },
   mutations: { ...OUT_OF_THE_WAY, scope: 'organization', whenUnavailable: 'allow' },
+  internal: { ...OUT_OF_THE_WAY, scope: 'ip', whenUnavailable: 'deny' },
 };
 
 /** Trust nothing, like the shipped file — the suites that care set their own. */
@@ -105,11 +108,11 @@ export interface Harness {
   readonly invites: InviteStore;
   readonly audit: InMemoryAuditSink;
   /**
-   * The service tokens `/internal/*` will accept. Empty until a test issues
-   * one, so an internal route in a suite that never mentions services behaves
-   * exactly as the deployed deny-all one does.
+   * The real signer and verifier `/internal/*` runs on, sharing this harness's
+   * clock and denylist. `issue` mints a token exactly as a calling service
+   * would — including its being spent on first use.
    */
-  readonly serviceTokens: FakeServiceTokens;
+  readonly serviceTokens: TestServiceTokens;
   /** Test-controlled clock, so expiry is asserted rather than waited for. */
   advance: (milliseconds: number) => void;
   now: () => Date;
@@ -144,7 +147,14 @@ export interface HarnessOptions {
    * shipping list; the suite that proves an unallowlisted caller is refused
    * narrows it.
    */
-  readonly decryptCallers?: readonly string[];
+  readonly decryptCallers?: readonly ServiceName[];
+  /**
+   * The secrets `/internal/*` signs and verifies with. Defaults to one nobody
+   * is rotating; the suite that asserts rotation supplies both.
+   */
+  readonly serviceTokenSecrets?: { readonly secret?: string; readonly previousSecret?: string };
+  /** For the suite that needs a verifier whose replay store cannot answer. */
+  readonly serviceTokenVerifier?: ServiceTokenVerifier;
 }
 
 /**
@@ -161,7 +171,10 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
   const now = (): Date => new Date(Date.now() + offset);
   const invites = createInMemoryInviteStore(now);
   const audit = createInMemoryAuditSink();
-  const serviceTokens: ServiceTokenVerifier & FakeServiceTokens = new FakeServiceTokens();
+  // One denylist for sessions and service tokens, as `composeApp` builds it —
+  // so a suite would notice if the two ever started colliding on a key.
+  const denylist = createInMemoryTokenDenylist(now);
+  const serviceTokens = new TestServiceTokens({ ...options.serviceTokenSecrets, denylist, now });
 
   const app = buildApp({
     logger: false,
@@ -170,7 +183,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       port,
       users,
       config: { ...TEST_AUTH_CONFIG, ...options.config },
-      denylist: createInMemoryTokenDenylist(now),
+      denylist,
       deviceStore: createInMemoryDeviceStore(now),
       now,
     },
@@ -188,7 +201,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
           // the pipeline was never exercised against.
           secrets: {
             masterKey: TEST_MASTER_KEY,
-            serviceTokens,
+            serviceTokens: options.serviceTokenVerifier ?? serviceTokens.verifier,
             ...(options.decryptCallers === undefined
               ? {}
               : { decryptCallers: options.decryptCallers }),

@@ -11,7 +11,7 @@ import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { decryptSecret } from '../../src/secrets/crypto.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { FakeServiceTokens } from '../support/fake-service-tokens.js';
+import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
   TEST_MASTER_KEY,
@@ -60,7 +60,7 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
   let organizationId: string;
   let projectId: string;
   let environmentIds: string[];
-  let serviceToken: string;
+  let serviceTokens: TestServiceTokens;
 
   const noAudit = (): Promise<void> => Promise.resolve();
 
@@ -112,15 +112,14 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
     await database.truncateIdentity();
     store = createDbOrganizationStore(database.db);
     port = new FakeAuthPort();
-    const serviceTokens = new FakeServiceTokens();
-    serviceToken = serviceTokens.issue(SANDBOX);
+    serviceTokens = new TestServiceTokens();
 
     app = buildApp({
       logger: false,
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations: store, audit: createDbAuditSink(database.db) },
       tenant: { tenantDb: createTenantDbFactory(database.db) },
-      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens },
+      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens: serviceTokens.verifier },
       limits: { config: TEST_RATE_LIMITS },
     });
     await app.ready();
@@ -294,7 +293,7 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/internal/secrets/decrypt',
-      headers: { [SERVICE_TOKEN_HEADER]: serviceToken },
+      headers: { [SERVICE_TOKEN_HEADER]: await serviceTokens.issue(SANDBOX) },
       payload: {
         organizationId,
         secretId: secret.id,
@@ -350,7 +349,10 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
       tenant: { tenantDb: createTenantDbFactory(database.db) },
       secrets: {
         masterKey: TEST_MASTER_KEY,
-        serviceTokens: { verify: () => Promise.resolve({ service: SANDBOX }) },
+        serviceTokens: {
+          verify: () =>
+            Promise.resolve({ ok: true, identity: { service: SANDBOX, tokenId: 'tok_broken' } }),
+        },
       },
       limits: { config: TEST_RATE_LIMITS },
     });
@@ -360,7 +362,7 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
       const response = await broken.inject({
         method: 'POST',
         url: '/internal/secrets/decrypt',
-        headers: { [SERVICE_TOKEN_HEADER]: serviceToken },
+        headers: { [SERVICE_TOKEN_HEADER]: await serviceTokens.issue(SANDBOX) },
         payload: {
           organizationId,
           secretId: secret.id,

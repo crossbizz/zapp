@@ -1,3 +1,4 @@
+import type { ServiceName } from '@zapp/config';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -144,13 +145,14 @@ export interface SecretsDeps {
    */
   readonly masterKey: MasterKeyPort;
   /**
-   * Verifies the service tokens `/internal/*` requires. CP-8 ships the HMAC
-   * implementation; `composeApp` binds the deny-all one until it does, so the
-   * route exists and admits nobody rather than not existing at all.
+   * Verifies the service tokens `/internal/*` requires (CP-8).
+   * `createServiceTokenVerifier` is the shipping one, bound in `composeApp`; it
+   * arrives here as a port so a suite can exercise the gate without a secret
+   * and so a KMS-signed variant could replace it without a route changing.
    */
   readonly serviceTokens: ServiceTokenVerifier;
   /** Which services may decrypt. Defaults to PRD §18.12's two; overridden by tests. */
-  readonly decryptCallers?: readonly string[];
+  readonly decryptCallers?: readonly ServiceName[];
 }
 
 /**

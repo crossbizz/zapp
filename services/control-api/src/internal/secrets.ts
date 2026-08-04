@@ -1,3 +1,4 @@
+import type { ServiceAudience, ServiceName } from '@zapp/config';
 import { idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
@@ -12,7 +13,7 @@ import { serviceOf } from './service-auth.js';
  * service, and the reason PRD §22.2 can say "Read secret values: No through UI"
  * for every role including Owner.
  *
- * Five properties, and each one is the answer to "how would this become a
+ * Seven properties, and each one is the answer to "how would this become a
  * back door":
  *
  * 1. **Service tokens only.** `requireService` refuses a request carrying any
@@ -25,6 +26,12 @@ import { serviceOf } from './service-auth.js';
  *    service needs the same at deploy time. Those two, by name. Any other
  *    verified service gets 403 — compromising one service's token does not
  *    confer every service's reach.
+ *
+ *    The 403 is decided from the token alone, before anything reads a row, so
+ *    it is the same answer for a secret that exists and one that does not: a
+ *    service that may not decrypt cannot use this route as an oracle for which
+ *    secrets a tenant holds. `test/service-auth.test.ts` asserts the two
+ *    responses are byte-identical.
  * 3. **A reason is required.** Not decoration: the audit row is what an incident
  *    is reconstructed from, and "sandbox-service decrypted DATABASE_URL" answers
  *    a different question than "sandbox-service decrypted DATABASE_URL to start
@@ -38,6 +45,15 @@ import { serviceOf } from './service-auth.js';
  *    response body in Redis for a minute so a retry can be answered from it, and
  *    the response body here is a plaintext credential. A read has nothing to
  *    make idempotent anyway.
+ * 6. **A token spends itself here.** The route is single-use (CP-8): the `jti`
+ *    is recorded in the denylist before the handler runs, so a token captured
+ *    on its way in is worth at most the one call it was minted for — never a
+ *    second copy of the plaintext. Callers mint per call, which is an HMAC and
+ *    no network.
+ * 7. **The audience is this route.** Only a token minted for
+ *    {@link SECRET_DECRYPT_AUDIENCE} is accepted, so a credential intended for
+ *    some future internal route is not a credential for the one that hands back
+ *    secrets — and vice versa.
  *
  * The response deliberately carries the metadata alongside the value, so the
  * caller does not need a second, unaudited call to learn which environment the
@@ -45,7 +61,16 @@ import { serviceOf } from './service-auth.js';
  */
 
 /** Who may ask. PRD §18.12 (sandbox injection) and plan 08 (release-time configuration). */
-export const SECRET_DECRYPT_CALLERS = ['sandbox-service', 'release-service'] as const;
+export const SECRET_DECRYPT_CALLERS: readonly ServiceName[] = ['sandbox-service', 'release-service'];
+
+/**
+ * What a token has to have been minted for to be spent here (CP-8).
+ *
+ * Named after the route rather than after this service, because that is the
+ * granularity that buys anything: `control-api` as an audience would make one
+ * captured token good for every internal route the control plane ever grows.
+ */
+export const SECRET_DECRYPT_AUDIENCE: ServiceAudience = 'control-api:secrets.decrypt';
 
 const DecryptBody = z
   .object({
@@ -85,7 +110,7 @@ const DecryptedSecretSchema = z.object({
 export interface InternalSecretRoutesDeps {
   readonly vault: SecretVault;
   /** Overridable so a test can prove an unallowlisted caller is refused. */
-  readonly callers?: readonly string[];
+  readonly callers?: readonly ServiceName[];
 }
 
 export function registerInternalSecretRoutes(
@@ -97,7 +122,15 @@ export function registerInternalSecretRoutes(
   app.post(
     '/internal/secrets/decrypt',
     {
-      preHandler: [app.requireService(deps.callers ?? SECRET_DECRYPT_CALLERS)],
+      preHandler: [
+        app.requireService({
+          audience: SECRET_DECRYPT_AUDIENCE,
+          callers: deps.callers ?? SECRET_DECRYPT_CALLERS,
+          // Property 6: the response is a plaintext credential, so the token
+          // that asked for it is spent by asking.
+          singleUse: true,
+        }),
+      ],
       // See property 5 in the file header: the response body is a credential,
       // and the idempotency plugin's job is to keep response bodies.
       config: { idempotency: 'exempt' },

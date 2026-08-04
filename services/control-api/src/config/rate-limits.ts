@@ -20,11 +20,12 @@ import { z } from 'zod';
  */
 
 /**
- * What a route is limited *as*. Three classes, because they answer three
+ * What a route is limited *as*. Five classes, because they answer five
  * different questions: is one tenant reading too fast, is one tenant writing
- * too fast, and is one address guessing credentials.
+ * too fast, is one address guessing credentials, is one machine polling for its
+ * device grant, and is anybody flooding the service-to-service surface.
  */
-export const RATE_LIMIT_CLASSES = ['auth', 'device', 'reads', 'mutations'] as const;
+export const RATE_LIMIT_CLASSES = ['auth', 'device', 'reads', 'mutations', 'internal'] as const;
 
 export type RateLimitClass = (typeof RATE_LIMIT_CLASSES)[number];
 
@@ -97,6 +98,7 @@ const ConfigSchema = z
         device: RuleSchema,
         reads: RuleSchema,
         mutations: RuleSchema,
+        internal: RuleSchema,
       })
       .strict(),
   })

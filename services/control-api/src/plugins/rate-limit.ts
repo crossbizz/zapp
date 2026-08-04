@@ -218,6 +218,29 @@ const EXEMPT_ROUTES = new Set(['/healthz']);
 const CLASS_BY_PATH = new Map<string, RateLimitClass>([['/v1/auth/device/token', 'device']]);
 
 /**
+ * The service-to-service surface (`src/internal/service-auth.ts`), which is the
+ * one place where decision 2 in the file header is not merely a trade-off but a
+ * hole.
+ *
+ * Every other route's guard is *appended*, so it runs after the session and the
+ * tenant are resolved and can key the bucket by organization. An internal route
+ * has no session to wait for, and its own `requireService` preHandler throws
+ * 401 on a bad token — which aborts the chain before an appended guard ever
+ * runs. The result, until CP-8, was that failed service-token attempts against
+ * `POST /internal/secrets/decrypt` were the only *completely unlimited* traffic
+ * in the service, on the one route in the system whose success response is a
+ * plaintext credential (plan 02 CP-7 review).
+ *
+ * So the guard for these routes is prepended instead: counted before anything
+ * decides whether the caller is real, at the cost of keying by address rather
+ * than by caller. That cost is small here — an internal caller is a pod in the
+ * cluster, not a browser behind a NAT.
+ */
+function isInternalRoute(url: string): boolean {
+  return url === '/internal' || url.startsWith('/internal/');
+}
+
+/**
  * Which limit a route answers to.
  *
  * By path and method rather than by a per-route declaration, so the answer is
@@ -228,6 +251,9 @@ export function classifyRoute(url: string, method: string | string[]): RateLimit
   const named = CLASS_BY_PATH.get(url);
   if (named !== undefined) {
     return named;
+  }
+  if (isInternalRoute(url)) {
+    return 'internal';
   }
   if (url === '/v1/auth' || url.startsWith('/v1/auth/')) {
     return 'auth';
@@ -353,12 +379,12 @@ export const rateLimit = fp<RateLimitOptions>(
       guards.set(routeClass, guard);
 
       // Appended, not prepended — the whole point is to run once the session and
-      // the tenant are known. See the file header.
+      // the tenant are known. See the file header. The exception is the internal
+      // surface, whose own gate throws before an appended guard would run: see
+      // {@link isInternalRoute}.
       const existing = route.preHandler;
-      route.preHandler =
-        existing === undefined
-          ? [guard]
-          : [...(Array.isArray(existing) ? existing : [existing]), guard];
+      const chain = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
+      route.preHandler = isInternalRoute(route.url) ? [guard, ...chain] : [...chain, guard];
     });
 
     done();

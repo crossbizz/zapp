@@ -18,7 +18,7 @@ import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugi
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { FakeServiceTokens } from '../support/fake-service-tokens.js';
+import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
   TEST_MASTER_KEY,
@@ -70,11 +70,13 @@ const SECRET_VALUE = 'hunter2-do-not-leak';
 
 /**
  * The service the internal decrypt route is exercised as. Real allowlist, real
- * gate; only the token store is a test's (`test/support/fake-service-tokens.ts`).
+ * gate, real HS256 tokens (`test/support/service-tokens.ts`) — only the secret
+ * is a test's. Minted per call because the route is single-use (plan 02 CP-8):
+ * a token spent on one assertion is refused by the next, which is the point.
  */
 const SANDBOX = 'sandbox-service';
-const serviceTokens = new FakeServiceTokens();
-const SERVICE_TOKEN = serviceTokens.issue(SANDBOX);
+const serviceTokens = new TestServiceTokens();
+const serviceToken = (): Promise<string> => serviceTokens.issue(SANDBOX);
 
 /** Seeding is not what this suite is about; the audit trail has its own suite. */
 const noAudit = (): Promise<void> => Promise.resolve();
@@ -372,7 +374,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       tenant: { tenantDb: createTenantDbFactory(database.db) },
       // The vault, wired exactly as `composeApp` wires it but with a token
       // verifier a test can issue from — CP-8 ships the real one.
-      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens },
+      secrets: { masterKey: TEST_MASTER_KEY, serviceTokens: serviceTokens.verifier },
       // Rate limiting is registered exactly as it is in production — this suite
       // just needs the numbers out of the way, since eleven sign-ins from one
       // address is more than the shipped ten-a-minute auth ceiling. The limits
@@ -516,7 +518,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/internal/secrets/decrypt',
-        headers: { [SERVICE_TOKEN_HEADER]: SERVICE_TOKEN },
+        headers: { [SERVICE_TOKEN_HEADER]: await serviceToken() },
         payload: {
           organizationId: a.organizationId,
           secretId: b.secretIds[0] ?? '',
@@ -1159,7 +1161,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       const decrypted = await app.inject({
         method: 'POST',
         url: '/internal/secrets/decrypt',
-        headers: { [SERVICE_TOKEN_HEADER]: SERVICE_TOKEN },
+        headers: { [SERVICE_TOKEN_HEADER]: await serviceToken() },
         payload: {
           organizationId: a.organizationId,
           secretId,

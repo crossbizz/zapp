@@ -15,7 +15,7 @@
     "            at the cost of a missed window; 'deny' keeps the protection at the",
     "            cost of the route. Reads and mutations fail open because a limiter",
     "            that takes the control plane down is worse than one that misses a",
-    "            window. Auth fails closed because password-adjacent brute-force",
+    "            window. Auth and internal fail closed because credential-surface",
     "            protection that evaporates the moment a cache blips is not",
     "            protection at all.",
     "",
@@ -61,6 +61,13 @@
       "burst": 60,
       "scope": "organization",
       "whenUnavailable": "allow"
+    },
+    "internal": {
+      "note": "Every /internal/* route — the service-to-service surface (plan 02 CP-8). Unlike every other class this guard is PREPENDED, so it counts requests that fail service-token auth too: those abort the preHandler chain at 401 and would otherwise be the only unlimited traffic in the service, against the one route whose success body is a plaintext credential. Address-scoped because there is no session or tenant to key on before the token is checked; an internal caller is a pod, not a browser behind a NAT. Sized well above the 60/min mutations budget because a sandbox start injects one decrypt per secret, each with its own single-use token. Guessing a token is not the threat it defends against (a service token is an HMAC over 32 bytes of secret) — flooding the route is. Fails CLOSED like the auth class: this is a credential surface, and the same Redis outage already stops the replay denylist from guaranteeing single use.",
+      "perMinute": 600,
+      "burst": 600,
+      "scope": "ip",
+      "whenUnavailable": "deny"
     }
   }
 }
