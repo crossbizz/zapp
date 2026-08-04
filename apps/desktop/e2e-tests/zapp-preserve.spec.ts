@@ -42,7 +42,7 @@ import path from "node:path";
 
 import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
 import {
-  getActiveEditorModelContent,
+  replaceEditorContent,
   selectFileAndWaitForEditor,
 } from "./helpers/monaco_editor";
 import { DYAD_LEGACY } from "./zapp-preserve-constants";
@@ -88,33 +88,6 @@ async function probe(url: string): Promise<number | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Types `content` into the focused Monaco editor, replacing what is there.
- *
- * Not using `helpers/monaco_editor.ts#replaceEditorContent`: it focuses
- * `.monaco-editor textarea`, which on this Monaco version resolves to the
- * aria-hidden `textarea.ime-text-area` rather than the real input surface
- * (`div.native-edit-context`), so keystrokes are dropped. Clicking the rendered
- * lines is both what a user does and what actually gives the editor focus.
- * Fixing the shared helper is upstream-test surface, out of scope for MAC-3.
- */
-async function typeIntoEditor(
-  page: import("@playwright/test").Page,
-  content: string,
-) {
-  await page.locator(".monaco-editor .view-lines").first().click();
-  await page.keyboard.press("ControlOrMeta+a");
-  await page.keyboard.press("Backspace");
-  await page.keyboard.insertText(content);
-  await expect
-    .poll(
-      async () =>
-        (await getActiveEditorModelContent(page))?.replace(/\r\n?/g, "\n"),
-      { timeout: Timeout.MEDIUM },
-    )
-    .toBe(content.replace(/\r\n?/g, "\n"));
 }
 
 /**
@@ -237,7 +210,7 @@ testSkipIfWindows(
     await selectFileAndWaitForEditor(po.page, "App.tsx");
     const editedSource =
       "const App = () => <div>preserve-suite local write</div>;\n\nexport default App;\n";
-    await typeIntoEditor(po.page, editedSource);
+    await replaceEditorContent(po.page, editedSource);
     await po.page.getByTestId("save-file-button").click();
 
     await expect
