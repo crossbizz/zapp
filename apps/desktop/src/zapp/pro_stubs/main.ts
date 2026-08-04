@@ -13,13 +13,18 @@
  * See docs/adr/0002-dyad-fork.md for the full inventory of stubbed sites.
  */
 
+import type { ModelMessage } from "ai";
+import type { IpcMainInvokeEvent } from "electron";
 import log from "electron-log";
 
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { createTypedHandler } from "@/ipc/handlers/base";
 import { registerTrustedIpcHandler } from "@/ipc/handlers/trusted_handle";
+import type { ChatStreamParams } from "@/ipc/types";
 import { agentContracts } from "@/ipc/types/agent";
 import { templateContracts } from "@/ipc/types/templates";
+import type { MentionedAppReference } from "@/ipc/utils/mention_apps";
+import type { UserSettings } from "@/lib/schemas";
 
 const logger = log.scope("zapp_pro_stubs");
 
@@ -121,12 +126,43 @@ export function cleanupOldAiMessagesJson(): void {}
 export function clearPendingLocalAgentInputsForChat(_chatId: number): void {}
 
 /**
+ * Options accepted by {@link handleLocalAgentStream}.
+ *
+ * Reconstructed from the three call sites in
+ * `src/ipc/handlers/chat_stream_handlers.ts` — not copied from the removed Pro
+ * module. `readOnly` (ask mode) and `planModeOnly` (plan mode) are each passed
+ * by exactly one call site; the rest are passed by all three.
+ *
+ * This is deliberately a *closed* object type. All three call sites pass a fresh
+ * object literal, so excess-property checking makes any upstream change to the
+ * argument shape fail `npm run ts` loudly instead of being silently swallowed —
+ * which a `...args: unknown[]` rest parameter would do.
+ */
+export interface LocalAgentStreamOptions {
+  placeholderMessageId: number;
+  systemPrompt: string;
+  dyadRequestId: string;
+  /** Ask mode: state-modifying tools disabled, no commits or deploys. */
+  readOnly?: boolean;
+  /** Plan mode: read-only exploration plus planning tools only. */
+  planModeOnly?: boolean;
+  messageOverride?: ModelMessage[] | undefined;
+  settingsOverride?: UserSettings | undefined;
+  freeModelMode?: boolean | undefined;
+  referencedApps?: MentionedAppReference[] | undefined;
+  currentTurnHasOnDiskAttachment?: boolean | undefined;
+}
+
+/**
  * The agent loop itself was Pro. Returning `false` is the upstream "stream did
  * not succeed" signal, which keeps quota accounting and error handling on the
  * paths they already take. zapp replaces this wholesale in MAC-6.
  */
 export async function handleLocalAgentStream(
-  ..._args: unknown[]
+  _event: IpcMainInvokeEvent,
+  _req: ChatStreamParams,
+  _abortController: AbortController,
+  _options: LocalAgentStreamOptions,
 ): Promise<boolean> {
   logger.warn(
     "Local agent mode is unavailable: the upstream implementation lives in src/pro and is not vendored.",

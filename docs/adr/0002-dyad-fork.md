@@ -87,9 +87,28 @@ unregistered, so the renderer degrades instead of throwing "No handler registere
 visual-editing and agent-consent channels reject with a typed
 `DyadError(Precondition)`.
 
+#### Pro-dependent tests the import sweep could not see
+
+The deletions below were found by grepping for `src/pro` import specifiers. That sweep
+is **necessary but not sufficient**: a test can depend on Pro *behaviourally*, by
+driving a chat turn through `hybrid_chat_harness` and asserting on a card that only a
+Pro tool renders, without importing anything from `src/pro`.
+
+`src/ipc/handlers/__tests__/local_agent_*.integration.test.*` (13 files) are the known
+population — e.g. `local_agent_list_files` waits for `[data-testid="dyad-list-files"]`,
+which `handleLocalAgentStream` no longer emits. They fail by construction and cannot be
+made green while the agent loop is stubbed. They are **left in place, red**, until MAC-6
+replaces the agent loop and can say which are worth rewriting against zapp's own
+implementation. Deleting them now would destroy the specification of behaviour MAC-6
+has to reproduce.
+
+Nothing depends on them being green: `@zapp/desktop` contributes no turbo tasks, so they
+are outside CI. Before treating a desktop test failure as a regression, check it against
+this list.
+
 #### Deleted tests
 
-Five test/eval files exercised only Pro code and were deleted whole (a deletion is a
+Six test/eval files exercised only Pro code and were deleted whole (a deletion is a
 trivially resolvable merge conflict; a rewritten test is not):
 
 - `src/components/chat/explore_chat_history_streaming.integration.test.tsx`
@@ -97,6 +116,25 @@ trivially resolvable merge conflict; a rewritten test is not):
 - `src/__tests__/evals/tool_use.eval.ts`
 - `src/__tests__/evals/chat_history.eval.ts`, `plumbing_check.eval.ts` and their shared
   `helpers/chat_history_harness.ts`
+
+### Two upstream fixtures need `git add -f`, forever
+
+Two files that upstream tracks are matched by gitignore rules here and were silently
+dropped from the first vendoring commit — `git status` cannot see them, so nothing
+warns you:
+
+| File | Swallowed by |
+|---|---|
+| `apps/desktop/e2e-tests/fixtures/import-app/context-manage/.env.foobar` | root `.gitignore` `.env.*` |
+| `apps/desktop/e2e-tests/fixtures/import-app/minimal-with-dyad/.dyad/plans/test-plan.md` | the fixture's own nested `.gitignore` `.dyad/` |
+
+Both are deliberately "ignored-looking": they are fixtures *for* tests that assert
+ignored files are handled correctly, so upstream force-adds them too. They must be
+re-added with `git add -f` after every merge that touches them.
+
+Because gitignore-swallowed files are invisible to `git status`, the merge checklist
+below includes a tracked-file **count** diff against the upstream tree — that is the
+only cheap check that catches this class.
 
 ### Making the fork build under pnpm
 
@@ -197,6 +235,19 @@ other package. `pnpm install` from the root restores the workspace layout afterw
 The lockfile it emits is gitignored: the root `pnpm-lock.yaml` stays the source of
 truth.
 
+**`install:packaging` rebuilds native modules against Electron's ABI, and pnpm's store
+is hard-linked.** Forge's "Preparing native dependencies" step rebuilds `better-sqlite3`
+and `node-pty` for Electron; because a hoisted pnpm install still hard-links into the
+shared content-addressable store, that write lands on the *workspace* copy too. The
+desktop unit tests then fail with `NODE_MODULE_VERSION 143 ... requires 127`. Repair:
+
+```sh
+pnpm rebuild -r better-sqlite3 node-pty
+```
+
+MAC-3 should either isolate the packaging tree from the shared store (`pnpm deploy`) or
+make the rebuild part of a packaging script that restores Node ABI afterwards.
+
 Two permanent alternatives, both **deferred to MAC-3** (which owns packaging and
 signing): set `node-linker=hoisted` in the *root* `.npmrc`, or build the packaging tree
 with `pnpm deploy`. Neither belongs in MAC-1, because the first changes dependency
@@ -215,17 +266,39 @@ merge of a new tag into `apps/desktop/`, then:
 1. **Re-assert the licence boundary first.** Delete `src/pro/` from the incoming tree
    *before* resolving anything else, and re-run the two grep/find checks above. This is
    non-negotiable and comes before any build fixing.
-2. **Expect conflicts only where marked.** Every intentional divergence is one of:
+2. **Diff the tracked-file count against the upstream tree.** Files swallowed by a
+   gitignore rule never appear in `git status`, so a merge can silently drop them (this
+   happened on the first vendoring — see the fixture table above). Against a clone of
+   upstream at the merged SHA:
+
+   ```sh
+   git --git-dir=<upstream>/.git ls-tree -r --name-only <SHA> | grep -v '^src/pro/' | sort > /tmp/up.txt
+   git ls-files apps/desktop | sed 's#^apps/desktop/##' | sort > /tmp/ours.txt
+   comm -23 /tmp/up.txt /tmp/ours.txt   # upstream has, we do not — every line must be
+                                        # an intentional deletion listed in this ADR
+   comm -13 /tmp/up.txt /tmp/ours.txt   # ours only — expect just src/zapp/**
+   ```
+
+   Baseline at `282591c`: upstream 2415 tracked files excluding `src/pro`; we track
+   2344 = 2415 − 66 (`.claude/**`) − 1 (`package-lock.json`) − 6 (Pro-only tests)
+   + 2 (`src/zapp/pro_stubs/*`). **Zero unexplained.**
+3. **Expect conflicts only where marked.** Every intentional divergence is one of:
    a `// zapp: pro-removed` comment, an additive `package.json` entry, a renamed script,
    or the `preserveSymlinks` block. Grep `// zapp:` to enumerate them.
-3. **Re-stub new Pro import sites.** If upstream adds an import from `src/pro`, add the
+4. **Re-stub new Pro import sites.** If upstream adds an import from `src/pro`, add the
    symbol to `src/zapp/pro_stubs/{shared,main}.ts` and repoint the site — do not inline.
-4. **Re-check the undeclared-dependency list.** New upstream imports of undeclared
+5. **Re-check the undeclared-dependency list.** New upstream imports of undeclared
    transitives fail loudly at build; add them to `dependencies` at upstream's locked
    version rather than loosening pnpm.
-5. **Keep zapp-authored code out of the vendored tree.** Per plan 09's constraint,
+6. **Keep zapp-authored code out of the vendored tree.** Per plan 09's constraint,
    zapp-specific code lives under `apps/desktop/src/zapp/*`, which upstream will never
    touch.
+7. **Re-`git add -f` the two swallowed fixtures** if the merge touched them:
+   `e2e-tests/fixtures/import-app/context-manage/.env.foobar` and
+   `e2e-tests/fixtures/import-app/minimal-with-dyad/.dyad/plans/test-plan.md`.
+8. **Before running the desktop tests**, build the nested fake LLM server, exactly as
+   upstream CI does — every `*.integration.test.*` file fails at import without it:
+   `cd apps/desktop/testing/fake-llm-server && npm install && npm run build`.
 
 ## Consequences
 
@@ -234,10 +307,11 @@ merge of a new tag into `apps/desktop/`, then:
   search-replace, themes, visual editing, the annotator canvas, and the agent tool
   registry. Local-agent chat modes are replaced wholesale in MAC-6; the rest are
   product decisions for MAC-2+.
-- The fork type-checks cleanly (`npx tsgo -p tsconfig.app.json --noEmit`: 0 errors in
-  `src/`, `shared/`, `e2e-tests/`). The 53 remaining errors are all in
-  `testing/fake-llm-server`, a nested npm project whose dependencies upstream installs
-  separately (`cd testing/fake-llm-server && npm install`) — unchanged from upstream.
+- The fork type-checks cleanly: `npx tsgo -p tsconfig.app.json --noEmit` reports
+  **0 errors**, once the nested `testing/fake-llm-server` project is installed. Without
+  that install it reports 53 errors there (`Cannot find module 'express'` and the
+  implicit-`any` cascade behind it) — an artifact of the missing install, not of this
+  fork. See merge-checklist step 8.
 - `pnpm --filter @zapp/desktop start` boots the app against the normal workspace
   install: main process ready, migrations run, GPU + renderer processes up, renderer
   driving IPC.
