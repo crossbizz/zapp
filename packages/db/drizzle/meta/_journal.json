@@ -22,6 +22,13 @@
       "when": 1785829434721,
       "tag": "0002_tenant_composite_fks_and_utc_bounds",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785829662598,
+      "tag": "0003_append_only_usage_and_audit",
+      "breakpoints": true
     }
   ]
 }

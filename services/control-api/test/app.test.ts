@@ -107,6 +107,78 @@ describe('error envelope', () => {
     });
   });
 
+  it('reduces a body Fastify could not parse to a 400 bad_request, in our words', async () => {
+    // The fourth branch of the handler: a 4xx raised by the framework itself,
+    // whose wording ("Unexpected token } in JSON at position 14") is neither
+    // ours nor tenant-safe, so only the status survives.
+    const app = testApp((instance) => {
+      instance.post('/v1/echo', { schema: { body: z.object({ name: z.string() }) } }, () => ({}));
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/echo',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"name": "acme-secret-customer",}',
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = ApiErrorSchema.parse(response.json());
+    expect(body.error.code).toBe('bad_request');
+    expect(body.error.requestId).toBe(response.headers['x-request-id']);
+    expect(response.body).not.toContain('acme-secret-customer');
+  });
+
+  it('keeps the envelope for an ApiError thrown from a hook, not just a handler', async () => {
+    // Authentication, CSRF and rate limiting all reject in `preHandler` rather
+    // than in the route body (CP-2 onward), so the envelope has to survive a
+    // throw that happens before any handler runs.
+    const app = testApp((instance) => {
+      instance.get(
+        '/v1/guarded',
+        {
+          preHandler: () => {
+            throw new ApiError('unauthenticated', 401, 'Authentication is required.');
+          },
+        },
+        () => ({ reached: true }),
+      );
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/v1/guarded' });
+
+    expect(response.statusCode).toBe(401);
+    expect(ApiErrorSchema.parse(response.json()).error).toEqual({
+      code: 'unauthenticated',
+      message: 'Authentication is required.',
+      requestId: response.headers['x-request-id'],
+    });
+  });
+
+  it('survives a route whose own response schema has no room for the envelope', async () => {
+    // The route declares what a 404 looks like *for it*; the error envelope is
+    // not that shape, and compiling it against that schema would strip the body
+    // down to `{}`. `errorHandler` serializes errors itself for exactly this.
+    const app = testApp((instance) => {
+      instance.get(
+        '/v1/projects/:id',
+        { schema: { response: { 404: z.object({ reason: z.literal('gone') }) } } },
+        () => {
+          throw new ApiError('project_not_found', 404, 'That project does not exist.');
+        },
+      );
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/v1/projects/proj_1' });
+
+    expect(response.statusCode).toBe(404);
+    expect(ApiErrorSchema.parse(response.json()).error).toEqual({
+      code: 'project_not_found',
+      message: 'That project does not exist.',
+      requestId: response.headers['x-request-id'],
+    });
+  });
+
   it('reduces an unexpected throw to a generic 500 with no internals in the body', async () => {
     const app = testApp((instance) => {
       instance.get('/v1/kaboom', () => {

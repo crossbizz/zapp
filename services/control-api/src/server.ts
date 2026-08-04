@@ -1,10 +1,31 @@
+import { createDb } from '@zapp/db';
+
 import { buildApp } from './app.js';
+import { loadAuthEnv } from './auth/config.js';
+import { createStytchAuthPort } from './auth/stytch.js';
+import { createDbUserStore } from './auth/users.js';
 import { loadEnv } from './env.js';
 import { loggerOptions } from './logging.js';
 
 const env = loadEnv();
+// Fails fast and by name: a control plane that cannot verify a session, or does
+// not know which database it owns, must not accept the first request.
+const auth = loadAuthEnv();
+const database = createDb(auth.databaseUrl);
+
 const app = buildApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
+  auth: {
+    port: createStytchAuthPort(auth.stytch),
+    users: createDbUserStore(database.db),
+    config: auth.config,
+  },
+});
+
+// The pool is opened here, so it is closed here — `close()` runs every `onClose`
+// hook, and this is the hook for the handle this file created.
+app.addHook('onClose', async () => {
+  await database.close();
 });
 
 /**

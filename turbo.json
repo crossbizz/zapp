@@ -14,8 +14,14 @@
       "dependsOn": ["build"]
     },
     "test:integration": {
+      // `^build` because a service's integration suite imports its workspace
+      // dependencies through their package entry points (`@zapp/db` resolves to
+      // `dist/`), unlike a package testing its own `src/`. Without this the
+      // suite fails on a cold checkout — where nothing has been built — rather
+      // than skipping.
+      "dependsOn": ["^build"],
       "cache": false,
-      "env": ["DATABASE_URL", "REDIS_URL"]
+      "env": ["DATABASE_URL", "REDIS_URL", "STYTCH_PROJECT_ID", "STYTCH_SECRET"]
     },
     "dev": {
       "cache": false,

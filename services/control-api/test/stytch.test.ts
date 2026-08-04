@@ -1,0 +1,260 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { AuthPortError } from '../src/auth/port.js';
+import { createStytchAuthPort, type StytchClientLike } from '../src/auth/stytch.js';
+
+/**
+ * The Stytch adapter, tested where it can be: the request it shapes and the
+ * response it maps. The live round trip is `test/integration/auth.test.ts`,
+ * which is env-gated on `STYTCH_PROJECT_ID` + `STYTCH_SECRET` and skips
+ * visibly without them — so these assertions are the only thing standing
+ * between a wrong field name and staging.
+ */
+
+const CONFIG = {
+  projectId: 'project-test-00000000-0000-0000-0000-000000000000',
+  secret: 'secret-test-not-a-real-key',
+  publicToken: 'public-token-test-abc',
+};
+
+const MEMBER = {
+  member_id: 'member-test-9f0b',
+  email_address: 'alice@acme.test',
+  name: 'Alice Example',
+  oauth_registrations: [
+    { provider_type: 'Google', profile_picture_url: 'https://cdn.google.test/alice.png' },
+  ],
+};
+
+interface MockCalls {
+  readonly authenticate: ReturnType<typeof vi.fn>;
+  readonly exchange: ReturnType<typeof vi.fn>;
+  readonly authenticateJwt: ReturnType<typeof vi.fn>;
+  readonly create: ReturnType<typeof vi.fn>;
+}
+
+function mockClient(overrides: Partial<Record<keyof MockCalls, unknown>> = {}): {
+  client: StytchClientLike;
+  calls: MockCalls;
+} {
+  const calls: MockCalls = {
+    authenticate: vi.fn().mockResolvedValue(
+      overrides.authenticate ?? {
+        intermediate_session_token: 'ist-1',
+        email_address: 'alice@acme.test',
+        discovered_organizations: [
+          {
+            member_authenticated: true,
+            organization: { organization_id: 'organization-test-acme', organization_slug: 'acme' },
+            membership: { type: 'active_member' },
+          },
+        ],
+      },
+    ),
+    exchange: vi
+      .fn()
+      .mockResolvedValue(
+        overrides.exchange ?? { member_authenticated: true, member: MEMBER, session_jwt: 'jwt-1' },
+      ),
+    authenticateJwt: vi
+      .fn()
+      .mockResolvedValue(
+        overrides.authenticateJwt ?? { member_session: { member_id: 'member-test-9f0b' } },
+      ),
+    create: vi
+      .fn()
+      .mockResolvedValue(
+        overrides.create ?? { organization: { organization_id: 'organization-test-new' } },
+      ),
+  };
+
+  return {
+    calls,
+    client: {
+      oauth: { discovery: { authenticate: calls.authenticate } },
+      discovery: { intermediateSessions: { exchange: calls.exchange } },
+      sessions: { authenticateJwt: calls.authenticateJwt },
+      organizations: { create: calls.create },
+    } as unknown as StytchClientLike,
+  };
+}
+
+describe('getAuthorizationUrl', () => {
+  it('starts the B2B discovery OAuth flow on the test host for a test project', () => {
+    const { client } = mockClient();
+    const port = createStytchAuthPort(CONFIG, client);
+
+    const url = new URL(
+      port.getAuthorizationUrl({
+        redirectUri: 'https://api.zapp.test/v1/auth/callback',
+        state: 'state-token',
+      }),
+    );
+
+    expect(url.origin).toBe('https://test.stytch.com');
+    expect(url.pathname).toBe('/v1/b2b/public/oauth/google/discovery/start');
+    expect(url.searchParams.get('public_token')).toBe(CONFIG.publicToken);
+    // Stytch appends its own `token`/`stytch_token_type`; our state rides along
+    // on the redirect URL, and the callback fails closed if it does not return.
+    expect(url.searchParams.get('discovery_redirect_url')).toBe(
+      'https://api.zapp.test/v1/auth/callback?state=state-token',
+    );
+  });
+
+  it('uses the live host for a live project and the configured provider', () => {
+    const { client } = mockClient();
+    const port = createStytchAuthPort(
+      { ...CONFIG, projectId: 'project-live-0000', oauthProvider: 'github' },
+      client,
+    );
+
+    const url = new URL(
+      port.getAuthorizationUrl({ redirectUri: 'https://api.zapp.build/cb', state: 's' }),
+    );
+
+    expect(url.origin).toBe('https://api.stytch.com');
+    expect(url.pathname).toBe('/v1/b2b/public/oauth/github/discovery/start');
+  });
+});
+
+describe('exchangeCode', () => {
+  it('authenticates the discovery token, then exchanges it into the discovered organization', async () => {
+    const { client, calls } = mockClient();
+    const port = createStytchAuthPort(CONFIG, client);
+
+    const identity = await port.exchangeCode('stytch-discovery-token');
+
+    expect(calls.authenticate).toHaveBeenCalledWith({
+      discovery_oauth_token: 'stytch-discovery-token',
+    });
+    expect(calls.exchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intermediate_session_token: 'ist-1',
+        organization_id: 'organization-test-acme',
+      }),
+    );
+    expect(identity).toEqual({
+      externalId: 'member-test-9f0b',
+      email: 'alice@acme.test',
+      displayName: 'Alice Example',
+      avatarUrl: 'https://cdn.google.test/alice.png',
+    });
+  });
+
+  it('prefers an organization the member is already authenticated for', async () => {
+    const { client, calls } = mockClient({
+      authenticate: {
+        intermediate_session_token: 'ist-2',
+        email_address: 'alice@acme.test',
+        discovered_organizations: [
+          {
+            member_authenticated: false,
+            organization: { organization_id: 'organization-test-invited' },
+            membership: { type: 'invited_member' },
+          },
+          {
+            member_authenticated: true,
+            organization: { organization_id: 'organization-test-active' },
+            membership: { type: 'active_member' },
+          },
+        ],
+      },
+    });
+    const port = createStytchAuthPort(CONFIG, client);
+
+    await port.exchangeCode('token');
+
+    expect(calls.exchange).toHaveBeenCalledWith(
+      expect.objectContaining({ organization_id: 'organization-test-active' }),
+    );
+  });
+
+  it('falls back to the email address when the member has no name', async () => {
+    const { client } = mockClient({
+      exchange: {
+        member_authenticated: true,
+        member: { member_id: 'member-test-1', email_address: 'bob@acme.test', name: '' },
+      },
+    });
+    const port = createStytchAuthPort(CONFIG, client);
+
+    expect(await port.exchangeCode('token')).toEqual({
+      externalId: 'member-test-1',
+      email: 'bob@acme.test',
+      displayName: 'bob@acme.test',
+    });
+  });
+
+  it('reports organization_required when discovery finds nowhere to sign in', async () => {
+    const { client } = mockClient({
+      authenticate: {
+        intermediate_session_token: 'ist-3',
+        email_address: 'nobody@acme.test',
+        discovered_organizations: [],
+      },
+    });
+    const port = createStytchAuthPort(CONFIG, client);
+
+    await expect(port.exchangeCode('token')).rejects.toMatchObject({
+      name: 'AuthPortError',
+      code: 'organization_required',
+    });
+  });
+
+  it('reports authentication_incomplete when the exchange still wants a second factor', async () => {
+    const { client } = mockClient({
+      exchange: { member_authenticated: false, intermediate_session_token: 'ist-4' },
+    });
+    const port = createStytchAuthPort(CONFIG, client);
+
+    await expect(port.exchangeCode('token')).rejects.toMatchObject({
+      code: 'authentication_incomplete',
+    });
+  });
+
+  it('wraps a provider failure rather than leaking it', async () => {
+    const { client, calls } = mockClient();
+    calls.authenticate.mockRejectedValue(new Error('stytch says: invalid secret sk-live-abc'));
+    const port = createStytchAuthPort(CONFIG, client);
+
+    const error = await port.exchangeCode('token').catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AuthPortError);
+    expect((error as AuthPortError).code).toBe('exchange_failed');
+    expect((error as AuthPortError).message).not.toContain('sk-live-abc');
+  });
+});
+
+describe('verifySession', () => {
+  it('maps a valid Stytch session JWT to its member id', async () => {
+    const { client, calls } = mockClient();
+    const port = createStytchAuthPort(CONFIG, client);
+
+    expect(await port.verifySession('stytch-session-jwt')).toEqual({
+      externalId: 'member-test-9f0b',
+    });
+    expect(calls.authenticateJwt).toHaveBeenCalledWith({ session_jwt: 'stytch-session-jwt' });
+  });
+
+  it('answers null — not an exception — for a session Stytch rejects', async () => {
+    const { client, calls } = mockClient();
+    calls.authenticateJwt.mockRejectedValue(new Error('session_not_found'));
+    const port = createStytchAuthPort(CONFIG, client);
+
+    expect(await port.verifySession('expired')).toBeNull();
+  });
+});
+
+describe('createOrganization', () => {
+  it('maps a zapp organization onto a Stytch one, name and slug alike', async () => {
+    const { client, calls } = mockClient();
+    const port = createStytchAuthPort(CONFIG, client);
+
+    expect(await port.createOrganization({ name: 'Acme Inc', slug: 'acme-inc' })).toEqual({
+      externalOrgId: 'organization-test-new',
+    });
+    expect(calls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ organization_name: 'Acme Inc', organization_slug: 'acme-inc' }),
+    );
+  });
+});

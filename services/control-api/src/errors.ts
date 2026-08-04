@@ -87,6 +87,13 @@ export function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply,
 ): void {
+  // A route's response schema describes its *success* payload; nothing declares
+  // the error envelope, so a route with a narrowed `404` (or `4xx`) schema would
+  // have the serializer compiled from that schema strip or reject this body.
+  // Errors are serialized as plain JSON, which is what makes the envelope a
+  // property of the service rather than of each route's schema.
+  reply.serializer((payload: unknown) => JSON.stringify(payload));
+
   if (error instanceof ApiError) {
     if (error.statusCode >= 500) {
       request.log.error({ err: error, errorCode: error.code }, 'request failed');

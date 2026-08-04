@@ -577,6 +577,12 @@ importers:
       fastify-type-provider-zod:
         specifier: ^4.0.2
         version: 4.0.2(fastify@5.11.2)(zod@3.25.76)
+      jose:
+        specifier: ^5.10.0
+        version: 5.10.0
+      stytch:
+        specifier: ^14.2.0
+        version: 14.2.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -584,9 +590,15 @@ importers:
       '@types/node':
         specifier: ^22.9.0
         version: 22.20.1
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.3)(better-sqlite3@12.11.1)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
       pino-pretty:
         specifier: ^13.1.3
         version: 13.1.3
+      tsx:
+        specifier: ^4.23.5
+        version: 4.23.5
       vitest:
         specifier: ^2.1.4
         version: 2.1.9(@types/node@22.20.1)(happy-dom@17.6.3)(lightningcss@1.32.0)(terser@5.49.0)
@@ -5961,6 +5973,9 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
+  jose@5.10.0:
+    resolution: {integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==}
+
   jose@6.2.8:
     resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
 
@@ -7877,6 +7892,10 @@ packages:
       babel-plugin-macros:
         optional: true
 
+  stytch@14.2.0:
+    resolution: {integrity: sha512-7Ws8WpBXNUojPQ2FcrjIBXN3IDwK/cyvDJlySnf4EL7YXpkIrVkyKUq5xoh31l9g/ABzefPQ6w0Pf5w/F7JwlQ==}
+    engines: {node: '>= 18.0.0'}
+
   sumchecker@3.0.1:
     resolution: {integrity: sha512-MvjXzkz/BOfyVDkG0oFOtBxHX2u3gKbMHIF/dXblZsgD3BWOFLmHovIpZY7BykJdAjcqRCBi1WYBNdEC9yI7vg==}
     engines: {node: '>= 8.0'}
@@ -8156,6 +8175,10 @@ packages:
   undici@5.29.0:
     resolution: {integrity: sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==}
     engines: {node: '>=14.0'}
+
+  undici@6.28.0:
+    resolution: {integrity: sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA==}
+    engines: {node: '>=18.17'}
 
   undici@8.10.0:
     resolution: {integrity: sha512-HvltHd7avK13QIw/oLe4qoOLyoVSoafqJ2jYOrtMRBkbYT31eiBQ8O0ehRKZiEZCMEyLFQNIADpgCWC5fALvYQ==}
@@ -14229,6 +14252,8 @@ snapshots:
 
   jiti@2.7.0: {}
 
+  jose@5.10.0: {}
+
   jose@6.2.8: {}
 
   jotai@2.20.2(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@19.2.18)(react@19.2.8):
@@ -16459,6 +16484,11 @@ snapshots:
     optionalDependencies:
       '@babel/core': 7.29.7
 
+  stytch@14.2.0:
+    dependencies:
+      jose: 5.10.0
+      undici: 6.28.0
+
   sumchecker@3.0.1:
     dependencies:
       debug: 4.4.3
@@ -16753,6 +16783,8 @@ snapshots:
   undici@5.29.0:
     dependencies:
       '@fastify/busboy': 2.1.1
+
+  undici@6.28.0: {}
 
   undici@8.10.0: {}
 
