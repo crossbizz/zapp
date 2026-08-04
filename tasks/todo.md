@@ -63,7 +63,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ### Plan 06
 - [ ] GIT-4 Nightly bundle backups + restore
 ### Plan 04 — Agent runtime core
-- [ ] AR-1 model-gateway streaming API
+- [x] AR-1 model-gateway streaming API
 - [ ] AR-2 Routing/retry/fallback
 - [ ] AR-3 Usage telemetry + budget cutoff
 - [ ] AR-4 agent-tools registry (PRD §16.1 complete)
