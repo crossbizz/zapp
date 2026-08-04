@@ -25,7 +25,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] CP-5 Audit + idempotency + rate limits
 - [x] CP-6 Projects/repos/branches/environments CRUD
 - [x] CP-7 Secrets vault (envelope encryption, audited decrypt)
-- [ ] CP-8 Internal service tokens
+- [x] CP-8 Internal service tokens
 
 ### Plan 06 — Internal Git
 - [ ] GIT-1 Forgejo deployment + bootstrap
