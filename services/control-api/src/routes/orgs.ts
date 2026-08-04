@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto';
-
 import { PageSchema, idSchema } from '@zapp/contracts';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -23,23 +21,36 @@ import {
   type OrganizationRecord,
   type OrganizationStore,
 } from '../orgs/store.js';
-import { ROLES, can, type Action } from '../policy/permissions.js';
+import { actorOf } from '../plugins/auth.js';
+import { authorize, organizationNotFound, selectOrganizationId } from '../plugins/tenant.js';
+import { ROLES } from '../policy/permissions.js';
+import { SlugSchema, randomSuffix, slugify } from '../slug.js';
 
 /**
  * PRD §32 organizations, memberships and invites.
  *
- * Three rules run through every handler here:
+ * Four rules run through every handler here:
  *
  * 1. **The PRD §22.2 matrix decides.** No handler compares roles by hand; each
  *    asks `can(role, action)` and nothing else. Which action a route requires is
  *    part of its definition, not of its body.
- * 2. **Not yours reads as not there.** A caller with no membership gets
+ * 2. **Not yours reads as not there.** A caller with no active membership gets
  *    `404 organization_not_found` for an organization that exists, exactly as it
  *    does for one that does not (plan 02 §Global Constraints). A 403 would
  *    confirm the organization by refusing to talk about it.
- * 3. **An organization keeps an Owner.** The last one cannot be demoted or
+ * 3. **One organization per request.** `:orgId` is the tenant selector for these
+ *    route shapes, and `selectOrganizationId` (CP-4) is what says so — the same
+ *    function every other tenant-scoped route uses, so an `x-organization-id`
+ *    header that contradicts the path is refused here exactly as it is there
+ *    rather than being quietly ignored.
+ * 4. **An organization keeps an Owner.** The last one cannot be demoted or
  *    removed; the store enforces it atomically and this maps it to
  *    `409 last_owner`.
+ *
+ * These routes administer organizations rather than reading tenant data, so they
+ * take the `OrganizationStore` port rather than `ctx.db` — there is no tenant
+ * table involved. Everything that does read tenant data goes through
+ * `./projects.ts` and `./runs.ts`.
  */
 
 const RoleSchema = z.enum(ROLES);
@@ -63,16 +74,6 @@ const MembershipEntrySchema = z.object({
   role: RoleSchema,
   status: z.enum(['invited', 'active', 'removed']),
 });
-
-/**
- * A DNS-label-shaped slug: it ends up in URLs and, later, in preview hostnames.
- * Lowercase only, so two organizations cannot differ by case alone.
- */
-const SlugSchema = z
-  .string()
-  .min(2)
-  .max(48)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const NameSchema = z.string().trim().min(1).max(80);
 
@@ -112,35 +113,6 @@ export interface OrgRoutesDeps {
   readonly now: () => Date;
 }
 
-/**
- * `Acme Rockets, Inc.` → `acme-rockets-inc`.
- *
- * Decomposing first folds the accents a Latin name carries, so `Café Zünd`
- * becomes `cafe-zund` rather than `caf-z-nd`. Letters that do not decompose
- * (`Æ`, `ø`) and scripts with no Latin form at all still drop out, and a name
- * that survives none of it yields the empty string — the caller falls back to a
- * random slug rather than to a shared constant. That is acceptable because the
- * slug is a URL handle, not a rendering of the name: the name itself is stored
- * exactly as it was given, and a slug can be chosen explicitly.
- */
-function slugify(name: string): string {
-  return (
-    name
-      .normalize('NFKD')
-      // Combining marks, spelled in escapes: the literal characters are invisible
-      // in a diff and easy to mangle.
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .slice(0, 40)
-      .replace(/^-+|-+$/g, '')
-  );
-}
-
-function randomSuffix(): string {
-  return randomBytes(3).toString('hex');
-}
-
 /** Nothing carrying a credential — an invite token — may be cached. */
 function noStore(reply: FastifyReply): void {
   reply.header('cache-control', 'no-store');
@@ -148,10 +120,6 @@ function noStore(reply: FastifyReply): void {
 
 function unauthenticated(): ApiError {
   return new ApiError('unauthenticated', 401, 'Authentication is required.');
-}
-
-function organizationNotFound(): ApiError {
-  return new ApiError('organization_not_found', 404, 'That organization does not exist.');
 }
 
 function slugTaken(): ApiError {
@@ -169,22 +137,13 @@ function lastOwner(): ApiError {
 export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
   const { organizations, invites, users, port, now } = deps;
 
-  /** `request.auth` is set by `requireSession`; this narrows it for the handler. */
-  function actor(request: FastifyRequest): string {
-    const auth = request.auth;
-    if (auth === undefined) {
-      throw unauthenticated();
-    }
-    return auth.userId;
-  }
-
   /**
    * The session's user, from the users table. A token that verifies for a user
    * who no longer exists is not a session — and the membership rows every
    * handler here writes reference that row.
    */
   async function currentUser(request: FastifyRequest): Promise<{ id: string; email: string }> {
-    const profile = await users.profile(actor(request));
+    const profile = await users.profile(actorOf(request));
     if (profile === undefined) {
       throw unauthenticated();
     }
@@ -192,28 +151,28 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
   }
 
   /**
-   * The caller's membership of `organizationId`, or a 404 — see rule 2 above.
-   * Every organization-scoped handler starts here, which is what makes tenant
-   * isolation a property of the route file rather than of each handler.
+   * The caller's active membership of the organization this request names, or a
+   * 404 — see rules 2 and 3 above. Every organization-scoped handler starts
+   * here, which is what makes tenant isolation a property of the route file
+   * rather than of each handler.
+   *
+   * `organizationId` is the path's, and `selectOrganizationId` is what makes an
+   * `x-organization-id` header that disagrees with it a 404 rather than a
+   * silently ignored contradiction.
    */
   async function membershipOf(
     request: FastifyRequest,
     organizationId: string,
   ): Promise<MembershipRecord> {
-    const membership = await organizations.membership(organizationId, actor(request));
-    if (membership === undefined) {
+    const selected = selectOrganizationId(request, organizationId);
+    const membership = await organizations.membership(selected, actorOf(request));
+    // `active`, not merely "not removed": an invitation that was issued and
+    // never accepted is a row, not an access grant — the same rule the tenant
+    // plugin applies, because it is the same question.
+    if (membership === undefined || membership.status !== 'active') {
       throw organizationNotFound();
     }
     return membership;
-  }
-
-  /** PRD §22.2, enforced. The action is echoed so a client can say what is missing. */
-  function authorize(membership: MembershipRecord, action: Action): void {
-    if (!can(membership.role, action)) {
-      throw new ApiError('permission_denied', 403, 'Your role does not allow this action.', {
-        action,
-      });
-    }
   }
 
   app.post(
@@ -309,7 +268,7 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
     async (request) => {
       // Only the caller's own memberships: this endpoint is not a directory of
       // organizations, and there is no query that would make it one.
-      const items = await organizations.listForUser(actor(request));
+      const items = await organizations.listForUser(actorOf(request));
       // `nextCursor` is explicitly null rather than absent (FND-10): a client
       // must never read a missing field as "there might be more".
       return { items, nextCursor: null };
@@ -400,7 +359,7 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         organizationId: request.params.orgId,
         email,
         role: request.body.role,
-        invitedBy: actor(request),
+        invitedBy: actorOf(request),
         expiresAt,
       });
 

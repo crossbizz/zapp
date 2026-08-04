@@ -1,4 +1,11 @@
-export { buildApp, type AppDeps, type AppInstance, type AuthDeps, type OrgDeps } from './app.js';
+export {
+  buildApp,
+  type AppDeps,
+  type AppInstance,
+  type AuthDeps,
+  type OrgDeps,
+  type TenantDeps,
+} from './app.js';
 export { ApiError } from './errors.js';
 export { REQUEST_ID_HEADER } from './plugins/context.js';
 
@@ -54,3 +61,22 @@ export {
   type AuditRecord,
   type AuditSink,
 } from './plugins/audit.js';
+
+// CP-4 — tenant context. `forOrg` never leaves this boundary: a caller builds
+// the factory once and hands it to `buildApp`, and every route reads through
+// the organization-bound handle the plugin puts on the request.
+export {
+  ORGANIZATION_HEADER,
+  authorize,
+  selectOrganizationId,
+  tenantOf,
+  type MembershipLookup,
+  type TenantContext,
+} from './plugins/tenant.js';
+export {
+  createTenantDbFactory,
+  type CreatedProject,
+  type NewProjectInput,
+  type TenantDatabase,
+  type TenantDbFactory,
+} from './tenant/db.js';

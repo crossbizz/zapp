@@ -16,9 +16,12 @@ import fp from 'fastify-plugin';
  * A handler cannot claim an audit row was somebody else's doing, which is the
  * one property that makes the trail worth keeping.
  *
- * CP-4 folds this into the request context (`ctx.audit(...)`) alongside
- * `ctx.db` and `ctx.organizationId`; until that exists, `organizationId` is
- * passed explicitly because an audit row is always tenant-scoped.
+ * `organizationId` stays an explicit argument now that CP-4's tenant context
+ * exists, rather than being read from `request.tenant`. Two of the actions
+ * below are written by routes that have no tenant context at all — creating an
+ * organization and accepting an invitation both record an organization the
+ * caller was not yet a member of when the request began — so a trail sourced
+ * from `ctx` would be missing exactly the rows that say how someone got access.
  */
 
 /**
@@ -33,12 +36,13 @@ export const AUDIT_ACTIONS = [
   'member.joined',
   'member.role_changed',
   'member.removed',
+  'project.created',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export type AuditTargetType = 'organization' | 'membership' | 'invite';
+export type AuditTargetType = 'organization' | 'membership' | 'invite' | 'project';
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
 export type AuditActorType = 'user' | 'service' | 'agent' | 'support';

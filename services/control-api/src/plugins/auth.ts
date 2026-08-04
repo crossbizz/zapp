@@ -21,9 +21,11 @@ import { ApiError } from '../errors.js';
  * distinction drives the CSRF rule below — so the rule cannot drift from the
  * reason it exists.
  *
- * CP-4 folds this into the full `ctx` (`{ requestId, user, organizationId,
- * role, db }`) once tenant resolution lands; until then `request.auth` is the
- * whole of it.
+ * CP-4's tenant plugin sits directly on top of this: `requireTenant` reads
+ * `request.auth` and adds `request.tenant` (`{ organizationId, role, db }`).
+ * Plan 02's `ctx` is those two plus CP-1's `request.id`, assembled from the
+ * decorators that own each part rather than copied into a third object that
+ * could disagree with them.
  */
 
 export interface SessionContext {
@@ -69,6 +71,19 @@ const BEARER_PREFIX = 'bearer ';
  */
 function unauthenticated(): ApiError {
   return new ApiError('unauthenticated', 401, 'Authentication is required.');
+}
+
+/**
+ * The session's user id, narrowed for a handler on a route that declared
+ * `requireSession`. A route that did not gets a 401 rather than `undefined`
+ * flowing into a query.
+ */
+export function actorOf(request: FastifyRequest): string {
+  const auth = request.auth;
+  if (auth === undefined) {
+    throw unauthenticated();
+  }
+  return auth.userId;
 }
 
 /**

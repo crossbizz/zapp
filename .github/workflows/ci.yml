@@ -186,3 +186,93 @@ jobs:
       # come back from cache.
       - name: Integration tests
         run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }}
+
+  # The M0 exit criterion -- "two organizations cannot access one another's
+  # projects or artifacts" -- as its own required job.
+  #
+  # It duplicates the integration job's service containers rather than adding a
+  # step to it, and that is the point: a milestone gate that lives inside a
+  # broader job is one `--filter` or one flaky neighbour away from being skipped
+  # without anyone deciding to skip it. This job runs exactly
+  # services/control-api/test/integration/tenant-isolation.test.ts, and it fails
+  # if that file stops existing (vitest exits non-zero when a name filter matches
+  # no test file) or if it runs without a database (the suite asserts
+  # DATABASE_URL is set whenever CI is).
+  tenant-isolation:
+    name: tenant isolation (M0 exit criterion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Steps do not start until every service reports healthy.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Throwaway credentials for ephemeral service containers on the runner's
+      # loopback interface. Not secrets, never reused outside this job.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      # persist-credentials: false -- this job executes repo code (build/test)
+      # and package postinstall scripts, so no push-capable token is left
+      # behind in .git/config for them to pick up.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Job-scoped cache key -- see the rationale in the checks job above.
+      - name: Cache turbo artifacts
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-tenant-isolation-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-tenant-isolation-
+
+      # The suite imports its workspace dependencies through their package entry
+      # points (@zapp/db resolves to dist/), so a cold checkout has to build them
+      # before anything can run. turbo's `build` task already depends on ^build,
+      # so this one filter covers the whole chain.
+      - name: Build workspace dependencies
+        run: pnpm turbo run build --filter=@zapp/control-api
+
+      # Deliberately not a turbo task: this job exists to run one file, and
+      # `pnpm --filter ... run` is the shortest path from "the gate" to "the
+      # file", with nothing in between that could decide to skip it.
+      - name: Tenant isolation suite
+        run: pnpm --filter @zapp/control-api run test:isolation

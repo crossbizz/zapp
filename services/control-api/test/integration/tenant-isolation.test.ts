@@ -1,0 +1,786 @@
+import { ApiErrorSchema, newId } from '@zapp/contracts';
+import { agentEvents, agentRuns, branches, nextEventSequence, projects } from '@zapp/db';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { buildApp, type AppInstance } from '../../src/app.js';
+import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
+import { createDbUserStore } from '../../src/auth/users.js';
+import { createDbOrganizationStore, type OrganizationStore } from '../../src/orgs/store.js';
+import { createInMemoryAuditSink } from '../../src/plugins/audit.js';
+import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
+import { createTenantDbFactory } from '../../src/tenant/db.js';
+import { FakeAuthPort } from '../support/fake-auth-port.js';
+import { TEST_AUTH_CONFIG, cookieJar, cookiesOf } from '../support/harness.js';
+import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
+
+/**
+ * The M0 exit criterion, as a permanent adversarial suite: **two organizations
+ * cannot access one another's projects or artifacts.**
+ *
+ * It is deliberately hostile. Two fully populated tenants exist, each with an
+ * Owner, a Builder and a Viewer, projects, runs and events; every request below
+ * is one a compromised or buggy client would actually send — someone else's id
+ * in the path, someone else's id in the `x-organization-id` header, the two
+ * disagreeing, a role reaching past its row in the PRD §22.2 matrix, and a
+ * session with no memberships at all.
+ *
+ * Two rules keep it honest:
+ *
+ * 1. **Assertions are on ids, never on counts.** "Three rows came back" is
+ *    satisfied by the wrong three. Every list assertion names the ids that must
+ *    be there and the ids that must not.
+ * 2. **Every refusal has a negative control.** The single most common way an
+ *    isolation suite goes fake is by passing because the service refuses
+ *    everything. The `negative control` block below re-issues each request with
+ *    the *correct* organization and role and requires it to succeed, so a
+ *    service that 404s indiscriminately fails this file just as loudly as one
+ *    that leaks.
+ *
+ * The CI job named `tenant-isolation` runs exactly this file.
+ */
+
+/**
+ * Fixed, and inside the partitions `packages/db/drizzle/0001` seeds
+ * (2026-08 … 2027-07). `new Date()` would make this suite start failing in
+ * August 2027 for reasons that have nothing to do with tenancy.
+ */
+const EVENT_TIME = new Date('2026-08-15T12:00:00.000Z');
+
+type Response = Awaited<ReturnType<AppInstance['inject']>>;
+
+interface Member {
+  readonly userId: string;
+  readonly email: string;
+  /** The `Cookie` header alone, for requests that deliberately omit CSRF. */
+  readonly cookie: string;
+  /** Cookie plus CSRF header — what a signed-in browser page sends. */
+  readonly headers: Record<string, string>;
+}
+
+interface Tenant {
+  readonly organizationId: string;
+  readonly owner: Member;
+  readonly builder: Member;
+  readonly viewer: Member;
+  /** Someone who was invited and never accepted: a row, not an access grant. */
+  readonly pending: Member;
+  readonly projectIds: string[];
+  readonly runIds: string[];
+  readonly eventIds: string[];
+}
+
+function errorOf(response: Response): string {
+  return ApiErrorSchema.parse(response.json()).error.code;
+}
+
+/** Asserts the whole refusal — status and envelope code — in one place. */
+function expectRefusal(response: Response, status: number, code: string): void {
+  expect(response.statusCode, response.body).toBe(status);
+  expect(errorOf(response), response.body).toBe(code);
+}
+
+interface Row {
+  readonly id: string;
+  readonly organizationId: string;
+}
+
+function rowsOf(response: Response): Row[] {
+  return response.json<{ items: Row[] }>().items;
+}
+
+/**
+ * A list is clean when every row belongs to `tenant`, every id `tenant` owns is
+ * present, and no id the other tenant owns is. All three, because any two of
+ * them can be satisfied by an empty or a truncated answer.
+ */
+function expectOnlyTenantRows(response: Response, tenant: Tenant, expected: string[]): void {
+  expect(response.statusCode, response.body).toBe(200);
+  const rows = rowsOf(response);
+  const ids = rows.map((row) => row.id);
+  expect(ids).toEqual(expect.arrayContaining(expected));
+  for (const row of rows) {
+    expect(row.organizationId, `row ${row.id} belongs to another organization`).toBe(
+      tenant.organizationId,
+    );
+  }
+}
+
+/**
+ * This suite is the milestone gate, so it must not be able to pass by not
+ * running. Outside the `skipIf` below on purpose: without `DATABASE_URL` every
+ * assertion in this file is skipped, and a CI job that skipped them all while
+ * reporting green is the exact failure the `tenant-isolation` job exists to
+ * prevent.
+ */
+describe('the isolation suite itself', () => {
+  it('refuses to be silently skipped in CI', () => {
+    expect(process.env['CI'] === 'true' ? hasDatabase : true).toBe(true);
+  });
+});
+
+describe.skipIf(!hasDatabase)('tenant isolation', () => {
+  let database: TestDatabase;
+  let store: OrganizationStore;
+  let app: AppInstance;
+  let port: FakeAuthPort;
+  let a: Tenant;
+  let b: Tenant;
+  /** Signed in, real session, member of nothing. */
+  let nomad: Member;
+  /** A Viewer in A and an Owner in B — the header is what tells them apart. */
+  let bridge: Member;
+
+  /** Drives the real login handshake; a minted token is not a session. */
+  async function signIn(email: string): Promise<Member> {
+    const code = `auth-code-${email}`;
+    const start = await app.inject({ method: 'GET', url: '/v1/auth/login' });
+    const state = new URL(start.headers.location as string).searchParams.get('state') ?? '';
+    port.issueCode(code, { externalId: `external-${email}`, email, displayName: email });
+
+    const callback = await app.inject({
+      method: 'GET',
+      url: `/v1/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieJar(cookiesOf(start.headers['set-cookie'])) },
+    });
+    expect(callback.statusCode, callback.body).toBe(302);
+
+    const cookies = cookiesOf(callback.headers['set-cookie']);
+    const cookie = cookieJar(cookies);
+    const [row] = await database.sql<{ id: string }[]>`
+      select id from users where email = ${email}
+    `;
+    if (row === undefined) {
+      throw new Error(`sign-in created no user for ${email}`);
+    }
+    return {
+      userId: row.id,
+      email,
+      cookie,
+      headers: { cookie, [CSRF_HEADER]: cookies.get(CSRF_COOKIE) ?? '' },
+    };
+  }
+
+  /** `member`'s headers, naming `organizationId` as the tenant for the request. */
+  function as(member: Member, organizationId?: string): Record<string, string> {
+    return organizationId === undefined
+      ? member.headers
+      : { ...member.headers, [ORGANIZATION_HEADER]: organizationId };
+  }
+
+  /** An organization with three active members, two projects, two runs, four events. */
+  async function seedTenant(slug: string): Promise<Tenant> {
+    const owner = await signIn(`owner@${slug}.test`);
+    const builder = await signIn(`builder@${slug}.test`);
+    const viewer = await signIn(`viewer@${slug}.test`);
+    const pending = await signIn(`pending@${slug}.test`);
+
+    const now = new Date();
+    const created = await store.create({
+      name: slug,
+      slug,
+      creatorUserId: owner.userId,
+      now,
+      link: () => Promise.resolve({ externalOrgId: `external-${slug}` }),
+    });
+    const organizationId = created.organization.id;
+    await store.addMember({ organizationId, userId: builder.userId, role: 'builder', now });
+    await store.addMember({ organizationId, userId: viewer.userId, role: 'viewer', now });
+    // Written directly: nothing in the API creates an `invited` membership row
+    // today, and the rule that one is not access has to be pinned before
+    // something does.
+    await database.sql`
+      insert into memberships (organization_id, user_id, role, status)
+      values (${organizationId}, ${pending.userId}, 'builder', 'invited')
+    `;
+
+    const projectIds: string[] = [];
+    const runIds: string[] = [];
+    const eventIds: string[] = [];
+
+    for (const name of ['alpha', 'beta']) {
+      const projectId = newId('proj');
+      await database.db.insert(projects).values({
+        id: projectId,
+        organizationId,
+        name: `${slug} ${name}`,
+        slug: `${slug}-${name}`,
+        sourceType: 'prompt',
+        supportLevel: 'verified',
+        createdBy: owner.userId,
+      });
+      projectIds.push(projectId);
+
+      const branchId = newId('br');
+      await database.db
+        .insert(branches)
+        .values({ id: branchId, organizationId, projectId, name: 'main', status: 'active' });
+
+      const runId = newId('run');
+      await database.db.insert(agentRuns).values({
+        id: runId,
+        organizationId,
+        projectId,
+        branchId,
+        mode: 'build',
+        status: 'running',
+        startedBy: owner.userId,
+      });
+      runIds.push(runId);
+
+      for (let index = 0; index < 2; index += 1) {
+        const id = newId('evt');
+        const sequence = await nextEventSequence(database.db, runId);
+        await database.db.insert(agentEvents).values({
+          id,
+          organizationId,
+          runId,
+          sequence,
+          type: 'tool.completed',
+          payloadJson: { tool: 'run_build', exitCode: 0 },
+          visibility: 'user',
+          occurredAt: EVENT_TIME,
+        });
+        eventIds.push(id);
+      }
+    }
+
+    return { organizationId, owner, builder, viewer, pending, projectIds, runIds, eventIds };
+  }
+
+  beforeAll(async () => {
+    database = await setUpTestDatabase();
+    await database.truncateIdentity();
+    store = createDbOrganizationStore(database.db);
+    port = new FakeAuthPort();
+    app = buildApp({
+      logger: false,
+      auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
+      orgs: { organizations: store, audit: createInMemoryAuditSink() },
+      tenant: { tenantDb: createTenantDbFactory(database.db) },
+    });
+    await app.ready();
+
+    a = await seedTenant('acme');
+    b = await seedTenant('beta');
+
+    nomad = await signIn('nomad@nowhere.test');
+    bridge = await signIn('bridge@both.test');
+    const now = new Date();
+    await store.addMember({
+      organizationId: a.organizationId,
+      userId: bridge.userId,
+      role: 'viewer',
+      now,
+    });
+    await store.addMember({
+      organizationId: b.organizationId,
+      userId: bridge.userId,
+      role: 'owner',
+      now,
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await app.close();
+    await database.close();
+  });
+
+  describe('a session in A, reading B by id', () => {
+    it('does not find B’s project', async () => {
+      for (const projectId of b.projectIds) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/v1/projects/${projectId}`,
+          headers: as(a.owner, a.organizationId),
+        });
+        expectRefusal(response, 404, 'project_not_found');
+      }
+    });
+
+    it('does not find B’s run', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${b.runIds[0] ?? ''}`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'run_not_found');
+    });
+
+    it('does not find the events of B’s run', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${b.runIds[0] ?? ''}/events`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'run_not_found');
+    });
+
+    it('does not find the runs of B’s project', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${b.projectIds[0] ?? ''}/runs`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(response, 404, 'project_not_found');
+    });
+
+    it('does not find B’s organization', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}`,
+        headers: a.owner.headers,
+        payload: { name: 'Mine Now' },
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('cannot invite anyone into B', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/organizations/${b.organizationId}/invites`,
+        headers: a.owner.headers,
+        payload: { email: 'intruder@acme.test', role: 'owner' },
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('cannot change or remove a member of B', async () => {
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}/members/${b.viewer.userId}`,
+        headers: a.owner.headers,
+        payload: { role: 'owner' },
+      });
+      expectRefusal(patched, 404, 'organization_not_found');
+
+      const deleted = await app.inject({
+        method: 'DELETE',
+        url: `/v1/organizations/${b.organizationId}/members/${b.owner.userId}`,
+        headers: a.owner.headers,
+      });
+      expectRefusal(deleted, 404, 'organization_not_found');
+
+      // And B is untouched by either attempt.
+      expect(await store.membership(b.organizationId, b.viewer.userId)).toMatchObject({
+        role: 'viewer',
+        status: 'active',
+      });
+      expect(await store.membership(b.organizationId, b.owner.userId)).toMatchObject({
+        role: 'owner',
+        status: 'active',
+      });
+    });
+  });
+
+  describe('list endpoints', () => {
+    it('never carry a project of the other tenant', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(a.viewer, a.organizationId),
+      });
+      expectOnlyTenantRows(response, a, a.projectIds);
+      const ids = rowsOf(response).map((row) => row.id);
+      expect(ids.filter((id) => b.projectIds.includes(id))).toEqual([]);
+    });
+
+    it('never carry a run of the other tenant', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expectOnlyTenantRows(response, a, [a.runIds[0] ?? '']);
+      const ids = rowsOf(response).map((row) => row.id);
+      expect(ids.filter((id) => b.runIds.includes(id))).toEqual([]);
+    });
+
+    it('never carry an event of the other tenant', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${a.runIds[0] ?? ''}/events`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expectOnlyTenantRows(response, a, a.eventIds.slice(0, 2));
+      const ids = rowsOf(response).map((row) => row.id);
+      expect(ids.filter((id) => b.eventIds.includes(id))).toEqual([]);
+    });
+
+    it('never carry an organization the caller is not in', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/organizations',
+        headers: a.owner.headers,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const ids = response
+        .json<{ items: { organization: { id: string } }[] }>()
+        .items.map((item) => item.organization.id);
+      expect(ids).toEqual([a.organizationId]);
+    });
+  });
+
+  describe('the x-organization-id header', () => {
+    it('does not admit a caller to an organization they are not in', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(a.owner, b.organizationId),
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('answers the same for an organization that never existed', async () => {
+      // Indistinguishable on purpose: a different answer here would be a probe
+      // for which organization ids are real.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(a.owner, newId('org')),
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('does not admit a caller whose membership is only invited', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(a.pending, a.organizationId),
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('does not admit a removed member', async () => {
+      const removed = await signIn('removed@acme.test');
+      const now = new Date();
+      await store.addMember({
+        organizationId: a.organizationId,
+        userId: removed.userId,
+        role: 'builder',
+        now,
+      });
+      expect(await store.removeMember(a.organizationId, removed.userId)).toBe('updated');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(removed, a.organizationId),
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('is required on a tenant-scoped route that has no organization in its path', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: a.owner.headers,
+      });
+      expectRefusal(response, 400, 'organization_required');
+    });
+
+    it('cannot override the organization that owns a path resource', async () => {
+      // A's owner, A's own project in the path, B named in the header. There is
+      // no reading of this request that should return a row.
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${a.projectIds[0] ?? ''}`,
+        headers: as(a.owner, b.organizationId),
+      });
+      expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('cannot disagree with an organization in the path', async () => {
+      for (const [path, header] of [
+        [a.organizationId, b.organizationId],
+        [b.organizationId, a.organizationId],
+      ]) {
+        const response = await app.inject({
+          method: 'PATCH',
+          url: `/v1/organizations/${path ?? ''}`,
+          headers: as(a.owner, header),
+          payload: { name: 'Confused' },
+        });
+        expectRefusal(response, 404, 'organization_not_found');
+      }
+      // A's name is exactly as it was seeded — no half-applied write.
+      expect((await store.findById(a.organizationId))?.name).toBe('acme');
+    });
+
+    it('selects between the organizations a member of both belongs to', async () => {
+      const inA = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(bridge, a.organizationId),
+      });
+      expectOnlyTenantRows(inA, a, a.projectIds);
+
+      const inB = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: as(bridge, b.organizationId),
+      });
+      expectOnlyTenantRows(inB, b, b.projectIds);
+
+      // Roles are per organization, not per person: a Viewer in A is still a
+      // Viewer there however senior they are in B.
+      const denied = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: as(bridge, a.organizationId),
+        payload: { name: 'Bridge Project' },
+      });
+      expectRefusal(denied, 403, 'permission_denied');
+    });
+  });
+
+  describe('the PRD §22.2 matrix', () => {
+    it('refuses a Viewer’s mutation', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: as(a.viewer, a.organizationId),
+        payload: { name: 'Viewer Project' },
+      });
+
+      expectRefusal(response, 403, 'permission_denied');
+      expect(ApiErrorSchema.parse(response.json()).error.details).toEqual({
+        action: 'create_project',
+      });
+      // A refusal that still wrote the row would be worse than no check at all.
+      const rows = await database.sql<{ id: string }[]>`
+        select id from projects where name = 'Viewer Project'
+      `;
+      expect(rows).toEqual([]);
+    });
+
+    it('refuses a Builder on an Owner-only route', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${a.organizationId}`,
+        headers: a.builder.headers,
+        payload: { name: 'Builders R Us' },
+      });
+
+      expectRefusal(response, 403, 'permission_denied');
+      expect(ApiErrorSchema.parse(response.json()).error.details).toEqual({
+        action: 'manage_organization',
+      });
+      expect((await store.findById(a.organizationId))?.name).toBe('acme');
+    });
+
+    it('refuses a Builder’s invite', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/organizations/${a.organizationId}/invites`,
+        headers: a.builder.headers,
+        payload: { email: 'someone@acme.test', role: 'owner' },
+      });
+      expectRefusal(response, 403, 'permission_denied');
+    });
+  });
+
+  describe('a session with no memberships', () => {
+    it('is asked for an organization rather than given one', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: nomad.headers,
+      });
+      expectRefusal(response, 400, 'organization_required');
+    });
+
+    it('finds no organization it names', async () => {
+      for (const organizationId of [a.organizationId, b.organizationId, newId('org')]) {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/v1/projects',
+          headers: as(nomad, organizationId),
+        });
+        expectRefusal(response, 404, 'organization_not_found');
+      }
+    });
+
+    it('finds no project, run or organization by id', async () => {
+      const project = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${a.projectIds[0] ?? ''}`,
+        headers: as(nomad, a.organizationId),
+      });
+      expectRefusal(project, 404, 'organization_not_found');
+
+      const run = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${a.runIds[0] ?? ''}`,
+        headers: as(nomad, a.organizationId),
+      });
+      expectRefusal(run, 404, 'organization_not_found');
+
+      const organization = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${a.organizationId}`,
+        headers: nomad.headers,
+        payload: { name: 'Nobody’s' },
+      });
+      expectRefusal(organization, 404, 'organization_not_found');
+    });
+
+    it('gets its own empty membership list, which is not a leak', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/organizations',
+        headers: nomad.headers,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json<{ items: unknown[]; nextCursor: null }>()).toEqual({
+        items: [],
+        nextCursor: null,
+      });
+    });
+  });
+
+  describe('negative control — the same requests, correctly addressed', () => {
+    /**
+     * Without this block the suite could pass by refusing everything, which is
+     * the failure mode that makes an isolation suite worthless. Every refusal
+     * asserted above has its mirror image here.
+     */
+
+    it('reads A’s own project, run and events', async () => {
+      const projectId = a.projectIds[0] ?? '';
+      const runId = a.runIds[0] ?? '';
+
+      const project = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expect(project.statusCode, project.body).toBe(200);
+      expect(project.json<{ project: Row }>().project).toMatchObject({
+        id: projectId,
+        organizationId: a.organizationId,
+      });
+
+      const run = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${runId}`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expect(run.statusCode, run.body).toBe(200);
+      expect(run.json<{ run: Row }>().run).toMatchObject({
+        id: runId,
+        organizationId: a.organizationId,
+      });
+
+      const events = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${runId}/events`,
+        headers: as(a.viewer, a.organizationId),
+      });
+      expectOnlyTenantRows(events, a, a.eventIds.slice(0, 2));
+    });
+
+    it('lets B read B’s own rows, by the same routes that refused A', async () => {
+      for (const projectId of b.projectIds) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/v1/projects/${projectId}`,
+          headers: as(b.builder, b.organizationId),
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json<{ project: Row }>().project.organizationId).toBe(b.organizationId);
+      }
+
+      const run = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${b.runIds[0] ?? ''}`,
+        headers: as(b.builder, b.organizationId),
+      });
+      expect(run.statusCode, run.body).toBe(200);
+
+      const runs = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${b.projectIds[0] ?? ''}/runs`,
+        headers: as(b.builder, b.organizationId),
+      });
+      expectOnlyTenantRows(runs, b, [b.runIds[0] ?? '']);
+    });
+
+    it('lets a Builder create a project, in their own organization only', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: as(a.builder, a.organizationId),
+        payload: {
+          name: 'Builder Project',
+          // Smuggled: the body names B. The organization a row lands in comes
+          // from the tenant handle, never from the request, so this is ignored
+          // rather than honoured.
+          organizationId: b.organizationId,
+        },
+      });
+
+      expect(response.statusCode, response.body).toBe(201);
+      const created = response.json<{ project: Row }>().project;
+      expect(created.organizationId).toBe(a.organizationId);
+
+      // Confirmed in the table, not in the response: the row is what another
+      // tenant would or would not be able to read.
+      const [row] = await database.sql<{ organization_id: string }[]>`
+        select organization_id from projects where id = ${created.id}
+      `;
+      expect(row?.organization_id).toBe(a.organizationId);
+
+      // And B cannot see it.
+      const fromB = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${created.id}`,
+        headers: as(b.owner, b.organizationId),
+      });
+      expectRefusal(fromB, 404, 'project_not_found');
+    });
+
+    it('lets an Owner rename their own organization and invite into it', async () => {
+      const renamed = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}`,
+        headers: as(b.owner, b.organizationId),
+        payload: { name: 'Beta Works' },
+      });
+      expect(renamed.statusCode, renamed.body).toBe(200);
+      expect(renamed.json<{ organization: { name: string } }>().organization.name).toBe(
+        'Beta Works',
+      );
+
+      const invited = await app.inject({
+        method: 'POST',
+        url: `/v1/organizations/${b.organizationId}/invites`,
+        headers: as(b.owner, b.organizationId),
+        payload: { email: 'newcomer@beta.test', role: 'viewer' },
+      });
+      expect(invited.statusCode, invited.body).toBe(201);
+    });
+
+    it('still requires a session for every one of these routes', async () => {
+      for (const url of ['/v1/projects', `/v1/runs/${a.runIds[0] ?? ''}`]) {
+        const response = await app.inject({
+          method: 'GET',
+          url,
+          headers: { [ORGANIZATION_HEADER]: a.organizationId },
+        });
+        expectRefusal(response, 401, 'unauthenticated');
+      }
+    });
+
+    it('still requires the CSRF header from a cookie-borne mutation', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: { cookie: a.owner.cookie, [ORGANIZATION_HEADER]: a.organizationId },
+        payload: { name: 'Forged' },
+      });
+      expectRefusal(response, 403, 'csrf_required');
+    });
+  });
+});

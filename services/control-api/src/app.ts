@@ -25,8 +25,12 @@ import type { OrganizationStore } from './orgs/store.js';
 import { auditLog, createInMemoryAuditSink, type AuditSink } from './plugins/audit.js';
 import { sessionAuth } from './plugins/auth.js';
 import { genRequestId, requestContext } from './plugins/context.js';
+import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerOrgRoutes } from './routes/orgs.js';
+import { registerProjectRoutes } from './routes/projects.js';
+import { registerRunRoutes } from './routes/runs.js';
+import type { TenantDbFactory } from './tenant/db.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -68,6 +72,20 @@ export interface OrgDeps {
 }
 
 /**
+ * What the tenant-scoped surface needs (CP-4): one function that binds the
+ * database to an organization.
+ *
+ * A factory rather than a `Database`, and for the reason the whole task exists:
+ * nothing downstream of this line ever holds an unscoped handle. `buildApp`
+ * passes it to the tenant plugin, the plugin calls it only with an organization
+ * it has already verified an active membership for, and the result is the only
+ * database access a route module has.
+ */
+export interface TenantDeps {
+  readonly tenantDb: TenantDbFactory;
+}
+
+/**
  * Collaborators handed to the app rather than reached for. Only the logger exists at
  * CP-1; the database, Redis and `AuthPort` join it as their plugins land, and each
  * arrives here so a test can substitute it.
@@ -83,6 +101,11 @@ export interface AppDeps {
   readonly auth?: AuthDeps;
   /** CP-3. Requires {@link AppDeps.auth} — every organization route needs a session. */
   readonly orgs?: OrgDeps;
+  /**
+   * CP-4. Requires {@link AppDeps.orgs} — tenant resolution asks the
+   * organization store whether the caller is a member before it scopes anything.
+   */
+  readonly tenant?: TenantDeps;
 }
 
 /**
@@ -145,6 +168,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     throw new Error('refusing to start: orgs routes require auth (AppDeps.auth)');
   }
 
+  if (deps.tenant !== undefined && deps.orgs === undefined) {
+    // The tenant plugin's whole job is "is this caller an active member of this
+    // organization", and only the organization store can answer it. Without one
+    // it would have to either guess or admit everybody.
+    throw new Error('refusing to start: tenant routes require orgs (AppDeps.orgs)');
+  }
+
   if (deps.auth !== undefined) {
     const auth = deps.auth;
     const now = auth.now ?? (() => new Date());
@@ -177,6 +207,14 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         );
       void app.register(auditLog, { sink, now });
 
+      const tenant = deps.tenant;
+      if (tenant !== undefined) {
+        void app.register(tenantContext, {
+          memberships: orgs.organizations,
+          tenantDb: tenant.tenantDb,
+        });
+      }
+
       app.after((error) => {
         // Truthiness rather than `!== null`: avvio hands the first `after`
         // callback `null` and the ones that follow `undefined`, and both mean
@@ -191,6 +229,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           port: auth.port,
           now,
         });
+        // Registered only with a tenant handle to give them: a projects route
+        // that could not scope itself would be the one thing this service must
+        // never ship.
+        if (tenant !== undefined) {
+          registerProjectRoutes(app, { now });
+          registerRunRoutes(app);
+        }
       });
     }
 
