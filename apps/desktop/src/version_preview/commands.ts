@@ -118,7 +118,7 @@ export function createVersionPreviewRuntime({
     } catch (error) {
       console.error(`version_preview: ${label} post-effects failed`, error);
       toast.warning(
-        "The version operation completed, but Dyad could not refresh every related view.",
+        "The version operation completed, but Zapp could not refresh every related view.",
       );
     }
     return result;

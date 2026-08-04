@@ -206,7 +206,7 @@ function classifyValidationError(
   }
 
   return new DyadError(
-    `Dyad could not verify this ${providerDisplayName} API key: ${errorMessage || "Unknown error"}`,
+    `Zapp could not verify this ${providerDisplayName} API key: ${errorMessage || "Unknown error"}`,
     DyadErrorKind.External,
   );
 }

@@ -420,7 +420,7 @@ function ensureTestScript(appPath: string): void {
       // (Scripts with flags, env vars, or extra commands are never touched.)
       pkg.scripts.test = `playwright test --config ${DYAD_CONFIG_FILENAME}`;
       fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
-      logger.info("Updated Dyad test script to use explicit config");
+      logger.info("Updated Zapp test script to use explicit config");
     }
   } catch (err) {
     logger.warn(`Failed to update package.json test script: ${err}`);

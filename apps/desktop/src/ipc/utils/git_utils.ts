@@ -330,7 +330,7 @@ export async function ensureGitLineEndingPolicy({
     try {
       await fsPromises.writeFile(
         gitattributesPath,
-        "# Normalize text files to LF so Dyad commits are stable across platforms.\n* text=auto eol=lf\n",
+        "# Normalize text files to LF so Zapp commits are stable across platforms.\n* text=auto eol=lf\n",
         { flag: "wx" },
       );
       logger.debug(`Created default .gitattributes in ${path}`);
@@ -1927,7 +1927,7 @@ async function renderSafeAgentDiff({
   const notices: string[] = [];
   if (sensitive.length > 0) {
     notices.push(
-      `[Diff omitted for sensitive or Dyad-managed paths: ${[...new Set(sensitive)].join(", ")}]`,
+      `[Diff omitted for sensitive or Zapp-managed paths: ${[...new Set(sensitive)].join(", ")}]`,
     );
   }
   if (omittedByCount) {
