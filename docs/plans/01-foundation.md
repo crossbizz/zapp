@@ -158,14 +158,14 @@ it("event type list matches PRD count", () => {
 - `ResourceProfileSchema`: small | standard | large with the PRD §18.10 cpu/mem table as `RESOURCE_PROFILES` const
 - `ProjectAdapter` — exactly PRD §17.3
 - `DeploymentProvider` — exactly PRD §27.1
-- `ExecutionContractSchema` — PRD §17.2 YAML shape (version, package_manager, workspace_root, install/develop/build/typecheck/lint/test/health blocks with commands, timeouts, port)
-- `ToolDefinition<I, O>`: `{ name, description, inputSchema, outputSchema, classification: "read_only"|"mutating", riskLevel: "low"|"medium"|"high", approvalPolicy: "auto"|"policy"|"human", idempotent: boolean, timeoutMs, retryPolicy: {maxAttempts, backoffMs}, redactOutput: boolean, userSummary(input, output): string }` (PRD §16.2)
+- `ExecutionContractSchema` — PRD §17.2 YAML shape (version, package_manager, workspace_root, install/develop/build/typecheck/lint/test/health blocks with commands, timeouts, port), **strict at every level** (stored versioned document — unknown/misspelled keys must reject loudly, never drop silently), plus optional `start { command, timeout_seconds? }` block for the PRD §17.1 production start command *(both amendments 2026-08-03, FND-4 review)*
+- `ToolDefinition<I, O>`: `{ name, description, inputSchema, outputSchema, classification: "read_only"|"mutating", riskLevel: "low"|"medium"|"high", approvalPolicy: "auto"|"policy"|"human", idempotent: boolean, timeoutMs, retryPolicy: {maxAttempts, backoffMs}, redactOutput: boolean, userSummary(input, output): string, auditPayload(input, output): Record<string, string|number|boolean> }` (PRD §16.2 — *auditPayload added 2026-08-03: original list lossily omitted the PRD-mandated audit payload; scalar-valued so audit rows never carry raw output*)
 - `TOOL_NAMES` — exactly the PRD §16.1 list (read/mutation/execution/git/release groups)
 **Effort:** M
 
-- [ ] **Step 1:** Failing test: parse the PRD §17.2 example execution contract verbatim (as JS object) → success; parse with missing `install.command` → failure; `TOOL_NAMES` covers all 5 groups (spot-check `read_project_contract`, `execute_migration`, `rollback_release` present).
-- [ ] **Step 2:** Implement; interfaces are TS types over Zod schemas; providers are `interface` (implementations live in services).
-- [ ] **Step 3:** Tests pass. Commit: `feat(contracts): sandbox/deployment/adapter/tool contracts + execution contract schema`
+- [x] **Step 1:** Failing test: parse the PRD §17.2 example execution contract verbatim (as JS object) → success; parse with missing `install.command` → failure; `TOOL_NAMES` covers all 5 groups (spot-check `read_project_contract`, `execute_migration`, `rollback_release` present).
+- [x] **Step 2:** Implement; interfaces are TS types over Zod schemas; providers are `interface` (implementations live in services).
+- [x] **Step 3:** Tests pass. Commit: `feat(contracts): sandbox/deployment/adapter/tool contracts + execution contract schema`
 
 ### Task FND-5: `packages/db` — Drizzle setup + identity & billing tables
 
@@ -301,3 +301,5 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-0 done (repo init, 8edc125). FND-1 done (b1de22a, review approved; Important fix applied in follow-up commit: turbo globalDependencies + .prettierignore). Minors deferred to final review: test:integration dependsOn (resolve FND-8), lib ES2023 note, decorative @ts-check.
 - 2026-08-03: FND-2 done (49e5ebe + fix ab0362c, review clean; error-formula deviation approved). Plan amendments: AGENT_EVENT_TYPES count corrected 30→34 vs PRD §14.4; contracts dep constraint now zod+ulid.
 - 2026-08-03: FND-3 done (13b5a4a + fix c0f4f25, review clean; 25 tests, full membership pins). phaseId/agentId plain strings (not in prefix list) — revisit if FND-6 mints phase ids.
+- 2026-08-03: FND-4 done (f38e808 + fix cc08adf, review clean; 86 tests). ADR-0003 filed (workspace-binding + preview revocation for plan 03). Deferred to FND-10: hoist httpsUrlSchema+shared primitives to src/primitives.ts; start block loses timeout_seconds.
+- 2026-08-03: FND-7 done pending amendment round (5e5fe17, Approved; Important: preserve admin password on re-mint).
