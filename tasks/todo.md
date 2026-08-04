@@ -24,7 +24,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-4 Tenant context + isolation suite v1
 - [ ] CP-5 Audit + idempotency + rate limits
 - [x] CP-6 Projects/repos/branches/environments CRUD
-- [ ] CP-7 Secrets vault (envelope encryption, audited decrypt)
+- [x] CP-7 Secrets vault (envelope encryption, audited decrypt)
 - [ ] CP-8 Internal service tokens
 
 ### Plan 06 — Internal Git
