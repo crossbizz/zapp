@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
-import type { AgentRun, Branch, Workspace } from '@zapp/db';
+import type { AgentRun, Branch, Project, Workspace } from '@zapp/db';
 import type { AuthIdentity } from '../src/auth/port.js';
 import { OrchestratorError } from '../src/orchestrator/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
@@ -980,6 +980,18 @@ describe('workspace passthrough routes', () => {
     const viewer = await joinViewer(wired);
     const foreignOrganizationId = newId('org');
     const foreignProjectId = newId('proj');
+    const foreignProject: Project = {
+      id: foreignProjectId,
+      organizationId: foreignOrganizationId,
+      name: 'Foreign Project',
+      slug: 'foreign-project',
+      description: null,
+      sourceType: 'blank',
+      supportLevel: 'compatible',
+      createdBy: wired.owner.userId,
+      createdAt: wired.built.now(),
+      archivedAt: null,
+    };
     const foreignRun: AgentRun = {
       id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
       mode: 'build', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
@@ -990,6 +1002,10 @@ describe('workspace passthrough routes', () => {
       provider: 'modal', providerWorkspaceId: 'foreign-workspace', status: 'active', resourceProfile: 'standard',
       snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
     };
+    wired.data.projects.push(foreignProject);
+    expect(
+      await wired.data.factory(foreignOrganizationId).projects.getById(foreignProject.id),
+    ).toEqual(foreignProject);
     wired.data.runs.push(foreignRun);
     wired.data.workspaces.push(foreignWorkspace);
 
