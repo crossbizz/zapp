@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CommitShaSchema,
   CompatibilityResultSchema,
   DeploymentArtifactSchema,
   DeploymentHandleSchema,
@@ -9,11 +8,11 @@ import {
   DnsInstructionSchema,
   DomainInputSchema,
   DomainResultSchema,
-  EnvironmentIdSchema,
   PreviewDeploymentInputSchema,
   ProductionDeploymentInputSchema,
   RollbackInputSchema,
 } from '../src/deployment.js';
+import { CommitShaSchema, EnvironmentIdSchema } from '../src/primitives.js';
 
 // Round-trips only: the vocabularies here (deployment state, domain status, artifact
 // kind) are v1 shapes, not PRD-fixed lists, so they are deliberately not pinned —

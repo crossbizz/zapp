@@ -35,14 +35,22 @@ describe('ExecutionContractSchema', () => {
   });
 
   it('round-trips a production start block', () => {
-    const withStart = {
-      ...minimalContract,
-      start: { command: 'node dist/server.js', timeout_seconds: 120 },
-    };
+    const withStart = { ...minimalContract, start: { command: 'node dist/server.js' } };
     expect(ExecutionContractSchema.parse(withStart)).toEqual(withStart);
     expect(
       ExecutionContractSchema.parse({ ...minimalContract, start: { command: 'npm start' } }),
     ).toEqual({ ...minimalContract, start: { command: 'npm start' } });
+  });
+
+  it('rejects a timeout on the long-lived start block', () => {
+    // `start` runs the deployed server, like `develop` runs the dev one: it is meant
+    // to stay up, so a wall-clock budget would only describe a healthy server as failed.
+    expect(
+      ExecutionContractSchema.safeParse({
+        ...minimalContract,
+        start: { command: 'node dist/server.js', timeout_seconds: 120 },
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects an unknown key at the root', () => {

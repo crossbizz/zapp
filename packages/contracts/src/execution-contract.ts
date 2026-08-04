@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AppPathSchema } from './primitives.js';
 
 /** A shell command run in the workspace; empty means "unknown", which is a block, not a no-op. */
 const commandSchema = z.string().min(1);
@@ -9,12 +10,6 @@ const timeoutSecondsSchema = z.number().int().positive();
 /** TCP port the dev server or preview target listens on. */
 const portSchema = z.number().int().min(1).max(65_535);
 
-/**
- * A path on this application. Rooted, and not protocol-relative: `//host/x` is a URL
- * to another origin, which must never be probed as if it were the project's own.
- */
-const appPathSchema = z.string().regex(/^\/(?!\/)/, 'Path must start with a single /');
-
 /** A command block with an optional budget. Strict: a misspelled key is a broken contract, not a comment. */
 const timedCommandSchema = z
   .object({
@@ -22,6 +17,9 @@ const timedCommandSchema = z
     timeout_seconds: timeoutSecondsSchema.optional(),
   })
   .strict();
+
+/** A command block with no budget: either it finishes on its own or it is long-lived. */
+const commandBlockSchema = z.object({ command: commandSchema }).strict();
 
 /** PRD §17.1 "Package manager". Detected from the lockfile by plan 05's adapters. */
 export const PackageManagerSchema = z.enum(['npm', 'pnpm', 'yarn', 'bun']);
@@ -57,10 +55,13 @@ export const ExecutionContractSchema = z
     /**
      * Production start command (PRD §17.1). Distinct from `develop`: this is what the
      * deployed container runs, so plan 07's Fly adapter (DEP-4) templates it into the image.
+     *
+     * Carries no timeout: like `develop`, the process is meant to run until it is
+     * stopped, so a wall-clock budget here would only describe a healthy server as failed.
      */
-    start: timedCommandSchema.optional(),
-    typecheck: z.object({ command: commandSchema }).strict().optional(),
-    lint: z.object({ command: commandSchema }).strict().optional(),
+    start: commandBlockSchema.optional(),
+    typecheck: commandBlockSchema.optional(),
+    lint: commandBlockSchema.optional(),
     /** Test entry points the gate engine (plan 05) runs; either may be absent, but not both. */
     test: z
       .object({
@@ -73,7 +74,7 @@ export const ExecutionContractSchema = z
       })
       .optional(),
     /** Path probed for readiness and for the pre-deployment health gate (plan 07 DEP-7). */
-    health: z.object({ path: appPathSchema }).strict().optional(),
+    health: z.object({ path: AppPathSchema }).strict().optional(),
   })
   .strict();
 

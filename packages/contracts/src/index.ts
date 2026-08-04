@@ -1,5 +1,13 @@
 export { idSchema, newId, type IdPrefix } from './ids.js';
 export {
+  AppPathSchema,
+  CommitShaSchema,
+  EnvVarsSchema,
+  EnvironmentIdSchema,
+  HttpsUrlSchema,
+  type EnvVars,
+} from './primitives.js';
+export {
   AGENT_EVENT_TYPES,
   AgentEventSchema,
   AgentEventVisibilitySchema,
@@ -41,7 +49,6 @@ export {
   CheckpointKindSchema,
   CheckpointRefSchema,
   CreateWorkspaceInputSchema,
-  EnvVarsSchema,
   ExecHandleSchema,
   ExecInputSchema,
   NetworkPolicyInputSchema,
@@ -58,7 +65,6 @@ export {
   type CheckpointRef,
   type CloudSandboxProvider,
   type CreateWorkspaceInput,
-  type EnvVars,
   type ExecHandle,
   type ExecInput,
   type NetworkPolicyInput,
@@ -93,7 +99,6 @@ export {
   type TestPlan,
 } from './project-adapter.js';
 export {
-  CommitShaSchema,
   CompatibilityResultSchema,
   DeploymentArtifactSchema,
   DeploymentHandleSchema,
@@ -103,7 +108,6 @@ export {
   DnsInstructionSchema,
   DomainInputSchema,
   DomainResultSchema,
-  EnvironmentIdSchema,
   PreviewDeploymentInputSchema,
   ProductionDeploymentInputSchema,
   RollbackInputSchema,
@@ -121,3 +125,4 @@ export {
   type ProductionDeploymentInput,
   type RollbackInput,
 } from './deployment.js';
+export { ApiErrorSchema, IdempotencyHeader, PageSchema, type ApiError, type Page } from './api.js';

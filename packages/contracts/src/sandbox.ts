@@ -1,18 +1,6 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
-
-/**
- * Environment handed to a workspace or a deployment. Values are secret material:
- * only allowlisted services hold them, and they are never logged, echoed into
- * events, or shown to an agent (PRD §18.12). Shared with `deployment.ts` so the
- * redaction rule has one definition, not two.
- */
-export const EnvVarsSchema = z.record(z.string());
-
-export type EnvVars = z.infer<typeof EnvVarsSchema>;
-
-/** Provider-issued URL. https only: preview and deployment traffic is never plaintext. */
-const httpsUrlSchema = z.string().url().startsWith('https://', 'URL must use https');
+import { EnvVarsSchema, HttpsUrlSchema } from './primitives.js';
 
 /**
  * PRD §18.9, in order. Both the membership and the order are contractual: plan 03's
@@ -195,7 +183,7 @@ export type PreviewInput = z.infer<typeof PreviewInputSchema>;
  */
 export const PreviewHandleSchema = z.object({
   providerWorkspaceId: z.string().min(1),
-  url: httpsUrlSchema,
+  url: HttpsUrlSchema,
   expiresAt: z.string().datetime(),
 });
 

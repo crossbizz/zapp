@@ -1,19 +1,12 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
-import { EnvVarsSchema } from './sandbox.js';
+import {
+  CommitShaSchema,
+  EnvVarsSchema,
+  EnvironmentIdSchema,
+  HttpsUrlSchema,
+} from './primitives.js';
 import type { ProjectContext } from './project-adapter.js';
-
-/** Exactly 40 lowercase hex characters: a resolved git commit, never a ref. */
-export const CommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/, 'Invalid commit sha');
-
-/**
- * Environments are outside the closed TypeID prefix list, so they carry the control
- * plane's own `environments` row identifier.
- */
-export const EnvironmentIdSchema = z.string().min(1);
-
-/** Provider-issued URL. https only: deployed traffic is never plaintext. */
-const httpsUrlSchema = z.string().url().startsWith('https://', 'URL must use https');
 
 /** PRD §27.1 `detectCompatibility` output; plan 07's registry ranks providers with it. */
 export const CompatibilityResultSchema = z.object({
@@ -82,7 +75,7 @@ export const DeploymentHandleSchema = z.object({
   providerId: z.string().min(1),
   providerDeploymentId: z.string().min(1),
   /** Absent until the provider has assigned a URL. */
-  url: httpsUrlSchema.optional(),
+  url: HttpsUrlSchema.optional(),
   state: DeploymentStateSchema,
   createdAt: z.string().datetime(),
 });
@@ -96,7 +89,7 @@ export type DeploymentHandle = z.infer<typeof DeploymentHandleSchema>;
 export const DeploymentStatusSchema = z.object({
   providerDeploymentId: z.string().min(1),
   state: DeploymentStateSchema,
-  url: httpsUrlSchema.optional(),
+  url: HttpsUrlSchema.optional(),
   /** Provider-supplied explanation, secrets already scrubbed. */
   detail: z.string().optional(),
   updatedAt: z.string().datetime(),
