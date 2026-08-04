@@ -17,6 +17,9 @@ import {
 import type { GitServicePort } from '../../src/git/port.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
 import type { SandboxServicePort } from '../../src/sandbox/port.js';
+import type { ReleasePort } from '../../src/routes/releases.js';
+import type { IntegrationPort } from '../../src/routes/integrations.js';
+import type { PermissionContext } from '../../src/policy/permissions.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
@@ -147,6 +150,9 @@ export interface HarnessOptions {
   /** CP-9's workflow boundary, normally a recording fake in route tests. */
   readonly orchestrator?: OrchestratorPort;
   readonly sandbox?: SandboxServicePort;
+  readonly releasePort?: ReleasePort;
+  readonly integrationPort?: IntegrationPort;
+  readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
    * shipping list; the suite that proves an unallowlisted caller is refused
@@ -201,6 +207,13 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+            ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
+            ...(options.integrationPort === undefined
+              ? {}
+              : { integrationPort: options.integrationPort }),
+            ...(options.permissionContextFor === undefined
+              ? {}
+              : { permissionContextFor: options.permissionContextFor }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that

@@ -100,6 +100,11 @@ export const AUDIT_ACTIONS = [
   'secret.created',
   'secret.rotated',
   'secret.deleted',
+  'release.created',
+  'release.approved',
+  'release.deploy_requested',
+  'release.rollback_requested',
+  'integration.connected',
   /**
    * A secret value was decrypted (plan 02 CP-7). The one action in this list
    * that records a *read*, and the reason the internal decrypt route exists in
@@ -123,7 +128,9 @@ export type AuditTargetType =
   | 'specification'
   | 'run'
   | 'workspace'
-  | 'secret';
+  | 'secret'
+  | 'release'
+  | 'integration_connection';
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
 export type AuditActorType = 'user' | 'service' | 'agent' | 'support';

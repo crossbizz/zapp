@@ -189,6 +189,44 @@ export const SecretMetadataSchema = z.object({
   keyVersion: z.number().int(),
 });
 
+/** PRD §23.5 release rows, rendered without provider-side identities. */
+export const ReleaseSchema = z
+  .object({
+    id: z.string(),
+    organizationId: z.string(),
+    projectId: z.string(),
+    environmentId: z.string(),
+    commitSha: z.string(),
+    specificationId: z.string().nullable(),
+    status: z.string(),
+    evidenceManifestArtifactId: z.string().nullable(),
+    createdBy: z.string(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+/** Safe PRD §23.6 connection view. Credential material is intentionally absent. */
+export const IntegrationConnectionSchema = z
+  .object({
+    id: z.string(),
+    organizationId: z.string(),
+    projectId: z.string().nullable(),
+    provider: z.enum(['github', 'supabase', 'neon', 'stripe']),
+    status: z.string().min(1),
+    credentialRef: z.string().nullable(),
+    configuration: z
+      .union([
+        z.object({ installationId: z.string().min(1) }).strict(),
+        z.object({ projectRef: z.string().min(1) }).strict(),
+        z.object({ projectId: z.string().min(1) }).strict(),
+        z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict(),
+      ]),
+  })
+  .strict();
+
+export type ReleaseView = z.infer<typeof ReleaseSchema>;
+export type IntegrationConnectionView = z.infer<typeof IntegrationConnectionSchema>;
+
 export const RunSchema = z.object({
   id: z.string(),
   organizationId: z.string(),

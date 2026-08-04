@@ -4,7 +4,7 @@ import fp from 'fastify-plugin';
 
 import { ApiError } from '../errors.js';
 import type { MembershipRecord } from '../orgs/store.js';
-import { can, type Action, type Role } from '../policy/permissions.js';
+import { can, type Action, type PermissionContext, type Role } from '../policy/permissions.js';
 import type { TenantDatabase, TenantDbFactory } from '../tenant/db.js';
 
 /**
@@ -169,8 +169,12 @@ function organizationInPath(request: FastifyRequest): string | undefined {
  *
  * @throws {ApiError} 403 `permission_denied`.
  */
-export function authorize(actor: { readonly role: Role }, action: Action): void {
-  if (!can(actor.role, action)) {
+export function authorize(
+  actor: { readonly role: Role },
+  action: Action,
+  context: PermissionContext = {},
+): void {
+  if (!can(actor.role, action, context)) {
     throw new ApiError('permission_denied', 403, 'Your role does not allow this action.', {
       action,
     });

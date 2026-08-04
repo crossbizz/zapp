@@ -152,7 +152,7 @@ Routes (PRD §32.2): `POST /v1/projects/:projectId/specifications` (content per 
 Routes exactly PRD §32.4/§32.5, delegating to `ReleasePort` / `IntegrationPort` (implemented in plans 07/06; fakes here). Tenancy + RBAC (approve/deploy requires `approve_production_deploy`) enforced at this layer with tests.
 **Effort:** M
 
-- [ ] Steps: failing RBAC tests (Builder with `builderCanDeploy=false` → 403 on `POST /v1/releases/:id/deploy`) → implement → commit: `feat(control-api): release + integration route shells with RBAC`
+- [x] Steps: failing RBAC tests (Builder with `builderCanDeploy=false` → 403 on `POST /v1/releases/:id/deploy`) → implement → commit: `feat(control-api): release + integration route shells with RBAC`
 
 ### Task CP-12: Audit log read API + org settings
 
@@ -261,3 +261,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-10 done — versioned tenant-scoped specifications with stable create recovery, atomic audits, and immutable approval. Temporary documented assumption: CP-10 defines a strict local PRD §12.2 schema because AR-16 (not AR-21) owns the shared SpecificationSchema; AR-16 should replace this local schema when it lands.
 - 2026-08-04 CP-10 Fix Round 1 done — required idempotency keys for PATCH/approve, made lost PATCH responses audit-stable, seeded real foreign-resource 404 coverage, and centralized the temporary local schema/types in tenant/view.
 - 2026-08-04 CP-10 Fix Round 2 done — replaced latest-audit replay detection with a tenant/specification/operation-key history lookup, so a stale lost PATCH retry cannot overwrite an intervening edit.
+- 2026-08-04 CP-11 done — temporary shells use candidate `{environmentId,commitSha,specificationId|null}`, replace-only `dataDisposition`, and GitHub installationId/Supabase projectRef/Neon projectId/Stripe accountId+mode configurations; injected Builder settings default deny; added tenant-explicit `getRelease` read.

@@ -47,10 +47,21 @@ import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import {
+  createUnavailableReleasePort,
+  registerReleaseRoutes,
+  type ReleasePort,
+} from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import { registerSpecificationRoutes } from './routes/specifications.js';
+import {
+  createUnavailableIntegrationPort,
+  registerIntegrationRoutes,
+  type IntegrationPort,
+} from './routes/integrations.js';
+import type { PermissionContext } from './policy/permissions.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
@@ -116,6 +127,12 @@ export interface TenantDeps {
   /** CP-9's durable-workflow boundary. Omitted only where mutations must fail closed. */
   readonly orchestrator?: OrchestratorPort;
   readonly sandbox?: SandboxServicePort;
+  /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
+  readonly releasePort?: ReleasePort;
+  /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
+  readonly integrationPort?: IntegrationPort;
+  /** CP-12 persists this setting; absent remains fail-closed for Builder deploys. */
+  readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
 }
 
 /**
@@ -411,6 +428,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
+          });
+          registerReleaseRoutes(app, {
+            port: tenant.releasePort ?? createUnavailableReleasePort(),
+            permissionContextFor: tenant.permissionContextFor ?? (() => Promise.resolve({})),
+          });
+          registerIntegrationRoutes(app, {
+            port: tenant.integrationPort ?? createUnavailableIntegrationPort(),
           });
 
           if (secrets !== undefined) {
