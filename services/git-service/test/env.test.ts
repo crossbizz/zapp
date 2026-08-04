@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadEnv, loadForgejoEnv } from '../src/env.js';
+import { loadArtifactEnv, loadEnv, loadForgejoEnv } from '../src/env.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from '../src/sweep.js';
 
 const FORGEJO = {
@@ -87,5 +87,37 @@ describe('loadForgejoEnv', () => {
     expect(() => loadForgejoEnv({ ...FORGEJO, FORGEJO_TIMEOUT_MS: '600000' })).toThrow(
       'Invalid environment: FORGEJO_TIMEOUT_MS',
     );
+  });
+});
+
+describe('loadArtifactEnv', () => {
+  const artifact = {
+    ARTIFACT_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
+    ARTIFACT_KEY: 'access-key-id',
+    ARTIFACT_SECRET: 'secret-access-key',
+    ARTIFACT_BUCKET: 'zapp-artifacts',
+  };
+
+  it('requires the existing artifact endpoint, credential, and bucket names', () => {
+    expect(() => loadArtifactEnv({})).toThrow(
+      'Invalid environment: ARTIFACT_ENDPOINT, ARTIFACT_KEY, ARTIFACT_SECRET, ARTIFACT_BUCKET',
+    );
+  });
+
+  it('defaults Cloudflare R2 to region auto and accepts the local MinIO region', () => {
+    expect(loadArtifactEnv(artifact)).toMatchObject({ region: 'auto' });
+    expect(loadArtifactEnv({ ...artifact, ARTIFACT_REGION: 'us-east-1' })).toMatchObject({
+      region: 'us-east-1',
+    });
+  });
+
+  it('never echoes a secret from an invalid configuration', () => {
+    const secret = 'r2-secret-never-log';
+    try {
+      loadArtifactEnv({ ...artifact, ARTIFACT_ENDPOINT: 'invalid', ARTIFACT_SECRET: secret });
+    } catch (error) {
+      expect((error as Error).message).toBe('Invalid environment: ARTIFACT_ENDPOINT');
+      expect((error as Error).message).not.toContain(secret);
+    }
   });
 });

@@ -1,0 +1,517 @@
+import { access, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { Readable } from 'node:stream';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  backupKey,
+  enforceBackupRetention,
+  latestBackupKey,
+  restoreRepositoryBackup,
+  runNightlyBackups,
+  runRepositoryBackup,
+  type BackupGit,
+  type BackupInventory,
+  type BackupObject,
+  type BackupObjectStore,
+  type BackupRepository,
+  type ExpectedBranch,
+} from '../src/backup.js';
+
+const ORGANIZATION_ID = 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9';
+const PROJECT_ID = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8';
+const SECOND_PROJECT_ID = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7N7';
+const REPOSITORY: BackupRepository = {
+  organizationId: ORGANIZATION_ID,
+  projectId: PROJECT_ID,
+  internalRepoRef: 'org_01j8me7yqzj2v9q0x3t5b6k7n9/proj_01j8me7yqzj2v9q0x3t5b6k7n8',
+  cloneUrl: 'https://git.test/org_01j8me7yqzj2v9q0x3t5b6k7n9/proj_01j8me7yqzj2v9q0x3t5b6k7n8.git',
+  defaultBranch: 'main',
+};
+const NOW = new Date('2026-08-04T09:30:00.000Z');
+
+async function streamBytes(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}
+
+class MemoryStore implements BackupObjectStore {
+  readonly values = new Map<string, { body: Buffer; lastModified: Date }>();
+  readonly puts: { key: string; streamed: boolean; contentLength: number }[] = [];
+  readonly deletes: string[] = [];
+  readonly listCalls: { prefix: string; continuationToken?: string }[] = [];
+  failPut = false;
+  failGet = false;
+  pageSize = 1_000;
+
+  exists(key: string): Promise<boolean> {
+    return Promise.resolve(this.values.has(key));
+  }
+
+  async put(key: string, body: Readable, contentLength: number): Promise<void> {
+    if (this.failPut) {
+      throw new Error('object-store-secret-was-here');
+    }
+    this.puts.push({ key, streamed: body instanceof Readable, contentLength });
+    this.values.set(key, { body: await streamBytes(body), lastModified: NOW });
+  }
+
+  get(key: string): Promise<Readable> {
+    if (this.failGet) {
+      return Promise.reject(new Error('object-store-secret-was-here'));
+    }
+    const value = this.values.get(key);
+    if (value === undefined) {
+      return Promise.reject(new Error('not found'));
+    }
+    return Promise.resolve(Readable.from(value.body));
+  }
+
+  list(
+    prefix: string,
+    continuationToken?: string,
+  ): Promise<{ objects: BackupObject[]; continuationToken?: string }> {
+    this.listCalls.push({
+      prefix,
+      ...(continuationToken === undefined ? {} : { continuationToken }),
+    });
+    const values = [...this.values.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .sort(([left], [right]) => left.localeCompare(right));
+    const offset = continuationToken === undefined ? 0 : Number(continuationToken);
+    const page = values.slice(offset, offset + this.pageSize).map(([key, value]) => ({
+      key,
+      lastModified: value.lastModified,
+    }));
+    const next = offset + this.pageSize;
+    return Promise.resolve({
+      objects: page,
+      ...(next < values.length ? { continuationToken: String(next) } : {}),
+    });
+  }
+
+  delete(key: string): Promise<void> {
+    this.deletes.push(key);
+    this.values.delete(key);
+    return Promise.resolve();
+  }
+}
+
+class FakeGit implements BackupGit {
+  readonly created: { cloneUrl: string; bundlePath: string }[] = [];
+  readonly verified: string[] = [];
+  readonly pushed: { bundlePath: string; targetCloneUrl: string }[] = [];
+  readonly heads = new Map<string, string>();
+  fail: 'create' | 'verify' | 'push' | undefined;
+
+  async createBundle(cloneUrl: string, bundlePath: string): Promise<void> {
+    this.created.push({ cloneUrl, bundlePath });
+    if (this.fail === 'create') {
+      throw new Error('forgejo-admin-secret-was-here');
+    }
+    await writeFile(bundlePath, 'complete bundle bytes');
+  }
+
+  verifyBundle(bundlePath: string): Promise<void> {
+    this.verified.push(bundlePath);
+    if (this.fail === 'verify') {
+      return Promise.reject(new Error('forgejo-admin-secret-was-here'));
+    }
+    return Promise.resolve();
+  }
+
+  mirrorPush(bundlePath: string, targetCloneUrl: string): Promise<void> {
+    this.pushed.push({ bundlePath, targetCloneUrl });
+    if (this.fail === 'push') {
+      return Promise.reject(new Error('forgejo-admin-secret-was-here'));
+    }
+    return Promise.resolve();
+  }
+
+  remoteHeads(): Promise<ReadonlyMap<string, string>> {
+    return Promise.resolve(this.heads);
+  }
+}
+
+function keyFor(projectId: string, date: string): string {
+  return `org/${ORGANIZATION_ID}/project/${projectId}/git-backups/${date}.bundle`;
+}
+
+describe('backupKey', () => {
+  it('derives the tenant-scoped daily bundle key from validated ids and a UTC date', () => {
+    expect(
+      backupKey({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        date: '2026-08-04',
+      }),
+    ).toBe(
+      'org/org_01J8ME7YQZJ2V9Q0X3T5B6K7N9/project/proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8/git-backups/2026-08-04.bundle',
+    );
+  });
+
+  it('rejects path-shaped ids and impossible dates without echoing them', () => {
+    expect(() =>
+      backupKey({ organizationId: '../another-tenant', projectId: PROJECT_ID, date: '2026-08-04' }),
+    ).toThrow('Invalid backup key input');
+    expect(() =>
+      backupKey({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID, date: '2026-02-30' }),
+    ).toThrow('Invalid backup key input');
+  });
+});
+
+describe('runRepositoryBackup', () => {
+  it('creates and verifies a non-empty bundle, then streams it to the exact daily key', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+
+    const result = await runRepositoryBackup({ store, git, now: () => NOW }, REPOSITORY);
+
+    expect(result).toEqual({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      key: keyFor(PROJECT_ID, '2026-08-04'),
+      status: 'uploaded',
+    });
+    expect(git.created).toHaveLength(1);
+    expect(git.created[0]?.cloneUrl).toBe(REPOSITORY.cloneUrl);
+    expect(git.verified).toEqual([git.created[0]?.bundlePath]);
+    expect(store.puts).toEqual([
+      { key: keyFor(PROJECT_ID, '2026-08-04'), streamed: true, contentLength: 21 },
+    ]);
+    expect(store.values.get(keyFor(PROJECT_ID, '2026-08-04'))?.body.toString()).toBe(
+      'complete bundle bytes',
+    );
+  });
+
+  it('does not rebuild or upload an existing same-day object', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+
+    await runRepositoryBackup({ store, git, now: () => NOW }, REPOSITORY);
+    const second = await runRepositoryBackup({ store, git, now: () => NOW }, REPOSITORY);
+
+    expect(second.status).toBe('existing');
+    expect(git.created).toHaveLength(1);
+    expect(store.puts).toHaveLength(1);
+  });
+
+  it.each(['create', 'verify'] as const)(
+    'fails closed when Git %s fails and removes scratch data',
+    async (failure) => {
+      const store = new MemoryStore();
+      const git = new FakeGit();
+      git.fail = failure;
+
+      await expect(runRepositoryBackup({ store, git, now: () => NOW }, REPOSITORY)).rejects.toThrow(
+        failure === 'create' ? 'Git bundle creation failed' : 'Git bundle verification failed',
+      );
+      expect(store.puts).toHaveLength(0);
+      const scratch = git.created[0]?.bundlePath ?? git.verified[0];
+      await expect(access(dirname(scratch ?? ''))).rejects.toThrow();
+    },
+  );
+
+  it('fails closed when upload fails, redacts the dependency error, and removes scratch data', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    store.failPut = true;
+
+    let failure: Error | undefined;
+    try {
+      await runRepositoryBackup({ store, git, now: () => NOW }, REPOSITORY);
+    } catch (error) {
+      failure = error as Error;
+    }
+
+    expect(failure?.message).toBe('Bundle upload failed');
+    expect(failure?.message).not.toContain('object-store-secret-was-here');
+    await expect(access(dirname(git.created[0]?.bundlePath ?? ''))).rejects.toThrow();
+  });
+});
+
+describe('enforceBackupRetention', () => {
+  it('paginates one project prefix, removes objects older than 30 days, and preserves the newest', async () => {
+    const store = new MemoryStore();
+    store.pageSize = 2;
+    for (const date of ['2026-01-01', '2026-06-01', '2026-07-05', '2026-08-04']) {
+      store.values.set(keyFor(PROJECT_ID, date), {
+        body: Buffer.from(date),
+        lastModified: new Date(`${date}T00:00:00.000Z`),
+      });
+    }
+    store.values.set(keyFor(SECOND_PROJECT_ID, '2025-01-01'), {
+      body: Buffer.from('other project'),
+      lastModified: new Date('2025-01-01T00:00:00.000Z'),
+    });
+
+    await enforceBackupRetention(store, {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      now: NOW,
+    });
+
+    expect(store.listCalls).toEqual([
+      {
+        prefix: `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/`,
+      },
+      {
+        prefix: `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/`,
+        continuationToken: '2',
+      },
+    ]);
+    expect(store.deletes).toEqual([
+      keyFor(PROJECT_ID, '2026-01-01'),
+      keyFor(PROJECT_ID, '2026-06-01'),
+    ]);
+    expect(store.values.has(keyFor(PROJECT_ID, '2026-07-05'))).toBe(true);
+    expect(store.values.has(keyFor(PROJECT_ID, '2026-08-04'))).toBe(true);
+    expect(store.values.has(keyFor(SECOND_PROJECT_ID, '2025-01-01'))).toBe(true);
+  });
+
+  it('preserves the newest object even when every object is outside retention', async () => {
+    const store = new MemoryStore();
+    for (const date of ['2025-01-01', '2025-01-02']) {
+      store.values.set(keyFor(PROJECT_ID, date), {
+        body: Buffer.from(date),
+        lastModified: new Date(`${date}T00:00:00.000Z`),
+      });
+    }
+
+    await enforceBackupRetention(store, {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      now: NOW,
+    });
+
+    expect(store.deletes).toEqual([keyFor(PROJECT_ID, '2025-01-01')]);
+    expect(store.values.has(keyFor(PROJECT_ID, '2025-01-02'))).toBe(true);
+  });
+});
+
+describe('latestBackupKey', () => {
+  it('paginates only the project prefix and returns the newest dated bundle', async () => {
+    const store = new MemoryStore();
+    store.pageSize = 1;
+    for (const date of ['2026-08-01', '2026-08-03', '2026-08-02']) {
+      store.values.set(keyFor(PROJECT_ID, date), {
+        body: Buffer.from(date),
+        lastModified: new Date(`${date}T00:00:00.000Z`),
+      });
+    }
+    store.values.set(keyFor(SECOND_PROJECT_ID, '2026-08-04'), {
+      body: Buffer.from('other project'),
+      lastModified: NOW,
+    });
+
+    await expect(
+      latestBackupKey(store, { organizationId: ORGANIZATION_ID, projectId: PROJECT_ID }),
+    ).resolves.toBe(keyFor(PROJECT_ID, '2026-08-03'));
+    expect(store.listCalls).toHaveLength(3);
+    expect(
+      store.listCalls.every(
+        (call) => call.prefix === `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/`,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('runNightlyBackups', () => {
+  it('reports each repository independently and does not turn a partial failure into success', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const second = {
+      ...REPOSITORY,
+      projectId: SECOND_PROJECT_ID,
+      internalRepoRef: 'org_01j8me7yqzj2v9q0x3t5b6k7n9/proj_01j8me7yqzj2v9q0x3t5b6k7n7',
+      cloneUrl:
+        'https://git.test/org_01j8me7yqzj2v9q0x3t5b6k7n9/proj_01j8me7yqzj2v9q0x3t5b6k7n7.git',
+    } satisfies BackupRepository;
+    const inventory: BackupInventory = {
+      listProvisionedRepositories: () => Promise.resolve([REPOSITORY, second]),
+      expectedBranches: () => Promise.resolve([]),
+    };
+    const originalPut = store.put.bind(store);
+    store.put = async (key, body, contentLength) => {
+      if (key.includes(SECOND_PROJECT_ID)) {
+        throw new Error('storage credential');
+      }
+      await originalPut(key, body, contentLength);
+    };
+
+    const report = await runNightlyBackups({ inventory, store, git, now: () => NOW });
+
+    expect(report).toEqual({
+      succeeded: 1,
+      failed: 1,
+      repositories: [
+        expect.objectContaining({ projectId: PROJECT_ID, status: 'uploaded' }),
+        {
+          organizationId: ORGANIZATION_ID,
+          projectId: SECOND_PROJECT_ID,
+          status: 'failed',
+          error: 'Bundle upload failed',
+        },
+      ],
+    });
+  });
+});
+
+describe('restoreRepositoryBackup', () => {
+  const branches: ExpectedBranch[] = [
+    { name: 'main', headCommitSha: 'a'.repeat(40) },
+    { name: 'feature/x', headCommitSha: 'b'.repeat(40) },
+    { name: 'unborn', headCommitSha: null },
+  ];
+
+  it('streams the bundle to scratch, verifies before mirror-push, and checks every non-null branch', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    git.heads.set('main', 'a'.repeat(40));
+    git.heads.set('feature/x', 'b'.repeat(40));
+
+    const result = await restoreRepositoryBackup(
+      { store, git },
+      {
+        key,
+        targetCloneUrl: 'https://git.test/drill/repository.git',
+        expectedBranches: branches,
+      },
+    );
+
+    expect(result).toEqual({ checkedBranches: 2 });
+    expect(git.verified).toHaveLength(1);
+    expect(git.pushed).toEqual([
+      {
+        bundlePath: git.verified[0],
+        targetCloneUrl: 'https://git.test/drill/repository.git',
+      },
+    ]);
+    await expect(access(dirname(git.verified[0] ?? ''))).rejects.toThrow();
+  });
+
+  it('creates a fresh target only after bundle verification', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    git.heads.set('main', 'a'.repeat(40));
+    git.heads.set('feature/x', 'b'.repeat(40));
+    let creates = 0;
+
+    await restoreRepositoryBackup(
+      {
+        store,
+        git,
+        createTarget: () => {
+          expect(git.verified).toHaveLength(1);
+          creates += 1;
+          return Promise.resolve('https://git.test/drill/fresh.git');
+        },
+      },
+      { key, expectedBranches: branches },
+    );
+
+    expect(creates).toBe(1);
+    expect(git.pushed[0]?.targetCloneUrl).toBe('https://git.test/drill/fresh.git');
+  });
+
+  it('does not create a restore target when bundle verification fails', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    git.fail = 'verify';
+    let creates = 0;
+
+    await expect(
+      restoreRepositoryBackup(
+        {
+          store,
+          git,
+          createTarget: () => {
+            creates += 1;
+            return Promise.resolve('https://git.test/drill/fresh.git');
+          },
+        },
+        { key, expectedBranches: branches },
+      ),
+    ).rejects.toThrow('Git bundle verification failed');
+    expect(creates).toBe(0);
+  });
+
+  it.each([
+    ['missing', new Map([['main', 'a'.repeat(40)]])],
+    [
+      'mismatched',
+      new Map([
+        ['main', 'a'.repeat(40)],
+        ['feature/x', 'c'.repeat(40)],
+      ]),
+    ],
+  ])('refuses a %s expected branch head', async (_case, heads) => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    for (const [name, sha] of heads) {
+      git.heads.set(name, sha);
+    }
+
+    await expect(
+      restoreRepositoryBackup(
+        { store, git },
+        {
+          key,
+          targetCloneUrl: 'https://git.test/drill/repository.git',
+          expectedBranches: branches,
+        },
+      ),
+    ).rejects.toThrow('Restored branch heads do not match the database');
+  });
+
+  it('reports a failed mirror push as failure and removes the downloaded bundle', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    git.fail = 'push';
+
+    await expect(
+      restoreRepositoryBackup(
+        { store, git },
+        {
+          key,
+          targetCloneUrl: 'https://git.test/drill/repository.git',
+          expectedBranches: branches,
+        },
+      ),
+    ).rejects.toThrow('Bundle mirror push failed');
+    await expect(access(dirname(git.verified[0] ?? ''))).rejects.toThrow();
+  });
+
+  it('rejects an empty downloaded object before Git verification', async () => {
+    const store = new MemoryStore();
+    const git = new FakeGit();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.alloc(0), lastModified: NOW });
+
+    await expect(
+      restoreRepositoryBackup(
+        { store, git },
+        {
+          key,
+          targetCloneUrl: 'https://git.test/drill/repository.git',
+          expectedBranches: branches,
+        },
+      ),
+    ).rejects.toThrow('Downloaded bundle is empty');
+    expect(git.verified).toHaveLength(0);
+  });
+});

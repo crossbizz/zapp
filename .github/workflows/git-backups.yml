@@ -1,0 +1,71 @@
+name: Git bundle backups and restore drill
+
+on:
+  schedule:
+    # Nightly backup inventory, after the daily low-traffic window begins.
+    - cron: '17 3 * * *'
+    # Quarterly executable restore drill (OPS-15 calendar handoff).
+    - cron: '29 4 1 */3 *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Backup operation
+        required: true
+        default: nightly
+        type: choice
+        options:
+          - nightly
+          - restore-drill
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-backups-${{ github.event.schedule || inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: ${{ github.event.schedule == '29 4 1 */3 *' && 'quarterly restore drill' || inputs.mode || 'nightly backup' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.GIT_BACKUP_DATABASE_URL }}
+      FORGEJO_URL: ${{ secrets.GIT_BACKUP_FORGEJO_URL }}
+      FORGEJO_ADMIN_TOKEN: ${{ secrets.GIT_BACKUP_FORGEJO_ADMIN_TOKEN }}
+      FORGEJO_TIMEOUT_MS: '5000'
+      ARTIFACT_ENDPOINT: ${{ secrets.GIT_BACKUP_R2_ENDPOINT }}
+      ARTIFACT_KEY: ${{ secrets.GIT_BACKUP_R2_ACCESS_KEY_ID }}
+      ARTIFACT_SECRET: ${{ secrets.GIT_BACKUP_R2_SECRET_ACCESS_KEY }}
+      ARTIFACT_BUCKET: ${{ secrets.GIT_BACKUP_R2_BUCKET }}
+      ARTIFACT_REGION: auto
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      TURBO_TELEMETRY_DISABLED: '1'
+      DO_NOT_TRACK: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run backup or restore drill
+        env:
+          OPERATION: ${{ github.event.schedule == '29 4 1 */3 *' && 'restore-drill' || inputs.mode || 'nightly' }}
+        run: |
+          if [ "$OPERATION" = 'restore-drill' ]; then
+            pnpm --filter @zapp/git-service backup:restore-drill
+          else
+            pnpm --filter @zapp/git-service backup
+          fi

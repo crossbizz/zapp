@@ -10,6 +10,10 @@
     }
   },
   "scripts": {
+    "backup": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts nightly",
+    "backup:restore": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore",
+    "backup:restore-cleanup": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore-cleanup",
+    "backup:restore-drill": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore-drill",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -20,6 +24,7 @@
     "start": "node --enable-source-maps dist/server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1103.0",
     "@zapp/config": "workspace:*",
     "@zapp/contracts": "workspace:*",
     "@zapp/db": "workspace:*",

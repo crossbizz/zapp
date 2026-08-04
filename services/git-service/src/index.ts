@@ -11,12 +11,34 @@
  */
 export { buildApp, type AppDeps, type AppInstance } from './app.js';
 export { GIT_AUDIT_ACTIONS, type GitAuditAction, type GitAuditEvent } from './audit.js';
+export {
+  backupKey,
+  createDbBackupInventory,
+  createGitBundleCommands,
+  createR2BackupObjectStore,
+  createS3BackupObjectStore,
+  enforceBackupRetention,
+  latestBackupKey,
+  restoreRepositoryBackup,
+  runNightlyBackups,
+  runRepositoryBackup,
+  type BackupGit,
+  type BackupInventory,
+  type BackupObject,
+  type BackupObjectStore,
+  type BackupRepository,
+  type ExpectedBranch,
+  type NightlyBackupReport,
+  type RepositoryBackupResult,
+} from './backup.js';
 export { composeApp, type ServiceComposition, type ServiceRuntime } from './compose.js';
 export {
+  loadArtifactEnv,
   loadDatabaseUrl,
   loadEnv,
   loadForgejoEnv,
   loadServiceTokenConfig,
+  type ArtifactEnv,
   type ForgejoEnv,
   type ServiceEnv,
 } from './env.js';
