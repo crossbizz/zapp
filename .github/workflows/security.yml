@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # gitleaks scans commit history, not just the tip tree, so the default
           # shallow clone would hide anything committed and later removed.
@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Advisory in M0: findings are reported but do not fail the build.
       # OPS-13 (M5) removes continue-on-error to make this blocking.

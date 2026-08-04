@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # Keeps the workflow action pins current. This is the update path for
+  # google/osv-scanner-action, which publishes no floating major tag and so is
+  # pinned to an exact release (@v2.3.8) that nothing else would ever move.
+  #
+  # For github-actions, `directory: /` means .github/workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'ci'
+
+  # The npm ecosystem is deliberately NOT enabled. pnpm-lock.yaml churn stays
+  # manual until OPS-13 turns the osv-scanner dependency scan into a blocking
+  # check; enabling it now would open PRs against a lockfile that already has
+  # a known, untriaged backlog of advisories from the vendored desktop tree.

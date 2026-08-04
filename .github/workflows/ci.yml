@@ -26,8 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # persist-credentials: false -- this job executes repo code (build/test)
+      # and package postinstall scripts, so no push-capable token is left
+      # behind in .git/config for them to pick up.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # Must run before setup-node: `cache: pnpm` shells out to `pnpm store path`,
       # so a pnpm binary has to exist on PATH first. corepack reads the
@@ -36,13 +41,30 @@ jobs:
         run: corepack enable
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Local turbo cache -- separable from the deferred remote cache and needs
+      # no token. Restores the previous run's task artifacts so unchanged
+      # packages replay instead of rebuilding.
+      - name: Cache turbo artifacts
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          # Key is job-scoped, deliberately. A key shared with the integration
+          # job would have both jobs racing to reserve one entry per SHA: only
+          # the first save wins, and integration wins that race (its only task
+          # is cache:false, so it does no work) -- storing a near-empty .turbo
+          # that the restore-keys prefix would then serve to every later checks
+          # run, silently zeroing out the cache this step exists to provide.
+          key: turbo-${{ runner.os }}-checks-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-checks-
 
       # @zapp/desktop is the vendored Electron app; its scripts are not wired
       # into the shared toolchain yet (it has no lint/typecheck/build/test
@@ -54,6 +76,10 @@ jobs:
       # predates the vendored app. Emits an empty string when it is absent, so
       # the expansion below disappears entirely rather than passing an empty
       # argument to turbo.
+      #
+      # Path and name are coupled here: the guard tests for the manifest at
+      # apps/desktop/package.json but the filter names @zapp/desktop. If the app
+      # moves or is renamed, both halves have to change (in both jobs).
       - name: Resolve turbo filters
         id: filters
         run: |
@@ -68,8 +94,12 @@ jobs:
       # One turbo invocation for all four tasks so the whole thing is scheduled
       # as a single DAG (typecheck/test wait only on the builds they need,
       # instead of four sequential full passes).
+      #
+      # --continue keeps going past the first failing task, so one CI round-trip
+      # reports every lint AND test failure instead of a lint error masking the
+      # tests behind it. Tasks whose dependencies failed are still skipped.
       - name: Lint, typecheck, build, test
-        run: pnpm turbo run lint typecheck build test ${{ steps.filters.outputs.desktop }}
+        run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
 
   integration:
     name: integration tests
@@ -108,14 +138,19 @@ jobs:
       REDIS_URL: redis://localhost:6379
 
     steps:
+      # persist-credentials: false -- this job executes repo code (build/test)
+      # and package postinstall scripts, so no push-capable token is left
+      # behind in .git/config for them to pick up.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Enable corepack
         run: corepack enable
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -123,7 +158,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Presence-guarded for the same reason as the checks job above.
+      # Job-scoped cache key -- see the rationale in the checks job above.
+      - name: Cache turbo artifacts
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-integration-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-integration-
+
+      # Presence-guarded for the same reason as the checks job above. Same
+      # path-vs-name coupling: manifest at apps/desktop/package.json, package
+      # named @zapp/desktop -- a rename or move has to update both.
       - name: Resolve turbo filters
         id: filters
         run: |
