@@ -5,6 +5,7 @@ import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { OperationKeySchema } from '../orchestrator/port.js';
 import { actorOf } from '../plugins/auth.js';
+import type { AuditHook } from '../plugins/audit.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { IntegrationConnectionSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
@@ -20,7 +21,13 @@ const IntegrationInputSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('neon'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectId: z.string().min(1) }).strict() }).strict(),
   z.object({ provider: z.literal('stripe'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict() }).strict(),
 ]);
-export interface IntegrationPort { connect(input: z.infer<typeof IntegrationInputSchema>): Promise<unknown>; }
+export type IntegrationInput = z.infer<typeof IntegrationInputSchema>;
+export type IntegrationMutationInput = IntegrationInput & {
+  readonly audit: AuditHook<z.infer<typeof IntegrationConnectionSchema>>;
+};
+export interface IntegrationPort {
+  connect(input: IntegrationMutationInput): Promise<z.infer<typeof IntegrationConnectionSchema>>;
+}
 export function createUnavailableIntegrationPort(): IntegrationPort { return { connect: () => Promise.reject(new Error('integration service unavailable')) }; }
 export interface IntegrationRoutesDeps { readonly port: IntegrationPort; }
 
@@ -28,7 +35,18 @@ export function registerIntegrationRoutes(app: AppInstance, deps: IntegrationRou
   app.post('/v1/integrations/github/install', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { body: GitHubBody, response: { 201: z.object({ connection: IntegrationConnectionSchema }).strict() } } }, async (request, reply) => {
     const ctx = tenantOf(request);
     authorize(ctx, 'manage_organization');
-    const connection = await connect(deps.port, IntegrationInputSchema.parse({ provider: 'github', organizationId: ctx.organizationId, projectId: null, actorId: actorOf(request), operationKey: operationOf(request), credential: request.body.code, state: request.body.state, configuration: { installationId: request.body.installationId } }));
+    const operationKey = operationOf(request);
+    const connection = await connect(deps.port, {
+      ...IntegrationInputSchema.parse({ provider: 'github', organizationId: ctx.organizationId, projectId: null, actorId: actorOf(request), operationKey, credential: request.body.code, state: request.body.state, configuration: { installationId: request.body.installationId } }),
+      audit: async (tx, connection) => {
+        await request.audit(tx, {
+          organizationId: ctx.organizationId,
+          action: 'integration.connected',
+          target: { type: 'integration_connection', id: connection.id },
+          metadata: { provider: connection.provider, projectId: null, operationKey },
+        });
+      },
+    });
     return await reply.status(201).send({ connection });
   });
   registerProjectConnection(app, deps, 'supabase', SupabaseBody);
@@ -44,12 +62,23 @@ function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps
     if (project === undefined) throw projectNotFound();
     authorize(ctx, 'edit_code');
     const credential = 'accessToken' in parsed ? parsed.accessToken : parsed.apiKey;
-    const connection = await connect(deps.port, IntegrationInputSchema.parse({ provider, organizationId: ctx.organizationId, projectId: project.id, actorId: actorOf(request), operationKey: operationOf(request), credential, configuration: parsed.configuration }));
+    const operationKey = operationOf(request);
+    const connection = await connect(deps.port, {
+      ...IntegrationInputSchema.parse({ provider, organizationId: ctx.organizationId, projectId: project.id, actorId: actorOf(request), operationKey, credential, configuration: parsed.configuration }),
+      audit: async (tx, connection) => {
+        await request.audit(tx, {
+          organizationId: ctx.organizationId,
+          action: 'integration.connected',
+          target: { type: 'integration_connection', id: connection.id },
+          metadata: { provider: connection.provider, projectId: connection.projectId, operationKey },
+        });
+      },
+    });
     return await reply.status(201).send({ connection });
   });
 }
 
-async function connect(port: IntegrationPort, input: z.infer<typeof IntegrationInputSchema>): Promise<z.infer<typeof IntegrationConnectionSchema>> {
+async function connect(port: IntegrationPort, input: IntegrationMutationInput): Promise<z.infer<typeof IntegrationConnectionSchema>> {
   try { return IntegrationConnectionSchema.parse(await port.connect(input)); } catch { throw integrationServiceFailed(); }
 }
 function projectNotFound(): ApiError { return new ApiError('project_not_found', 404, 'That project does not exist.'); }

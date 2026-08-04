@@ -5,6 +5,7 @@ import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { OperationKeySchema } from '../orchestrator/port.js';
 import { actorOf } from '../plugins/auth.js';
+import type { AuditHook } from '../plugins/audit.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import type { PermissionContext } from '../policy/permissions.js';
 import { ReleaseSchema } from '../tenant/view.js';
@@ -22,10 +23,11 @@ const CreateReleaseBody = z
   })
   .strict();
 const DeploymentTypeSchema = z.enum(['first_deploy', 'redeploy', 'replace_deployment']);
+const DataDispositionSchema = z.enum(['preserve', 'transfer', 'reset']);
 const DeployBody = z
   .object({
     deploymentType: DeploymentTypeSchema,
-    dataDisposition: z.string().trim().min(1).max(200).optional(),
+    dataDisposition: DataDispositionSchema.optional(),
   })
   .strict();
 const RollbackBody = z
@@ -35,7 +37,7 @@ const RollbackBody = z
   })
   .strict();
 
-const ReleaseRowSchema = z
+export const ReleaseRowSchema = z
   .object({
     id: idSchema('rel'),
     organizationId: idSchema('org'),
@@ -49,7 +51,7 @@ const ReleaseRowSchema = z
     createdAt: z.date(),
   })
   .strict();
-const ReadinessSchema = z
+export const ReadinessSchema = z
   .object({
     state: z.enum(['ready', 'warnings', 'blocked']),
     findings: z.array(
@@ -68,7 +70,7 @@ const ReadinessSchema = z
 const EvidenceSectionSchema = z
   .object({ status: z.enum(['passed', 'failed', 'skipped', 'not_required']) })
   .strict();
-const EvidenceManifestSchema = z
+export const EvidenceManifestSchema = z
   .object({
     release_id: idSchema('rel'),
     commit_sha: CommitShaSchema,
@@ -86,7 +88,7 @@ const EvidenceManifestSchema = z
   })
   .strict();
 
-const CreateReleaseInputSchema = z
+export const CreateReleaseInputSchema = z
   .object({
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
@@ -97,26 +99,42 @@ const CreateReleaseInputSchema = z
     operationKey: OperationKeySchema,
   })
   .strict();
-const ReleaseLookupInputSchema = z.object({ organizationId: idSchema('org'), releaseId: idSchema('rel') }).strict();
-const ReleaseMutationInputSchema = ReleaseLookupInputSchema.extend({ actorId: idSchema('user'), operationKey: OperationKeySchema }).strict();
-const DeployInputSchema = ReleaseMutationInputSchema.extend({
+export const ReleaseLookupInputSchema = z.object({ organizationId: idSchema('org'), releaseId: idSchema('rel') }).strict();
+export const ReleaseMutationInputSchema = ReleaseLookupInputSchema.extend({ actorId: idSchema('user'), operationKey: OperationKeySchema }).strict();
+export const DeployInputSchema = ReleaseMutationInputSchema.extend({
   deploymentType: DeploymentTypeSchema,
-  confirmation: z.object({ dataDisposition: z.string().trim().min(1).max(200).nullable() }).strict(),
+  confirmation: z.object({ dataDisposition: DataDispositionSchema.nullable() }).strict(),
 }).strict();
-const RollbackInputSchema = ReleaseMutationInputSchema.extend({
+export const RollbackInputSchema = ReleaseMutationInputSchema.extend({
   toDeploymentId: idSchema('dep').nullable(),
   reason: z.string().trim().min(1).max(2_000),
 }).strict();
+export const DeploymentResultSchema = z.object({ deploymentId: idSchema('dep') }).strict();
+
+export type ReleaseRow = z.infer<typeof ReleaseRowSchema>;
+export type ReadinessReport = z.infer<typeof ReadinessSchema>;
+export type EvidenceManifest = z.infer<typeof EvidenceManifestSchema>;
+export type CreateReleaseInput = z.infer<typeof CreateReleaseInputSchema>;
+export type ReleaseLookupInput = z.infer<typeof ReleaseLookupInputSchema>;
+export type ReleaseMutationInput = z.infer<typeof ReleaseMutationInputSchema>;
+export type DeployInput = z.infer<typeof DeployInputSchema>;
+export type RollbackInput = z.infer<typeof RollbackInputSchema>;
+export type DeploymentResult = z.infer<typeof DeploymentResultSchema>;
+export type Audited<TInput, TResult> = TInput & { readonly audit: AuditHook<TResult> };
+export type CreateReleaseMutationInput = Audited<CreateReleaseInput, ReleaseRow>;
+export type ApproveReleaseMutationInput = Audited<ReleaseMutationInput, ReleaseRow>;
+export type DeployReleaseMutationInput = Audited<DeployInput, DeploymentResult>;
+export type RollbackReleaseMutationInput = Audited<RollbackInput, DeploymentResult>;
 
 /** Temporary Plan 07 DEP-1 boundary. Implementations commit release state and audit together. */
 export interface ReleasePort {
-  createReleaseCandidate(input: z.infer<typeof CreateReleaseInputSchema>): Promise<unknown>;
-  getRelease(input: z.infer<typeof ReleaseLookupInputSchema>): Promise<unknown>;
-  getReadiness(input: z.infer<typeof ReleaseLookupInputSchema>): Promise<unknown>;
-  approve(input: z.infer<typeof ReleaseMutationInputSchema>): Promise<unknown>;
-  deploy(input: z.infer<typeof DeployInputSchema>): Promise<unknown>;
-  rollback(input: z.infer<typeof RollbackInputSchema>): Promise<unknown>;
-  getEvidence(input: z.infer<typeof ReleaseLookupInputSchema>): Promise<unknown>;
+  createReleaseCandidate(input: CreateReleaseMutationInput): Promise<ReleaseRow>;
+  getRelease(input: ReleaseLookupInput): Promise<ReleaseRow | undefined>;
+  getReadiness(input: ReleaseLookupInput): Promise<ReadinessReport>;
+  approve(input: ApproveReleaseMutationInput): Promise<ReleaseRow>;
+  deploy(input: DeployReleaseMutationInput): Promise<DeploymentResult>;
+  rollback(input: RollbackReleaseMutationInput): Promise<DeploymentResult>;
+  getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest>;
 }
 
 export interface ReleaseRoutesDeps {
@@ -137,8 +155,40 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const ctx = tenantOf(request);
     const project = await ctx.db.projects.getById(request.params.projectId);
     if (project === undefined) throw projectNotFound();
+    if ((await ctx.db.environments.getForProject(project.id, request.body.environmentId)) === undefined)
+      throw projectNotFound();
+    if (
+      request.body.specificationId !== null &&
+      (await ctx.db.specifications.getForProject(project.id, request.body.specificationId)) === undefined
+    )
+      throw projectNotFound();
     authorize(ctx, 'edit_code');
-    const row = await portResult(() => deps.port.createReleaseCandidate(CreateReleaseInputSchema.parse({ organizationId: ctx.organizationId, projectId: project.id, ...request.body, actorId: actorOf(request), operationKey: operationOf(request) })), ReleaseRowSchema);
+    const operationKey = operationOf(request);
+    const row = await portResult(
+      () =>
+        deps.port.createReleaseCandidate({
+          ...CreateReleaseInputSchema.parse({
+            organizationId: ctx.organizationId,
+            projectId: project.id,
+            ...request.body,
+            actorId: actorOf(request),
+            operationKey,
+          }),
+          audit: async (tx, release) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'release.created',
+              target: { type: 'release', id: release.id },
+              metadata: {
+                projectId: release.projectId,
+                environmentId: release.environmentId,
+                operationKey,
+              },
+            });
+          },
+        }),
+      ReleaseRowSchema,
+    );
     return await reply.status(201).send({ release: releaseView(row) });
   });
 
@@ -160,7 +210,25 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const ctx = tenantOf(request);
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
-    const approved = await portResult(() => deps.port.approve({ organizationId: ctx.organizationId, releaseId: row.id, actorId: actorOf(request), operationKey: operationOf(request) }), ReleaseRowSchema);
+    const operationKey = operationOf(request);
+    const approved = await portResult(
+      () =>
+        deps.port.approve({
+          organizationId: ctx.organizationId,
+          releaseId: row.id,
+          actorId: actorOf(request),
+          operationKey,
+          audit: async (tx, release) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'release.approved',
+              target: { type: 'release', id: release.id },
+              metadata: { operationKey },
+            });
+          },
+        }),
+      ReleaseRowSchema,
+    );
     return { release: releaseView(approved) };
   });
 
@@ -172,7 +240,33 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
     if (request.body.deploymentType === 'replace_deployment' && request.body.dataDisposition === undefined) throw dataDispositionRequired();
-    return await portResult(() => deps.port.deploy(DeployInputSchema.parse({ organizationId: ctx.organizationId, releaseId: row.id, actorId: actorOf(request), operationKey: operationOf(request), deploymentType: request.body.deploymentType, confirmation: { dataDisposition: request.body.dataDisposition ?? null } })), z.object({ deploymentId: idSchema('dep') }).strict());
+    const operationKey = operationOf(request);
+    return await portResult(
+      () =>
+        deps.port.deploy({
+          ...DeployInputSchema.parse({
+            organizationId: ctx.organizationId,
+            releaseId: row.id,
+            actorId: actorOf(request),
+            operationKey,
+            deploymentType: request.body.deploymentType,
+            confirmation: { dataDisposition: request.body.dataDisposition ?? null },
+          }),
+          audit: async (tx) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'release.deploy_requested',
+              target: { type: 'release', id: row.id },
+              metadata: {
+                operationKey,
+                deploymentType: request.body.deploymentType,
+                dataDisposition: request.body.dataDisposition ?? null,
+              },
+            });
+          },
+        }),
+      DeploymentResultSchema,
+    );
   });
 
   app.post('/v1/releases/:releaseId/rollback', {
@@ -182,7 +276,29 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const ctx = tenantOf(request);
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
-    return await portResult(() => deps.port.rollback(RollbackInputSchema.parse({ organizationId: ctx.organizationId, releaseId: row.id, actorId: actorOf(request), operationKey: operationOf(request), toDeploymentId: request.body.toDeploymentId ?? null, reason: request.body.reason })), z.object({ deploymentId: idSchema('dep') }).strict());
+    const operationKey = operationOf(request);
+    return await portResult(
+      () =>
+        deps.port.rollback({
+          ...RollbackInputSchema.parse({
+            organizationId: ctx.organizationId,
+            releaseId: row.id,
+            actorId: actorOf(request),
+            operationKey,
+            toDeploymentId: request.body.toDeploymentId ?? null,
+            reason: request.body.reason,
+          }),
+          audit: async (tx) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'release.rollback_requested',
+              target: { type: 'release', id: row.id },
+              metadata: { operationKey, toDeploymentId: request.body.toDeploymentId ?? null },
+            });
+          },
+        }),
+      DeploymentResultSchema,
+    );
   });
 
   app.get('/v1/releases/:releaseId/evidence', {
@@ -213,7 +329,7 @@ async function releaseFor(port: ReleasePort, organizationId: string, releaseId: 
   if (result.organizationId !== organizationId) throw releaseNotFound();
   return result;
 }
-async function portResult<T>(work: () => Promise<unknown>, schema: z.ZodType<T>): Promise<T> {
+async function portResult<T>(work: () => Promise<T>, schema: z.ZodType<T>): Promise<T> {
   try { return schema.parse(await work()); } catch { throw releaseServiceFailed(); }
 }
 async function permissionContext(deps: ReleaseRoutesDeps, organizationId: string): Promise<PermissionContext> {

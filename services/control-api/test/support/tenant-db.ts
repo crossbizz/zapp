@@ -283,6 +283,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           ),
         );
       },
+      getForProject(projectId, specificationId): Promise<Specification | undefined> {
+        return Promise.resolve(
+          mine(orgId, data.specifications).find(
+            (row) => row.projectId === projectId && row.id === specificationId,
+          ),
+        );
+      },
       async create(input: NewSpecificationInput): Promise<Specification> {
         return await withSpecificationLock(data, `${orgId}:${input.projectId}`, async () => {
           const existing = mine(orgId, data.specifications).find((row) => row.id === input.id);
@@ -378,6 +385,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       byProject(projectId): Promise<Environment[]> {
         return Promise.resolve(
           mine(orgId, data.environments).filter((row) => row.projectId === projectId),
+        );
+      },
+      getForProject(projectId, environmentId): Promise<Environment | undefined> {
+        return Promise.resolve(
+          mine(orgId, data.environments).find(
+            (row) => row.projectId === projectId && row.id === environmentId,
+          ),
         );
       },
     },

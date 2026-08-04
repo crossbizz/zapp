@@ -196,6 +196,8 @@ export interface TenantBranchRepository {
 export interface TenantEnvironmentRepository {
   /** The project's environments, oldest first; empty for another tenant's project. */
   byProject(projectId: string): Promise<Environment[]>;
+  /** One environment only when it and its project belong to this tenant. */
+  getForProject(projectId: string, environmentId: string): Promise<Environment | undefined>;
 }
 
 export interface TenantContractRepository {
@@ -238,6 +240,8 @@ export type UpdatedSpecification = Specification | 'immutable' | undefined;
 /** All specification writes lock their tenant project before reading the next version. */
 export interface TenantSpecificationRepository {
   getByProjectVersion(projectId: string, version: number): Promise<Specification | undefined>;
+  /** One specification only when it and its project belong to this tenant. */
+  getForProject(projectId: string, specificationId: string): Promise<Specification | undefined>;
   create(input: NewSpecificationInput): Promise<Specification>;
   update(input: UpdateSpecificationInput): Promise<UpdatedSpecification>;
   approve(input: ApproveSpecificationInput): Promise<Specification | undefined>;
@@ -703,6 +707,21 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
           return row;
         },
 
+        async getForProject(projectId, specificationId) {
+          const [row] = await db
+            .select()
+            .from(specifications)
+            .where(
+              scoped(
+                specifications.organizationId,
+                eq(specifications.projectId, projectId),
+                eq(specifications.id, specificationId),
+              ),
+            )
+            .limit(1);
+          return row;
+        },
+
         async create(input) {
           return await db.transaction(async (tx) => {
             // A no-op update is the row lock. It serializes distinct creates for
@@ -1159,6 +1178,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             // Ascending: `preview` then `production`, in the order they were
             // created, which is the order a client renders them in.
             .orderBy(asc(environments.id));
+        },
+        async getForProject(projectId: string, environmentId: string): Promise<Environment | undefined> {
+          const [row] = await db
+            .select()
+            .from(environments)
+            .where(
+              scoped(
+                environments.organizationId,
+                eq(environments.projectId, projectId),
+                eq(environments.id, environmentId),
+              ),
+            )
+            .limit(1);
+          return row;
         },
       },
 

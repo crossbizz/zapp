@@ -2,7 +2,10 @@ import { ApiErrorSchema, newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
+import { NO_TRANSACTION } from '../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
+import type { IntegrationPort, IntegrationMutationInput } from '../src/routes/integrations.js';
+import type { IntegrationConnectionView } from '../src/tenant/view.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
@@ -14,18 +17,15 @@ const BUILDER: AuthIdentity = { externalId: 'integration-builder', email: 'build
 const VIEWER: AuthIdentity = { externalId: 'integration-viewer', email: 'viewer@integration.test', displayName: 'Vera Viewer' };
 const CREDENTIAL = 'credential-must-not-leak-4fa22d';
 
-class RecordingIntegrationPort {
-  readonly calls: Array<Record<string, unknown>> = [];
+class RecordingIntegrationPort implements IntegrationPort {
+  readonly calls: IntegrationMutationInput[] = [];
   readonly auditMetadata: Array<Record<string, unknown>> = [];
   fail = false;
 
-  connect(input: Record<string, unknown>) {
-    this.calls.push(input);
+  async connect(input: IntegrationMutationInput): Promise<IntegrationConnectionView> {
     const configuration = input.configuration;
-    this.auditMetadata.push({ provider: input.provider, projectId: input.projectId ?? null, configuration });
-    return this.fail
-      ? Promise.reject(new Error(`provider rejected ${CREDENTIAL}`))
-      : Promise.resolve({
+    if (this.fail) throw new Error(`provider rejected ${CREDENTIAL}`);
+    const result = {
       id: newId('intc'),
       organizationId: input.organizationId,
       projectId: input.projectId ?? null,
@@ -33,12 +33,17 @@ class RecordingIntegrationPort {
       status: 'connected',
       credentialRef: 'vault://integration/ref',
       configuration,
-    });
+    };
+    await input.audit(NO_TRANSACTION, result);
+    this.calls.push(input);
+    this.auditMetadata.push({ provider: input.provider, projectId: input.projectId ?? null, configuration });
+    return result;
   }
 }
 
 interface Wired {
   readonly built: Harness;
+  readonly data: InMemoryTenantData;
   readonly owner: TestSession;
   readonly organizationId: string;
   readonly projectId: string;
@@ -58,7 +63,7 @@ async function wire(): Promise<Wired> {
   const as = (session: TestSession): Record<string, string> => ({ ...session.headers, [ORGANIZATION_HEADER]: organizationId });
   const project = await built.app.inject({ method: 'POST', url: '/v1/projects', headers: as(owner), payload: { name: 'Integration Target' } });
   expect(project.statusCode, project.body).toBe(201);
-  return { built, owner, organizationId, projectId: project.json<{ project: { id: string } }>().project.id, integrations, as };
+  return { built, data, owner, organizationId, projectId: project.json<{ project: { id: string } }>().project.id, integrations, as };
 }
 
 async function join(wired: Wired, identity: AuthIdentity, role: 'builder' | 'viewer'): Promise<TestSession> {
@@ -97,6 +102,17 @@ describe('integration route shells', () => {
       projectId: provider === 'github' ? null : wired.projectId,
     });
     expect(wired.integrations.calls[0]?.operationKey).toMatch(/^op_[a-f0-9]{64}$/);
+    const audit = wired.built.audit.events.at(-1);
+    expect(audit).toMatchObject({
+      organizationId: wired.organizationId,
+      actorId: wired.owner.userId,
+      action: 'integration.connected',
+      targetType: 'integration_connection',
+      targetId: response.json<{ connection: { id: string } }>().connection.id,
+      metadata: { provider, projectId: provider === 'github' ? null : wired.projectId },
+    });
+    expect(audit?.metadata.operationKey).toMatch(/^op_[a-f0-9]{64}$/);
+    expect(JSON.stringify(audit)).not.toContain(CREDENTIAL);
   });
 
   it('allows Builder project connections but keeps org GitHub installation Owner-only and denies Viewer', async () => {
@@ -113,10 +129,25 @@ describe('integration route shells', () => {
   it('returns 404 before RBAC for a real foreign project id', async () => {
     const wired = await wire();
     const viewer = await join(wired, VIEWER, 'viewer');
-    const request = requestFor('neon', newId('proj'));
+    const foreign = await createForeignProject(wired);
+    expect((await wired.built.app.inject({ method: 'GET', url: `/v1/projects/${foreign.projectId}`, headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: foreign.organizationId } })).statusCode).toBe(200);
+    const request = requestFor('neon', foreign.projectId);
     const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, viewer, 'foreign-project-01'), payload: request.body });
     expect(response.statusCode).toBe(404);
     expect(ApiErrorSchema.parse(response.json()).error.code).toBe('project_not_found');
+    expect(wired.integrations.calls).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'integration.connected')).toEqual([]);
+  });
+
+  it('rolls back an integration connection when its audit callback fails', async () => {
+    const wired = await wire();
+    const failingAudit = wired.built.audit as unknown as { record: () => Promise<void> };
+    failingAudit.record = () => Promise.reject(new Error('audit sink unavailable'));
+    const request = requestFor('stripe', wired.projectId);
+    const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, 'integration-audit-fail-01'), payload: request.body });
+    expect(response.statusCode).toBe(502);
+    expect(wired.integrations.calls).toEqual([]);
+    expect(wired.built.audit.events.filter((event) => event.action === 'integration.connected')).toEqual([]);
   });
 
   it('replays exactly once and forwards tenant actor and stable operation key', async () => {
@@ -144,3 +175,12 @@ describe('integration route shells', () => {
     expect(failure.body).not.toContain(CREDENTIAL);
   });
 });
+
+async function createForeignProject(wired: Wired): Promise<{ organizationId: string; projectId: string }> {
+  const organization = await wired.built.app.inject({ method: 'POST', url: '/v1/organizations', headers: wired.owner.headers, payload: { name: 'Foreign Integration Factory' } });
+  expect(organization.statusCode, organization.body).toBe(201);
+  const organizationId = organization.json<{ organization: { id: string } }>().organization.id;
+  const project = await wired.built.app.inject({ method: 'POST', url: '/v1/projects', headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: organizationId }, payload: { name: 'Foreign Integration Target' } });
+  expect(project.statusCode, project.body).toBe(201);
+  return { organizationId, projectId: project.json<{ project: { id: string } }>().project.id };
+}
