@@ -302,6 +302,13 @@ function fingerprintOf(request: FastifyRequest): string {
  * to the person who caused it.
  */
 function scopeOf(request: FastifyRequest): string {
+  // Internal routes authenticate in `onRequest`, before this route-level
+  // preHandler is appended by the plugin. A service's stable verified identity,
+  // rather than its proxy-visible source address, is the only scope a retry can
+  // safely follow across workers, deploys, or NAT.
+  if (request.service !== undefined) {
+    return `service:${request.service.service}`;
+  }
   const organizationId = request.tenant?.organizationId;
   const userId = request.auth?.userId;
   if (userId === undefined) {

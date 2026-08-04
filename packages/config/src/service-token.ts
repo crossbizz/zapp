@@ -100,6 +100,8 @@ export const SERVICE_TOKEN_ISSUER = 'zapp-control-plane';
 export const SERVICE_TOKEN_AUDIENCES = [
   /** `POST /internal/secrets/decrypt` — the one internal route today (plan 02 CP-7). */
   'control-api:secrets.decrypt',
+  /** `POST /internal/runs/:runId/events` — the sequenced orchestration event writer (plan 02 CP-13). */
+  'control-api:events.ingest',
   ...SERVICE_NAMES,
 ] as const;
 

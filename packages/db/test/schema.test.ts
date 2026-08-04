@@ -280,7 +280,6 @@ describe('tenant scoping', () => {
       'agent_phases',
       'agent_tasks',
       'approvals',
-      'agent_events',
       'test_runs',
       'test_cases',
       'verification_results',

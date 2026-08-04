@@ -70,6 +70,22 @@ const NON_PRD_COLUMNS = new Map([
     'repositories.provisioned_at',
     'null while only the repository *record* exists, set when the internal Git instance confirms; lets plan 06 GIT-2 tell a row it must still provision from one it must not create twice (plan 02 CP-6 review)',
   ],
+  [
+    'agent_events.project_id',
+    'PRD §14.4 replay contract carries projectId; CP-13 persists it for tenant/project validation and complete event replay although conceptual §23.4 omits it',
+  ],
+  [
+    'agent_events.phase_id',
+    'PRD §14.4 replay contract carries optional phaseId; CP-13 persists the top-level event context rather than hiding it in payload_json',
+  ],
+  [
+    'agent_events.task_id',
+    'PRD §14.4 replay contract carries optional taskId; CP-13 persists the top-level event context rather than hiding it in payload_json',
+  ],
+  [
+    'agent_events.agent_id',
+    'PRD §14.4 replay contract carries optional agentId role; CP-13 persists the top-level event context rather than hiding it in payload_json',
+  ],
 ]);
 
 /** `#### \`table\`` followed by a `- \`column\`` list, which is how PRD §23 is written. */

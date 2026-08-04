@@ -39,7 +39,7 @@ describe('execution and evidence (PRD §23.4)', () => {
     ]);
   });
 
-  it('gives agent_events exactly the PRD columns, in order', () => {
+  it('gives agent_events the PRD columns plus CP-13 replay context, in order', () => {
     expect(columnNames(agentEvents)).toEqual([
       'id',
       'organization_id',
@@ -49,6 +49,11 @@ describe('execution and evidence (PRD §23.4)', () => {
       'payload_json',
       'visibility',
       'occurred_at',
+      // CP-13 persists the complete PRD §14.4 event replay shape.
+      'project_id',
+      'phase_id',
+      'task_id',
+      'agent_id',
     ]);
   });
 
@@ -177,11 +182,15 @@ describe('agent_events', () => {
     expect(primaryKeyColumns(agentEvents)).toEqual(['id', 'occurred_at']);
   });
 
-  it('scopes and time-bounds the tenant read (master plan §5.2)', () => {
+  it('scopes, binds replay relations, and time-bounds the tenant read (master plan §5.2)', () => {
     expect(indexNames(agentEvents)).toEqual(['agent_events_org_occurred_at_idx']);
     expect(foreignKeys(agentEvents)).toEqual([
       'organization_id -> organizations.id',
       'run_id -> agent_runs.id',
+      'project_id -> projects.id',
+      'phase_id -> agent_phases.id',
+      'task_id -> agent_tasks.id',
+      'project_id, organization_id -> projects.id, organization_id',
     ]);
   });
 

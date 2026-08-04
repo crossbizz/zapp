@@ -323,6 +323,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
           organizationId,
           runId,
           sequence,
+          projectId,
           type: 'tool.completed',
           payloadJson: { tool: 'run_build', exitCode: 0 },
           visibility: 'user',

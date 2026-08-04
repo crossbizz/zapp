@@ -690,6 +690,9 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       byRun(runId): Promise<AgentEventRow[]> {
         return Promise.resolve(mine(orgId, data.events).filter((row) => row.runId === runId));
       },
+      ingest() {
+        return Promise.resolve(undefined);
+      },
     },
   };
 }

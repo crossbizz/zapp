@@ -84,6 +84,7 @@ export async function seedTenant(
       id,
       organizationId,
       runId,
+      projectId,
       sequence,
       type: 'tool.completed',
       payloadJson: { tool: 'run_build', exitCode: 0 },

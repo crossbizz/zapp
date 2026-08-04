@@ -71,6 +71,7 @@ export const AUDIT_ACTIONS = [
   'specification.updated',
   'specification.approved',
   'run.created',
+  'run.events_ingested',
   'run.pause_requested',
   'run.paused',
   'run.pause_rejected',

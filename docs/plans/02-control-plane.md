@@ -168,7 +168,7 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 **Interfaces produced:** `POST /internal/runs/:runId/events` (service token; body: array of events WITHOUT id/sequence; server assigns `newId("evt")` + `nextEventSequence` in one tx, inserts, `pg_notify('agent_events', runId)`). Batch ≤ 100. This is the ONLY write path for events (orchestrator-worker uses it — keeps one DB writer for sequencing).
 **Effort:** M
 
-- [ ] Steps: failing tests (batch insert assigns contiguous sequences under concurrency; payload > 64 KB → 413 `payload_too_large` telling caller to use artifacts; visibility validated) → implement → commit: `feat(control-api): sequenced event ingest with NOTIFY`
+- [x] Steps: failing tests (batch insert assigns contiguous sequences under concurrency; payload > 64 KB → 413 `payload_too_large` telling caller to use artifacts; visibility validated) → implement → commit: `feat(control-api): sequenced event ingest with NOTIFY`
 
 ### Task CP-14: Redis fanout publisher
 
@@ -263,3 +263,5 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-10 Fix Round 2 done — replaced latest-audit replay detection with a tenant/specification/operation-key history lookup, so a stale lost PATCH retry cannot overwrite an intervening edit.
 - 2026-08-04 CP-11 done — temporary shells use candidate `{environmentId,commitSha,specificationId|null}`, replace-only `dataDisposition`, and GitHub installationId/Supabase projectRef/Neon projectId/Stripe accountId+mode configurations; injected Builder settings default deny; added tenant-explicit `getRelease` read.
 - 2026-08-04 CP-12 BLOCKED: the required durable organization settings have no PRD §23.1/Drizzle storage, while schema conformance rejects undocumented columns/tables. Proposed ADR-0004 adds `organizations.settings_json`; human approval is required before plan/schema/code changes. Task and tracker remain unchecked.
+- 2026-08-04 CP-13 execution assumption: choose the FND-6 note's additive migration path and retain all PRD §14.4 top-level replay context absent from the conceptual `agent_events` row (`project_id`, `phase_id`, `task_id`, `agent_id`), documented in the schema-conformance allowlist. The internal route uses a route-specific orchestrator token, required idempotency key, tenant/run/project validation before sequence allocation, and one transactional batch audit + NOTIFY.
+- 2026-08-04 CP-13 done — sequenced service-only event ingest persists full replay context, audits each committed batch, and sends transactional PostgreSQL NOTIFY.

@@ -1,4 +1,5 @@
 import {
+  type AgentEvent,
   newId,
   type ResourceProfile,
   type RunMode,
@@ -6,7 +7,10 @@ import {
   type WorkspaceStatus,
 } from '@zapp/contracts';
 import {
+  agentEvents,
+  agentPhases,
   agentRuns,
+  agentTasks,
   auditEvents,
   branches,
   environments,
@@ -18,10 +22,13 @@ import {
   secretMetadata,
   specifications,
   workspaces,
+  nextEventSequence,
+  type AgentEventRow,
   type Branch,
   type AgentRun,
   type Database,
   type Environment,
+  type EventRepository,
   type Project,
   type ProjectContract,
   type ProjectRepository,
@@ -440,8 +447,24 @@ export interface TenantSecretRepository {
   readEnvelope(input: ReadSecretInput): Promise<StoredSecret | undefined>;
 }
 
+/** The caller-supplied half of PRD §14.4; CP-13 mints `id` and `sequence`. */
+export type NewAgentEvent = Omit<AgentEvent, 'id' | 'sequence'>;
+
+export interface IngestEventBatchInput {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly events: readonly NewAgentEvent[];
+  /** One audit row, after the batch and notification statement but before commit. */
+  readonly audit: AuditHook<readonly AgentEventRow[]>;
+}
+
+export interface TenantEventRepository extends EventRepository {
+  /** The only production writer for the immutable event log. */
+  ingest(input: IngestEventBatchInput): Promise<readonly AgentEventRow[] | undefined>;
+}
+
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
-export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs'> {
+export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
   readonly runs: TenantRunRepository;
   readonly workspaces: TenantWorkspaceRepository;
@@ -451,6 +474,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs'> {
   readonly contracts: TenantContractRepository;
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
+  readonly events: TenantEventRepository;
 }
 
 /**
@@ -510,6 +534,77 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
     return {
       ...base,
+
+      events: {
+        ...base.events,
+        async ingest(input: IngestEventBatchInput): Promise<readonly AgentEventRow[] | undefined> {
+          return await db.transaction(async (tx) => {
+            // This is deliberately the first statement in the transaction. The
+            // allocator has no tenant argument, so looking the run up afterward
+            // would create a gap for a foreign or malformed request.
+            const [run] = await tx
+              .select()
+              .from(agentRuns)
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .limit(1);
+            if (run === undefined || run.projectId !== input.projectId) return undefined;
+
+            for (const event of input.events) {
+              if (event.phaseId !== undefined) {
+                const [phase] = await tx
+                  .select({ id: agentPhases.id })
+                  .from(agentPhases)
+                  .where(
+                    scoped(
+                      agentPhases.organizationId,
+                      eq(agentPhases.id, event.phaseId),
+                      eq(agentPhases.runId, input.runId),
+                    ),
+                  )
+                  .limit(1);
+                if (phase === undefined) return undefined;
+              }
+              if (event.taskId !== undefined) {
+                const [task] = await tx
+                  .select({ id: agentTasks.id })
+                  .from(agentTasks)
+                  .innerJoin(agentPhases, eq(agentPhases.id, agentTasks.phaseId))
+                  .where(
+                    scoped(
+                      agentTasks.organizationId,
+                      eq(agentTasks.id, event.taskId),
+                      eq(agentPhases.runId, input.runId),
+                    ),
+                  )
+                  .limit(1);
+                if (task === undefined) return undefined;
+              }
+            }
+
+            const pending: (typeof agentEvents.$inferInsert)[] = [];
+            for (const event of input.events) {
+              pending.push({
+                id: newId('evt'),
+                organizationId: orgId,
+                runId: input.runId,
+                sequence: await nextEventSequence(tx, input.runId),
+                projectId: input.projectId,
+                phaseId: event.phaseId ?? null,
+                taskId: event.taskId ?? null,
+                agentId: event.agentId ?? null,
+                type: event.type,
+                visibility: event.visibility,
+                payloadJson: event.payload,
+                occurredAt: new Date(event.occurredAt),
+              });
+            }
+            const inserted = await tx.insert(agentEvents).values(pending).returning();
+            await tx.execute(sql`select pg_notify('agent_events', ${input.runId})`);
+            await input.audit(tx, inserted);
+            return inserted;
+          });
+        },
+      },
 
       projects: {
         ...base.projects,

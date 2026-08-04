@@ -43,7 +43,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-10 Specification routes
 - [x] CP-11 Release/integration route shells + RBAC
 - [ ] CP-12 Audit reads + org settings
-- [ ] CP-13 Sequenced event ingest
+- [x] CP-13 Sequenced event ingest
 - [ ] CP-14 LISTEN/NOTIFY → Redis fanout
 - [ ] CP-15 Resumable SSE stream
 - [ ] CP-16 OpenAPI + generated SDK

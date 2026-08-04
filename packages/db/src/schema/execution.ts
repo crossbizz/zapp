@@ -17,7 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import { oneOf, organizationId } from './columns.js';
-import { agentRuns, agentTasks } from './planning.js';
+import { agentPhases, agentRuns, agentTasks } from './planning.js';
 import { branches, projectTenantForeignKey, projects } from './projects.js';
 
 /**
@@ -114,6 +114,14 @@ export const agentEvents = pgTable(
      * with its insert time — that would file it under the wrong partition.
      */
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /** CP-13 replay context (PRD §14.4); physical column absent from conceptual PRD §23.4 row. */
+    projectId: text('project_id').notNull().references(() => projects.id),
+    /** CP-13 replay context; nullable for run-level events. */
+    phaseId: text('phase_id').references(() => agentPhases.id),
+    /** CP-13 replay context; nullable for non-task events. */
+    taskId: text('task_id').references(() => agentTasks.id),
+    /** CP-13 replay context; an agent role string, not an entity foreign key. */
+    agentId: text('agent_id'),
   },
   (t) => [
     primaryKey({ name: 'agent_events_pk', columns: [t.id, t.occurredAt] }),
@@ -128,6 +136,7 @@ export const agentEvents = pgTable(
     // Master plan §5.2: the tenant-scoped, time-bounded read, and what lets the
     // planner prune partitions instead of scanning every month.
     index('agent_events_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+    projectTenantForeignKey('agent_events', t.projectId, t.organizationId),
   ],
 );
 

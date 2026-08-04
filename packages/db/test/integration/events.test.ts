@@ -82,6 +82,7 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
           id: newId('evt'),
           organizationId: tenant.organizationId,
           runId: tenant.runId,
+          projectId: tenant.projectId,
           sequence: 99,
           type: 'run.created',
           payloadJson: {},
@@ -165,6 +166,7 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
           id: newId('evt'),
           organizationId: tenant.organizationId,
           runId: tenant.runId,
+          projectId: tenant.projectId,
           sequence: 1, // seedTenant already wrote sequence 1
           type: 'run.started',
           payloadJson: {},
@@ -188,6 +190,7 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
           id: newId('evt'),
           organizationId: tenant.organizationId,
           runId: tenant.runId,
+          projectId: tenant.projectId,
           sequence: 2,
           type: 'tool.output',
           payloadJson: { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_BYTES + 1_000) },
@@ -205,8 +208,9 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
     it('accepts a payload just under the ceiling', async () => {
       await handle.db.insert(agentEvents).values({
         id: newId('evt'),
-        organizationId: tenant.organizationId,
-        runId: tenant.runId,
+          organizationId: tenant.organizationId,
+          runId: tenant.runId,
+          projectId: tenant.projectId,
         sequence: 2,
         type: 'tool.output',
         payloadJson: { blob: 'x'.repeat(60_000) },
@@ -231,9 +235,9 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
       // its own values; raw queries here must.
       const error = await rejection(handle.sql`
         insert into agent_events
-          (id, organization_id, run_id, sequence, type, payload_json, visibility, occurred_at)
+          (id, organization_id, run_id, project_id, sequence, type, payload_json, visibility, occurred_at)
         values
-          (${newId('evt')}, ${tenant.organizationId}, ${tenant.runId}, 2, 'run.started',
+          (${newId('evt')}, ${tenant.organizationId}, ${tenant.runId}, ${tenant.projectId}, 2, 'run.started',
            '{}'::jsonb, 'public', ${EVENT_TIME.toISOString()})
       `);
 
@@ -249,6 +253,7 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
           id: newId('evt'),
           organizationId: tenant.organizationId,
           runId: newId('run'),
+          projectId: tenant.projectId,
           sequence: 1,
           type: 'run.created',
           payloadJson: {},

@@ -30,6 +30,7 @@ import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
 import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
+import { registerInternalEventRoutes } from './internal/events.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
@@ -438,6 +439,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
 
           if (secrets !== undefined) {
+            registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
             // One vault for both surfaces, so the key that encrypted a value on
             // the way in is by construction the key that unwraps it on the way
             // out — two constructions could disagree, and would do so silently
