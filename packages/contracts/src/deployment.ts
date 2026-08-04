@@ -1,21 +1,19 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
+import { EnvVarsSchema } from './sandbox.js';
 import type { ProjectContext } from './project-adapter.js';
 
 /** Exactly 40 lowercase hex characters: a resolved git commit, never a ref. */
-const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/, 'Invalid commit sha');
+export const CommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/, 'Invalid commit sha');
 
 /**
  * Environments are outside the closed TypeID prefix list, so they carry the control
  * plane's own `environments` row identifier.
  */
-const environmentIdSchema = z.string().min(1);
+export const EnvironmentIdSchema = z.string().min(1);
 
-/**
- * Deployment-time environment. Values are secret material: only the release service
- * ever holds them, and they are never logged or echoed into events (PRD §18.12).
- */
-const envSchema = z.record(z.string());
+/** Provider-issued URL. https only: deployed traffic is never plaintext. */
+const httpsUrlSchema = z.string().url().startsWith('https://', 'URL must use https');
 
 /** PRD §27.1 `detectCompatibility` output; plan 07's registry ranks providers with it. */
 export const CompatibilityResultSchema = z.object({
@@ -42,9 +40,9 @@ export type DeploymentArtifact = z.infer<typeof DeploymentArtifactSchema>;
 /** PRD §27.1 `createPreview` input — a provider-hosted preview, distinct from the sandbox preview. */
 export const PreviewDeploymentInputSchema = z.object({
   projectId: idSchema('proj'),
-  commitSha: commitShaSchema,
+  commitSha: CommitShaSchema,
   artifact: DeploymentArtifactSchema,
-  env: envSchema,
+  env: EnvVarsSchema,
 });
 
 export type PreviewDeploymentInput = z.infer<typeof PreviewDeploymentInputSchema>;
@@ -55,11 +53,11 @@ export type PreviewDeploymentInput = z.infer<typeof PreviewDeploymentInputSchema
  */
 export const ProductionDeploymentInputSchema = z.object({
   projectId: idSchema('proj'),
-  environmentId: environmentIdSchema,
+  environmentId: EnvironmentIdSchema,
   releaseId: idSchema('rel'),
-  commitSha: commitShaSchema,
+  commitSha: CommitShaSchema,
   artifact: DeploymentArtifactSchema,
-  env: envSchema,
+  env: EnvVarsSchema,
 });
 
 export type ProductionDeploymentInput = z.infer<typeof ProductionDeploymentInputSchema>;
@@ -84,7 +82,7 @@ export const DeploymentHandleSchema = z.object({
   providerId: z.string().min(1),
   providerDeploymentId: z.string().min(1),
   /** Absent until the provider has assigned a URL. */
-  url: z.string().url().optional(),
+  url: httpsUrlSchema.optional(),
   state: DeploymentStateSchema,
   createdAt: z.string().datetime(),
 });
@@ -98,7 +96,7 @@ export type DeploymentHandle = z.infer<typeof DeploymentHandleSchema>;
 export const DeploymentStatusSchema = z.object({
   providerDeploymentId: z.string().min(1),
   state: DeploymentStateSchema,
-  url: z.string().url().optional(),
+  url: httpsUrlSchema.optional(),
   /** Provider-supplied explanation, secrets already scrubbed. */
   detail: z.string().optional(),
   updatedAt: z.string().datetime(),
@@ -118,7 +116,7 @@ export type DeploymentLog = z.infer<typeof DeploymentLogSchema>;
 /** PRD §27.1 `configureDomain` input; the user's custom hostname for one environment. */
 export const DomainInputSchema = z.object({
   projectId: idSchema('proj'),
-  environmentId: environmentIdSchema,
+  environmentId: EnvironmentIdSchema,
   /** Apex or subdomain, without scheme: `app.example.com`. */
   hostname: z.string().min(1),
 });
@@ -154,7 +152,7 @@ export type DomainResult = z.infer<typeof DomainResultSchema>;
  */
 export const RollbackInputSchema = z.object({
   projectId: idSchema('proj'),
-  environmentId: environmentIdSchema,
+  environmentId: EnvironmentIdSchema,
   toProviderDeploymentId: z.string().min(1),
   reason: z.string().min(1),
 });

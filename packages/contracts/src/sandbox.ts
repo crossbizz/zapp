@@ -2,6 +2,19 @@ import { z } from 'zod';
 import { idSchema } from './ids.js';
 
 /**
+ * Environment handed to a workspace or a deployment. Values are secret material:
+ * only allowlisted services hold them, and they are never logged, echoed into
+ * events, or shown to an agent (PRD §18.12). Shared with `deployment.ts` so the
+ * redaction rule has one definition, not two.
+ */
+export const EnvVarsSchema = z.record(z.string());
+
+export type EnvVars = z.infer<typeof EnvVarsSchema>;
+
+/** Provider-issued URL. https only: preview and deployment traffic is never plaintext. */
+const httpsUrlSchema = z.string().url().startsWith('https://', 'URL must use https');
+
+/**
  * PRD §18.9, in order. Both the membership and the order are contractual: plan 03's
  * lifecycle manager (WS-6) derives its legal-transition table from this list.
  */
@@ -75,8 +88,7 @@ export const CreateWorkspaceInputSchema = z.object({
   resourceProfile: ResourceProfileSchema,
   /** Immutable image tag from `infra/modal/images.lock.json` — never `latest` (plan 03 WS-2). */
   imageTag: z.string().min(1),
-  /** Environment injected into the workspace. Values may be secret and are never logged (PRD §18.12). */
-  env: z.record(z.string()),
+  env: EnvVarsSchema,
   networkProfile: NetworkProfileSchema,
 });
 
@@ -105,7 +117,7 @@ export const ExecInputSchema = z.object({
   args: z.array(z.string()),
   /** Relative to the workspace root; escapes are rejected by the provider (PRD §16.3). */
   cwd: z.string().optional(),
-  env: z.record(z.string()).optional(),
+  env: EnvVarsSchema.optional(),
   timeoutMs: z.number().int().positive(),
   /** True when the command needs a tty (interactive installers, colored output). */
   pty: z.boolean().optional(),
@@ -177,10 +189,13 @@ export type PreviewInput = z.infer<typeof PreviewInputSchema>;
 /**
  * An authenticated preview session. The URL is a provider connect URL, never a raw
  * public tunnel; sharing goes through a share record with its own expiry (plan 03 WS-12).
+ *
+ * Carries no revocation identifier, because the PRD §18.2 method set has no revoke
+ * call to use one with — see `docs/adr/0003-sandbox-file-io-and-preview-revocation.md`.
  */
 export const PreviewHandleSchema = z.object({
   providerWorkspaceId: z.string().min(1),
-  url: z.string().url(),
+  url: httpsUrlSchema,
   expiresAt: z.string().datetime(),
 });
 
@@ -205,8 +220,9 @@ export type NetworkPolicyInput = z.infer<typeof NetworkPolicyInputSchema>;
  * only place the Modal SDK may be imported (master plan Global Constraint 1).
  *
  * `readFile` and `writeFile` take no workspace id in the PRD: the implementation binds
- * them to the workspace it is currently attached to. Flagged for an ADR rather than
- * silently re-specified here.
+ * them to the workspace it is currently attached to. Kept verbatim on purpose — the
+ * workspace-scoped replacement lands with plan 03 WS-4, per
+ * `docs/adr/0003-sandbox-file-io-and-preview-revocation.md`.
  */
 export interface CloudSandboxProvider {
   createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceHandle>;

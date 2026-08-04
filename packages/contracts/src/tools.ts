@@ -127,4 +127,13 @@ export interface ToolDefinition<I extends z.ZodTypeAny, O extends z.ZodTypeAny> 
   readonly redactOutput: boolean;
   /** One line for the user's timeline — never raw output, never a promise the call didn't keep. */
   userSummary(input: z.infer<I>, output: z.infer<O>): string;
+  /**
+   * PRD §16.2 "Audit payload": the attributes worth keeping on the audit row.
+   * Scalars only, so an audit trail can never become a copy of the tool's output —
+   * blobs stay in artifacts, and secrets never reach here at all (PRD §16.3).
+   */
+  readonly auditPayload: (
+    input: z.infer<I>,
+    output: z.infer<O>,
+  ) => Record<string, string | number | boolean>;
 }

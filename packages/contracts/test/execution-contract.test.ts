@@ -34,6 +34,45 @@ describe('ExecutionContractSchema', () => {
     expect(ExecutionContractSchema.parse(minimalContract)).toEqual(minimalContract);
   });
 
+  it('round-trips a production start block', () => {
+    const withStart = {
+      ...minimalContract,
+      start: { command: 'node dist/server.js', timeout_seconds: 120 },
+    };
+    expect(ExecutionContractSchema.parse(withStart)).toEqual(withStart);
+    expect(
+      ExecutionContractSchema.parse({ ...minimalContract, start: { command: 'npm start' } }),
+    ).toEqual({ ...minimalContract, start: { command: 'npm start' } });
+  });
+
+  it('rejects an unknown key at the root', () => {
+    expect(ExecutionContractSchema.safeParse({ ...prdExample, deploy: 'vercel' }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a misspelled block instead of silently dropping it', () => {
+    const misspelled = { ...prdExample, typechek: { command: 'pnpm typecheck' } };
+    expect(ExecutionContractSchema.safeParse(misspelled).success).toBe(false);
+  });
+
+  it('rejects an unknown key inside a block', () => {
+    const nestedUnknown = { ...prdExample, install: { command: 'npm ci', retries: 3 } };
+    expect(ExecutionContractSchema.safeParse(nestedUnknown).success).toBe(false);
+    const nestedUnknownStart = {
+      ...minimalContract,
+      start: { command: 'npm start', port: 3000 },
+    };
+    expect(ExecutionContractSchema.safeParse(nestedUnknownStart).success).toBe(false);
+  });
+
+  it('rejects a test block declaring no suite at all', () => {
+    expect(ExecutionContractSchema.safeParse({ ...prdExample, test: {} }).success).toBe(false);
+    expect(
+      ExecutionContractSchema.safeParse({ ...prdExample, test: { unit: 'pnpm test' } }).success,
+    ).toBe(true);
+  });
+
   it('rejects an install block with no command', () => {
     const withoutInstallCommand = { ...prdExample, install: { timeout_seconds: 600 } };
     expect(ExecutionContractSchema.safeParse(withoutInstallCommand).success).toBe(false);
@@ -92,6 +131,14 @@ describe('ExecutionContractSchema', () => {
   it('rejects a health path that is not rooted', () => {
     expect(
       ExecutionContractSchema.safeParse({ ...prdExample, health: { path: 'health' } }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a protocol-relative health path', () => {
+    // `//evil.example.com/` is a URL to another origin, not a path on this app.
+    expect(
+      ExecutionContractSchema.safeParse({ ...prdExample, health: { path: '//evil.example.com/' } })
+        .success,
     ).toBe(false);
   });
 

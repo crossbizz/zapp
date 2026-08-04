@@ -80,8 +80,12 @@ describe('TOOL_NAMES', () => {
   it('types a name union that rejects anything outside the list', () => {
     const known: ToolName = 'read_project_contract';
     // @ts-expect-error - not a PRD §16.1 tool name
-    const unknown: ToolName = 'read_the_room';
-    expect([known, unknown]).toHaveLength(2);
+    const rejected: ToolName = 'read_the_room';
+    // The directive above is the compile-time half: if `ToolName` ever widened to
+    // `string` the unused directive would fail typecheck. These two assert the
+    // runtime list agrees with what the type accepts and refuses.
+    expect(TOOL_NAMES).toContain(known);
+    expect(TOOL_NAMES).not.toContain(rejected);
   });
 });
 
@@ -214,6 +218,7 @@ describe('ToolDefinition', () => {
     retryPolicy: { maxAttempts: 2, backoffMs: 250 },
     redactOutput: false,
     userSummary: (input, output) => `Read ${input.path} (${String(output.bytes)} bytes)`,
+    auditPayload: (input, output) => ({ path: input.path, bytes: output.bytes, cached: false }),
   };
 
   it('summarises a call from its typed input and output', () => {
@@ -222,8 +227,18 @@ describe('ToolDefinition', () => {
     );
   });
 
+  it('audits a call as scalar attributes, never as raw output', () => {
+    const payload = readFile.auditPayload({ path: 'src/app.ts' }, { bytes: 128 });
+    expect(payload).toEqual({ path: 'src/app.ts', bytes: 128, cached: false });
+    // Scalars only: nothing an audit row would have to truncate or redact.
+    expect(
+      Object.values(payload).every((v) => ['string', 'number', 'boolean'].includes(typeof v)),
+    ).toBe(true);
+  });
+
   it('validates calls with the schemas it carries', () => {
     expect(readFile.inputSchema.safeParse({ path: '' }).success).toBe(false);
-    expect(readFile.outputSchema.safeParse({ bytes: 1 }).success).toBe(true);
+    expect(readFile.outputSchema.safeParse({ bytes: -1 }).success).toBe(false);
+    expect(readFile.outputSchema.parse({ bytes: 1 })).toEqual({ bytes: 1 });
   });
 });

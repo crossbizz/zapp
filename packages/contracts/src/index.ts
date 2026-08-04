@@ -41,6 +41,7 @@ export {
   CheckpointKindSchema,
   CheckpointRefSchema,
   CreateWorkspaceInputSchema,
+  EnvVarsSchema,
   ExecHandleSchema,
   ExecInputSchema,
   NetworkPolicyInputSchema,
@@ -57,6 +58,7 @@ export {
   type CheckpointRef,
   type CloudSandboxProvider,
   type CreateWorkspaceInput,
+  type EnvVars,
   type ExecHandle,
   type ExecInput,
   type NetworkPolicyInput,
@@ -91,6 +93,7 @@ export {
   type TestPlan,
 } from './project-adapter.js';
 export {
+  CommitShaSchema,
   CompatibilityResultSchema,
   DeploymentArtifactSchema,
   DeploymentHandleSchema,
@@ -100,6 +103,7 @@ export {
   DnsInstructionSchema,
   DomainInputSchema,
   DomainResultSchema,
+  EnvironmentIdSchema,
   PreviewDeploymentInputSchema,
   ProductionDeploymentInputSchema,
   RollbackInputSchema,
