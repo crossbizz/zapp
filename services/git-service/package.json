@@ -1,0 +1,29 @@
+{
+  "name": "@zapp/git-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run --dir test/integration --no-file-parallelism",
+    "bootstrap": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/bootstrap.ts"
+  },
+  "dependencies": {
+    "@zapp/config": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.23.5",
+    "vitest": "^2.1.4"
+  }
+}

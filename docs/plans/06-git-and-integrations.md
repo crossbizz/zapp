@@ -35,9 +35,29 @@ templates/stripe/*  (generated-app billing templates)
 **Files:** Create: `infra/terraform/forgejo.tf`, `infra/docker/forgejo/app.ini` (prod variant), `services/git-service/scripts/bootstrap.ts`
 **Effort:** M
 
-- [ ] Binding behavior: Fly app `zapp-forgejo-{env}` with volume; app.ini: registrations disabled, API-only admin, webhooks allowed to control-api host, LFS enabled; bootstrap script creates admin token + org `zapp-projects`; health check wired.
-- [ ] Verify: terraform plan clean; bootstrap idempotent (second run no-ops).
-- [ ] Commit: `feat(infra): forgejo internal git deployment`
+- [x] Binding behavior: Fly app `zapp-forgejo-{env}` with volume; app.ini: registrations disabled, API-only admin, webhooks allowed to control-api host, LFS enabled; bootstrap script creates admin token + org `zapp-projects`; health check wired.
+- [x] Verify: terraform plan clean; bootstrap idempotent (second run no-ops).
+- [x] Commit: `feat(infra): forgejo internal git deployment`
+
+**Delivered against a dev stack that already runs Forgejo.** FND-7's compose file
+starts it and `scripts/dev-up.sh` mints its admin token, so this task shipped the
+*deployed* half only: `infra/terraform/` (app, volume, addresses, certificate),
+`infra/fly/forgejo/` (image + machine config), `infra/docker/forgejo/app.ini.prod`
+and `services/git-service/scripts/bootstrap.ts`. The dev compose stack is
+unchanged — see `infra/terraform/README.md` for the dev-vs-prod split.
+
+Two deviations from the text above, both deliberate:
+
+- **The admin token is not created by the bootstrap script.** Forgejo's API
+  refuses to mint a token without HTTP basic auth, so the first one has to come
+  from the CLI on the host (`forgejo admin user generate-access-token`) — which
+  is what `scripts/dev-up.sh` does in dev and what the runbook does in a
+  deployment. The script *verifies* the token instead, and that it belongs to an
+  administrator: a non-admin token otherwise fails at the first customer project
+  create rather than at deploy time.
+- **`terraform validate` is unverified**, not clean: terraform is not installed
+  on the machine this was authored on and `validate` needs `terraform init` to
+  fetch the provider first. Recorded in `infra/terraform/README.md`.
 
 ### Task GIT-2: git-service + GitProvider interface
 

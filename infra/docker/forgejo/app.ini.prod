@@ -1,0 +1,164 @@
+; zapp.build — Forgejo configuration for a deployed environment (GIT-1).
+;
+; The production sibling of app.ini (which is the dev stack's, FND-7). Same
+; seeding contract, so the two files differ in their *contents* and never in how
+; they get where they are going: the image copies this to
+; /data/gitea/conf/app.ini on first boot only, and Forgejo then owns that copy
+; and appends its generated SECRET_KEY / INTERNAL_TOKEN to it. Those generated
+; values live on the Fly volume and are never written back into the repo.
+;
+; Delivered by infra/fly/forgejo/Dockerfile; the app, the volume, the addresses
+; and the certificate are terraform's (infra/terraform/forgejo.tf).
+;
+; **Per-environment values are not in this file.** Anything that differs between
+; staging and production — the domain, the database host, every password — is
+; supplied as a `FORGEJO__<section>__<KEY>` environment variable, which the
+; image's `environment-to-ini` step merges into the seeded copy at every boot.
+; That is what keeps one committed file correct for every environment, and it is
+; the only way a secret reaches this instance: nothing below is a credential.
+;
+;   FORGEJO__server__DOMAIN, FORGEJO__server__ROOT_URL, FORGEJO__server__SSH_DOMAIN
+;   FORGEJO__database__HOST, __NAME, __USER, __PASSWD
+;   FORGEJO__webhook__ALLOWED_HOST_LIST   (the control-plane host, and nothing else)
+;   FORGEJO__metrics__TOKEN
+;
+; Re-seeding means destroying the volume, which destroys every repository on it.
+; Change a live instance through its own copy and reconcile this file afterwards:
+; a seed is a starting point, not a desired state.
+;
+; The differences from the dev variant, each of them deliberate:
+;
+;   - PostgreSQL rather than SQLite. Dev keeps Forgejo self-contained; a
+;     deployment wants backups, PITR and a restore that is not a file copy.
+;   - REQUIRE_SIGNIN_VIEW, COOKIE_SECURE, DISABLE_GIT_HOOKS, no Swagger, no
+;     OAuth2, no push-to-create, and a webhook allowlist with one host in it.
+;   - OFFLINE_MODE stays on, for the reason it is on in dev: a deployment has no
+;     more business phoning a version endpoint than a laptop does.
+
+APP_NAME = zapp.build git
+RUN_USER = git
+RUN_MODE = prod
+WORK_PATH = /data/gitea
+
+[server]
+; Fly terminates TLS at the edge and forwards plain HTTP over the private
+; network, so the listener is http while every URL Forgejo *emits* is https.
+PROTOCOL = http
+HTTP_ADDR = 0.0.0.0
+HTTP_PORT = 3000
+; Overridden per environment — see the header. The placeholder is the production
+; hostname rather than `localhost` so a deployment that forgets the variable
+; produces clone URLs that fail loudly against the right host instead of quietly
+; against the wrong one.
+DOMAIN = git.zapp.build
+ROOT_URL = https://git.zapp.build/
+SSH_DOMAIN = git.zapp.build
+; Git over SSH is the image's OpenSSH daemon, as in dev. Forgejo's built-in
+; server stays off: both would fight over port 22 inside the container.
+DISABLE_SSH = false
+START_SSH_SERVER = false
+SSH_LISTEN_PORT = 22
+SSH_PORT = 22
+LFS_START_SERVER = true
+APP_DATA_PATH = /data/gitea
+OFFLINE_MODE = true
+
+[database]
+; Managed PostgreSQL, so repository metadata has the same backup story as the
+; control plane's. The Git objects themselves live on the volume — see
+; infra/terraform/forgejo.tf for the snapshot retention that covers them.
+DB_TYPE = postgres
+SSL_MODE = require
+LOG_SQL = false
+
+[security]
+; Skip the web installer — this file is the installation.
+INSTALL_LOCK = true
+PASSWORD_HASH_ALGO = pbkdf2
+; Behind exactly one proxy, and Fly's edge is it. A larger limit would let a
+; client choose the address every rate limit and audit line is attributed to.
+REVERSE_PROXY_LIMIT = 1
+; Cookies only ever go back over TLS, which the edge terminates.
+COOKIE_SECURE = true
+; Server-side Git hooks are how a repository writes arbitrary code onto the Git
+; host and runs it as the Git user. zapp creates repositories through the API and
+; never needs them, so the capability is removed rather than left to the admin
+; flag that guards it.
+DISABLE_GIT_HOOKS = true
+
+[service]
+; No self-service accounts anywhere: every user, including the ephemeral
+; repository-scoped ones GIT-3 mints, is created through the admin API.
+DISABLE_REGISTRATION = true
+ALLOW_ONLY_INTERNAL_REGISTRATION = true
+; The one line that makes a missed `private` on a repository a closed door
+; rather than an open one: an anonymous request sees no repository, no
+; organization and no user, whatever a repository's own visibility says.
+REQUIRE_SIGNIN_VIEW = true
+DEFAULT_KEEP_EMAIL_PRIVATE = true
+; Organizations are created by the git service under the platform admin, never
+; by the per-repository users that clone and push.
+DEFAULT_ALLOW_CREATE_ORGANIZATION = false
+ENABLE_NOTIFY_MAIL = false
+; Git over HTTPS authenticates with a repository-scoped token as the password
+; (GIT-3), which is HTTP basic auth by another name.
+ENABLE_BASIC_AUTHENTICATION = true
+DEFAULT_USER_VISIBILITY = private
+DEFAULT_ORG_VISIBILITY = private
+
+[repository]
+ROOT = /data/git/repositories
+DEFAULT_BRANCH = main
+DEFAULT_PRIVATE = private
+DEFAULT_PUSH_CREATE_PRIVATE = true
+; Repositories are created through the API, at the ref the control plane already
+; recorded. Push-to-create would let a scoped token invent a repository that
+; nothing in PostgreSQL knows about — and therefore one nothing backs up,
+; audits or bills.
+ENABLE_PUSH_CREATE_USER = false
+ENABLE_PUSH_CREATE_ORG = false
+
+[api]
+; The web UI is not a supported surface here; the API is the whole product.
+ENABLE_SWAGGER = false
+DEFAULT_PAGING_NUM = 50
+DEFAULT_MAX_RESPONSE_ITEMS = 200
+
+[webhook]
+; Overridden per environment with the control-plane host, and nothing else. An
+; empty list means "anywhere", which would turn every repository owner into
+; someone who can make this host issue requests inside the private network.
+ALLOWED_HOST_LIST = control-api.internal
+SKIP_TLS_VERIFY = false
+DELIVER_TIMEOUT = 30
+PAGING_NUM = 20
+
+[mailer]
+ENABLED = false
+
+[actions]
+; zapp runs its own verification pipeline (plan 05). Forgejo Actions would be a
+; second, unaudited executor holding repository write access.
+ENABLED = false
+
+[cron]
+ENABLED = true
+RUN_AT_START = false
+
+[oauth2]
+; Nothing signs in to this instance interactively.
+ENABLED = false
+
+[metrics]
+; Scraped over the private network only; the bearer token is a Fly secret
+; (FORGEJO__metrics__TOKEN).
+ENABLED = true
+
+[log]
+MODE = console
+LEVEL = info
+logger.router.MODE = console
+
+[other]
+SHOW_FOOTER_VERSION = false
+SHOW_FOOTER_TEMPLATE_LOAD_TIME = false

@@ -1,0 +1,80 @@
+# zapp.build — the deployed Forgejo machine (GIT-1).
+#
+#   fly deploy --config infra/fly/forgejo/fly.toml \
+#              --dockerfile infra/fly/forgejo/Dockerfile \
+#              --app zapp-forgejo-staging .
+#
+# **This file owns the release; terraform owns everything the release lands on.**
+# The app, the volume, the addresses and the certificate are created by
+# infra/terraform/forgejo.tf and outlive every deploy — a `fly deploy` that
+# replaced a machine must never be able to take a volume with it. Run terraform
+# first; this second.
+#
+# `app` is deliberately absent so one file serves every environment and the
+# target is named explicitly on the command line. A committed default is how a
+# staging deploy reaches production.
+
+primary_region = "iad"
+
+[build]
+  # Context is the repository root — the image copies
+  # infra/docker/forgejo/app.ini.prod, which is shared with the dev stack.
+  dockerfile = "infra/fly/forgejo/Dockerfile"
+
+[[mounts]]
+  # Created by terraform, named there. Every repository, every LFS object and
+  # Forgejo's own generated SECRET_KEY live here; the machine is disposable and
+  # this is not.
+  source = "forgejo_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Never zero. A Git host that scaled to nothing would answer the first clone of
+  # the day with a cold start in the middle of a workspace boot, and would answer
+  # a webhook with a timeout.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    # Forgejo's own liveness endpoint: it reports the database connection too, so
+    # a machine that cannot reach PostgreSQL is taken out of rotation rather than
+    # left serving 500s.
+    interval = "15s"
+    timeout = "10s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/healthz"
+
+[[services]]
+  # Git over SSH. A dedicated IPv4 address is what makes port 22 addressable —
+  # Fly's shared v4 only forwards 80/443 — and terraform allocates it.
+  internal_port = 22
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[services.ports]]
+    port = 22
+
+[[vm]]
+  # Git is memory-hungry at pack time: `git gc` on a large repository is the
+  # first thing to be OOM-killed on a small machine, and a half-finished repack
+  # is how a repository becomes slow forever.
+  size = "shared-cpu-2x"
+  memory = "2gb"
+
+[deploy]
+  # One machine, one volume, one at a time. `rolling` would start a second
+  # machine against a volume that only one can mount.
+  strategy = "immediate"

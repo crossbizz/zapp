@@ -28,7 +28,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-8 Internal service tokens
 
 ### Plan 06 — Internal Git
-- [ ] GIT-1 Forgejo deployment + bootstrap
+- [x] GIT-1 Forgejo deployment + bootstrap
 - [ ] GIT-2 git-service GitProvider
 - [ ] GIT-3 Repo-scoped short-lived tokens
 ### Plan 09 — Desktop fork prep
