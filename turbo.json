@@ -9,7 +9,13 @@
     "typecheck": {
       "dependsOn": ["^build"]
     },
-    "lint": {},
+    "lint": {
+      // `^build` because typescript-eslint's type-aware rules resolve workspace
+      // imports through package entry points (`@zapp/db` -> `dist/`). Without
+      // this, a cold checkout lints against unresolved types and reports
+      // no-unsafe-* errors that do not reproduce locally, where dist/ survives.
+      "dependsOn": ["^build"]
+    },
     "test": {
       "dependsOn": ["build"]
     },
