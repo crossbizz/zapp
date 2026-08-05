@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "company-ai": "npm:ai@6.0.68"
+  }
+}
