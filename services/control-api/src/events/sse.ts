@@ -76,8 +76,72 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function splitOutsideQuotedStrings(value: string, delimiter: ',' | ';'): string[] | undefined {
+  const parts: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        quoted = false;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === delimiter) {
+      parts.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (quoted || escaped) return undefined;
+  parts.push(value.slice(start));
+  return parts;
+}
+
+function isQuotedText(code: number): boolean {
+  return (
+    code === 0x09 ||
+    code === 0x20 ||
+    code === 0x21 ||
+    (code >= 0x23 && code <= 0x5b) ||
+    (code >= 0x5d && code <= 0x7e) ||
+    (code >= 0x80 && code <= 0xff)
+  );
+}
+
+function isQuotedPair(code: number): boolean {
+  return code === 0x09 || code === 0x20 || (code >= 0x21 && code <= 0x7e) || (code >= 0x80 && code <= 0xff);
+}
+
+function parseHttpParameterValue(value: string): string | undefined {
+  if (HTTP_TOKEN.test(value)) return value;
+  if (value.length < 2 || value[0] !== '"' || value.at(-1) !== '"') return undefined;
+  let parsed = '';
+  for (let index = 1; index < value.length - 1; index += 1) {
+    const character = value[index];
+    if (character === '\\') {
+      index += 1;
+      if (index >= value.length - 1) return undefined;
+      const escaped = value[index];
+      if (escaped === undefined || !isQuotedPair(escaped.charCodeAt(0))) return undefined;
+      parsed += escaped;
+      continue;
+    }
+    if (character === undefined || !isQuotedText(character.charCodeAt(0))) return undefined;
+    parsed += character;
+  }
+  return parsed;
+}
+
 function acceptsEventStream(value: string | undefined): boolean {
   if (value === undefined) return false;
+  const entries = splitOutsideQuotedStrings(value, ',');
+  if (entries === undefined) return false;
   let selected:
     | {
         readonly typeSpecificity: number;
@@ -85,8 +149,10 @@ function acceptsEventStream(value: string | undefined): boolean {
         readonly quality: number;
       }
     | undefined;
-  for (const rawEntry of value.split(',')) {
-    const [rawMediaRange, ...parameters] = rawEntry.split(';');
+  for (const rawEntry of entries) {
+    const segments = splitOutsideQuotedStrings(rawEntry, ';');
+    if (segments === undefined) return false;
+    const [rawMediaRange, ...parameters] = segments;
     const mediaRange = rawMediaRange?.trim().toLowerCase();
     if (mediaRange === undefined || mediaRange === '') return false;
     const slash = mediaRange.indexOf('/');
@@ -109,15 +175,16 @@ function acceptsEventStream(value: string | undefined): boolean {
       const equals = parameter.indexOf('=');
       if (equals <= 0) return false;
       const name = parameter.slice(0, equals).trim();
-      const parameterValue = parameter.slice(equals + 1).trim();
-      if (!HTTP_TOKEN.test(name) || parameterValue === '') return false;
+      const rawParameterValue = parameter.slice(equals + 1).trim();
+      if (!HTTP_TOKEN.test(name) || rawParameterValue === '') return false;
       if (name.toLowerCase() === 'q') {
-        if (qualitySeen || !QUALITY_VALUE.test(parameterValue)) return false;
+        if (qualitySeen || !QUALITY_VALUE.test(rawParameterValue)) return false;
         qualitySeen = true;
-        quality = Number(parameterValue);
-      } else if (!HTTP_TOKEN.test(parameterValue)) {
-        return false;
-      } else if (!qualitySeen) {
+        quality = Number(rawParameterValue);
+      } else {
+        const parameterValue = parseHttpParameterValue(rawParameterValue);
+        if (parameterValue === undefined) return false;
+        if (qualitySeen) continue;
         const normalizedName = name.toLowerCase();
         if (mediaParameters.has(normalizedName)) return false;
         mediaParameters.set(normalizedName, parameterValue.toLowerCase());

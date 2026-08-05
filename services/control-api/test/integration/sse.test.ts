@@ -622,6 +622,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     // A matching parameterized refusal outranks the unparameterized fallback.
     const refused = [
       'text/event-stream;charset=utf-8;q=0, text/event-stream;q=1',
+      'text/event-stream;charset="utf-8";q=0, text/event-stream;q=1',
       'text/event-stream;foo=bar;q=1, text/event-stream;q=0',
     ];
     for (const accept of refused) {
@@ -633,7 +634,10 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
 
     const permitted = [
       'text/event-stream;charset=utf-8;q=1, text/event-stream;q=0',
+      'text/event-stream;charset="UTF-8";q=1, text/event-stream;q=0',
       'text/event-stream;q=1;extension=accepted',
+      'text/event-stream;q=1;extension="quoted value"',
+      'text/event-stream;q=1;extension="quoted, value; one range"',
     ];
     for (const accept of permitted) {
       const controller = new AbortController();
@@ -652,6 +656,8 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     'text/event-stream;q=0.1234',
     'text/event-stream;q=0;q=1',
     'text/event-stream;broken',
+    'text/event-stream;charset="utf-8',
+    'text/event-stream;q=1;extension="broken\\"',
   ])('returns 406 for malformed Accept value %s', async (accept) => {
     // Break caught: Number coercion or ignored malformed parameters negotiates
     // an SSE stream from an invalid Accept field.
