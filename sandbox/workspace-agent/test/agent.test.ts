@@ -7,6 +7,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -49,6 +50,33 @@ async function waitForFile(path: string): Promise<string> {
     }
   }
   throw new Error(`Timed out waiting for ${path}`);
+}
+
+async function requireNativePause(
+  request: Promise<{ readonly statusCode: number }>,
+  readyPath: string,
+): Promise<void> {
+  const first = await Promise.race([
+    waitForFile(readyPath).then(() => 'paused' as const),
+    request.then(() => 'completed' as const),
+  ]);
+  if (first === 'completed') {
+    const response = await request;
+    throw new Error(`Native helper did not pause before the request completed (${String(response.statusCode)})`);
+  }
+}
+
+function configureNativePause(readyPath: string, continuePath: string): () => void {
+  const previousReady = process.env.ZAPP_NATIVE_TEST_READY_PATH;
+  const previousContinue = process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH;
+  process.env.ZAPP_NATIVE_TEST_READY_PATH = readyPath;
+  process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH = continuePath;
+  return () => {
+    if (previousReady === undefined) delete process.env.ZAPP_NATIVE_TEST_READY_PATH;
+    else process.env.ZAPP_NATIVE_TEST_READY_PATH = previousReady;
+    if (previousContinue === undefined) delete process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH;
+    else process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH = previousContinue;
+  };
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {
@@ -1220,6 +1248,122 @@ describe('workspace-agent RPC daemon', () => {
       { path: 'nested/visible.txt', type: 'file' },
     ]);
   });
+
+  test('uses the native helper for read, write, and list across parent swaps', async () => {
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'zapp-workspace-agent-native-outside-'));
+    const restoreNativePause = configureNativePause(
+      join(workspaceRoot, 'native-helper-ready'),
+      join(workspaceRoot, 'native-helper-continue'),
+    );
+
+    try {
+      const readParent = join(workspaceRoot, 'read-parent');
+      const pinnedReadParent = join(workspaceRoot, 'pinned-read-parent');
+      await mkdir(readParent);
+      await writeFile(join(readParent, 'secret.txt'), 'inside');
+      await writeFile(join(outsideRoot, 'secret.txt'), 'outside');
+      const readRequest = requireApp().inject({
+        method: 'GET',
+        url: '/files?path=read-parent/secret.txt',
+        headers: authorization(),
+      });
+      await requireNativePause(readRequest, join(workspaceRoot, 'native-helper-ready'));
+      await rename(readParent, pinnedReadParent);
+      await symlink(outsideRoot, readParent, 'dir');
+      await writeFile(join(workspaceRoot, 'native-helper-continue'), 'continue');
+      const readResponse = await readRequest;
+      expect(readResponse.statusCode).toBe(200);
+      expect(readResponse.body).toBe('inside');
+
+      await rm(join(workspaceRoot, 'native-helper-ready'), { force: true });
+      await rm(join(workspaceRoot, 'native-helper-continue'), { force: true });
+      const writeParent = join(workspaceRoot, 'write-parent');
+      const pinnedWriteParent = join(workspaceRoot, 'pinned-write-parent');
+      await mkdir(writeParent);
+      const writeRequest = requireApp().inject({
+        method: 'PUT',
+        url: '/files?path=write-parent/written.txt',
+        headers: { ...authorization(), 'content-type': 'application/octet-stream' },
+        payload: Buffer.from('inside'),
+      });
+      await requireNativePause(writeRequest, join(workspaceRoot, 'native-helper-ready'));
+      await rename(writeParent, pinnedWriteParent);
+      await symlink(outsideRoot, writeParent, 'dir');
+      await writeFile(join(workspaceRoot, 'native-helper-continue'), 'continue');
+      const writeResponse = await writeRequest;
+      expect(writeResponse.statusCode).toBe(204);
+      expect(await readFile(join(pinnedWriteParent, 'written.txt'), 'utf8')).toBe('inside');
+      await expect(access(join(outsideRoot, 'written.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await rm(join(workspaceRoot, 'native-helper-ready'), { force: true });
+      await rm(join(workspaceRoot, 'native-helper-continue'), { force: true });
+      const listParent = join(workspaceRoot, 'list-parent');
+      const pinnedListParent = join(workspaceRoot, 'pinned-list-parent');
+      await mkdir(listParent);
+      await writeFile(join(listParent, 'inside.txt'), 'inside');
+      await writeFile(join(outsideRoot, 'outside.txt'), 'outside');
+      const listRequest = requireApp().inject({
+        method: 'GET',
+        url: '/files/list?path=list-parent',
+        headers: authorization(),
+      });
+      await requireNativePause(listRequest, join(workspaceRoot, 'native-helper-ready'));
+      await rename(listParent, pinnedListParent);
+      await symlink(outsideRoot, listParent, 'dir');
+      await writeFile(join(workspaceRoot, 'native-helper-continue'), 'continue');
+      const listResponse = await listRequest;
+      expect(listResponse.statusCode).toBe(200);
+      expect(listResponse.json()).toEqual([{ path: 'inside.txt', type: 'file' }]);
+    } finally {
+      restoreNativePause();
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test.each([false, true])(
+    'uses the native launcher to pin cwd across a parent swap when pty=%s',
+    async (pty) => {
+      const outsideRoot = await mkdtemp(join(tmpdir(), 'zapp-workspace-agent-native-exec-'));
+      const parent = join(workspaceRoot, 'exec-parent');
+      const pinnedParent = join(workspaceRoot, 'pinned-exec-parent');
+      const readyPath = join(workspaceRoot, `native-exec-${String(pty)}-ready`);
+      const continuePath = join(workspaceRoot, `native-exec-${String(pty)}-continue`);
+      await mkdir(parent);
+
+      try {
+        const request = requireApp().inject({
+          method: 'POST',
+          url: '/exec',
+          headers: authorization(),
+          payload: {
+            cmd: '/bin/sh',
+            args: ['-c', 'printf pinned > executed.txt'],
+            cwd: 'exec-parent',
+            env: {
+              ZAPP_NATIVE_TEST_READY_PATH: readyPath,
+              ZAPP_NATIVE_TEST_CONTINUE_PATH: continuePath,
+            },
+            timeoutMs: 2_000,
+            pty,
+          },
+        });
+        await requireNativePause(request, readyPath);
+        await rename(parent, pinnedParent);
+        await symlink(outsideRoot, parent, 'dir');
+        await writeFile(continuePath, 'continue');
+
+        const response = await request;
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ exitCode: 0 });
+        expect(await readFile(join(pinnedParent, 'executed.txt'), 'utf8')).toBe('pinned');
+        await expect(access(join(outsideRoot, 'executed.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        await rm(outsideRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('runs the safe git init, add_commit, and status workflow inside the workspace', async () => {
     await execFileAsync('git', ['init'], { cwd: workspaceRoot });

@@ -1,9 +1,16 @@
 import process from 'node:process';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import * as nodePty from 'node-pty';
 import { z } from 'zod';
-import { MAX_EXEC_OUTPUT_BYTES, resolveInRoot } from '@zapp/workspace-runtime';
+import { MAX_EXEC_OUTPUT_BYTES, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
+
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const EXEC_LAUNCHER = join(PACKAGE_ROOT, 'dist', 'native', 'exec-launcher');
 
 const SAFE_INHERITED_ENV_NAMES = [
   'PATH',
@@ -281,6 +288,32 @@ function killProcessGroup(pid: number, fallback: () => void): void {
   fallback();
 }
 
+function launcherArgs(workspaceRoot: string, cwd: string, input: ExecRequest): string[] {
+  return ['--workspace-root', workspaceRoot, '--cwd', cwd, '--', input.cmd, ...input.args];
+}
+
+async function assertExecutable(
+  command: string,
+  checkedCwd: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const candidates = command.includes('/')
+    ? [isAbsolute(command) ? command : resolve(checkedCwd, command)]
+    : (environment.PATH ?? '/usr/bin:/bin')
+        .split(delimiter)
+        .filter((directory) => directory.length > 0)
+        .map((directory) => join(directory, command));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return;
+    } catch {
+      // Try the next PATH entry. The native launcher remains authoritative at exec time.
+    }
+  }
+  throw new ExecPreflightError();
+}
+
 export class ExecManager {
   private readonly active = new Map<number, ActiveProcess>();
 
@@ -291,8 +324,13 @@ export class ExecManager {
   }
 
   async run(input: ExecRequest, emit?: ExecStreamEmitter): Promise<ExecResult> {
-    const cwd = await resolveInRoot(this.workspaceRoot, input.cwd ?? '.');
-    return input.pty === true ? this.runPty(input, cwd, emit) : this.runProcess(input, cwd, emit);
+    const cwd = input.cwd ?? '.';
+    const checkedCwd = await resolveInRoot(this.workspaceRoot, cwd);
+    const environment = buildChildEnv(input.env);
+    await assertExecutable(input.cmd, checkedCwd, environment);
+    return input.pty === true
+      ? this.runPty(input, cwd, environment, emit)
+      : this.runProcess(input, cwd, environment, emit);
   }
 
   kill(pid: number): boolean {
@@ -315,13 +353,13 @@ export class ExecManager {
   private async runProcess(
     input: ExecRequest,
     cwd: string,
+    environment: NodeJS.ProcessEnv,
     emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
-    const subprocess = execa(input.cmd, input.args, {
-      cwd,
-      env: buildChildEnv(input.env),
+    const subprocess = execa(EXEC_LAUNCHER, launcherArgs(this.workspaceRoot, cwd, input), {
+      env: environment,
       extendEnv: false,
       reject: false,
       buffer: false,
@@ -369,6 +407,9 @@ export class ExecManager {
         consumeOutputChunks(stderr, async (data) => output.append('stderr', data)),
       ]);
       const completedExitCode = (completed as { exitCode?: number }).exitCode;
+      if (completedExitCode === 65 && state.termination === undefined) {
+        throw new PathViolationError(cwd);
+      }
       const result = ExecResultSchema.parse({
         exitCode:
           state.termination === 'timeout'
@@ -403,15 +444,15 @@ export class ExecManager {
   private async runPty(
     input: ExecRequest,
     cwd: string,
+    environment: NodeJS.ProcessEnv,
     emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
     let terminal: nodePty.IPty;
     try {
-      terminal = nodePty.spawn(input.cmd, input.args, {
-        cwd,
-        env: buildChildEnv(input.env),
+      terminal = nodePty.spawn(EXEC_LAUNCHER, launcherArgs(this.workspaceRoot, cwd, input), {
+        env: environment,
         cols: 80,
         rows: 24,
       });
