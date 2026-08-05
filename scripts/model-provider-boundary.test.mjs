@@ -764,6 +764,21 @@ test('AR-1 drops detached array aliases and unreachable mutations', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 snapshots direct and aliased array mutations at each object spread', () => {
+  const result = runFixture('loader-cached-array-spread-mutations');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['direct-unshift-unsafe', 'alias-push-unsafe']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 keeps harmless indexes clean after cached array spreads', () => {
+  const result = runFixture('loader-cached-array-spread-mutations-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('AR-1 respects Object.assign source order for final loader values', () => {
   const result = runFixture('loader-object-assign-overwrite-semantics');
 

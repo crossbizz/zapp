@@ -2586,6 +2586,22 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       visit(node);
       return found;
     };
+    const onlySnapshotsTrackedValue = (node) => {
+      let found = false;
+      let snapshotsOnly = true;
+      function visit(current) {
+        if (!snapshotsOnly) return;
+        if (ts.isIdentifier(current) && isTrackedValue(current)) {
+          found = true;
+          snapshotsOnly =
+            ts.isSpreadAssignment(current.parent) && current.parent.expression === current;
+          return;
+        }
+        ts.forEachChild(current, visit);
+      }
+      visit(node);
+      return found && snapshotsOnly;
+    };
     let containerState;
     let refined = false;
 
@@ -2612,7 +2628,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               trackedSymbols.add(declarationIdentity);
             } else {
               trackedSymbols.delete(declarationIdentity);
-              if (referencesTrackedValue(declaration.initializer)) return undefined;
+              if (
+                referencesTrackedValue(declaration.initializer) &&
+                !onlySnapshotsTrackedValue(declaration.initializer)
+              ) {
+                return undefined;
+              }
             }
           }
         }
@@ -2660,6 +2681,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           continue;
         }
         if (assignmentIncludesTrackedSymbol(left, trackedSymbols)) return undefined;
+      }
+      const arrayMutation = ts.isCallExpression(current)
+        ? arrayMutationForCall(current)
+        : undefined;
+      if (arrayMutation && isTrackedValue(arrayMutation.owner)) {
+        if (containerState?.kind !== 'array') return undefined;
+        if (arrayMutation.methodName === 'push') {
+          containerState.elements.push(...current.arguments);
+        } else {
+          containerState.elements.unshift(...current.arguments);
+        }
+        refined = true;
+        continue;
       }
       if (
         ts.isCallExpression(current) &&
