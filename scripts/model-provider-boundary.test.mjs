@@ -653,6 +653,19 @@ test('AR-1 inspects called instance methods through chained aliases of this', ()
   assert.match(result.stderr, /new-provider path: .*called-this-aliases\.ts/);
 });
 
+test('AR-1 preserves mutations across successive calls on one class instance', () => {
+  const result = runFixture('loader-called-instance-state');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*called-instance-state\.ts/);
+});
+
+test('AR-1 isolates called instance state and honors later harmless overwrites', () => {
+  const result = runFixture('loader-called-instance-state-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('AR-1 leaves 250 uncalled this-alias methods bounded and allowed', () => {
   const result = runFixture('loader-called-this-aliases-control');
 

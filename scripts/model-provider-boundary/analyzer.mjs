@@ -363,6 +363,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const trustedLoaderCounts = new Map();
   const contextualLoaderTargets = new Map();
   const contextualValueCache = new Map();
+  const runtimeClassInstances = new Map();
   let collectLoaderContexts = false;
 
   function originsForSymbol(symbol) {
@@ -936,6 +937,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       members: new Map(),
       nullish: MAY_BE_NULLISH | MAY_BE_NON_NULLISH,
       references: new Set(),
+      runtimeInstance: false,
       strings: undefined,
       truthiness: MAY_BE_TRUTHY | MAY_BE_FALSY,
     };
@@ -972,6 +974,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       0,
     );
     merged.references = union(...values.map((value) => value.references ?? new Set()));
+    merged.runtimeInstance = values.some((value) => value.runtimeInstance);
     if (values.every((value) => value.strings !== undefined)) {
       merged.strings = union(...values.map((value) => value.strings));
     }
@@ -1693,9 +1696,31 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       const owner = callableValue(current.expression, environment, state);
       for (const memberName of accessMemberNames(current) ?? ['*']) {
-        owner.members.set(memberName, mergeCallableValues(owner.members.get(memberName), value));
+        owner.members.set(
+          memberName,
+          owner.runtimeInstance ? value : mergeCallableValues(owner.members.get(memberName), value),
+        );
+        if (owner.runtimeInstance && memberName !== '*') {
+          owner.knownDefinedMembers.add(memberName);
+        }
       }
     }
+  }
+
+  function isDeclaredThisAlias(expression, seenSymbols = new Set()) {
+    const current = unwrapExpression(expression);
+    if (current.kind === ts.SyntaxKind.ThisKeyword) return true;
+    if (!ts.isIdentifier(current)) return false;
+    const symbol = symbolAt(checker, current);
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    if (!identity || seenSymbols.has(identity)) return false;
+    const nextSeenSymbols = new Set([...seenSymbols, identity]);
+    return [...(identity.declarations ?? [])].some(
+      (declaration) =>
+        ts.isVariableDeclaration(declaration) &&
+        !!declaration.initializer &&
+        isDeclaredThisAlias(declaration.initializer, nextSeenSymbols),
+    );
   }
 
   function thisAliasValue(expression, environment, state) {
@@ -1775,6 +1800,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function classInstance(record, argumentValues, state) {
     const instance = emptyCallableValue();
     instance.nullish = MAY_BE_NON_NULLISH;
+    instance.runtimeInstance = true;
     instance.truthiness = MAY_BE_TRUTHY;
     const environment = new Map(record.environment ?? []);
     const classLike = record.classLike;
@@ -1794,6 +1820,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             memberName,
             mergeCallableValues(instance.members.get(memberName), memberValue),
           );
+          if (memberName !== '*') instance.knownDefinedMembers.add(memberName);
         }
       } else if (
         ts.isMethodDeclaration(member) &&
@@ -1817,6 +1844,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             memberName,
             mergeCallableValues(instance.members.get(memberName), methodValue),
           );
+          if (memberName !== '*') instance.knownDefinedMembers.add(memberName);
         }
       }
     }
@@ -1831,6 +1859,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             argumentValues[index] ?? emptyCallableValue(),
           ),
         );
+        instance.knownDefinedMembers.add(parameter.name.text);
       });
       functionResult(
         {
@@ -2394,10 +2423,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         state,
       );
       if (exactMemberValue) return exactMemberValue;
-      let value = mergeCallableValues(
-        storedCallableValue(symbolForValue(current)),
-        selectCallableMembers(callableValue(current.expression, environment, state), memberNames),
-      );
+      const ownerValue = callableValue(current.expression, environment, state);
+      const selectedValue = selectCallableMembers(ownerValue, memberNames);
+      let value =
+        (ownerValue.runtimeInstance &&
+          selectedMemberIsDefinitelyDefined(ownerValue, memberNames)) ||
+        isDeclaredThisAlias(current.expression)
+          ? selectedValue
+          : mergeCallableValues(storedCallableValue(symbolForValue(current)), selectedValue);
       if (isNodeModuleNamespaceValue(current.expression)) {
         if (!memberNames) {
           unresolvedNodeModuleMembers.set(current, current.getSourceFile());
@@ -2463,15 +2496,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return mergeCallableValues(...results);
     }
     if (ts.isNewExpression(current)) {
+      const existingInstance = runtimeClassInstances.get(current);
+      if (existingInstance) return existingInstance;
       const constructorValue = callableValue(current.expression, environment, state);
       const argumentValues = (current.arguments ?? []).map((argument) =>
         callableValue(argument, environment, state),
       );
-      return mergeCallableAlternatives(
-        ...(constructorValue.constructors ?? []).map((record) =>
-          classInstance(record, argumentValues, state),
-        ),
+      const instances = (constructorValue.constructors ?? []).map((record) =>
+        classInstance(record, argumentValues, state),
       );
+      const instance =
+        instances.length === 1 ? instances[0] : mergeCallableAlternatives(...instances);
+      runtimeClassInstances.set(current, instance);
+      return instance;
     }
     if (ts.isBinaryExpression(current)) {
       if (current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
