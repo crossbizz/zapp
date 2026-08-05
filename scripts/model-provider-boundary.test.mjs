@@ -653,6 +653,28 @@ test('AR-1 keeps non-assign computed keys and harmless defaults clean', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 selects an Object.assign default when a known source member is undefined', () => {
+  const result = runFixture('loader-object-assign-computed-defaulted-aliases');
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /new-provider path: .*undefined-source-selects-assign-default-unsafe\.ts/,
+  );
+});
+
+test('AR-1 suppresses an Object.assign default when a known source member is defined', () => {
+  const result = runFixture('loader-object-assign-computed-defaulted-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 keeps a missing computed property with a harmless default clean', () => {
+  const result = runFixture('loader-object-assign-computed-defaulted-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('AR-1 invalidates Object.assign aliases after harmless reassignment', () => {
   const result = runFixture('loader-object-assign-alias-reassignment-control');
 

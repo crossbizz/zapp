@@ -2217,6 +2217,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function straightLineObjectAssignExpressionKinds(expression, kindsBySymbol) {
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
+      if (isUnshadowedIdentifier(current, 'undefined')) return 0;
       const identity = valueSymbolIdentity(current);
       if (identity && kindsBySymbol.has(identity)) return kindsBySymbol.get(identity);
       return (symbolAt(checker, current)?.declarations ?? []).some((declaration) =>
