@@ -4340,6 +4340,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       let mayChangeIdentity = false;
       const visit = (node) => {
         if (mayChangeIdentity) return;
+        if (ts.isFunctionLike(node)) {
+          if (node.name && ts.isComputedPropertyName(node.name)) {
+            visit(node.name.expression);
+          }
+          return;
+        }
         if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
           if (!dataOnlyMemberRead(node, dataOnlyState)) {
             mayChangeIdentity = true;
@@ -4382,6 +4388,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       visit(expression);
       return mayChangeIdentity;
     };
+    const expressionEvaluationMayInvalidateState = (expression, state, dataOnlyState) =>
+      [...state.values()].some((identities) => identities && identities.size > 0) &&
+      expressionEvaluationMayChangeIdentity(expression, dataOnlyState);
     const mutationEvaluationMayChangeIdentity = (mutationCall, mutation, dataOnlyState) =>
       [mutation.owner, ...mutationCall.arguments].some((expression) =>
         expressionEvaluationMayChangeIdentity(expression, dataOnlyState),
@@ -4390,6 +4399,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (!ts.isIdentifier(declaration.name)) return false;
+          if (
+            declaration.initializer &&
+            expressionEvaluationMayInvalidateState(declaration.initializer, state, dataOnlyState)
+          ) {
+            return false;
+          }
           const identity = valueSymbolIdentity(declaration.name);
           if (identity) {
             state.set(
@@ -4414,6 +4429,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
           ts.isIdentifier(unwrapExpression(expression.left))
         ) {
+          if (expressionEvaluationMayInvalidateState(expression.right, state, dataOnlyState)) {
+            return false;
+          }
           const identity = valueSymbolIdentity(unwrapExpression(expression.left));
           if (identity) {
             state.set(identity, identitiesForExpression(expression.right, state));

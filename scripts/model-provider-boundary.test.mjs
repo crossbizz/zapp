@@ -808,6 +808,31 @@ test('AR-1 applies getter condition effects before branching array alias state',
   );
 });
 
+test('AR-1 applies initializer expression effects before updating alias state', () => {
+  const result = runFixture('loader-array-alias-reachability');
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /new-provider path: .*getter-ternary-initializer-reattaches-alias-unsafe\.ts/,
+  );
+});
+
+test('AR-1 applies logical assignment RHS effects before updating alias state', () => {
+  const result = runFixture('loader-array-alias-reachability');
+
+  assert.equal(result.status, 1);
+  const fileNames = [
+    'getter-logical-and-assignment-reattaches-alias-unsafe',
+    'getter-logical-or-assignment-reattaches-alias-unsafe',
+    'getter-nullish-assignment-reattaches-alias-unsafe',
+  ];
+  const missingFileNames = fileNames.filter(
+    (fileName) => !new RegExp(`new-provider path: .*${fileName}\\.ts`).test(result.stderr),
+  );
+  assert.deepEqual(missingFileNames, []);
+});
+
 test('AR-1 ignores detached array identities and definitely unreachable mutations', () => {
   const result = runFixture('loader-array-alias-reachability-control');
 
@@ -827,6 +852,12 @@ test('AR-1 preserves detached aliases across proven data-only member and spread 
 });
 
 test('AR-1 preserves detached aliases across proven data-only conditions', () => {
+  const result = runFixture('loader-array-alias-reachability-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 preserves detached aliases across proven data-only initializers and assignments', () => {
   const result = runFixture('loader-array-alias-reachability-control');
 
   assert.equal(result.status, 0, result.stderr);
