@@ -22,7 +22,7 @@ const matchingEvidence = JSON.stringify({
 });
 
 async function runScript(
-  mode: 'valid' | 'banner' | 'producer-failure' | 'sha-mismatch',
+  mode: 'valid' | 'banner' | 'concatenated' | 'producer-failure' | 'sha-mismatch',
   options: { readonly preexistingEvidence?: string } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'zapp-restore-runbook-'));
@@ -37,6 +37,7 @@ set -euo pipefail
 case "$FAKE_PNPM_MODE" in
   valid) printf '%s\\n' "$FAKE_EVIDENCE" ;;
   banner) printf 'pnpm banner\\n%s\\n' "$FAKE_EVIDENCE" ;;
+  concatenated) printf '%s\\n%s\\n' "$FAKE_EVIDENCE" "$FAKE_EVIDENCE" ;;
   producer-failure) printf '%s\\n' "$FAKE_EVIDENCE"; exit 23 ;;
   sha-mismatch) printf '%s\\n' "$FAKE_MISMATCH_EVIDENCE" ;;
 esac
@@ -90,6 +91,15 @@ describe('the executable Git restore runbook', () => {
   it('rejects pnpm banners instead of accepting mixed output as evidence', async () => {
     const execution = await runScript('banner');
     await expect(execution.result).rejects.toBeInstanceOf(Error);
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
+  });
+
+  it('rejects two concatenated valid JSON documents', async () => {
+    const execution = await runScript('concatenated');
+    await expect(execution.result).rejects.toMatchObject({ code: 1 });
     await expect(access(execution.evidence)).rejects.toThrow();
     expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
       [],

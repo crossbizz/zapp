@@ -24,8 +24,10 @@ import {
   type RestorePhase,
   type RestoreRepositoryResult,
 } from '../src/backup.js';
+import { createDbGitAuditSink } from '../src/audit.js';
 import { loadArtifactEnv, loadDatabaseUrl, loadForgejoEnv } from '../src/env.js';
 import { createForgejoClient, type ForgejoClient } from '../src/forgejo/client.js';
+import { createTokenService, type TokenService } from '../src/tokens.js';
 
 const RestoreIdempotencyKeySchema = z
   .string()
@@ -197,6 +199,65 @@ export interface RestoreOperation {
   recordPhase(phase: RestorePhase, result?: RestoreRepositoryResult): Promise<void>;
 }
 
+export interface RestoreCredentialIssuer {
+  issue(input: {
+    readonly sourceOrganizationId: string;
+    readonly sourceProjectId: string;
+    readonly targetRef: string;
+    readonly repositoryId: number;
+    readonly cloneUrl: string;
+  }): Promise<{
+    readonly cloneUrl: string;
+    readonly git: BackupGit;
+    release(): Promise<void>;
+  }>;
+}
+
+export function createForgejoRestoreCredentialIssuer(
+  client: ForgejoClient,
+  tokens: Pick<TokenService, 'mintForRepository'>,
+): RestoreCredentialIssuer {
+  return {
+    issue: async (input) => {
+      const minted = await tokens.mintForRepository({
+        organizationId: input.sourceOrganizationId,
+        projectId: input.sourceProjectId,
+        targetRef: input.targetRef,
+        expectedRepositoryId: input.repositoryId,
+        access: 'write',
+        requestingService: 'git-service',
+        reason: 'restore a verified Git bundle into its receipt-owned target',
+      });
+      try {
+        return {
+          cloneUrl: minted.cloneUrl,
+          git: createGitBundleCommands({
+            username: minted.username,
+            password: minted.token,
+            timeoutMs: 30_000,
+          }),
+          release: async () => {
+            await client.send({
+              method: 'DELETE',
+              path: `/admin/users/${encodeURIComponent(minted.username)}?purge=true`,
+              allow: [404],
+            });
+          },
+        };
+      } catch (error) {
+        await client
+          .send({
+            method: 'DELETE',
+            path: `/admin/users/${encodeURIComponent(minted.username)}?purge=true`,
+            allow: [404],
+          })
+          .catch(() => undefined);
+        throw error;
+      }
+    },
+  };
+}
+
 const RestorePhaseReceiptSchema = z
   .object({
     version: z.literal(1),
@@ -317,14 +378,12 @@ async function resolveIntentTarget(
       },
       allow: [409],
     });
-    response =
-      created.status === 409
-        ? await deps.client.send<ForgejoRestoreRepository>({
-            method: 'GET',
-            path: repositoryPath,
-            allow: [404],
-          })
-        : created;
+    if (created.status === 409) {
+      throw new Error('Restore target has no immutable repository receipt; repository preserved');
+    }
+    response = created;
+  } else if (receipt === undefined) {
+    throw new Error('Restore target has no immutable repository receipt; repository preserved');
   }
 
   const repository = ForgejoRestoreRepositorySchema.safeParse(response.body);
@@ -479,6 +538,7 @@ export function createBackupOperations(deps: {
   readonly store: BackupObjectStore;
   readonly git: BackupGit;
   readonly client: ForgejoClient;
+  readonly restoreCredentials: RestoreCredentialIssuer;
   readonly restoreDrillLease: RestoreDrillLease;
   readonly close: () => Promise<void>;
 }): BackupCliOperations {
@@ -514,7 +574,16 @@ export function createBackupOperations(deps: {
         {
           store,
           git,
-          resolveTarget: async () => await operation.resolveTarget(),
+          resolveTarget: async () => {
+            const target = await operation.resolveTarget();
+            return await deps.restoreCredentials.issue({
+              sourceOrganizationId: repository.organizationId,
+              sourceProjectId: repository.projectId,
+              targetRef: operation.targetRef,
+              repositoryId: target.repositoryId,
+              cloneUrl: target.cloneUrl,
+            });
+          },
           recordPhase: async (phase, result) => {
             await operation.recordPhase(phase, result);
           },
@@ -546,7 +615,16 @@ export function createBackupOperations(deps: {
           {
             store,
             git,
-            resolveTarget: async () => await operation.resolveTarget(),
+            resolveTarget: async () => {
+              const target = await operation.resolveTarget();
+              return await deps.restoreCredentials.issue({
+                sourceOrganizationId: repository.organizationId,
+                sourceProjectId: repository.projectId,
+                targetRef: operation.targetRef,
+                repositoryId: target.repositoryId,
+                cloneUrl: target.cloneUrl,
+              });
+            },
             recordPhase: async (phase, result) => {
               await operation.recordPhase(phase, result);
             },
@@ -571,6 +649,10 @@ function createProductionOperations(): BackupCliOperations {
   const client = createForgejoClient(forgejo);
   const inventory = createDbBackupInventory(database.db, forgejo.baseUrl);
   const store = createR2BackupObjectStore(artifact);
+  const tokens = createTokenService({
+    client,
+    audit: createDbGitAuditSink(database.db),
+  });
   const git = createGitBundleCommands({
     username: 'zapp-admin-token',
     password: forgejo.adminToken,
@@ -581,6 +663,7 @@ function createProductionOperations(): BackupCliOperations {
     store,
     git,
     client,
+    restoreCredentials: createForgejoRestoreCredentialIssuer(client, tokens),
     restoreDrillLease: createPostgresRestoreDrillLease(database.sql),
     close: async () => {
       await database.close();

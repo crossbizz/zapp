@@ -103,6 +103,17 @@ class RestoreGit implements BackupGit {
   }
 }
 
+function credentialsFor(git: BackupGit) {
+  return {
+    issue: (input: { readonly cloneUrl: string }) =>
+      Promise.resolve({
+        cloneUrl: input.cloneUrl,
+        git,
+        release: () => Promise.resolve(),
+      }),
+  };
+}
+
 class StatefulForgejo implements ForgejoClient {
   readonly baseUrl = 'https://git.test';
   readonly calls: ForgejoRequest[] = [];
@@ -251,7 +262,7 @@ describe('intent-first restore recovery', () => {
     expect(forgejo.writes).toEqual([]);
   });
 
-  it('adopts a marker-matching target created before its immutable-id receipt was saved', async () => {
+  it('refuses a marker-matching target without an immutable-id receipt', async () => {
     const begin = beginRestoreOperation();
     expect(begin, 'intent-first restore operation is missing').toBeTypeOf('function');
     if (begin === undefined) {
@@ -283,11 +294,12 @@ describe('intent-first restore recovery', () => {
       },
     });
 
-    await expect(operation.resolveTarget()).resolves.toMatchObject({ repositoryId: 418 });
+    await expect(operation.resolveTarget()).rejects.toThrow(
+      'Restore target has no immutable repository receipt; repository preserved',
+    );
 
     expect(forgejo.writes).toEqual([]);
-    expect(store.puts).toHaveLength(2);
-    expect(store.puts[1]).toMatch(/\.target\.json$/);
+    expect(store.puts).toEqual([operation.intentKey]);
   });
 
   it('persists append-only push and verification phase receipts for crash recovery', async () => {
@@ -313,12 +325,24 @@ describe('intent-first restore recovery', () => {
     const [owner, name] = operation.targetRef.split('/') as [string, string];
     forgejo.route(`GET /orgs/${owner}`, { status: 200, body: { username: owner } });
     forgejo.route(`GET /repos/${owner}/${name}`, {
-      status: 200,
+      status: 404,
+      then: {
+        status: 200,
+        body: {
+          id: 419,
+          clone_url: `https://git.test/${operation.targetRef}.git`,
+          description: intent.targetMarker,
+          empty: true,
+        },
+      },
+    });
+    forgejo.route(`POST /orgs/${owner}/repos`, {
+      status: 201,
       body: {
         id: 419,
         clone_url: `https://git.test/${operation.targetRef}.git`,
         description: intent.targetMarker,
-        empty: false,
+        empty: true,
       },
     });
     await operation.resolveTarget();
@@ -352,6 +376,7 @@ describe('intent-first restore recovery', () => {
       store,
       git,
       client: forgejo,
+      restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
       close: () => Promise.resolve(),
     });
@@ -377,18 +402,126 @@ describe('intent-first restore recovery', () => {
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 
-  it('reuses one persistent marker-owned drill target without path deletion', async () => {
+  it('uses immutable-repository-bound Git access after the target path is replaced', async () => {
     const store = new ReceiptStore();
     store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
     const forgejo = new StatefulForgejo();
+    const adminGit = new RestoreGit();
+    const boundGit = new RestoreGit();
+    boundGit.mirrorPush = () => {
+      boundGit.phases.push('bound-push-refused');
+      return Promise.reject(new Error('repository-bound credential cannot reach replacement'));
+    };
     const operations = backupScript.createBackupOperations({
       inventory: {
         listProvisionedRepositories: () => Promise.resolve([SOURCE]),
         expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
       },
       store,
-      git: new RestoreGit(),
+      git: adminGit,
       client: forgejo,
+      restoreCredentials: {
+        issue: (input: { readonly repositoryId: number }) => {
+          expect(input.repositoryId).toBe(501);
+          forgejo.repository = {
+            id: 999,
+            clone_url: 'https://git.test/replacement/repository.git',
+            description: forgejo.repository?.description ?? '',
+            empty: true,
+          };
+          return Promise.resolve({
+            cloneUrl: 'https://git.test/restore/repository.git',
+            git: boundGit,
+            release: () => Promise.resolve(),
+          });
+        },
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+
+    await expect(
+      operations.restore({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        key: BACKUP_KEY,
+        idempotencyKey: 'incident-2026-08-04-path-replacement',
+      }),
+    ).rejects.toThrow('Bundle mirror push failed');
+    expect(boundGit.phases).toContain('bound-push-refused');
+    expect(adminGit.phases).not.toContain('mirror-pushed');
+    expect(forgejo.repository?.id).toBe(999);
+  });
+
+  it('uses the same repository-bound access to verify refs after a path replacement', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const forgejo = new StatefulForgejo();
+    const adminGit = new RestoreGit();
+    const boundGit = new RestoreGit();
+    boundGit.mirrorPush = () => {
+      boundGit.phases.push('mirror-pushed');
+      forgejo.repository = {
+        id: 999,
+        clone_url: 'https://git.test/replacement/repository.git',
+        description: forgejo.repository?.description ?? '',
+        empty: false,
+      };
+      return Promise.resolve();
+    };
+    boundGit.remoteRefs = () => {
+      boundGit.phases.push('bound-refs-refused');
+      return Promise.reject(new Error('repository-bound credential cannot read replacement'));
+    };
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
+      },
+      store,
+      git: adminGit,
+      client: forgejo,
+      restoreCredentials: {
+        issue: (input) =>
+          Promise.resolve({
+            cloneUrl: input.cloneUrl,
+            git: boundGit,
+            release: () => Promise.resolve(),
+          }),
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+
+    await expect(
+      operations.restore({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        key: BACKUP_KEY,
+        idempotencyKey: 'incident-2026-08-04-ref-replacement',
+      }),
+    ).rejects.toThrow('Restored branch listing failed');
+    expect(boundGit.phases).toEqual(
+      expect.arrayContaining(['mirror-pushed', 'bound-refs-refused']),
+    );
+    expect(adminGit.phases).not.toContain('refs-read');
+    expect(forgejo.repository?.id).toBe(999);
+  });
+
+  it('reuses one persistent marker-owned drill target without path deletion', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const forgejo = new StatefulForgejo();
+    const git = new RestoreGit();
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
+      },
+      store,
+      git,
+      client: forgejo,
+      restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
       close: () => Promise.resolve(),
     });
@@ -410,7 +543,7 @@ describe('intent-first restore recovery', () => {
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 
-  it('leaves a created target intact when its immutable-id receipt write fails, then adopts it', async () => {
+  it('leaves a created target intact but refuses marker-only recovery after receipt loss', async () => {
     const begin = beginRestoreOperation();
     expect(begin).toBeTypeOf('function');
     if (begin === undefined) {
@@ -432,7 +565,9 @@ describe('intent-first restore recovery', () => {
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
 
     const retry = await begin({ store, client: forgejo }, input);
-    await expect(retry.resolveTarget()).resolves.toMatchObject({ repositoryId: 501 });
+    await expect(retry.resolveTarget()).rejects.toThrow(
+      'Restore target has no immutable repository receipt; repository preserved',
+    );
     expect(
       forgejo.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/repos')),
     ).toHaveLength(1);
@@ -463,7 +598,7 @@ describe('intent-first restore recovery', () => {
     ).toHaveLength(1);
   });
 
-  it('adopts only the marker-matching winner of a GET/POST 409 race', async () => {
+  it('refuses the marker-matching winner of a GET/POST 409 race without an id receipt', async () => {
     const begin = beginRestoreOperation();
     expect(begin).toBeTypeOf('function');
     if (begin === undefined) {
@@ -499,7 +634,9 @@ describe('intent-first restore recovery', () => {
     });
     forgejo.route(`POST /orgs/${owner}/repos`, { status: 409 });
 
-    await expect(operation.resolveTarget()).resolves.toMatchObject({ repositoryId: 610 });
+    await expect(operation.resolveTarget()).rejects.toThrow(
+      'Restore target has no immutable repository receipt; repository preserved',
+    );
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 
@@ -573,6 +710,24 @@ describe('intent-first restore recovery', () => {
         source: SOURCE,
         backupKey: BACKUP_KEY,
       },
+    );
+    const intent = JSON.parse(store.values.get(operation.intentKey)?.toString('utf8') ?? '{}') as {
+      readonly targetMarker?: string;
+      readonly targetReceiptKey?: string;
+    };
+    if (intent.targetMarker === undefined || intent.targetReceiptKey === undefined) {
+      throw new Error('restore intent fixture is incomplete');
+    }
+    store.values.set(
+      intent.targetReceiptKey,
+      Buffer.from(
+        JSON.stringify({
+          version: 1,
+          targetRef: operation.targetRef,
+          repositoryId: 700,
+          targetMarker: intent.targetMarker,
+        }),
+      ),
     );
 
     await expect(operation.resolveTarget()).rejects.toThrow('does not match the durable intent');
@@ -651,6 +806,7 @@ describe('intent-first restore recovery', () => {
       store,
       git,
       client: forgejo,
+      restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
       close: () => Promise.resolve(),
     });
@@ -679,14 +835,16 @@ describe('intent-first restore recovery', () => {
     store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
     store.failNextPutMatching = /\.verified\.json$/;
     const forgejo = new StatefulForgejo();
+    const git = new RestoreGit();
     const operations = backupScript.createBackupOperations({
       inventory: {
         listProvisionedRepositories: () => Promise.resolve([SOURCE]),
         expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
       },
       store,
-      git: new RestoreGit(),
+      git,
       client: forgejo,
+      restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
       close: () => Promise.resolve(),
     });

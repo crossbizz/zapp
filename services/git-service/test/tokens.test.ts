@@ -99,6 +99,32 @@ describe('the ephemeral username', () => {
 });
 
 describe('mint', () => {
+  it('refuses to mint a restore credential when the repository is replaced after grant', async () => {
+    const harness = service({
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 200,
+        body: { id: 501, clone_url: `https://git.test/${REF}.git` },
+        then: {
+          status: 200,
+          body: { id: 999, clone_url: `https://git.test/${REF}.git` },
+        },
+      },
+    });
+    await expect(
+      harness.tokens.mintForRepository({
+        ...INPUT,
+        targetRef: REF,
+        expectedRepositoryId: 501,
+      }),
+    ).rejects.toThrow('repository identity changed during credential grant');
+    expect(harness.forgejo.calls.some((call) => call.path.endsWith('/tokens'))).toBe(false);
+    expect(
+      harness.forgejo.calls.filter(
+        (call) => call.method === 'DELETE' && call.path.startsWith('/admin/users/'),
+      ),
+    ).toHaveLength(1);
+  });
+
   it('creates a restricted user, grants it one repository, and mints its token', async () => {
     const harness = service();
 

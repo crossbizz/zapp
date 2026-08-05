@@ -9,7 +9,11 @@ import { branches, organizations, projects, repositories, users } from '@zapp/db
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { beginRestoreOperation } from '../../scripts/backup.js';
+import {
+  beginRestoreOperation,
+  createForgejoRestoreCredentialIssuer,
+} from '../../scripts/backup.js';
+import { createRecordingGitAuditSink } from '../../src/audit.js';
 import {
   createDbBackupInventory,
   createGitBundleCommands,
@@ -23,6 +27,7 @@ import { loadArtifactEnv } from '../../src/env.js';
 import type { ForgejoClient } from '../../src/forgejo/client.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import type { GitProvider } from '../../src/provider/types.js';
+import { createTokenService } from '../../src/tokens.js';
 import { credentialGate } from '../support/credentials.js';
 import {
   adminToken,
@@ -256,12 +261,17 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
       provider === undefined ||
       inventory === undefined ||
       store === undefined ||
+      database === undefined ||
       cloneUrl === undefined
     ) {
       throw new Error('live backup test was not initialized');
     }
     const activeClient = client;
     const activeProvider = provider;
+    const restoreCredentials = createForgejoRestoreCredentialIssuer(
+      activeClient,
+      createTokenService({ client: activeClient, audit: createRecordingGitAuditSink() }),
+    );
     const token = adminToken();
     const before = refs(await authenticatedGit(tmpdir(), token, ['ls-remote', cloneUrl]));
     const repository = (await inventory.listProvisionedRepositories()).find(
@@ -309,7 +319,16 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
         {
           store,
           git,
-          resolveTarget: async () => await failedOperation.resolveTarget(),
+          resolveTarget: async () => {
+            const target = await failedOperation.resolveTarget();
+            return await restoreCredentials.issue({
+              sourceOrganizationId: organizationId,
+              sourceProjectId: projectId,
+              targetRef: failedOperation.targetRef,
+              repositoryId: target.repositoryId,
+              cloneUrl: target.cloneUrl,
+            });
+          },
           recordPhase: async (phase, result) => {
             await failedOperation.recordPhase(phase, result);
           },
@@ -341,8 +360,15 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
         git,
         resolveTarget: async () => {
           const target = await retryOperation.resolveTarget();
-          restoredCloneUrl = target.cloneUrl;
-          return target;
+          const credential = await restoreCredentials.issue({
+            sourceOrganizationId: organizationId,
+            sourceProjectId: projectId,
+            targetRef: retryOperation.targetRef,
+            repositoryId: target.repositoryId,
+            cloneUrl: target.cloneUrl,
+          });
+          restoredCloneUrl = credential.cloneUrl;
+          return credential;
         },
         recordPhase: async (phase, result) => {
           await retryOperation.recordPhase(phase, result);

@@ -1238,6 +1238,10 @@ const RestoreInputSchema = z
 
 export interface ResolvedRestoreTarget {
   readonly cloneUrl: string;
+  /** Push and ref reads use this repository-bound credential, never backup admin access. */
+  readonly git: BackupGit;
+  /** Revokes the one ephemeral grant issued for this restore attempt. */
+  release(): Promise<void>;
 }
 
 export type RestorePhase = 'push-started' | 'push-complete' | 'verified';
@@ -1257,6 +1261,7 @@ export async function restoreRepositoryBackup(
   }
   const directory = await mkdtemp(join(tmpdir(), 'zapp-git-restore-'));
   const bundlePath = join(directory, 'repository.bundle');
+  let resolvedTarget: ResolvedRestoreTarget | undefined;
   try {
     try {
       await pipeline(await deps.store.get(parsed.data.key), createWriteStream(bundlePath));
@@ -1272,7 +1277,6 @@ export async function restoreRepositoryBackup(
     } catch {
       throw new Error('Git bundle verification failed');
     }
-    let resolvedTarget: ResolvedRestoreTarget;
     try {
       resolvedTarget = await deps.resolveTarget();
       resolvedTarget = { ...resolvedTarget, cloneUrl: safeGitUrl(resolvedTarget.cloneUrl) };
@@ -1281,14 +1285,14 @@ export async function restoreRepositoryBackup(
     }
     await deps.recordPhase?.('push-started');
     try {
-      await deps.git.mirrorPush(bundlePath, resolvedTarget.cloneUrl);
+      await resolvedTarget.git.mirrorPush(bundlePath, resolvedTarget.cloneUrl);
     } catch {
       throw new Error('Bundle mirror push failed');
     }
     await deps.recordPhase?.('push-complete');
     let actual: ReadonlyMap<string, string>;
     try {
-      actual = await deps.git.remoteRefs(resolvedTarget.cloneUrl);
+      actual = await resolvedTarget.git.remoteRefs(resolvedTarget.cloneUrl);
     } catch {
       throw new Error('Restored branch listing failed');
     }
@@ -1313,6 +1317,10 @@ export async function restoreRepositoryBackup(
     await deps.recordPhase?.('verified', result);
     return result;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    try {
+      await resolvedTarget?.release();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 }

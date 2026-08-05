@@ -8,7 +8,7 @@ Use this runbook when a provisioned internal Forgejo repository must be rebuilt 
 - Confirm the `repositories` row is an internal repository with non-null `provisioned_at` and that the `branches` rows contain the expected heads. Null heads are unborn branches and are not compared.
 - Select exactly one object under `org/{organizationId}/project/{projectId}/git-backups/`. Prefer the newest known-good `YYYY-MM-DD.bundle`; record the full key in the incident log.
 - Choose a durable, non-secret incident idempotency key and record it with the selected object key. Reusing the same key with the same selector resumes that operation; reusing it with a different selector fails before Forgejo mutation.
-- Do not delete or rename a failed restore target. The command may resume only the exact target whose durable marker, expected ref, and immutable Forgejo repository ID match its append-only receipts. Any mismatch is preserved and refused.
+- Do not delete or rename a failed restore target. The command may resume only the exact target whose durable target receipt records the expected ref, marker, and immutable Forgejo repository ID. A marker without that ID receipt is insufficient; any missing receipt or mismatch is preserved and refused.
 - Inject `DATABASE_URL`, `FORGEJO_URL`, `FORGEJO_ADMIN_TOKEN`, and `ARTIFACT_ENDPOINT/KEY/SECRET/BUCKET/REGION` from the approved secret manager into the process environment. Never place a token in a Git URL, command argument, shell history, workflow value, fixture, or file.
 
 Git bundles do **not** contain Git LFS objects, Forgejo metadata, issues, pull requests, users, or repository settings. Forgejo volume snapshots are the LFS/object backup half. A complete incident restore requires the matching PostgreSQL metadata and Forgejo volume state; the bundle alone is not a full Forgejo backup.
@@ -33,10 +33,10 @@ The command performs the recovery in this order:
 
 1. conditionally persists the selector-bound intent receipt before any Forgejo repository creation;
 2. streams the selected object to a controller-created temporary directory, rejects an empty object, and runs `git bundle verify`;
-3. resolves the expected target: it creates and records the immutable repository ID, or resumes only a repository whose target ref and marker match the intent and whose ID matches any existing target receipt;
-4. records `push-started`, mirror-pushes every ref from the bundle (including tags and non-branch refs), then records `push-complete`;
-5. reads every actual remote ref, compares every non-null expected branch SHA with the `branches` table, emits exact branch/ref evidence, and records `verified`;
-6. removes only local temporary bundle, mirror, and askpass files.
+3. resolves the expected target: a confirmed create records its immutable repository ID; an existing repository is accepted only when a prior target receipt matches its ref, marker, and ID. A marker-only repository and a create conflict are refused;
+4. grants a restricted ephemeral user access to that repository, re-reads and matches the immutable ID after the collaborator grant, then uses that repository-bound credential for the mirror push and every remote-ref read. A replacement at the same path cannot inherit the grant;
+5. records `push-started`, mirror-pushes every ref from the bundle (including tags and non-branch refs), records `push-complete`, compares every non-null expected branch SHA with the `branches` table, emits exact branch/ref evidence, and records `verified`;
+6. revokes the ephemeral restore identity and removes only local temporary bundle, mirror, and askpass files.
 
 Any failed download, verification, create, push, or SHA comparison exits non-zero. A missing or mismatched expected branch is never reported as success.
 
@@ -44,7 +44,7 @@ Any failed download, verification, create, push, or SHA comparison exits non-zer
 
 The restore process never automatically deletes a Forgejo repository. Forgejo has no atomic delete-by-immutable-ID guard, so a path-based delete could remove a replacement installed after the final ownership check. Safety takes precedence over cleanup: failed and interrupted attempts retain their target and append-only intent, target, and phase receipts.
 
-Retry with the same `GIT_RESTORE_IDEMPOTENCY_KEY` and unchanged selector. The retry resumes the exact receipt-owned target and safely replays mirror push and verification. If the target is absent, its immutable ID changed, its marker changed, or the key names a different selector, the command exits non-zero without repository deletion. Preserve the target and receipts for operator investigation; never remove the organization or R2 source object as part of restore recovery.
+Retry with the same `GIT_RESTORE_IDEMPOTENCY_KEY` and unchanged selector. The retry resumes the exact ID-receipt-owned target and safely replays mirror push and verification. If creation succeeded but the immutable-ID receipt was not saved, the marker alone does not authorize adoption: the retry exits non-zero and preserves the repository for operator reconciliation. An absent target, changed ID or marker, create conflict, or different selector also exits non-zero without repository deletion. Never remove the organization or R2 source object as part of restore recovery.
 
 The scheduled quarterly drill holds the PostgreSQL advisory lease for the entire operation and reuses one deterministic, persistent drill target. Each selected bundle gets its own intent/phase receipts, while the stable target receipt pins the target ref, marker, and immutable repository ID. A later drill mirrors the newly selected bundle into that same target. A crash or mismatch never authorizes deletion, and quarterly drills do not accumulate fresh repositories.
 

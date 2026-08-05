@@ -434,6 +434,8 @@ describe('restoreRepositoryBackup', () => {
         resolveTarget: () =>
           Promise.resolve({
             cloneUrl: 'https://git.test/drill/repository.git',
+            git,
+            release: () => Promise.resolve(),
           }),
       },
       { key, expectedBranches: branches },
@@ -479,6 +481,8 @@ describe('restoreRepositoryBackup', () => {
           resolutions += 1;
           return Promise.resolve({
             cloneUrl: 'https://git.test/drill/persistent.git',
+            git,
+            release: () => Promise.resolve(),
           });
         },
       },
@@ -506,6 +510,8 @@ describe('restoreRepositoryBackup', () => {
             resolutions += 1;
             return Promise.resolve({
               cloneUrl: 'https://git.test/drill/persistent.git',
+              git,
+              release: () => Promise.resolve(),
             });
           },
         },
@@ -542,6 +548,8 @@ describe('restoreRepositoryBackup', () => {
             resolveTarget: () =>
               Promise.resolve({
                 cloneUrl: 'https://git.test/drill/repository.git',
+                git,
+                release: () => Promise.resolve(),
               }),
           },
           { key, expectedBranches: branches },
@@ -566,6 +574,8 @@ describe('restoreRepositoryBackup', () => {
           resolveTarget: () =>
             Promise.resolve({
               cloneUrl: 'https://git.test/drill/repository.git',
+              git,
+              release: () => Promise.resolve(),
             }),
           recordPhase: (phase) => {
             expect(git.pushed).toHaveLength(0);
@@ -596,6 +606,8 @@ describe('restoreRepositoryBackup', () => {
             resolutions += 1;
             return Promise.resolve({
               cloneUrl: 'https://git.test/drill/repository.git',
+              git,
+              release: () => Promise.resolve(),
             });
           },
         },

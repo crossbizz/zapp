@@ -29,12 +29,15 @@ pnpm --silent --filter @zapp/git-service exec tsx \
   --env-file-if-exists=../../.env.local.forgejo \
   scripts/backup.ts restore >"$temporary_path"
 
-jq -e '
-  .status == "restored" and
-  (.branches | type) == "array" and
-  (.refs | type) == "array" and
-  .checkedBranches == (.branches | length) and
-  all(.branches[]; .expectedSha == .actualSha)
+jq -s -e '
+  length == 1 and
+  (.[0] |
+    .status == "restored" and
+    (.branches | type) == "array" and
+    (.refs | type) == "array" and
+    .checkedBranches == (.branches | length) and
+    all(.branches[]; .expectedSha == .actualSha)
+  )
 ' "$temporary_path" >/dev/null
 
 node - "$temporary_path" <<'NODE'

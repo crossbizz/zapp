@@ -58,6 +58,9 @@ describe('the restore-drill lease', () => {
         remoteRefs: () => Promise.reject(new Error('not used')),
       },
       client: createFakeForgejo(),
+      restoreCredentials: {
+        issue: () => Promise.reject(new Error('not used')),
+      },
       restoreDrillLease: lease,
       close: () => Promise.resolve(),
     });
