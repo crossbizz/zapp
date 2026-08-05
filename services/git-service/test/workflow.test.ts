@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 type WorkflowStep = {
   readonly name?: string;
   readonly env?: Readonly<Record<string, string>>;
+  readonly run?: string;
 };
 
 type Workflow = {
@@ -53,21 +54,26 @@ describe('the Git backup workflow', () => {
   it('exposes operational secrets only to the backup or restore step', async () => {
     const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
     const job = workflow.jobs?.run;
-
-    expect(containsSecretReference(workflow.env)).toBe(false);
-    expect(containsSecretReference(job?.env)).toBe(false);
-
-    const setupStepNames = ['Checkout', 'Enable corepack', 'Setup Node', 'Install dependencies'];
-    for (const stepName of setupStepNames) {
-      const step = job?.steps?.find((candidate) => candidate.name === stepName);
-      expect(step, `missing workflow step ${stepName}`).toBeDefined();
-      expect(containsSecretReference(step), `${stepName} receives a secret`).toBe(false);
-    }
-
-    const operation = job?.steps?.find(
-      (candidate) => candidate.name === 'Run backup or restore drill',
+    const steps = job?.steps ?? [];
+    const operationIndexes = steps.flatMap((step, index) =>
+      step.name === 'Run backup or restore drill' ? [index] : [],
     );
+    expect(operationIndexes).toEqual([steps.length - 1]);
+    const operation = steps.at(-1);
     expect(operation, 'missing backup or restore step').toBeDefined();
-    expect(operation?.env).toMatchObject(secretEnvironment);
+    expect(operation?.env).toEqual(secretEnvironment);
+    expect(operation?.run).toBe(
+      `if [ "\${{ github.event.schedule == '29 4 1 */3 *' && 'restore-drill' || inputs.mode || 'nightly' }}" = 'restore-drill' ]; then\n  pnpm --filter @zapp/git-service backup:restore-drill\nelse\n  pnpm --filter @zapp/git-service backup\nfi\n`,
+    );
+
+    const workflowWithoutOperation = structuredClone(workflow) as {
+      jobs?: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    workflowWithoutOperation.jobs?.run?.steps?.pop();
+    expect(
+      containsSecretReference(workflowWithoutOperation),
+      'a non-operation workflow field receives a secret',
+    ).toBe(false);
+    expect(containsSecretReference({ ...operation, env: undefined })).toBe(false);
   });
 });

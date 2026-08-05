@@ -110,6 +110,12 @@ describe('loadArtifactEnv', () => {
       secretAccessKey: 'secret-access-key',
       bucket: 'zapp-artifacts',
       region: 'auto',
+      multipartThresholdBytes: 100 * 1024 * 1024,
+      multipartPartSizeBytes: 10 * 1024 * 1024,
+      multipartConcurrency: 4,
+      uploadDeadlineMs: 1_800_000,
+      maxAttempts: 3,
+      retryBaseDelayMs: 100,
     });
   });
 
@@ -123,6 +129,27 @@ describe('loadArtifactEnv', () => {
     expect(loadArtifactEnv(artifact)).toMatchObject({ region: 'auto' });
     expect(loadArtifactEnv({ ...artifact, ARTIFACT_REGION: 'us-east-1' })).toMatchObject({
       region: 'us-east-1',
+    });
+  });
+
+  it('parses bounded multipart threshold, part, concurrency, deadline, and retry controls', () => {
+    expect(
+      loadArtifactEnv({
+        ...artifact,
+        ARTIFACT_MULTIPART_THRESHOLD_BYTES: String(20 * 1024 * 1024),
+        ARTIFACT_MULTIPART_PART_SIZE_BYTES: String(5 * 1024 * 1024),
+        ARTIFACT_MULTIPART_CONCURRENCY: '2',
+        ARTIFACT_UPLOAD_DEADLINE_MS: '120000',
+        ARTIFACT_UPLOAD_MAX_ATTEMPTS: '2',
+        ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS: '25',
+      }),
+    ).toMatchObject({
+      multipartThresholdBytes: 20 * 1024 * 1024,
+      multipartPartSizeBytes: 5 * 1024 * 1024,
+      multipartConcurrency: 2,
+      uploadDeadlineMs: 120_000,
+      maxAttempts: 2,
+      retryBaseDelayMs: 25,
     });
   });
 

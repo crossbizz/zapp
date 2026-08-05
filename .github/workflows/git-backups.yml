@@ -62,9 +62,8 @@ jobs:
           ARTIFACT_KEY: ${{ secrets.GIT_BACKUP_R2_ACCESS_KEY_ID }}
           ARTIFACT_SECRET: ${{ secrets.GIT_BACKUP_R2_SECRET_ACCESS_KEY }}
           ARTIFACT_BUCKET: ${{ secrets.GIT_BACKUP_R2_BUCKET }}
-          OPERATION: ${{ github.event.schedule == '29 4 1 */3 *' && 'restore-drill' || inputs.mode || 'nightly' }}
         run: |
-          if [ "$OPERATION" = 'restore-drill' ]; then
+          if [ "${{ github.event.schedule == '29 4 1 */3 *' && 'restore-drill' || inputs.mode || 'nightly' }}" = 'restore-drill' ]; then
             pnpm --filter @zapp/git-service backup:restore-drill
           else
             pnpm --filter @zapp/git-service backup

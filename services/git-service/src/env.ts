@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { LOG_LEVELS } from './logging.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from './sweep.js';
 
+const MIB = 1024 * 1024;
+
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
  *
@@ -122,6 +124,22 @@ export const ArtifactEnvSchema = z
       .max(63)
       .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/),
     ARTIFACT_REGION: z.string().min(1).default('auto'),
+    ARTIFACT_MULTIPART_THRESHOLD_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(5 * 1024 * MIB)
+      .default(100 * MIB),
+    ARTIFACT_MULTIPART_PART_SIZE_BYTES: z.coerce
+      .number()
+      .int()
+      .min(5 * MIB)
+      .max(5 * 1024 * MIB)
+      .default(10 * MIB),
+    ARTIFACT_MULTIPART_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(4),
+    ARTIFACT_UPLOAD_DEADLINE_MS: z.coerce.number().int().min(100).max(7_200_000).default(1_800_000),
+    ARTIFACT_UPLOAD_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+    ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(0).max(10_000).default(100),
   })
   .transform((env) => ({
     endpoint: env.ARTIFACT_ENDPOINT.replace(/\/+$/, ''),
@@ -129,6 +147,12 @@ export const ArtifactEnvSchema = z
     secretAccessKey: env.ARTIFACT_SECRET,
     bucket: env.ARTIFACT_BUCKET,
     region: env.ARTIFACT_REGION,
+    multipartThresholdBytes: env.ARTIFACT_MULTIPART_THRESHOLD_BYTES,
+    multipartPartSizeBytes: env.ARTIFACT_MULTIPART_PART_SIZE_BYTES,
+    multipartConcurrency: env.ARTIFACT_MULTIPART_CONCURRENCY,
+    uploadDeadlineMs: env.ARTIFACT_UPLOAD_DEADLINE_MS,
+    maxAttempts: env.ARTIFACT_UPLOAD_MAX_ATTEMPTS,
+    retryBaseDelayMs: env.ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS,
   }));
 
 export type ArtifactEnv = z.infer<typeof ArtifactEnvSchema>;

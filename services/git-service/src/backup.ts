@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { idSchema, internalRepoRef, InternalRepoRefSchema } from '@zapp/contracts';
 import {
@@ -13,12 +14,16 @@ import {
   type Database,
 } from '@zapp/db';
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { and, asc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
@@ -26,7 +31,13 @@ import { z } from 'zod';
 export const BackupDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .refine((value) => new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value);
+  .refine((value) => {
+    if (value.startsWith('0000-')) {
+      return false;
+    }
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  });
 
 const BackupKeyInputSchema = z
   .object({
@@ -137,9 +148,17 @@ const BackupObjectSchema = z
 
 export type BackupObject = z.infer<typeof BackupObjectSchema>;
 
+export interface BackupUploadSource {
+  readonly contentLength: number;
+  readonly contentType?: string;
+  open(range?: { readonly start: number; readonly endExclusive: number }): Readable;
+}
+
+export type BackupPutResult = 'created' | 'existing';
+
 export interface BackupObjectStore {
   exists(key: string): Promise<boolean>;
-  put(key: string, body: Readable, contentLength: number): Promise<void>;
+  put(key: string, source: BackupUploadSource): Promise<BackupPutResult>;
   get(key: string): Promise<Readable>;
   list(
     prefix: string,
@@ -149,11 +168,15 @@ export interface BackupObjectStore {
 }
 
 export type S3ClientPortCommand =
+  | AbortMultipartUploadCommand
+  | CompleteMultipartUploadCommand
+  | CreateMultipartUploadCommand
   | DeleteObjectCommand
   | GetObjectCommand
   | HeadObjectCommand
   | ListObjectsV2Command
-  | PutObjectCommand;
+  | PutObjectCommand
+  | UploadPartCommand;
 
 export interface S3ClientPort {
   send(
@@ -174,10 +197,24 @@ function httpStatus(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+const MIB = 1024 * 1024;
+const RETRYABLE_HTTP_STATUSES = new Set([409, 429, 500, 502, 503, 504]);
+
+function retryable(error: unknown): boolean {
+  const status = httpStatus(error);
+  return status !== undefined && RETRYABLE_HTTP_STATUSES.has(status);
+}
+
 export function createS3BackupObjectStore(options: {
   readonly client: S3ClientPort;
   readonly bucket: string;
   readonly timeoutMs: number;
+  readonly multipartThresholdBytes?: number;
+  readonly multipartPartSizeBytes?: number;
+  readonly multipartConcurrency?: number;
+  readonly uploadDeadlineMs?: number;
+  readonly maxAttempts?: number;
+  readonly retryBaseDelayMs?: number;
 }): BackupObjectStore {
   const parsed = z
     .object({
@@ -187,22 +224,174 @@ export function createS3BackupObjectStore(options: {
         .max(63)
         .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/),
       timeoutMs: z.number().int().min(100).max(300_000),
+      multipartThresholdBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(5 * 1024 * MIB)
+        .default(100 * MIB),
+      multipartPartSizeBytes: z
+        .number()
+        .int()
+        .min(5 * MIB)
+        .max(5 * 1024 * MIB)
+        .default(10 * MIB),
+      multipartConcurrency: z.number().int().min(1).max(16).default(4),
+      uploadDeadlineMs: z.number().int().min(100).max(7_200_000).default(1_800_000),
+      maxAttempts: z.number().int().min(1).max(5).default(3),
+      retryBaseDelayMs: z.number().int().min(0).max(10_000).default(100),
     })
     .strict()
-    .safeParse({ bucket: options.bucket, timeoutMs: options.timeoutMs });
+    .safeParse({
+      bucket: options.bucket,
+      timeoutMs: options.timeoutMs,
+      multipartThresholdBytes: options.multipartThresholdBytes,
+      multipartPartSizeBytes: options.multipartPartSizeBytes,
+      multipartConcurrency: options.multipartConcurrency,
+      uploadDeadlineMs: options.uploadDeadlineMs,
+      maxAttempts: options.maxAttempts,
+      retryBaseDelayMs: options.retryBaseDelayMs,
+    });
   if (!parsed.success) {
     throw new Error('Invalid object store configuration');
   }
+  const config = parsed.data;
 
   const send = async (command: S3ClientPortCommand): Promise<unknown> =>
     await options.client.send(command, {
-      abortSignal: AbortSignal.timeout(parsed.data.timeoutMs),
+      abortSignal: AbortSignal.timeout(config.timeoutMs),
     });
+
+  async function sendWithRetry(
+    command: () => S3ClientPortCommand,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+      try {
+        return await options.client.send(command(), { abortSignal: signal });
+      } catch (error) {
+        lastError = error;
+        if (attempt === config.maxAttempts || !retryable(error) || signal.aborted) {
+          throw error;
+        }
+        await delay(config.retryBaseDelayMs * 2 ** (attempt - 1), undefined, { signal });
+      }
+    }
+    throw lastError;
+  }
+
+  async function abortMultipart(key: string, uploadId: string): Promise<void> {
+    try {
+      await options.client.send(
+        new AbortMultipartUploadCommand({
+          Bucket: config.bucket,
+          Key: key,
+          UploadId: uploadId,
+        }),
+        { abortSignal: AbortSignal.timeout(config.timeoutMs) },
+      );
+    } catch {
+      // The original upload failure remains authoritative. R2 also expires
+      // incomplete multipart uploads, but this best-effort abort is the normal cleanup path.
+    }
+  }
+
+  async function multipartAttempt(
+    key: string,
+    source: BackupUploadSource,
+    deadline: AbortSignal,
+  ): Promise<void> {
+    const created = await sendWithRetry(
+      () =>
+        new CreateMultipartUploadCommand({
+          Bucket: config.bucket,
+          Key: key,
+          ContentType: source.contentType ?? 'application/x-git-bundle',
+        }),
+      deadline,
+    );
+    const uploadId =
+      typeof created === 'object' && created !== null && 'UploadId' in created
+        ? (created as { readonly UploadId?: unknown }).UploadId
+        : undefined;
+    if (typeof uploadId !== 'string' || uploadId === '') {
+      throw new Error('Multipart upload response carried no upload id');
+    }
+
+    const controller = new AbortController();
+    const signal = AbortSignal.any([deadline, controller.signal]);
+    const partCount = Math.ceil(source.contentLength / config.multipartPartSizeBytes);
+    if (partCount > 10_000) {
+      await abortMultipart(key, uploadId);
+      throw new Error('Multipart upload exceeds the part limit');
+    }
+    const parts: { PartNumber: number; ETag: string }[] = [];
+    let nextPart = 0;
+
+    const workers = Array.from(
+      { length: Math.min(config.multipartConcurrency, partCount) },
+      async () => {
+        for (;;) {
+          const index = nextPart;
+          nextPart += 1;
+          if (index >= partCount) {
+            return;
+          }
+          const start = index * config.multipartPartSizeBytes;
+          const endExclusive = Math.min(
+            start + config.multipartPartSizeBytes,
+            source.contentLength,
+          );
+          const response = await sendWithRetry(
+            () =>
+              new UploadPartCommand({
+                Bucket: config.bucket,
+                Key: key,
+                UploadId: uploadId,
+                PartNumber: index + 1,
+                Body: source.open({ start, endExclusive }),
+                ContentLength: endExclusive - start,
+              }),
+            signal,
+          );
+          const etag =
+            typeof response === 'object' && response !== null && 'ETag' in response
+              ? (response as { readonly ETag?: unknown }).ETag
+              : undefined;
+          if (typeof etag !== 'string' || etag === '') {
+            throw new Error('Multipart part response carried no ETag');
+          }
+          parts.push({ PartNumber: index + 1, ETag: etag });
+        }
+      },
+    );
+
+    try {
+      await Promise.all(workers);
+      parts.sort((left, right) => left.PartNumber - right.PartNumber);
+      await options.client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: config.bucket,
+          Key: key,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts },
+          IfNoneMatch: '*',
+        }),
+        { abortSignal: signal },
+      );
+    } catch (error) {
+      controller.abort();
+      await Promise.allSettled(workers);
+      await abortMultipart(key, uploadId);
+      throw error;
+    }
+  }
 
   return {
     async exists(key: string): Promise<boolean> {
       try {
-        await send(new HeadObjectCommand({ Bucket: parsed.data.bucket, Key: key }));
+        await send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
         return true;
       } catch (error) {
         if (httpStatus(error) === 404) {
@@ -212,28 +401,59 @@ export function createS3BackupObjectStore(options: {
       }
     },
 
-    async put(key: string, body: Readable, contentLength: number): Promise<void> {
-      try {
-        await send(
-          new PutObjectCommand({
-            Bucket: parsed.data.bucket,
-            Key: key,
-            Body: body,
-            ContentLength: contentLength,
-            ContentType: 'application/x-git-bundle',
-            IfNoneMatch: '*',
-          }),
-        );
-      } catch (error) {
-        if (httpStatus(error) === 412) {
-          return;
-        }
-        throw error;
+    async put(key: string, source: BackupUploadSource): Promise<BackupPutResult> {
+      if (
+        !Number.isSafeInteger(source.contentLength) ||
+        source.contentLength <= 0 ||
+        typeof source.open !== 'function'
+      ) {
+        throw new Error('Invalid backup upload source');
       }
+      const deadline = AbortSignal.timeout(config.uploadDeadlineMs);
+      if (source.contentLength < config.multipartThresholdBytes) {
+        try {
+          await sendWithRetry(
+            () =>
+              new PutObjectCommand({
+                Bucket: config.bucket,
+                Key: key,
+                Body: source.open(),
+                ContentLength: source.contentLength,
+                ContentType: source.contentType ?? 'application/x-git-bundle',
+                IfNoneMatch: '*',
+              }),
+            deadline,
+          );
+          return 'created';
+        } catch (error) {
+          if (httpStatus(error) === 412) {
+            return 'existing';
+          }
+          throw error;
+        }
+      }
+
+      for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+        try {
+          await multipartAttempt(key, source, deadline);
+          return 'created';
+        } catch (error) {
+          if (httpStatus(error) === 412) {
+            return 'existing';
+          }
+          if (httpStatus(error) !== 409 || attempt === config.maxAttempts || deadline.aborted) {
+            throw error;
+          }
+          await delay(config.retryBaseDelayMs * 2 ** (attempt - 1), undefined, {
+            signal: deadline,
+          });
+        }
+      }
+      throw new Error('Multipart upload attempts exhausted');
     },
 
     async get(key: string): Promise<Readable> {
-      const response = await send(new GetObjectCommand({ Bucket: parsed.data.bucket, Key: key }));
+      const response = await send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
       const body =
         typeof response === 'object' && response !== null && 'Body' in response
           ? (response as { readonly Body?: unknown }).Body
@@ -247,7 +467,7 @@ export function createS3BackupObjectStore(options: {
     async list(prefix: string, continuationToken?: string) {
       const response = await send(
         new ListObjectsV2Command({
-          Bucket: parsed.data.bucket,
+          Bucket: config.bucket,
           Prefix: prefix,
           ...(continuationToken === undefined ? {} : { ContinuationToken: continuationToken }),
         }),
@@ -279,7 +499,7 @@ export function createS3BackupObjectStore(options: {
     },
 
     async delete(key: string): Promise<void> {
-      await send(new DeleteObjectCommand({ Bucket: parsed.data.bucket, Key: key }));
+      await send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
     },
   };
 }
@@ -291,11 +511,18 @@ export function createR2BackupObjectStore(config: {
   readonly bucket: string;
   readonly region: string;
   readonly timeoutMs?: number;
+  readonly multipartThresholdBytes?: number;
+  readonly multipartPartSizeBytes?: number;
+  readonly multipartConcurrency?: number;
+  readonly uploadDeadlineMs?: number;
+  readonly maxAttempts?: number;
+  readonly retryBaseDelayMs?: number;
 }): BackupObjectStore {
   const endpoint = new URL(config.endpoint);
   const client = new S3Client({
     endpoint: endpoint.toString().replace(/\/$/, ''),
     region: config.region,
+    maxAttempts: 1,
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
@@ -311,6 +538,18 @@ export function createR2BackupObjectStore(config: {
     client,
     bucket: config.bucket,
     timeoutMs: config.timeoutMs ?? 30_000,
+    ...(config.multipartThresholdBytes === undefined
+      ? {}
+      : { multipartThresholdBytes: config.multipartThresholdBytes }),
+    ...(config.multipartPartSizeBytes === undefined
+      ? {}
+      : { multipartPartSizeBytes: config.multipartPartSizeBytes }),
+    ...(config.multipartConcurrency === undefined
+      ? {}
+      : { multipartConcurrency: config.multipartConcurrency }),
+    ...(config.uploadDeadlineMs === undefined ? {} : { uploadDeadlineMs: config.uploadDeadlineMs }),
+    ...(config.maxAttempts === undefined ? {} : { maxAttempts: config.maxAttempts }),
+    ...(config.retryBaseDelayMs === undefined ? {} : { retryBaseDelayMs: config.retryBaseDelayMs }),
   });
 }
 
@@ -722,6 +961,25 @@ export interface RepositoryBackupResult {
   readonly status: 'uploaded' | 'existing';
 }
 
+async function verifyStoredBundle(
+  store: BackupObjectStore,
+  git: BackupGit,
+  key: string,
+): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), 'zapp-git-backup-verify-'));
+  const bundlePath = join(directory, 'repository.bundle');
+  try {
+    await pipeline(await store.get(key), createWriteStream(bundlePath));
+    const details = await stat(bundlePath);
+    if (!details.isFile() || details.size === 0) {
+      throw new Error('Stored bundle is empty');
+    }
+    await git.verifyBundle(bundlePath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 export async function runRepositoryBackup(
   deps: {
     readonly store: BackupObjectStore;
@@ -749,6 +1007,11 @@ export async function runRepositoryBackup(
     throw new Error('Bundle existence check failed');
   }
   if (exists) {
+    try {
+      await verifyStoredBundle(deps.store, deps.git, key);
+    } catch {
+      throw new Error('Stored bundle verification failed');
+    }
     try {
       await enforceBackupRetention(deps.store, { ...repository, now });
     } catch {
@@ -779,10 +1042,25 @@ export async function runRepositoryBackup(
     } catch {
       throw new Error('Git bundle verification failed');
     }
+    let putResult: BackupPutResult;
     try {
-      await deps.store.put(key, createReadStream(bundlePath), details.size);
+      putResult = await deps.store.put(key, {
+        contentLength: details.size,
+        open: (range) =>
+          range === undefined
+            ? createReadStream(bundlePath)
+            : createReadStream(bundlePath, {
+                start: range.start,
+                end: range.endExclusive - 1,
+              }),
+      });
     } catch {
       throw new Error('Bundle upload failed');
+    }
+    try {
+      await verifyStoredBundle(deps.store, deps.git, key);
+    } catch {
+      throw new Error('Stored bundle verification failed');
     }
     try {
       await enforceBackupRetention(deps.store, { ...repository, now });
@@ -793,7 +1071,7 @@ export async function runRepositoryBackup(
       organizationId: repository.organizationId,
       projectId: repository.projectId,
       key,
-      status: 'uploaded',
+      status: putResult === 'created' ? 'uploaded' : 'existing',
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

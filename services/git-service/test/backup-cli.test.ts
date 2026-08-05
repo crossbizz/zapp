@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -10,6 +14,35 @@ const ORGANIZATION_ID = 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9';
 const PROJECT_ID = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8';
 const RESTORE_KEY =
   'org/org_01J8ME7YQZJ2V9Q0X3T5B6K7N9/project/proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8/git-backups/2026-08-04.bundle';
+const packagePath = fileURLToPath(new URL('../package.json', import.meta.url));
+const entrypointPath = fileURLToPath(new URL('../scripts/backup.ts', import.meta.url));
+const tsxPath = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url));
+
+async function spawnEntrypoint(
+  action: string,
+  environment: NodeJS.ProcessEnv = {},
+): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [tsxPath, entrypointPath, action], {
+      env: { ...process.env, ...environment },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
 
 function processDouble(
   action: string,
@@ -75,6 +108,44 @@ function operationsDouble(overrides: Partial<BackupCliOperations> = {}): {
 }
 
 describe('the backup CLI entrypoint', () => {
+  it('executes the real entrypoint and rejects an invalid action', async () => {
+    await expect(spawnEntrypoint('not-a-backup-action')).resolves.toEqual({
+      code: 1,
+      stdout: '',
+      stderr: 'Git backup operation failed\n',
+    });
+  });
+
+  it('executes the real entrypoint and rejects an invalid restore selector', async () => {
+    await expect(
+      spawnEntrypoint('restore', {
+        GIT_RESTORE_ORGANIZATION_ID: ORGANIZATION_ID,
+        GIT_RESTORE_PROJECT_ID: PROJECT_ID,
+        GIT_RESTORE_KEY:
+          'org/org_01J8ME7YQZJ2V9Q0X3T5B6K7N9/project/proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8/git-backups/2026-13-01.bundle',
+      }),
+    ).resolves.toEqual({
+      code: 1,
+      stdout: '',
+      stderr: 'Git backup operation failed\n',
+    });
+  });
+
+  it('keeps every package backup script wired to the real entrypoint and action', async () => {
+    const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+    expect(packageJson.scripts?.['backup']).toBe(
+      'tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts nightly',
+    );
+    expect(packageJson.scripts?.['backup:restore']).toBe(
+      'tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore',
+    );
+    expect(packageJson.scripts?.['backup:restore-drill']).toBe(
+      'tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore-drill',
+    );
+  });
+
   it('dispatches nightly and exits nonzero when any repository failed', async () => {
     const cli = processDouble('nightly');
     const fake = operationsDouble({

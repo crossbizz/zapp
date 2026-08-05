@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 
 import {
+  BackupDateSchema,
   backupKey,
   enforceBackupRetention,
   latestBackupKey,
@@ -15,7 +16,9 @@ import {
   type BackupInventory,
   type BackupObject,
   type BackupObjectStore,
+  type BackupPutResult,
   type BackupRepository,
+  type BackupUploadSource,
   type ExpectedBranch,
 } from '../src/backup.js';
 
@@ -52,12 +55,21 @@ class MemoryStore implements BackupObjectStore {
     return Promise.resolve(this.values.has(key));
   }
 
-  async put(key: string, body: Readable, contentLength: number): Promise<void> {
+  async put(key: string, source: BackupUploadSource): Promise<BackupPutResult> {
     if (this.failPut) {
       throw new Error('object-store-secret-was-here');
     }
-    this.puts.push({ key, streamed: body instanceof Readable, contentLength });
+    if (this.values.has(key)) {
+      return 'existing';
+    }
+    const body = source.open();
+    this.puts.push({
+      key,
+      streamed: body instanceof Readable,
+      contentLength: source.contentLength,
+    });
     this.values.set(key, { body: await streamBytes(body), lastModified: NOW });
+    return 'created';
   }
 
   get(key: string): Promise<Readable> {
@@ -170,6 +182,28 @@ describe('backupKey', () => {
   });
 });
 
+describe('BackupDateSchema', () => {
+  it.each([
+    '0000-01-01',
+    '2026-00-01',
+    '2026-13-01',
+    '2026-01-00',
+    '2026-01-32',
+    '2026-02-29',
+    '2026-04-31',
+  ])('returns a failed parse rather than throwing for invalid calendar date %s', (date) => {
+    let result: ReturnType<typeof BackupDateSchema.safeParse> | undefined;
+    expect(() => {
+      result = BackupDateSchema.safeParse(date);
+    }).not.toThrow();
+    expect(result?.success).toBe(false);
+  });
+
+  it('accepts a real leap day', () => {
+    expect(BackupDateSchema.safeParse('2024-02-29').success).toBe(true);
+  });
+});
+
 describe('runRepositoryBackup', () => {
   it('creates and verifies a non-empty bundle, then streams it to the exact daily key', async () => {
     const store = new MemoryStore();
@@ -185,7 +219,9 @@ describe('runRepositoryBackup', () => {
     });
     expect(git.created).toHaveLength(1);
     expect(git.created[0]?.cloneUrl).toBe(REPOSITORY.cloneUrl);
-    expect(git.verified).toEqual([git.created[0]?.bundlePath]);
+    expect(git.verified).toHaveLength(2);
+    expect(git.verified[0]).toBe(git.created[0]?.bundlePath);
+    expect(git.verified[1]).not.toBe(git.created[0]?.bundlePath);
     expect(store.puts).toEqual([
       { key: keyFor(PROJECT_ID, '2026-08-04'), streamed: true, contentLength: 21 },
     ]);
@@ -204,6 +240,7 @@ describe('runRepositoryBackup', () => {
     expect(second.status).toBe('existing');
     expect(git.created).toHaveLength(1);
     expect(store.puts).toHaveLength(1);
+    expect(git.verified).toHaveLength(3);
   });
 
   it.each(['create', 'verify'] as const)(
@@ -348,11 +385,11 @@ describe('runNightlyBackups', () => {
       expectedBranches: () => Promise.resolve([]),
     };
     const originalPut = store.put.bind(store);
-    store.put = async (key, body, contentLength) => {
+    store.put = async (key, source) => {
       if (key.includes(SECOND_PROJECT_ID)) {
         throw new Error('storage credential');
       }
-      await originalPut(key, body, contentLength);
+      return await originalPut(key, source);
     };
 
     const report = await runNightlyBackups({ inventory, store, git, now: () => NOW });

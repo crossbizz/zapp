@@ -16,19 +16,16 @@ Git bundles do **not** contain Git LFS objects, Forgejo metadata, issues, pull r
 
 Set only the non-secret selectors below. Use the exact IDs and object key recorded during preflight.
 
-```sh
+```bash
+set -euo pipefail
 export GIT_RESTORE_ORGANIZATION_ID='org_<26-character-ULID>'
 export GIT_RESTORE_PROJECT_ID='proj_<26-character-ULID>'
 export GIT_RESTORE_KEY="org/${GIT_RESTORE_ORGANIZATION_ID}/project/${GIT_RESTORE_PROJECT_ID}/git-backups/<YYYY-MM-DD>.bundle"
 restore_evidence="git-restore-${GIT_RESTORE_PROJECT_ID}-$(date -u +%Y%m%dT%H%M%SZ).json"
-set -o pipefail
-pnpm --filter @zapp/git-service backup:restore | tee "$restore_evidence"
-jq -e '.status == "restored" and .checkedBranches == (.branches | length)' "$restore_evidence"
-jq -r '.branches[] | [.name, .expectedSha, .actualSha] | @tsv' "$restore_evidence"
-jq -r '.refs[] | [.name, .sha] | @tsv' "$restore_evidence"
+services/git-service/scripts/restore-evidence.sh "$restore_evidence"
 ```
 
-The command emits one JSON object containing every compared branch as exact `name`, `expectedSha`, and `actualSha` values, plus every restored ref returned by `git ls-remote --refs` as exact `name` and `sha` values. It never emits the clone URL, access keys, tokens, or database URL. The `jq` commands both validate the branch count and produce executable tab-separated branch/ref evidence for the incident record.
+The wrapper invokes the real TypeScript CLI directly with pnpm's own output silenced, preserves its exit status, and writes stdout directly to the evidence file. The file is therefore exactly one JSON document rather than a display pipeline. It contains every compared branch as exact `name`, `expectedSha`, and `actualSha` values, plus every restored ref returned by `git ls-remote --refs` as exact `name` and `sha` values. It never emits the clone URL, access keys, tokens, or database URL. The wrapper rejects the evidence unless the status and branch count match and every `expectedSha` equals its `actualSha`, then prints tab-separated branch/ref evidence for the incident record.
 
 The command performs the recovery in this order:
 
@@ -47,7 +44,7 @@ The restore process receives a no-argument compensation closure only after it ha
 
 If automatic compensation itself fails, preserve the command output and escalate for operator review. Do not delete another repository, remove the organization, or delete the R2 source object. Re-run the restore only after confirming the exact failed target is absent and the same object key is still selected.
 
-The scheduled quarterly drill uses a random organization/project pair, verifies the same database heads, then deletes only its disposable repository and newly created empty organization in a `finally` path.
+The scheduled quarterly drill uses deterministic organization/project IDs derived from a source-scoped marker in the existing R2 bucket. After a crash, a retry reconciles only a target whose Forgejo description matches that durable marker. A missing marker or mismatched description never authorizes deletion. Successful and compensated drills delete only the exact marker-owned repository and marker; they do not delete the organization.
 
 ## Evidence checklist
 
