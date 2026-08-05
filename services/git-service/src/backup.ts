@@ -198,11 +198,67 @@ function httpStatus(error: unknown): number | undefined {
 }
 
 const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+const TIB = 1024 * GIB;
+const R2_MIN_MULTIPART_PART_BYTES = 5 * MIB;
+const R2_MAX_MULTIPART_PART_BYTES = 5 * GIB;
+const R2_MAX_MULTIPART_PARTS = 10_000;
+const R2_MAX_OBJECT_BYTES = 5 * TIB;
 const RETRYABLE_HTTP_STATUSES = new Set([409, 429, 500, 502, 503, 504]);
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENETUNREACH',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+const RETRYABLE_TRANSPORT_NAMES = new Set(['NetworkingError', 'RequestTimeout', 'TimeoutError']);
+
+export function multipartUploadLayout(
+  contentLength: number,
+  configuredPartSizeBytes: number,
+): { readonly partSizeBytes: number; readonly partCount: number } {
+  if (
+    !Number.isSafeInteger(contentLength) ||
+    contentLength <= 0 ||
+    contentLength > R2_MAX_OBJECT_BYTES
+  ) {
+    throw new Error('Backup exceeds the R2 object size limit');
+  }
+  if (
+    !Number.isSafeInteger(configuredPartSizeBytes) ||
+    configuredPartSizeBytes < R2_MIN_MULTIPART_PART_BYTES ||
+    configuredPartSizeBytes > R2_MAX_MULTIPART_PART_BYTES
+  ) {
+    throw new Error('Invalid multipart part size');
+  }
+  const partSizeBytes = Math.max(
+    configuredPartSizeBytes,
+    Math.ceil(contentLength / R2_MAX_MULTIPART_PARTS),
+  );
+  if (partSizeBytes > R2_MAX_MULTIPART_PART_BYTES) {
+    throw new Error('Multipart upload exceeds the R2 part size limit');
+  }
+  return {
+    partSizeBytes,
+    partCount: Math.ceil(contentLength / partSizeBytes),
+  };
+}
 
 function retryable(error: unknown): boolean {
   const status = httpStatus(error);
-  return status !== undefined && RETRYABLE_HTTP_STATUSES.has(status);
+  if (status !== undefined && RETRYABLE_HTTP_STATUSES.has(status)) {
+    return true;
+  }
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const candidate = error as { readonly code?: unknown; readonly name?: unknown };
+  return (
+    (typeof candidate.code === 'string' && RETRYABLE_TRANSPORT_CODES.has(candidate.code)) ||
+    (typeof candidate.name === 'string' && RETRYABLE_TRANSPORT_NAMES.has(candidate.name))
+  );
 }
 
 export function createS3BackupObjectStore(options: {
@@ -297,11 +353,64 @@ export function createS3BackupObjectStore(options: {
     }
   }
 
+  async function finalObjectExists(key: string, signal: AbortSignal): Promise<boolean> {
+    try {
+      await sendWithRetry(() => new HeadObjectCommand({ Bucket: config.bucket, Key: key }), signal);
+      return true;
+    } catch (error) {
+      if (httpStatus(error) === 404) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function completeMultipart(
+    key: string,
+    uploadId: string,
+    parts: readonly { readonly PartNumber: number; readonly ETag: string }[],
+    signal: AbortSignal,
+  ): Promise<BackupPutResult> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+      try {
+        await options.client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: config.bucket,
+            Key: key,
+            UploadId: uploadId,
+            MultipartUpload: { Parts: [...parts] },
+            IfNoneMatch: '*',
+          }),
+          { abortSignal: signal },
+        );
+        return 'created';
+      } catch (error) {
+        lastError = error;
+        if (httpStatus(error) === 412) {
+          return 'existing';
+        }
+        if (httpStatus(error) === 409 || !retryable(error) || signal.aborted) {
+          throw error;
+        }
+        if (await finalObjectExists(key, signal)) {
+          return 'existing';
+        }
+        if (attempt === config.maxAttempts) {
+          throw error;
+        }
+        await delay(config.retryBaseDelayMs * 2 ** (attempt - 1), undefined, { signal });
+      }
+    }
+    throw lastError;
+  }
+
   async function multipartAttempt(
     key: string,
     source: BackupUploadSource,
     deadline: AbortSignal,
-  ): Promise<void> {
+  ): Promise<BackupPutResult> {
+    const layout = multipartUploadLayout(source.contentLength, config.multipartPartSizeBytes);
     const created = await sendWithRetry(
       () =>
         new CreateMultipartUploadCommand({
@@ -321,11 +430,7 @@ export function createS3BackupObjectStore(options: {
 
     const controller = new AbortController();
     const signal = AbortSignal.any([deadline, controller.signal]);
-    const partCount = Math.ceil(source.contentLength / config.multipartPartSizeBytes);
-    if (partCount > 10_000) {
-      await abortMultipart(key, uploadId);
-      throw new Error('Multipart upload exceeds the part limit');
-    }
+    const { partCount, partSizeBytes } = layout;
     const parts: { PartNumber: number; ETag: string }[] = [];
     let nextPart = 0;
 
@@ -338,11 +443,8 @@ export function createS3BackupObjectStore(options: {
           if (index >= partCount) {
             return;
           }
-          const start = index * config.multipartPartSizeBytes;
-          const endExclusive = Math.min(
-            start + config.multipartPartSizeBytes,
-            source.contentLength,
-          );
+          const start = index * partSizeBytes;
+          const endExclusive = Math.min(start + partSizeBytes, source.contentLength);
           const response = await sendWithRetry(
             () =>
               new UploadPartCommand({
@@ -370,16 +472,11 @@ export function createS3BackupObjectStore(options: {
     try {
       await Promise.all(workers);
       parts.sort((left, right) => left.PartNumber - right.PartNumber);
-      await options.client.send(
-        new CompleteMultipartUploadCommand({
-          Bucket: config.bucket,
-          Key: key,
-          UploadId: uploadId,
-          MultipartUpload: { Parts: parts },
-          IfNoneMatch: '*',
-        }),
-        { abortSignal: signal },
-      );
+      const result = await completeMultipart(key, uploadId, parts, signal);
+      if (result === 'existing') {
+        await abortMultipart(key, uploadId);
+      }
+      return result;
     } catch (error) {
       controller.abort();
       await Promise.allSettled(workers);
@@ -409,6 +506,9 @@ export function createS3BackupObjectStore(options: {
       ) {
         throw new Error('Invalid backup upload source');
       }
+      if (source.contentLength > R2_MAX_OBJECT_BYTES) {
+        throw new Error('Backup exceeds the R2 object size limit');
+      }
       const deadline = AbortSignal.timeout(config.uploadDeadlineMs);
       if (source.contentLength < config.multipartThresholdBytes) {
         try {
@@ -429,18 +529,17 @@ export function createS3BackupObjectStore(options: {
           if (httpStatus(error) === 412) {
             return 'existing';
           }
+          if (retryable(error) && !deadline.aborted && (await finalObjectExists(key, deadline))) {
+            return 'existing';
+          }
           throw error;
         }
       }
 
       for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
         try {
-          await multipartAttempt(key, source, deadline);
-          return 'created';
+          return await multipartAttempt(key, source, deadline);
         } catch (error) {
-          if (httpStatus(error) === 412) {
-            return 'existing';
-          }
           if (httpStatus(error) !== 409 || attempt === config.maxAttempts || deadline.aborted) {
             throw error;
           }

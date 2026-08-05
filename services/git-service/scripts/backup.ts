@@ -1,11 +1,11 @@
 import process from 'node:process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { idSchema, internalRepoRef, parseInternalRepoRef } from '@zapp/contracts';
-import { createDb } from '@zapp/db';
+import { createDb, type Db } from '@zapp/db';
 import { z } from 'zod';
 
 import {
@@ -72,6 +72,54 @@ export interface BackupCliOperations {
   close(): Promise<void>;
 }
 
+export interface RestoreDrillLease {
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
+}
+
+const RESTORE_DRILL_ADVISORY_LOCK_NAMESPACE = 0x5a415050;
+const RESTORE_DRILL_ADVISORY_LOCK_KEY = 0x47495434;
+
+export function createPostgresRestoreDrillLease(
+  sql: Pick<Db['sql'], 'reserve'>,
+): RestoreDrillLease {
+  return {
+    runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
+      const session = await sql.reserve();
+      let acquired = false;
+      try {
+        const rows = await session`
+          SELECT pg_try_advisory_lock(
+            ${RESTORE_DRILL_ADVISORY_LOCK_NAMESPACE},
+            ${RESTORE_DRILL_ADVISORY_LOCK_KEY}
+          ) AS acquired
+        `;
+        const result = z
+          .array(z.object({ acquired: z.boolean() }).passthrough())
+          .length(1)
+          .safeParse(rows);
+        if (!result.success || !result.data[0]?.acquired) {
+          throw new Error('Restore drill is already in progress');
+        }
+        acquired = true;
+        return await operation();
+      } finally {
+        try {
+          if (acquired) {
+            await session`
+              SELECT pg_advisory_unlock(
+                ${RESTORE_DRILL_ADVISORY_LOCK_NAMESPACE},
+                ${RESTORE_DRILL_ADVISORY_LOCK_KEY}
+              ) AS released
+            `;
+          }
+        } finally {
+          session.release();
+        }
+      }
+    },
+  };
+}
+
 const ForgejoRestoreTargetInputSchema = z
   .object({
     organizationId: idSchema('org'),
@@ -81,16 +129,25 @@ const ForgejoRestoreTargetInputSchema = z
   })
   .strict();
 
-interface ForgejoRestoreRepositoryResponse {
-  readonly clone_url?: string;
-  readonly description?: string;
-  readonly empty?: boolean;
+const ForgejoRestoreRepositorySchema = z
+  .object({
+    id: z.number().int().positive(),
+    clone_url: z.string().min(1),
+    description: z.string(),
+    empty: z.boolean(),
+  })
+  .passthrough();
+
+type ForgejoRestoreRepository = z.infer<typeof ForgejoRestoreRepositorySchema>;
+
+export interface CreatedForgejoRestoreTarget extends CreatedRestoreTarget {
+  readonly repositoryId: number;
 }
 
 export async function createForgejoRestoreTarget(
   client: ForgejoClient,
   input: z.input<typeof ForgejoRestoreTargetInputSchema>,
-): Promise<CreatedRestoreTarget> {
+): Promise<CreatedForgejoRestoreTarget> {
   const parsed = ForgejoRestoreTargetInputSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error('Invalid restore target');
@@ -98,6 +155,7 @@ export async function createForgejoRestoreTarget(
   const ref = internalRepoRef(parsed.data);
   const { owner, name } = parseInternalRepoRef(ref);
   const repositoryPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const operationMarker = parsed.data.description ?? `zapp.build restore operation ${randomUUID()}`;
 
   const organization = await client.send({
     method: 'GET',
@@ -122,7 +180,7 @@ export async function createForgejoRestoreTarget(
     throw new Error('Forgejo restore target already exists');
   }
 
-  const created = await client.send<ForgejoRestoreRepositoryResponse>({
+  const created = await client.send<ForgejoRestoreRepository>({
     method: 'POST',
     path: `/orgs/${encodeURIComponent(owner)}/repos`,
     body: {
@@ -130,7 +188,7 @@ export async function createForgejoRestoreTarget(
       private: true,
       auto_init: false,
       default_branch: parsed.data.defaultBranch,
-      ...(parsed.data.description === undefined ? {} : { description: parsed.data.description }),
+      description: operationMarker,
     },
     allow: [409],
   });
@@ -138,19 +196,38 @@ export async function createForgejoRestoreTarget(
     throw new Error('Forgejo restore target creation conflicted');
   }
 
-  const compensate = async (): Promise<void> => {
-    await client.send({ method: 'DELETE', path: repositoryPath, allow: [404] });
-  };
-  const cloneUrl = created.body?.clone_url;
-  if (cloneUrl === undefined || cloneUrl === '' || created.body?.empty === false) {
-    try {
-      await compensate();
-    } catch {
-      throw new Error('Fresh restore target validation and compensation failed');
-    }
+  const createdRepository = ForgejoRestoreRepositorySchema.safeParse(created.body);
+  if (
+    !createdRepository.success ||
+    createdRepository.data.description !== operationMarker ||
+    !createdRepository.data.empty
+  ) {
     throw new Error('Fresh restore target creation failed');
   }
-  return { cloneUrl, compensate };
+
+  const repositoryId = createdRepository.data.id;
+  const compensate = async (): Promise<void> => {
+    const current = await client.send<ForgejoRestoreRepository>({
+      method: 'GET',
+      path: repositoryPath,
+      allow: [404],
+    });
+    if (current.status === 404) {
+      throw new Error(
+        'Forgejo restore target ownership was lost; target absent, no delete attempted',
+      );
+    }
+    const owned = ForgejoRestoreRepositorySchema.safeParse(current.body);
+    if (
+      !owned.success ||
+      owned.data.id !== repositoryId ||
+      owned.data.description !== operationMarker
+    ) {
+      throw new Error('Forgejo restore target ownership was lost; replacement preserved');
+    }
+    await client.send({ method: 'DELETE', path: repositoryPath, allow: [404] });
+  };
+  return { repositoryId, cloneUrl: createdRepository.data.clone_url, compensate };
 }
 
 const RestoreDrillMarkerSchema = z
@@ -166,10 +243,22 @@ const RestoreDrillMarkerSchema = z
 
 type RestoreDrillMarker = z.infer<typeof RestoreDrillMarkerSchema>;
 
+const RestoreDrillOwnershipSchema = z
+  .object({
+    version: z.literal(1),
+    markerKey: z.string().min(1),
+    repositoryId: z.number().int().positive(),
+    description: z.string().min(1).max(255),
+  })
+  .strict();
+
+type RestoreDrillOwnership = z.infer<typeof RestoreDrillOwnershipSchema>;
+
 export interface PreparedRestoreDrillTarget {
   readonly markerKey: string;
+  readonly ownershipKey: string;
   readonly targetRef: string;
-  readonly target: CreatedRestoreTarget;
+  readonly target: CreatedForgejoRestoreTarget;
   clearMarker(): Promise<void>;
 }
 
@@ -224,11 +313,40 @@ async function readRestoreDrillMarker(
   return parsed.data;
 }
 
+async function readRestoreDrillOwnership(
+  store: BackupObjectStore,
+  key: string,
+): Promise<RestoreDrillOwnership> {
+  const stream = await store.get(key);
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    length += bytes.length;
+    if (length > 4_096) {
+      throw new Error('Restore drill ownership receipt is invalid');
+    }
+    chunks.push(bytes);
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  } catch {
+    throw new Error('Restore drill ownership receipt is invalid');
+  }
+  const parsed = RestoreDrillOwnershipSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error('Restore drill ownership receipt is invalid');
+  }
+  return parsed.data;
+}
+
 export async function prepareRestoreDrillTarget(
   deps: { readonly store: BackupObjectStore; readonly client: ForgejoClient },
   source: BackupRepository,
 ): Promise<PreparedRestoreDrillTarget> {
   const marker = restoreDrillMarker(source);
+  const ownershipKey = marker.key.replace(/\.json$/, '.ownership.json');
   const markerBytes = Buffer.from(marker.json, 'utf8');
   await deps.store.put(marker.key, {
     contentLength: markerBytes.length,
@@ -246,16 +364,39 @@ export async function prepareRestoreDrillTarget(
   });
   const { owner, name } = parseInternalRepoRef(targetRef);
   const repositoryPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const existing = await deps.client.send<ForgejoRestoreRepositoryResponse>({
+  const hasOwnershipReceipt = await deps.store.exists(ownershipKey);
+  const existing = await deps.client.send<ForgejoRestoreRepository>({
     method: 'GET',
     path: repositoryPath,
     allow: [404],
   });
   if (existing.status !== 404) {
-    if (existing.body?.description !== persisted.description) {
-      throw new Error('Forgejo restore drill target is not marker-owned');
+    if (!hasOwnershipReceipt) {
+      throw new Error('Forgejo restore drill target has no immutable ownership receipt');
+    }
+    const receipt = await readRestoreDrillOwnership(deps.store, ownershipKey);
+    const currentResponse = await deps.client.send<ForgejoRestoreRepository>({
+      method: 'GET',
+      path: repositoryPath,
+      allow: [404],
+    });
+    const current = ForgejoRestoreRepositorySchema.safeParse(currentResponse.body);
+    if (
+      receipt.markerKey !== marker.key ||
+      receipt.description !== persisted.description ||
+      currentResponse.status === 404 ||
+      !current.success ||
+      current.data.id !== receipt.repositoryId ||
+      current.data.description !== receipt.description
+    ) {
+      throw new Error('Forgejo restore target ownership was lost; replacement preserved');
     }
     await deps.client.send({ method: 'DELETE', path: repositoryPath, allow: [404] });
+    await deps.store.delete(ownershipKey);
+  } else if (hasOwnershipReceipt) {
+    throw new Error(
+      'Forgejo restore target ownership was lost; target absent, no delete attempted',
+    );
   }
 
   const target = await createForgejoRestoreTarget(deps.client, {
@@ -264,11 +405,34 @@ export async function prepareRestoreDrillTarget(
     defaultBranch: source.defaultBranch,
     description: persisted.description,
   });
+  const ownership = RestoreDrillOwnershipSchema.parse({
+    version: 1,
+    markerKey: marker.key,
+    repositoryId: target.repositoryId,
+    description: persisted.description,
+  });
+  const ownershipBytes = Buffer.from(JSON.stringify(ownership), 'utf8');
+  const ownershipPut = await deps.store.put(ownershipKey, {
+    contentLength: ownershipBytes.length,
+    contentType: 'application/json',
+    open: () => Readable.from(ownershipBytes),
+  });
+  if (ownershipPut !== 'created') {
+    await target.compensate();
+    throw new Error('Restore drill ownership receipt already exists');
+  }
+  const persistedOwnership = await readRestoreDrillOwnership(deps.store, ownershipKey);
+  if (JSON.stringify(persistedOwnership) !== JSON.stringify(ownership)) {
+    await target.compensate();
+    throw new Error('Restore drill ownership receipt does not match this target');
+  }
   return {
     markerKey: marker.key,
+    ownershipKey,
     targetRef,
     target,
     clearMarker: async () => {
+      await deps.store.delete(ownershipKey);
       await deps.store.delete(marker.key);
     },
   };
@@ -291,6 +455,7 @@ export function createBackupOperations(deps: {
   readonly store: BackupObjectStore;
   readonly git: BackupGit;
   readonly client: ForgejoClient;
+  readonly restoreDrillLease: RestoreDrillLease;
   readonly close: () => Promise<void>;
 }): BackupCliOperations {
   const { inventory, store, git, client } = deps;
@@ -336,59 +501,60 @@ export function createBackupOperations(deps: {
       return { status: 'restored', projectId: selector.projectId, ...result };
     },
 
-    restoreDrill: async () => {
-      const [repository] = await inventory.listProvisionedRepositories();
-      if (repository === undefined) {
-        throw new Error('No provisioned internal repository is available for the restore drill');
-      }
-      const key = await latestBackupKey(store, repository);
-      const expectedBranches = await inventory.expectedBranches(
-        repository.organizationId,
-        repository.projectId,
-      );
-      const ownership: {
-        prepared?: PreparedRestoreDrillTarget;
-        targetPresent: boolean;
-        disposeCreatedTarget?: () => Promise<void>;
-      } = { targetPresent: false };
-      try {
-        const result = await restoreRepositoryBackup(
-          {
-            store,
-            git,
-            createTarget: async () => {
-              const prepared = await prepareRestoreDrillTarget({ store, client }, repository);
-              ownership.prepared = prepared;
-              ownership.targetPresent = true;
-              ownership.disposeCreatedTarget = async () => {
-                if (!ownership.targetPresent) {
-                  return;
-                }
-                await prepared.target.compensate();
-                ownership.targetPresent = false;
-              };
-              return {
-                cloneUrl: prepared.target.cloneUrl,
-                compensate: ownership.disposeCreatedTarget,
-              };
-            },
-          },
-          { key, expectedBranches: [...expectedBranches] },
+    restoreDrill: async () =>
+      await deps.restoreDrillLease.runExclusive(async () => {
+        const [repository] = await inventory.listProvisionedRepositories();
+        if (repository === undefined) {
+          throw new Error('No provisioned internal repository is available for the restore drill');
+        }
+        const key = await latestBackupKey(store, repository);
+        const expectedBranches = await inventory.expectedBranches(
+          repository.organizationId,
+          repository.projectId,
         );
-        return {
-          status: 'restore-drill-verified',
-          projectId: repository.projectId,
-          ...result,
-        };
-      } finally {
-        if (ownership.targetPresent) {
-          await ownership.disposeCreatedTarget?.();
+        const ownership: {
+          prepared?: PreparedRestoreDrillTarget;
+          targetPresent: boolean;
+          disposeCreatedTarget?: () => Promise<void>;
+        } = { targetPresent: false };
+        try {
+          const result = await restoreRepositoryBackup(
+            {
+              store,
+              git,
+              createTarget: async () => {
+                const prepared = await prepareRestoreDrillTarget({ store, client }, repository);
+                ownership.prepared = prepared;
+                ownership.targetPresent = true;
+                ownership.disposeCreatedTarget = async () => {
+                  if (!ownership.targetPresent) {
+                    return;
+                  }
+                  await prepared.target.compensate();
+                  ownership.targetPresent = false;
+                };
+                return {
+                  cloneUrl: prepared.target.cloneUrl,
+                  compensate: ownership.disposeCreatedTarget,
+                };
+              },
+            },
+            { key, expectedBranches: [...expectedBranches] },
+          );
+          return {
+            status: 'restore-drill-verified',
+            projectId: repository.projectId,
+            ...result,
+          };
+        } finally {
+          if (ownership.targetPresent) {
+            await ownership.disposeCreatedTarget?.();
+          }
+          if (ownership.prepared !== undefined && !ownership.targetPresent) {
+            await ownership.prepared.clearMarker();
+          }
         }
-        if (ownership.prepared !== undefined && !ownership.targetPresent) {
-          await ownership.prepared.clearMarker();
-        }
-      }
-    },
+      }),
 
     close: deps.close,
   };
@@ -411,6 +577,7 @@ function createProductionOperations(): BackupCliOperations {
     store,
     git,
     client,
+    restoreDrillLease: createPostgresRestoreDrillLease(database.sql),
     close: async () => {
       await database.close();
     },

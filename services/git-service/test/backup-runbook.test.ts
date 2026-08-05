@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -21,7 +21,10 @@ const matchingEvidence = JSON.stringify({
   refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
 });
 
-async function runScript(mode: 'valid' | 'banner' | 'producer-failure' | 'sha-mismatch') {
+async function runScript(
+  mode: 'valid' | 'banner' | 'producer-failure' | 'sha-mismatch',
+  options: { readonly preexistingEvidence?: string } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), 'zapp-restore-runbook-'));
   temporaryDirectories.push(directory);
   const fakeBin = join(directory, 'bin');
@@ -42,11 +45,15 @@ esac
   );
   await chmod(fakePnpm, 0o700);
   const evidence = join(directory, 'evidence.json');
+  if (options.preexistingEvidence !== undefined) {
+    await writeFile(evidence, options.preexistingEvidence);
+  }
   const mismatch = JSON.stringify({
     ...JSON.parse(matchingEvidence),
     branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'b'.repeat(40) }],
   });
   return {
+    directory,
     evidence,
     result: execute('bash', [scriptPath, evidence], {
       env: {
@@ -75,21 +82,47 @@ describe('the executable Git restore runbook', () => {
     expect(JSON.parse(await readFile(execution.evidence, 'utf8'))).toEqual(
       JSON.parse(matchingEvidence),
     );
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
   });
 
   it('rejects pnpm banners instead of accepting mixed output as evidence', async () => {
     const execution = await runScript('banner');
     await expect(execution.result).rejects.toBeInstanceOf(Error);
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
   });
 
   it('preserves the real CLI producer exit status', async () => {
     const execution = await runScript('producer-failure');
     await expect(execution.result).rejects.toMatchObject({ code: 23 });
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
   });
 
   it('exits nonzero when any expected and actual SHA differ', async () => {
     const execution = await runScript('sha-mismatch');
     await expect(execution.result).rejects.toMatchObject({ code: 1 });
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
+  });
+
+  it('refuses to overwrite pre-existing incident evidence', async () => {
+    const original = '{"incident":"preserve"}\n';
+    const execution = await runScript('valid', { preexistingEvidence: original });
+
+    await expect(execution.result).rejects.toMatchObject({ code: 73 });
+    expect(await readFile(execution.evidence, 'utf8')).toBe(original);
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
   });
 
   it('documents the strict executable wrapper rather than a display pipeline', async () => {

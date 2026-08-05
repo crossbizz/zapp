@@ -11,6 +11,7 @@ const PROJECT_ID = newId('proj');
 const REF = internalRepoRef({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID });
 const [OWNER, NAME] = REF.split('/') as [string, string];
 const CLONE_URL = `https://git.test/${REF}.git`;
+const OPERATION_MARKER = 'zapp.build restore operation unit-marker';
 
 type CreateForgejoRestoreTarget = (
   client: ForgejoClient,
@@ -44,6 +45,7 @@ async function attempt(client: ForgejoClient): Promise<CreatedRestoreTarget> {
     organizationId: ORGANIZATION_ID,
     projectId: PROJECT_ID,
     defaultBranch: 'main',
+    description: OPERATION_MARKER,
   });
 }
 
@@ -79,16 +81,35 @@ describe('createForgejoRestoreTarget', () => {
     const forgejo = createFakeForgejo({
       [`GET /orgs/${OWNER}`]: { status: 404 },
       'POST /orgs': { status: 422 },
-      [`GET /repos/${OWNER}/${NAME}`]: { status: 404 },
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 404,
+        then: {
+          status: 200,
+          body: {
+            id: 101,
+            clone_url: CLONE_URL,
+            empty: true,
+            description: OPERATION_MARKER,
+          },
+        },
+      },
       [`POST /orgs/${OWNER}/repos`]: {
         status: 201,
-        body: { clone_url: CLONE_URL, empty: true },
+        body: {
+          id: 101,
+          clone_url: CLONE_URL,
+          empty: true,
+          description: OPERATION_MARKER,
+        },
       },
       [`DELETE /repos/${OWNER}/${NAME}`]: { status: 204 },
     });
 
     const target = await attempt(forgejo);
     expect(target.cloneUrl).toBe(CLONE_URL);
+    expect((target as CreatedRestoreTarget & { readonly repositoryId?: number }).repositoryId).toBe(
+      101,
+    );
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
 
     await target.compensate();
@@ -96,5 +117,93 @@ describe('createForgejoRestoreTarget', () => {
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([
       expect.objectContaining({ path: `/repos/${OWNER}/${NAME}` }),
     ]);
+  });
+
+  it('preserves a replacement installed at the same path before compensation', async () => {
+    const forgejo = createFakeForgejo({
+      [`GET /orgs/${OWNER}`]: { status: 200, body: { username: OWNER } },
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 404,
+        then: {
+          status: 200,
+          body: {
+            id: 202,
+            clone_url: CLONE_URL,
+            empty: true,
+            description: OPERATION_MARKER,
+          },
+        },
+      },
+      [`POST /orgs/${OWNER}/repos`]: {
+        status: 201,
+        body: {
+          id: 101,
+          clone_url: CLONE_URL,
+          empty: true,
+          description: OPERATION_MARKER,
+        },
+      },
+      [`DELETE /repos/${OWNER}/${NAME}`]: { status: 204 },
+    });
+
+    const target = await attempt(forgejo);
+
+    await expect(target.compensate()).rejects.toThrow('restore target ownership was lost');
+    expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
+  });
+
+  it('reports ownership loss without deleting when the created path disappeared', async () => {
+    const forgejo = createFakeForgejo({
+      [`GET /orgs/${OWNER}`]: { status: 200, body: { username: OWNER } },
+      [`GET /repos/${OWNER}/${NAME}`]: { status: 404, then: { status: 404 } },
+      [`POST /orgs/${OWNER}/repos`]: {
+        status: 201,
+        body: {
+          id: 101,
+          clone_url: CLONE_URL,
+          empty: true,
+          description: OPERATION_MARKER,
+        },
+      },
+      [`DELETE /repos/${OWNER}/${NAME}`]: { status: 204 },
+    });
+
+    const target = await attempt(forgejo);
+
+    await expect(target.compensate()).rejects.toThrow('restore target ownership was lost');
+    expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
+  });
+
+  it('preserves a repository whose immutable id matches but operation marker changed', async () => {
+    const forgejo = createFakeForgejo({
+      [`GET /orgs/${OWNER}`]: { status: 200, body: { username: OWNER } },
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 404,
+        then: {
+          status: 200,
+          body: {
+            id: 101,
+            clone_url: CLONE_URL,
+            empty: true,
+            description: 'a different operation marker',
+          },
+        },
+      },
+      [`POST /orgs/${OWNER}/repos`]: {
+        status: 201,
+        body: {
+          id: 101,
+          clone_url: CLONE_URL,
+          empty: true,
+          description: OPERATION_MARKER,
+        },
+      },
+      [`DELETE /repos/${OWNER}/${NAME}`]: { status: 204 },
+    });
+
+    const target = await attempt(forgejo);
+
+    await expect(target.compensate()).rejects.toThrow('restore target ownership was lost');
+    expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 });

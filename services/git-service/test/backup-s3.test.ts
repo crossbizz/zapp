@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
 
+import * as backupModule from '../src/backup.js';
 import {
   createS3BackupObjectStore,
   type BackupObjectStore,
@@ -9,6 +10,20 @@ import {
   type S3ClientPort,
   type S3ClientPortCommand,
 } from '../src/backup.js';
+
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+const TIB = 1024 * GIB;
+
+type MultipartUploadLayout = (
+  contentLength: number,
+  configuredPartSizeBytes: number,
+) => { readonly partSizeBytes: number; readonly partCount: number };
+
+function multipartLayout(): MultipartUploadLayout | undefined {
+  return (backupModule as { readonly multipartUploadLayout?: MultipartUploadLayout })
+    .multipartUploadLayout;
+}
 
 interface RecordedS3Call {
   readonly name: string;
@@ -90,6 +105,110 @@ function multipartStore(
 }
 
 describe('createS3BackupObjectStore', () => {
+  it.each([
+    [5 * TIB - 1, 5 * MIB, 549_755_814, 10_000],
+    [5 * TIB, 5 * MIB, 549_755_814, 10_000],
+    [5 * TIB, GIB, GIB, 5_120],
+    [5 * TIB, 5 * GIB, 5 * GIB, 1_024],
+    [10 * GIB + 1, 5 * MIB, 5 * MIB, 2_049],
+  ])(
+    'plans %i bytes with configured part size %i inside R2 limits',
+    (contentLength, configuredPartSize, partSizeBytes, partCount) => {
+      const plan = multipartLayout();
+      expect(plan, 'multipart sizing helper is missing').toBeTypeOf('function');
+      expect(plan?.(contentLength, configuredPartSize)).toEqual({ partSizeBytes, partCount });
+    },
+  );
+
+  it.each([5 * MIB - 1, 5 * GIB + 1])(
+    'rejects configured multipart part size %i outside R2 limits',
+    (configuredPartSize) => {
+      expect(() => multipartLayout()?.(5 * GIB, configuredPartSize)).toThrow(
+        'Invalid multipart part size',
+      );
+    },
+  );
+
+  it.each([5 * MIB, 5 * MIB + 1, 5 * GIB - 1, 5 * GIB])(
+    'accepts configured multipart part size %i at R2 boundaries',
+    (configuredPartSize) => {
+      expect(multipartLayout()?.(5 * GIB, configuredPartSize).partSizeBytes).toBe(
+        configuredPartSize,
+      );
+    },
+  );
+
+  it('rejects an object above R2 maximum before starting an upload', async () => {
+    const client = new FakeS3();
+    const store = multipartStore(client);
+
+    await expect(store.put('too-large.bundle', source(5 * TIB + 1).source)).rejects.toThrow(
+      'R2 object size limit',
+    );
+    expect(client.calls).toEqual([]);
+  });
+
+  it('uses single PUT just below 5 GiB and multipart at and above 5 GiB', async () => {
+    const client = new FakeS3();
+    let upload = 0;
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        upload += 1;
+        return { UploadId: `upload-${String(upload)}` };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      return {};
+    };
+    const store = multipartStore(client, {
+      multipartThresholdBytes: 5 * GIB,
+      multipartPartSizeBytes: 5 * GIB,
+      multipartConcurrency: 1,
+    });
+
+    await expect(store.put('below.bundle', source(5 * GIB - 1).source)).resolves.toBe('created');
+    await expect(store.put('at.bundle', source(5 * GIB).source)).resolves.toBe('created');
+    await expect(store.put('above.bundle', source(5 * GIB + 1).source)).resolves.toBe('created');
+
+    expect(client.calls.filter((call) => call.name === 'PutObjectCommand')).toHaveLength(1);
+    expect(
+      client.calls.filter((call) => call.name === 'CreateMultipartUploadCommand'),
+    ).toHaveLength(2);
+    expect(
+      client.calls
+        .filter((call) => call.name === 'UploadPartCommand')
+        .map((call) => call.input['ContentLength']),
+    ).toEqual([5 * GIB, 5 * GIB, 1]);
+  });
+
+  it('increases the effective part size so a configured upload never exceeds 10,000 parts', async () => {
+    const client = new FakeS3();
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'derived-layout' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      return {};
+    };
+    const contentLength = 5 * MIB * 10_000 + 1;
+    const upload = source(contentLength);
+    const store = multipartStore(client, { multipartConcurrency: 16 });
+
+    await expect(store.put('ten-thousand-parts.bundle', upload.source)).resolves.toBe('created');
+
+    const partCalls = client.calls.filter((call) => call.name === 'UploadPartCommand');
+    expect(partCalls).toHaveLength(10_000);
+    expect(partCalls[0]?.input['ContentLength']).toBe(5 * MIB + 1);
+    expect(upload.ranges).toHaveLength(10_000);
+    expect(upload.ranges[0]).toEqual({ start: 0, endExclusive: 5 * MIB + 1 });
+    expect(upload.ranges.at(-1)).toEqual({
+      start: (5 * MIB + 1) * 9_999,
+      endExclusive: contentLength,
+    });
+  });
   it('uses conditional PutObject below the multipart threshold', async () => {
     const client = new FakeS3();
     const store = multipartStore(client);
@@ -204,6 +323,172 @@ describe('createS3BackupObjectStore', () => {
       { start: 0, endExclusive: 5 * 1024 * 1024 },
       { start: 0, endExclusive: 5 * 1024 * 1024 },
     ]);
+  });
+
+  it('retries ECONNRESET with a fresh single-upload body stream', async () => {
+    const client = new FakeS3();
+    let attempts = 0;
+    client.handler = () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('socket reset'), { code: 'ECONNRESET' });
+      }
+      return {};
+    };
+    const upload = source(12);
+    const store = multipartStore(client);
+
+    await expect(store.put('network-retry.bundle', upload.source)).resolves.toBe('created');
+    expect(client.calls).toHaveLength(2);
+    expect(upload.ranges).toEqual(['all', 'all']);
+    expect(client.calls[0]?.input['Body']).not.toBe(client.calls[1]?.input['Body']);
+  });
+
+  it('retries ETIMEDOUT multipart parts with the exact range reopened', async () => {
+    const client = new FakeS3();
+    let firstPartAttempts = 0;
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'transport-retry' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        if (call.input['PartNumber'] === 1) {
+          firstPartAttempts += 1;
+          if (firstPartAttempts === 1) {
+            throw Object.assign(new Error('transport timeout'), { code: 'ETIMEDOUT' });
+          }
+        }
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      return {};
+    };
+    const upload = source(11 * MIB);
+    const store = multipartStore(client, { multipartConcurrency: 1 });
+
+    await expect(store.put('part-network-retry.bundle', upload.source)).resolves.toBe('created');
+    expect(firstPartAttempts).toBe(2);
+    expect(upload.ranges.slice(0, 2)).toEqual([
+      { start: 0, endExclusive: 5 * MIB },
+      { start: 0, endExclusive: 5 * MIB },
+    ]);
+  });
+
+  it('does not retry a non-transient transport error', async () => {
+    const client = new FakeS3();
+    const failure = Object.assign(new Error('local access denied'), { code: 'EACCES' });
+    client.error = failure;
+    const store = multipartStore(client);
+
+    await expect(store.put('non-retryable.bundle', source(12).source)).rejects.toBe(failure);
+    expect(client.calls).toHaveLength(1);
+  });
+
+  it('reconciles an ambiguous multipart completion that already published the final key', async () => {
+    const client = new FakeS3();
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'ambiguous-published' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      if (call.name === 'CompleteMultipartUploadCommand') {
+        throw Object.assign(new Error('response socket reset'), { code: 'ECONNRESET' });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        return { ContentLength: 11 * MIB };
+      }
+      return {};
+    };
+    const store = multipartStore(client);
+
+    await expect(store.put('ambiguous-published.bundle', source(11 * MIB).source)).resolves.toBe(
+      'existing',
+    );
+    expect(
+      client.calls.filter((call) => call.name === 'CompleteMultipartUploadCommand'),
+    ).toHaveLength(1);
+    expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
+    expect(client.calls.filter((call) => call.name === 'AbortMultipartUploadCommand')).toHaveLength(
+      1,
+    );
+  });
+
+  it('reconciles an ambiguous completion even when the retry budget is exhausted', async () => {
+    const client = new FakeS3();
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'last-attempt-published' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      if (call.name === 'CompleteMultipartUploadCommand') {
+        throw Object.assign(new Error('last response timed out'), { code: 'ETIMEDOUT' });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        return { ContentLength: 11 * MIB };
+      }
+      return {};
+    };
+    const store = multipartStore(client, { maxAttempts: 1 });
+
+    await expect(store.put('last-attempt-published.bundle', source(11 * MIB).source)).resolves.toBe(
+      'existing',
+    );
+    expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
+  });
+
+  it('reconciles an ambiguous conditional single PUT before reporting failure', async () => {
+    const client = new FakeS3();
+    client.handler = (call) => {
+      if (call.name === 'PutObjectCommand') {
+        throw Object.assign(new Error('publish response reset'), { code: 'ECONNRESET' });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        return { ContentLength: 12 };
+      }
+      return {};
+    };
+    const store = multipartStore(client, { maxAttempts: 1 });
+
+    await expect(store.put('single-published.bundle', source(12).source)).resolves.toBe('existing');
+    expect(client.calls.map((call) => call.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+    ]);
+  });
+
+  it('retries multipart completion only after an ambiguous response reconciles as absent', async () => {
+    const client = new FakeS3();
+    let completions = 0;
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'ambiguous-absent' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      if (call.name === 'CompleteMultipartUploadCommand') {
+        completions += 1;
+        if (completions === 1) {
+          throw Object.assign(new Error('response timed out'), { code: 'ETIMEDOUT' });
+        }
+        return {};
+      }
+      if (call.name === 'HeadObjectCommand') {
+        throw Object.assign(new Error('not found'), { $metadata: { httpStatusCode: 404 } });
+      }
+      return {};
+    };
+    const store = multipartStore(client);
+
+    await expect(store.put('ambiguous-absent.bundle', source(11 * MIB).source)).resolves.toBe(
+      'created',
+    );
+    expect(completions).toBe(2);
+    expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
+    expect(client.calls.filter((call) => call.name === 'AbortMultipartUploadCommand')).toEqual([]);
   });
 
   it('aborts incomplete parts after the shared upload deadline', async () => {

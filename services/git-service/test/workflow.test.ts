@@ -12,6 +12,7 @@ type WorkflowStep = {
 
 type Workflow = {
   readonly env?: Readonly<Record<string, string>>;
+  readonly concurrency?: { readonly group?: string; readonly 'cancel-in-progress'?: boolean };
   readonly jobs?: Readonly<
     Record<
       string,
@@ -53,6 +54,10 @@ function containsSecretReference(value: unknown): boolean {
 describe('the Git backup workflow', () => {
   it('exposes operational secrets only to the backup or restore step', async () => {
     const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
+    expect(workflow.concurrency).toEqual({
+      group: 'git-backups',
+      'cancel-in-progress': false,
+    });
     const job = workflow.jobs?.run;
     const steps = job?.steps ?? [];
     const operationIndexes = steps.flatMap((step, index) =>
