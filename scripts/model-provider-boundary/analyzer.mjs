@@ -837,11 +837,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return staticTargets(current, new Set(), false);
   }
 
-  function accessMemberNames(expression) {
+  function accessMemberNames(expression, environment, state) {
     const current = unwrapExpression(expression);
     if (ts.isPropertyAccessExpression(current)) return new Set([current.name.text]);
     if (ts.isElementAccessExpression(current))
-      return staticPropertyNames(current.argumentExpression);
+      return (
+        staticPropertyNames(current.argumentExpression) ??
+        (environment
+          ? callableValue(current.argumentExpression, environment, state).strings
+          : undefined)
+      );
     return undefined;
   }
 
@@ -2542,7 +2547,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return { functions: [], kinds: CALLABLE_LOADER, members: new Map(), strings: undefined };
     }
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
-      const memberNames = accessMemberNames(current);
+      const memberNames = accessMemberNames(current, environment, state);
       const exactMemberValue = exactTopLevelContainerMemberValue(
         current,
         memberNames,

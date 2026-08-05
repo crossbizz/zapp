@@ -541,6 +541,21 @@ test('round-6 allows a harmless Array.reduce callback owner argument', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 resolves harmless Array.reduce computed indexes per callback invocation', () => {
+  const result = runFixture('loader-array-reduce-computed-index-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 detects require selected by Array.reduce computed callback indexes', () => {
+  const result = runFixture('loader-array-reduce-computed-index');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['no-initial-require', 'explicit-initial-require']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
 test('round-6 tracks loaders through array mutations, spreads, and Object.assign', () => {
   const result = runFixture('loader-container-mutations');
 
