@@ -68,6 +68,20 @@ function finalizeOpenApiDocument<Document extends object>(document: Document): D
       if (noContent !== undefined) delete noContent['content'];
     }
   }
+
+  for (const path of ['/v1/auth/login', '/v1/auth/callback']) {
+    const operation = objectRecord(objectRecord(paths[path])?.['get']);
+    const redirect = objectRecord(objectRecord(operation?.['responses'])?.['302']);
+    if (redirect === undefined) continue;
+    delete redirect['content'];
+    redirect['headers'] = {
+      Location: {
+        description: 'Absolute redirect destination.',
+        required: true,
+        schema: { type: 'string' },
+      },
+    };
+  }
   return document;
 }
 
@@ -84,13 +98,15 @@ function publicRouteTransform(
     route: { readonly preHandler?: unknown; readonly method: string | readonly string[] };
   },
 ) {
-  if (!input.url.startsWith('/v1/')) return { schema: { hide: true }, url: input.url };
+  if (input.schema.hide === true || !input.url.startsWith('/v1/')) {
+    return { schema: { hide: true }, url: input.url };
+  }
 
   const response = {
     ...(isEventStreamRoute(input.url) ? { 200: AgentEventSchema } : {}),
     ...responseSchemas(input.schema.response),
     ...(input.schema.response === undefined && !isEventStreamRoute(input.url)
-      ? { 200: z.null() }
+      ? schemaLessResponseSchemas(input.url, input.route.method)
       : {}),
     '4XX': ApiErrorSchema,
     '5XX': ApiErrorSchema,
@@ -111,6 +127,22 @@ function publicRouteTransform(
     ...transformed,
     schema: security === undefined ? transformedSchema : { ...transformedSchema, security },
   };
+}
+
+function schemaLessResponseSchemas(
+  url: string,
+  method: string | readonly string[],
+): Record<string, z.ZodTypeAny> {
+  const routeMethods: readonly string[] = typeof method === 'string' ? [method] : method;
+  const methods = routeMethods.map((value) => value.toUpperCase());
+  if (
+    methods.length === 1
+    && methods[0] === 'GET'
+    && (url === '/v1/auth/login' || url === '/v1/auth/callback')
+  ) {
+    return { 302: z.void() };
+  }
+  throw new Error(`Public route ${methods.join(',')} ${url} must declare its response schema.`);
 }
 
 function responseSchemas(response: unknown): Record<string, unknown> {

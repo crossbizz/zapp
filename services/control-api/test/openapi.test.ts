@@ -56,7 +56,7 @@ describe('GET /v1/openapi.json', () => {
     } = response.json();
 
     expect(document.openapi).toMatch(/^3\.0\./);
-    expect(document.paths['/v1/auth/login']?.get?.responses).toHaveProperty('200');
+    expect(document.paths['/v1/auth/login']?.get?.responses).toHaveProperty('302');
     expect(document.paths['/v1/projects']?.post?.requestBody?.content).toHaveProperty(
       'application/json',
     );

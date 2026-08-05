@@ -71,7 +71,7 @@ type ResponseContent<Value> = Value extends { content: infer Content }
   : undefined;
 type SuccessfulResponse<Value> = Value extends { responses: infer Responses }
   ? {
-      [Status in keyof Responses]: `${Status & (string | number)}` extends `2${string}`
+      [Status in keyof Responses]: `${Status & (string | number)}` extends `${2 | 3}${string}`
         ? ResponseContent<Responses[Status]>
         : never;
     }[keyof Responses]
@@ -176,7 +176,7 @@ export class ZappApiError extends Error {
 /** A safe response-shape failure that never includes response contents. */
 export class ZappProtocolError extends Error {
   constructor() {
-    super('API response was not valid JSON.');
+    super('API response did not match the generated operation contract.');
     this.name = 'ZappProtocolError';
   }
 }
@@ -212,8 +212,8 @@ interface RuntimeRequestOptions {
 }
 
 interface OperationMetadata {
-  readonly requiresAuth: boolean;
-  readonly successMediaTypes: readonly string[];
+  readonly authMode: 'public' | 'optional' | 'required';
+  readonly successResponses: Readonly<Record<string, readonly string[] | undefined>>;
 }
 
 /** Creates an authenticated client for zapp.build's generated public `/v1` API. */
@@ -228,7 +228,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
     ): Promise<SuccessfulResponse<Operation<Path, Method>>> {
       const runtimeOptions = requestOptions as RuntimeRequestOptions;
       const operation = publicOperation(path, runtimeOptions.method);
-      if (operation.successMediaTypes.includes('text/event-stream')) {
+      if (operationHasMediaType(operation, 'text/event-stream')) {
         throw new RangeError('Event stream operations must use subscribeRunEvents.');
       }
       const url = requestUrl(baseUrl, path, runtimeOptions.path, runtimeOptions.query);
@@ -236,7 +236,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         options.getToken,
         runtimeOptions.headers,
         runtimeOptions.body,
-        operation.requiresAuth,
+        operation.authMode,
         runtimeOptions.signal,
       );
       const responsePromise = fetch(url, {
@@ -249,13 +249,21 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         ? await responsePromise
         : await raceAbort(responsePromise, runtimeOptions.signal);
 
-      if (!response.ok) throw await apiError(response);
-      if (response.status === 204 || response.status === 205 || response.body === null) {
+      const documentedMediaTypes = operation.successResponses[String(response.status)];
+      if (documentedMediaTypes === undefined) {
+        if (response.status >= 400) throw await apiError(response);
+        throw new ZappProtocolError();
+      }
+      if (response.body === null) {
         return undefined as SuccessfulResponse<Operation<Path, Method>>;
       }
       const payload = await response.text();
       if (payload.trim().length === 0) {
         return undefined as SuccessfulResponse<Operation<Path, Method>>;
+      }
+      const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+      if (mediaType === undefined || !documentedMediaTypes.includes(mediaType)) {
+        throw new ZappProtocolError();
       }
       try {
         return JSON.parse(payload) as SuccessfulResponse<Operation<Path, Method>>;
@@ -356,7 +364,7 @@ async function requestHeaders(
   getToken: ZappClientOptions['getToken'],
   headers: ClientHeaders | undefined,
   body: unknown,
-  requiresAuth: boolean,
+  authMode: OperationMetadata['authMode'],
   signal?: AbortSignal,
 ): Promise<Headers> {
   const result =
@@ -365,13 +373,21 @@ async function requestHeaders(
       : headers instanceof Headers
         ? new Headers(headers)
         : new Headers(Object.entries(headers));
-  if (requiresAuth) {
+  if (authMode !== 'public') {
     const tokenPromise = Promise.resolve().then(getToken);
-    const token = signal === undefined
-      ? await tokenPromise
-      : await raceAbort(tokenPromise, signal);
-    if (token.length === 0) throw new Error('A non-empty zapp API token is required.');
-    result.set('authorization', `Bearer ${token}`);
+    let token: string | undefined;
+    try {
+      token = signal === undefined
+        ? await tokenPromise
+        : await raceAbort(tokenPromise, signal);
+    } catch (error) {
+      if (authMode === 'required' || signal?.aborted === true) throw error;
+    }
+    if (token !== undefined && token.length > 0) {
+      result.set('authorization', `Bearer ${token}`);
+    } else if (authMode === 'required') {
+      throw new Error('A non-empty zapp API token is required.');
+    }
   }
   if (body !== undefined && !result.has('content-type')) result.set('content-type', 'application/json');
   return result;
@@ -431,7 +447,7 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
         input.getToken,
         { accept: 'text/event-stream' },
         undefined,
-        true,
+        'required',
         input.signal,
       );
       if (!initial && state.latestId !== undefined) headers.set('last-event-id', state.latestId);
@@ -585,12 +601,23 @@ async function consumeEventStream(
     // A partial EOF frame is discarded and replayed from Last-Event-ID.
   } finally {
     try {
-      await reader.cancel(signal.aborted ? abortError(signal) : undefined);
+      const cancellation = reader.cancel(signal.aborted ? abortError(signal) : undefined);
+      void cancellation.catch(() => {
+        // Cancellation is best-effort after the stream has already failed.
+      });
     } catch {
       // Cancellation is best-effort after the stream has already failed.
     }
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative reader must not prevent subscription cleanup.
+    }
   }
+}
+
+function operationHasMediaType(operation: OperationMetadata, expected: string): boolean {
+  return Object.values(operation.successResponses).some((mediaTypes) => mediaTypes?.includes(expected));
 }
 
 function parseEventSequence(value: string): number | undefined {

@@ -57,13 +57,13 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                302: {
                     headers: {
+                        /** @description Absolute redirect destination. */
+                        Location: string;
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };
@@ -441,13 +441,13 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                302: {
                     headers: {
+                        /** @description Absolute redirect destination. */
+                        Location: string;
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };

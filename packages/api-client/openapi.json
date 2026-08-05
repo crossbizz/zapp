@@ -10527,15 +10527,14 @@
           }
         ],
         "responses": {
-          "200": {
+          "302": {
             "description": "Default Response",
-            "content": {
-              "application/json": {
+            "headers": {
+              "Location": {
+                "description": "Absolute redirect destination.",
+                "required": true,
                 "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
+                  "type": "string"
                 }
               }
             }
@@ -10670,15 +10669,14 @@
           }
         ],
         "responses": {
-          "200": {
+          "302": {
             "description": "Default Response",
-            "content": {
-              "application/json": {
+            "headers": {
+              "Location": {
+                "description": "Absolute redirect destination.",
+                "required": true,
                 "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
+                  "type": "string"
                 }
               }
             }

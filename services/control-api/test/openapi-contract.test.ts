@@ -5,7 +5,13 @@ import { astToString, default as openapiTypescript } from 'openapi-typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AppInstance } from '../src/app.js';
-import { buildHarness } from './support/harness.js';
+import type { AuthIdentity } from '../src/auth/port.js';
+import {
+  buildHarness,
+  cookieJar,
+  cookiesOf,
+  type Harness,
+} from './support/harness.js';
 
 const GENERATED_TYPES = resolve(import.meta.dirname, '../../../packages/api-client/src/generated.ts');
 const GENERATED_OPERATIONS = resolve(
@@ -21,18 +27,25 @@ interface OpenApiOperation {
     required?: boolean;
     content?: Record<string, { schema?: Record<string, unknown> }>;
   };
-  responses?: Record<string, { content?: Record<string, unknown> }>;
+  responses?: Record<string, {
+    content?: Record<string, unknown>;
+    headers?: Record<string, unknown>;
+  }>;
   security?: readonly Record<string, readonly string[]>[];
 }
 
-function documentedApp(): AppInstance {
+function documentedHarness(): Harness {
   const built = buildHarness({
     tenantDb: (() => {
       throw new Error('OpenAPI generation must not access the tenant database.');
     }),
   });
   apps.push(built.app);
-  return built.app;
+  return built;
+}
+
+function documentedApp(): AppInstance {
+  return documentedHarness().app;
 }
 
 afterEach(async () => {
@@ -93,6 +106,50 @@ describe('generated API types', () => {
       expect(responses?.['200']).toBeUndefined();
     }
   });
+
+  it('documents every formerly schema-less redirect with its live status and location header', async () => {
+    // Break caught: the fallback invents a JSON 200/null response for login and
+    // callback even though both live handlers return an empty 302 with Location.
+    const built = documentedHarness();
+    const documentResponse = await built.app.inject({ method: 'GET', url: '/v1/openapi.json' });
+    const { paths } = documentResponse.json<{
+      paths: Record<string, Record<string, OpenApiOperation>>;
+    }>();
+
+    const login = await built.app.inject({ method: 'GET', url: '/v1/auth/login' });
+    const state = new URL(login.headers.location as string).searchParams.get('state') ?? '';
+    const identity: AuthIdentity = {
+      externalId: 'openapi-callback-user',
+      email: 'openapi-callback@zapp.test',
+      displayName: 'OpenAPI Callback',
+    };
+    built.port.issueCode('openapi-code', identity);
+    const callback = await built.app.inject({
+      method: 'GET',
+      url: `/v1/auth/callback?code=openapi-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieJar(cookiesOf(login.headers['set-cookie'])) },
+    });
+
+    for (const [path, actual] of [
+      ['/v1/auth/login', login],
+      ['/v1/auth/callback', callback],
+    ] as const) {
+      expect(actual.statusCode).toBe(302);
+      expect(actual.body).toBe('');
+      expect(actual.headers.location).toEqual(expect.stringMatching(/^https:\/\//));
+      const responses = paths[path]?.['get']?.responses;
+      expect(responses?.['302']).toMatchObject({
+        headers: {
+          Location: {
+            required: true,
+            schema: { type: 'string' },
+          },
+        },
+      });
+      expect(responses?.['302']?.content).toBeUndefined();
+      expect(responses?.['200']).toBeUndefined();
+    }
+  });
 });
 
 function generatedOperations(paths: Record<string, Record<string, unknown>>): string {
@@ -105,14 +162,19 @@ function generatedOperations(paths: Record<string, Record<string, unknown>>): st
           HTTP_METHODS.flatMap((method) => {
             const operation = paths[path]?.[method] as OpenApiOperation | undefined;
             if (operation === undefined) return [];
-            const successMediaTypes = Object.entries(operation.responses ?? {})
-              .filter(([status]) => /^2\d\d$/.test(status))
-              .flatMap(([, response]) => Object.keys(response.content ?? {}))
-              .sort();
-            const requiresAuth = operation.security !== undefined
-              && operation.security.length > 0
-              && operation.security.every((requirement) => Object.keys(requirement).length > 0);
-            return [[method, { requiresAuth, successMediaTypes }]];
+            const successResponses = Object.fromEntries(
+              Object.entries(operation.responses ?? {})
+                .filter(([status]) => /^[23]\d\d$/.test(status))
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([status, response]) => [status, Object.keys(response.content ?? {}).sort()]),
+            );
+            const security = operation.security;
+            const authMode = security === undefined || security.length === 0
+              ? 'public'
+              : security.some((requirement) => Object.keys(requirement).length === 0)
+                ? 'optional'
+                : 'required';
+            return [[method, { authMode, successResponses }]];
           }),
         ),
       ]),

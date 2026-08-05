@@ -44,6 +44,11 @@ void client.request('/v1/auth/logout', {
 });
 
 function noContentResponseContract(): void {
+  const login: Promise<undefined> = client.request('/v1/auth/login', { method: 'GET' });
+  const callback: Promise<undefined> = client.request('/v1/auth/callback', {
+    method: 'GET',
+    query: { state: 'state' },
+  });
   const logout: Promise<undefined> = client.request('/v1/auth/logout', { method: 'POST' });
   const approve: Promise<undefined> = client.request('/v1/auth/device/approve', {
     method: 'POST',
@@ -64,7 +69,7 @@ function noContentResponseContract(): void {
       secretId: 'secret_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
     },
   });
-  void [logout, approve, deny, memberDelete, secretDelete];
+  void [login, callback, logout, approve, deny, memberDelete, secretDelete];
 }
 void noContentResponseContract;
 
