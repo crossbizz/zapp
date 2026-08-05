@@ -677,16 +677,24 @@ test('AR-1 allows harmless positions after push and unshift mutations', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('AR-1 preserves loader positions when arrays mutate through value aliases', () => {
+test('AR-1 tracks active and reattached array aliases plus reachable mutations', () => {
   const result = runFixture('loader-alias-mutation-positions');
 
   assert.equal(result.status, 1);
-  for (const fileName of ['alias-unshift', 'late-alias-unshift']) {
+  for (const fileName of [
+    'active-alias-push',
+    'active-alias-chain-unshift',
+    'alias-unshift',
+    'late-alias-unshift',
+    'reachable-conditional-unshift',
+    'reattached-alias-chain-unshift',
+    'unknown-conditional-unshift',
+  ]) {
     assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
   }
 });
 
-test('AR-1 keeps harmless positions clean when arrays mutate through value aliases', () => {
+test('AR-1 drops detached array aliases and unreachable mutations', () => {
   const result = runFixture('loader-alias-mutation-positions-control');
 
   assert.equal(result.status, 0, result.stderr);

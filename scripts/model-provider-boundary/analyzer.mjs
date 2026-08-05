@@ -3285,10 +3285,121 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return union(referenceSymbolsForExpression(expression), symbol ? new Set([symbol]) : new Set());
   }
 
+  function mutationMayExecute(node) {
+    let child = node;
+    for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+      if (ts.isIfStatement(parent)) {
+        const { truthiness } = runtimePossibilities(parent.expression);
+        if (child === parent.thenStatement && (truthiness & MAY_BE_TRUTHY) === 0) return false;
+        if (child === parent.elseStatement && (truthiness & MAY_BE_FALSY) === 0) return false;
+      } else if (ts.isConditionalExpression(parent)) {
+        const { truthiness } = runtimePossibilities(parent.condition);
+        if (child === parent.whenTrue && (truthiness & MAY_BE_TRUTHY) === 0) return false;
+        if (child === parent.whenFalse && (truthiness & MAY_BE_FALSY) === 0) return false;
+      } else if (
+        ts.isBinaryExpression(parent) &&
+        child === parent.right &&
+        isLogicalOperator(parent.operatorToken.kind)
+      ) {
+        const possibilities = runtimePossibilities(parent.left);
+        if (
+          (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+            (possibilities.truthiness & MAY_BE_TRUTHY) === 0) ||
+          (parent.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+            (possibilities.truthiness & MAY_BE_FALSY) === 0) ||
+          (parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+            (possibilities.nullish & MAY_BE_NULLISH) === 0)
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function containingSourceFileStatement(node) {
+    let current = node;
+    while (current && !ts.isSourceFile(current.parent)) {
+      if (ts.isFunctionLike(current)) return undefined;
+      current = current.parent;
+    }
+    return current && ts.isStatement(current) ? current : undefined;
+  }
+
+  function straightLineArrayMutationTargets(callExpression, owner) {
+    const currentOwner = unwrapExpression(owner);
+    if (!ts.isIdentifier(currentOwner)) return undefined;
+    const callStatement = containingSourceFileStatement(callExpression);
+    if (!callStatement) return undefined;
+
+    const identitiesBySymbol = new Map();
+    const identitiesForExpression = (expression) => {
+      const current = unwrapExpression(expression);
+      if (ts.isArrayLiteralExpression(current)) return new Set([current]);
+      if (!ts.isIdentifier(current)) return undefined;
+      const identity = valueSymbolIdentity(current);
+      return identity && identitiesBySymbol.has(identity)
+        ? identitiesBySymbol.get(identity)
+        : undefined;
+    };
+
+    for (const statement of callExpression.getSourceFile().statements) {
+      if (statement === callStatement) break;
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name)) continue;
+          const identity = valueSymbolIdentity(declaration.name);
+          if (identity) {
+            identitiesBySymbol.set(
+              identity,
+              declaration.initializer
+                ? identitiesForExpression(declaration.initializer)
+                : undefined,
+            );
+          }
+        }
+        continue;
+      }
+      if (ts.isExpressionStatement(statement)) {
+        const expression = unwrapExpression(statement.expression);
+        if (
+          ts.isBinaryExpression(expression) &&
+          expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(unwrapExpression(expression.left))
+        ) {
+          const identity = valueSymbolIdentity(unwrapExpression(expression.left));
+          if (identity) identitiesBySymbol.set(identity, identitiesForExpression(expression.right));
+          continue;
+        }
+        if (ts.isStringLiteralLike(expression)) continue;
+        return undefined;
+      }
+      if (
+        !ts.isExportDeclaration(statement) &&
+        !ts.isImportDeclaration(statement) &&
+        !ts.isImportEqualsDeclaration(statement) &&
+        !ts.isFunctionDeclaration(statement) &&
+        !ts.isClassDeclaration(statement) &&
+        !ts.isInterfaceDeclaration(statement) &&
+        !ts.isTypeAliasDeclaration(statement) &&
+        !ts.isEmptyStatement(statement)
+      ) {
+        return undefined;
+      }
+    }
+
+    const ownerIdentity = valueSymbolIdentity(currentOwner);
+    const arrayIdentities = ownerIdentity ? identitiesBySymbol.get(ownerIdentity) : undefined;
+    return ownerIdentity && arrayIdentities
+      ? union(new Set([ownerIdentity]), arrayIdentities)
+      : undefined;
+  }
+
   function addArrayMutationProvenance(callExpression) {
     const mutation = arrayMutationForCall(callExpression);
     if (
       !mutation ||
+      !mutationMayExecute(callExpression) ||
       (!callableValue(mutation.owner).arrayLike &&
         ![...referenceSymbolsForExpression(mutation.owner)].some((reference) =>
           ts.isArrayLiteralExpression(reference),
@@ -3297,7 +3408,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return false;
     }
     let changed = false;
-    for (const target of mutationTargetSymbols(mutation.owner)) {
+    const targets =
+      straightLineArrayMutationTargets(callExpression, mutation.owner) ??
+      mutationTargetSymbols(mutation.owner);
+    for (const target of targets) {
       for (const argument of callExpression.arguments) {
         changed = addMemberKinds(target, new Set(['*']), callableKinds(argument)) || changed;
         changed =
