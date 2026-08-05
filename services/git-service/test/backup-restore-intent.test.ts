@@ -786,6 +786,176 @@ describe('intent-first restore recovery', () => {
     });
   });
 
+  it('does not let an identical generation loser release the accepted allocation', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    const username = 'zt-1785837900-000000000005';
+    const activeUsers = new Set<string>();
+    const deleteCalls: string[] = [];
+    forgejo.deleteUser = (deletedUsername) => {
+      deleteCalls.push(deletedUsername);
+      activeUsers.delete(deletedUsername);
+      return Promise.resolve();
+    };
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-identical-generation-collision',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const owner = await begin(operationDeps, input);
+    await owner.resolveTarget();
+    const loser = await begin(operationDeps, input);
+    await loser.resolveTarget();
+    const loserWrite = store.pauseNextPutBeforeWrite(/\.allocated\.json$/);
+    const identity = {
+      username,
+      expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+    };
+
+    let loserCreated = false;
+    const losingAllocation = loser
+      .reserveCredentialCleanup(identity)
+      .then(() => {
+        loserCreated = true;
+        return 'accepted' as const;
+      })
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : 'non-error credential coordination failure',
+      );
+    await loserWrite.reached;
+    const ownerAllocation = await owner.reserveCredentialCleanup(identity);
+    const result = {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    };
+    await expect(owner.recordPhase('verified', result)).rejects.toThrow(
+      'Restore credential creator is still pending',
+    );
+    expect([...store.values.keys()].some((key) => key.endsWith('.verified.json'))).toBe(false);
+
+    loserWrite.resume();
+    const loserOutcome = await losingAllocation;
+    const releasedByLoser = [...store.values.keys()].some((key) =>
+      key.endsWith('.released.json'),
+    );
+    activeUsers.add(username);
+    await owner.recordCredentialCreated(ownerAllocation);
+
+    const recovery = await begin(operationDeps, input);
+    expect({
+      loserOutcome,
+      loserCreated,
+      releasedByLoser,
+      activeUsers: [...activeUsers],
+      deleteCalls,
+      completedResult: recovery.completedResult,
+    }).toEqual({
+      loserOutcome: 'Restore credential allocation conflicts with a concurrent attempt',
+      loserCreated: false,
+      releasedByLoser: false,
+      activeUsers: [],
+      deleteCalls: [username],
+      completedResult: result,
+    });
+  });
+
+  it.each([
+    {
+      collision: 'identical retry',
+      idempotencyKey: 'incident-2026-08-04-identical-generation-retry',
+      ownerUsername: 'zt-1785837900-000000000006',
+      loserUsername: 'zt-1785837900-000000000006',
+    },
+    {
+      collision: 'differing body',
+      idempotencyKey: 'incident-2026-08-04-different-generation-collision',
+      ownerUsername: 'zt-1785837900-000000000007',
+      loserUsername: 'zt-1785837900-000000000008',
+    },
+  ])('refuses a $collision loser before it can create or release generation 1', async (scenario) => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    const activeUsers = new Set<string>();
+    const deleteCalls: string[] = [];
+    forgejo.deleteUser = (username) => {
+      deleteCalls.push(username);
+      activeUsers.delete(username);
+      return Promise.resolve();
+    };
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: scenario.idempotencyKey,
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const owner = await begin(operationDeps, input);
+    await owner.resolveTarget();
+    const loser = await begin(operationDeps, input);
+    await loser.resolveTarget();
+    const loserWrite = store.pauseNextPutBeforeWrite(/\.allocated\.json$/);
+    const expiresAt = new Date('2026-08-04T10:05:00.000Z');
+
+    let loserCreated = false;
+    const losingAllocation = loser
+      .reserveCredentialCleanup({ username: scenario.loserUsername, expiresAt })
+      .then(() => {
+        loserCreated = true;
+        activeUsers.add(scenario.loserUsername);
+        return 'accepted' as const;
+      })
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : 'non-error credential coordination failure',
+      );
+    await loserWrite.reached;
+    const ownerAllocation = await owner.reserveCredentialCleanup({
+      username: scenario.ownerUsername,
+      expiresAt,
+    });
+    loserWrite.resume();
+    const loserOutcome = await losingAllocation;
+    const releasedByLoser = [...store.values.keys()].some((key) =>
+      key.endsWith('.released.json'),
+    );
+
+    activeUsers.add(scenario.ownerUsername);
+    await owner.recordCredentialCreated(ownerAllocation);
+    await owner.recordPhase('verified', {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    });
+
+    expect({
+      loserOutcome,
+      loserCreated,
+      releasedByLoser,
+      activeUsers: [...activeUsers],
+      deleteCalls,
+    }).toEqual({
+      loserOutcome: 'Restore credential allocation conflicts with a concurrent attempt',
+      loserCreated: false,
+      releasedByLoser: false,
+      activeUsers: [],
+      deleteCalls: [scenario.ownerUsername],
+    });
+  });
+
   it('rejects an allocation whose write lands after its terminal-fence check', async () => {
     const begin = beginRestoreOperation();
     expect(begin).toBeTypeOf('function');
@@ -879,6 +1049,7 @@ describe('intent-first restore recovery', () => {
     await expect(creator.recordPhase('verified', result)).rejects.toThrow(
       'Restore credential creator is still pending',
     );
+    expect([...store.values.keys()].some((key) => key.endsWith('.verified.json'))).toBe(false);
     let active = true;
     forgejo.deleteUser = () => {
       active = false;

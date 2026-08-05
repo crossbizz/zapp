@@ -22,6 +22,7 @@ import {
   type BackupGit,
   type BackupInventory,
   type BackupObjectStore,
+  type BackupPutResult,
   type NightlyBackupReport,
   type RestoreBackupInspectionGit,
   type RestorePhase,
@@ -436,10 +437,10 @@ async function putExactJson(
   key: string,
   value: unknown,
   conflictMessage = 'Restore idempotency key conflicts with a different selector',
-): Promise<void> {
+): Promise<BackupPutResult> {
   const json = JSON.stringify(value);
   const bytes = Buffer.from(json, 'utf8');
-  await store.put(key, {
+  const result = await store.put(key, {
     contentLength: bytes.length,
     contentType: 'application/json',
     open: () => Readable.from(bytes),
@@ -447,6 +448,7 @@ async function putExactJson(
   if (JSON.stringify(await readSmallJson(store, key)) !== json) {
     throw new Error(conflictMessage);
   }
+  return result;
 }
 
 function credentialReceiptPrefix(intentKey: string): string {
@@ -987,7 +989,7 @@ export async function beginRestoreOperation(
     if (await deps.store.exists(fenceKey)) {
       throw new Error('Restore credential allocation is closed');
     }
-    await putExactJson(
+    const allocationResult = await putExactJson(
       deps.store,
       credentialAllocationKey(
         credentialReceiptPrefix(intentKey),
@@ -996,6 +998,9 @@ export async function beginRestoreOperation(
       allocation,
       'Restore credential allocation conflicts with a concurrent attempt',
     );
+    if (allocationResult !== 'created') {
+      throw new Error('Restore credential allocation conflicts with a concurrent attempt');
+    }
     if (await deps.store.exists(fenceKey)) {
       await completeCredentialCleanup(allocation);
       throw new Error('Restore credential allocation is closed');
