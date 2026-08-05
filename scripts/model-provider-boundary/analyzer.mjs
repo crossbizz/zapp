@@ -4243,6 +4243,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             (node.operator === ts.SyntaxKind.PlusPlusToken ||
               node.operator === ts.SyntaxKind.MinusMinusToken)) ||
           ts.isPostfixUnaryExpression(node) ||
+          ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node) ||
           ts.isCallExpression(node) ||
           ts.isNewExpression(node) ||
           ts.isDeleteExpression(node) ||
