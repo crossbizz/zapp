@@ -13,7 +13,7 @@ const ORGANIZATION = newId('org');
 const PROJECT = newId('proj');
 const REF = internalRepoRef({ organizationId: ORGANIZATION, projectId: PROJECT });
 const OCCURRED_AT = new Date('2026-03-01T00:00:00.000Z');
-const TOKEN_SENTINEL = 'sentinel-token-value-must-never-enter-audit';
+const TOKEN_SENTINEL = 'forgejo-secret-token';
 
 const VALID_MINTED_EVENT = {
   organizationId: ORGANIZATION,
@@ -47,10 +47,11 @@ const VALID_REVOKED_EVENT = {
 const VALID_EVENTS = [VALID_MINTED_EVENT, VALID_REVOKED_EVENT] satisfies readonly GitAuditEvent[];
 
 const REJECTED_SCALAR_KEYS = [
-  ['token', 'sentinel-rejected-token'],
-  ['password', 'sentinel-rejected-password'],
-  ['credential', 'sentinel-rejected-credential'],
-  ['unexpectedField', 'sentinel-rejected-unknown-field'],
+  ['token', TOKEN_SENTINEL],
+  ['password', TOKEN_SENTINEL],
+  ['credential', TOKEN_SENTINEL],
+  ['secret', TOKEN_SENTINEL],
+  ['unexpectedField', TOKEN_SENTINEL],
   ['reason', TOKEN_SENTINEL],
 ] as const;
 
