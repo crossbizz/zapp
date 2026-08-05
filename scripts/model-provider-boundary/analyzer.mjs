@@ -858,6 +858,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function callableValueHasData(value) {
     return (
+      value.arrayLike ||
       value.kinds !== 0 ||
       value.functions.length > 0 ||
       (value.constructors?.length ?? 0) > 0 ||
@@ -1121,6 +1122,43 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       : selected;
   }
 
+  function classCallableValue(classLike, environment, state) {
+    const value = {
+      constructors: [{ classLike, environment: capturedEnvironment(environment) }],
+      functions: [],
+      kinds: 0,
+      members: new Map(),
+      strings: undefined,
+    };
+    for (const member of classLike.members) {
+      if (!hasModifier(member, ts.SyntaxKind.StaticKeyword) || !member.name) continue;
+      let memberValue = emptyCallableValue();
+      if (ts.isPropertyDeclaration(member) && member.initializer) {
+        memberValue = callableValue(member.initializer, environment, state);
+      } else if (ts.isMethodDeclaration(member)) {
+        memberValue = {
+          functions: [
+            {
+              environment: capturedEnvironment(environment),
+              functionLike: member,
+              thisValue: value,
+            },
+          ],
+          kinds: 0,
+          members: new Map(),
+          strings: undefined,
+        };
+      }
+      for (const memberName of declarationMemberNames(member.name) ?? ['*']) {
+        value.members.set(
+          memberName,
+          mergeCallableValues(value.members.get(memberName), memberValue),
+        );
+      }
+    }
+    return value;
+  }
+
   function callableValueForSymbol(symbol, environment, state) {
     if (!symbol) return emptyCallableValue();
     const target = aliasedSymbol(checker, symbol);
@@ -1145,13 +1183,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           strings: undefined,
         });
       } else if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) {
-        values.push({
-          constructors: [{ classLike: declaration, environment: capturedEnvironment(environment) }],
-          functions: [],
-          kinds: 0,
-          members: new Map(),
-          strings: undefined,
-        });
+        values.push(classCallableValue(declaration, environment, nextState));
       } else if (
         (ts.isVariableDeclaration(declaration) ||
           ts.isPropertyDeclaration(declaration) ||
@@ -1474,6 +1506,17 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
   }
 
+  function thisAliasValue(expression, environment, state) {
+    if (!state.thisValue) return undefined;
+    const current = unwrapExpression(expression);
+    if (current.kind === ts.SyntaxKind.ThisKeyword) return state.thisValue;
+    if (!ts.isIdentifier(current)) return undefined;
+    const symbol = symbolAt(checker, current);
+    const target = aliasedSymbol(checker, symbol);
+    const contextual = environment.get(symbol) ?? environment.get(target);
+    return contextual === state.thisValue ? state.thisValue : undefined;
+  }
+
   function functionResult(record, argumentValues, state) {
     const functionLike = record.functionLike;
     if (state.callStack.has(functionLike)) return emptyCallableValue();
@@ -1508,6 +1551,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const inspectBodyCalls = [...environment.values()].some((value) => containsCallableKind(value));
     function visit(node) {
       if (node !== functionLike && ts.isFunctionLike(node)) return;
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const alias = thisAliasValue(node.initializer, environment, nextState);
+        if (alias) bindCallablePattern(node.name, alias, environment);
+      }
       if (ts.isReturnStatement(node) && node.expression) {
         returns.push(callableValue(node.expression, environment, nextState));
         return;
@@ -1540,7 +1587,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const environment = new Map(record.environment ?? []);
     const classLike = record.classLike;
     for (const member of classLike.members) {
-      if (ts.isPropertyDeclaration(member) && member.name && member.initializer) {
+      if (
+        ts.isPropertyDeclaration(member) &&
+        !hasModifier(member, ts.SyntaxKind.StaticKeyword) &&
+        member.name &&
+        member.initializer
+      ) {
         const memberValue = callableValue(member.initializer, environment, {
           ...state,
           thisValue: instance,
@@ -1551,7 +1603,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             mergeCallableValues(instance.members.get(memberName), memberValue),
           );
         }
-      } else if (ts.isMethodDeclaration(member) && member.name) {
+      } else if (
+        ts.isMethodDeclaration(member) &&
+        !hasModifier(member, ts.SyntaxKind.StaticKeyword) &&
+        member.name
+      ) {
         const methodValue = {
           functions: [
             {
@@ -1610,6 +1666,46 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function arrayMutationForCall(callExpression) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+      return undefined;
+    }
+    const memberNames = accessMemberNames(callee);
+    if (!memberNames || memberNames.size !== 1) return undefined;
+    const methodName = [...memberNames][0];
+    return methodName === 'push' || methodName === 'unshift'
+      ? { methodName, owner: callee.expression }
+      : undefined;
+  }
+
+  function isObjectAssignCall(callExpression) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+      return false;
+    }
+    const memberNames = accessMemberNames(callee);
+    const owner = unwrapExpression(callee.expression);
+    return (
+      memberNames?.size === 1 &&
+      memberNames.has('assign') &&
+      ts.isIdentifier(owner) &&
+      isUnshadowedIdentifier(owner, 'Object')
+    );
+  }
+
+  function assignObjectMembers(target, sources) {
+    for (const source of sources) {
+      for (const [memberName, memberValue] of materializedMembers(source)) {
+        target.members.set(
+          memberName,
+          mergeCallableValues(target.members.get(memberName), memberValue),
+        );
+      }
+    }
+    return target;
+  }
+
   function callbackPipelineResult(callExpression, environment, state) {
     const callee = unwrapExpression(callExpression.expression);
     if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
@@ -1618,43 +1714,84 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const memberNames = accessMemberNames(callee);
     if (!memberNames || memberNames.size !== 1) return undefined;
     const methodName = [...memberNames][0];
-    if (!['map', 'filter', 'find', 'reduce'].includes(methodName)) return undefined;
+    if (
+      !['map', 'flatMap', 'filter', 'find', 'some', 'every', 'forEach', 'reduce'].includes(
+        methodName,
+      )
+    ) {
+      return undefined;
+    }
     const owner = callableValue(callee.expression, environment, state);
     if (!owner.arrayLike) return undefined;
-    if (!containsCallableKind(owner)) return undefined;
     const elements = arrayElements(owner);
     const callback = callExpression.arguments[0]
       ? callableValue(callExpression.arguments[0], environment, state)
       : emptyCallableValue();
+    const initialValue =
+      methodName === 'reduce' && callExpression.arguments.length > 1
+        ? callableValue(callExpression.arguments[1], environment, state)
+        : undefined;
+    if (
+      !containsCallableKind(owner) &&
+      !containsCallableKind(callback) &&
+      !(initialValue && containsCallableKind(initialValue))
+    ) {
+      return undefined;
+    }
     if (methodName === 'filter') return owner;
     if (methodName === 'find') return mergeCallableAlternatives(...elements);
-    if (methodName === 'map') {
+    if (methodName === 'map' || methodName === 'flatMap') {
       const members = new Map();
+      let resultIndex = 0;
       elements.forEach((element, index) => {
-        members.set(
-          String(index),
-          invokeFunctions(
-            callback,
-            [
-              element,
-              {
-                functions: [],
-                kinds: 0,
-                members: new Map(),
-                strings: new Set([String(index)]),
-              },
-              owner,
-            ],
-            state,
-          ),
+        const callbackResult = invokeFunctions(
+          callback,
+          [
+            element,
+            {
+              functions: [],
+              kinds: 0,
+              members: new Map(),
+              strings: new Set([String(index)]),
+            },
+            owner,
+          ],
+          state,
         );
+        const results =
+          methodName === 'flatMap' && callbackResult.arrayLike
+            ? arrayElements(callbackResult)
+            : [callbackResult];
+        for (const result of results) {
+          members.set(String(resultIndex), result);
+          resultIndex += 1;
+        }
       });
       return { arrayLike: true, functions: [], kinds: 0, members, strings: undefined };
     }
+    if (methodName === 'some' || methodName === 'every' || methodName === 'forEach') {
+      elements.forEach((element, index) => {
+        invokeFunctions(
+          callback,
+          [
+            element,
+            {
+              functions: [],
+              kinds: 0,
+              members: new Map(),
+              strings: new Set([String(index)]),
+            },
+            owner,
+          ],
+          state,
+        );
+      });
+      return emptyCallableValue();
+    }
     let accumulator;
     let remaining;
-    if (callExpression.arguments.length > 1) {
-      accumulator = callableValue(callExpression.arguments[1], environment, state);
+    if (initialValue) {
+      accumulator = initialValue;
       remaining = elements;
     } else {
       accumulator = elements[0] ?? emptyCallableValue();
@@ -1666,7 +1803,96 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return accumulator;
   }
 
+  function intrinsicInvocationMethod(expression) {
+    const current = unwrapExpression(expression);
+    if (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) {
+      return undefined;
+    }
+    const methodNames = accessMemberNames(current);
+    if (
+      !methodNames ||
+      methodNames.size !== 1 ||
+      (![...methodNames].includes('call') && ![...methodNames].includes('apply'))
+    ) {
+      return undefined;
+    }
+    const prototype = unwrapExpression(current.expression);
+    if (!ts.isPropertyAccessExpression(prototype) && !ts.isElementAccessExpression(prototype)) {
+      return undefined;
+    }
+    const prototypeNames = accessMemberNames(prototype);
+    const owner = unwrapExpression(prototype.expression);
+    return prototypeNames?.size === 1 &&
+      prototypeNames.has('prototype') &&
+      ts.isIdentifier(owner) &&
+      isUnshadowedIdentifier(owner, 'Function')
+      ? [...methodNames][0]
+      : undefined;
+  }
+
+  function arrayInvocationArguments(expression, value) {
+    const current = expression ? unwrapExpression(expression) : undefined;
+    return {
+      expressions:
+        current && ts.isArrayLiteralExpression(current)
+          ? [...current.elements].filter((element) => !ts.isOmittedExpression(element))
+          : [],
+      values: arrayElements({ ...value, arrayLike: true }),
+    };
+  }
+
+  function nestedIntrinsicInvocation(callExpression, environment, state) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+      return undefined;
+    }
+    const outerNames = accessMemberNames(callee);
+    if (!outerNames || outerNames.size !== 1) return undefined;
+    const outerMethod = [...outerNames][0];
+    if (outerMethod !== 'call' && outerMethod !== 'apply') return undefined;
+    const intrinsicMethod = intrinsicInvocationMethod(callee.expression);
+    if (!intrinsicMethod || !callExpression.arguments[0]) return undefined;
+
+    let passedArguments;
+    if (outerMethod === 'call') {
+      passedArguments = {
+        expressions: callExpression.arguments.slice(1),
+        values: callExpression.arguments
+          .slice(1)
+          .map((argument) => callableValue(argument, environment, state)),
+      };
+    } else {
+      const argumentExpression = callExpression.arguments[1];
+      passedArguments = arrayInvocationArguments(
+        argumentExpression,
+        argumentExpression
+          ? callableValue(argumentExpression, environment, state)
+          : emptyCallableValue(),
+      );
+    }
+
+    let argumentsForTarget;
+    if (intrinsicMethod === 'call') {
+      argumentsForTarget = {
+        expressions: passedArguments.expressions.slice(1),
+        values: passedArguments.values.slice(1),
+      };
+    } else {
+      argumentsForTarget = arrayInvocationArguments(
+        passedArguments.expressions[1],
+        passedArguments.values[1] ?? emptyCallableValue(),
+      );
+    }
+    return {
+      argumentExpressions: argumentsForTarget.expressions,
+      argumentValues: argumentsForTarget.values,
+      callee: callableValue(callExpression.arguments[0], environment, state),
+    };
+  }
+
   function invocationForCall(callExpression, environment, state) {
+    const nestedInvocation = nestedIntrinsicInvocation(callExpression, environment, state);
+    if (nestedInvocation) return nestedInvocation;
     const calleeExpression = unwrapExpression(callExpression.expression);
     if (
       ts.isPropertyAccessExpression(calleeExpression) ||
@@ -1687,15 +1913,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         const argumentArray = argumentExpression
           ? callableValue(argumentExpression, environment, state)
           : emptyCallableValue();
-        const expressions =
-          argumentExpression && ts.isArrayLiteralExpression(unwrapExpression(argumentExpression))
-            ? [...unwrapExpression(argumentExpression).elements].filter(
-                (element) => !ts.isOmittedExpression(element),
-              )
-            : [];
+        const appliedArguments = arrayInvocationArguments(argumentExpression, argumentArray);
         return {
-          argumentExpressions: expressions,
-          argumentValues: arrayElements({ ...argumentArray, arrayLike: true }),
+          argumentExpressions: appliedArguments.expressions,
+          argumentValues: appliedArguments.values,
           callee: callableValue(calleeExpression.expression, environment, state),
         };
       }
@@ -1816,6 +2037,27 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     if (ts.isCallExpression(current)) {
       if (isBindCall(current)) return callableValue(bindOwner(current), environment, state);
+      const arrayMutation = arrayMutationForCall(current);
+      if (arrayMutation) {
+        const owner = callableValue(arrayMutation.owner, environment, state);
+        if (owner.arrayLike) {
+          for (const argument of current.arguments) {
+            const argumentValue = callableValue(argument, environment, state);
+            owner.members.set('*', mergeCallableValues(owner.members.get('*'), argumentValue));
+          }
+          return emptyCallableValue();
+        }
+      }
+      if (isObjectAssignCall(current)) {
+        const [targetExpression, ...sourceExpressions] = current.arguments;
+        const target = targetExpression
+          ? callableValue(targetExpression, environment, state)
+          : emptyCallableValue();
+        return assignObjectMembers(
+          target,
+          sourceExpressions.map((source) => callableValue(source, environment, state)),
+        );
+      }
       const callbackResult = callbackPipelineResult(current, environment, state);
       if (callbackResult) return callbackResult;
       const invocation = invocationForCall(current, environment, state);
@@ -1889,11 +2131,25 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (ts.isAwaitExpression(current)) return callableValue(current.expression, environment, state);
     if (ts.isArrayLiteralExpression(current)) {
       const members = new Map();
-      current.elements.forEach((element, index) => {
-        if (!ts.isOmittedExpression(element)) {
-          members.set(String(index), callableValue(element, environment, state));
+      let nextIndex = 0;
+      for (const element of current.elements) {
+        if (ts.isOmittedExpression(element)) {
+          nextIndex += 1;
+        } else if (ts.isSpreadElement(element)) {
+          const spread = callableValue(element.expression, environment, state);
+          for (const [memberName, memberValue] of materializedMembers(spread)) {
+            if (memberName === '*') {
+              members.set('*', mergeCallableValues(members.get('*'), memberValue));
+            } else if (Number.isInteger(Number(memberName))) {
+              members.set(String(nextIndex), memberValue);
+              nextIndex += 1;
+            }
+          }
+        } else {
+          members.set(String(nextIndex), callableValue(element, environment, state));
+          nextIndex += 1;
         }
-      });
+      }
       return { arrayLike: true, functions: [], kinds: 0, members, strings: undefined };
     }
     if (ts.isObjectLiteralExpression(current)) {
@@ -1935,13 +2191,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       };
     }
     if (ts.isClassExpression(current)) {
-      return {
-        constructors: [{ classLike: current, environment: capturedEnvironment(environment) }],
-        functions: [],
-        kinds: 0,
-        members: new Map(),
-        strings: undefined,
-      };
+      return classCallableValue(current, environment, state);
     }
     return emptyCallableValue();
   }
@@ -1972,13 +2222,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (ts.isCallExpression(current)) {
       if (isBindCall(current)) return callableKinds(bindOwner(current));
       const callee = unwrapExpression(current.expression);
-      const invocationOwner =
+      const nestedTarget =
         (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
+        intrinsicInvocationMethod(callee.expression)
+          ? current.arguments[0]
+          : undefined;
+      const invocationOwner =
+        nestedTarget ??
+        ((ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
         [...(accessMemberNames(callee) ?? [])].some(
           (memberName) => memberName === 'call' || memberName === 'apply',
         )
           ? callee.expression
-          : current.expression;
+          : current.expression);
       const calleeKinds = callableKinds(invocationOwner);
       let kinds = calleeKinds & CALLABLE_CREATE_REQUIRE ? CALLABLE_LOADER : 0;
       for (const functionLike of calledFunctionLikes(current)) {
@@ -2165,6 +2421,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function referenceSymbolsForExpression(expression, seen = new Set()) {
     const current = unwrapExpression(expression);
+    if (ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current)) {
+      addContainerProvenance(current, current);
+      return new Set([current]);
+    }
     if (ts.isIdentifier(current)) {
       const symbol = symbolAt(checker, current);
       if (!symbol) return new Set();
@@ -2209,6 +2469,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (!targetSymbol) return false;
     const current = unwrapExpression(expression);
     let changed = false;
+    if (ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current)) {
+      const identity = aliasedSymbol(checker, targetSymbol) ?? targetSymbol;
+      if (!containerSymbols.has(identity)) {
+        containerSymbols.add(identity);
+        changed = true;
+      }
+    }
     const sourceSymbol = symbolForValue(current);
     if (
       sourceSymbol &&
@@ -2241,10 +2508,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             memberNames,
             functionTargetsForExpression(valueExpression),
           ) || changed;
+        changed =
+          addMemberReferences(
+            targetSymbol,
+            memberNames,
+            referenceSymbolsForExpression(valueExpression),
+          ) || changed;
       }
     } else if (ts.isArrayLiteralExpression(current)) {
       current.elements.forEach((element, index) => {
         if (ts.isOmittedExpression(element)) return;
+        if (ts.isSpreadElement(element)) {
+          changed =
+            copyContainerProvenance(targetSymbol, symbolForValue(element.expression)) || changed;
+          return;
+        }
         const memberNames = new Set([String(index)]);
         changed = addMemberKinds(targetSymbol, memberNames, callableKinds(element)) || changed;
         changed =
@@ -2253,6 +2531,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             memberNames,
             functionTargetsForExpression(element),
           ) || changed;
+        changed =
+          addMemberReferences(targetSymbol, memberNames, referenceSymbolsForExpression(element)) ||
+          changed;
       });
     } else {
       changed = copyContainerProvenance(targetSymbol, symbolForValue(current)) || changed;
@@ -2291,6 +2572,43 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       );
     }
     return false;
+  }
+
+  function mutationTargetSymbols(expression) {
+    const symbol = symbolForValue(expression);
+    return union(referenceSymbolsForExpression(expression), symbol ? new Set([symbol]) : new Set());
+  }
+
+  function addArrayMutationProvenance(callExpression) {
+    const mutation = arrayMutationForCall(callExpression);
+    if (!mutation || !callableValue(mutation.owner).arrayLike) return false;
+    let changed = false;
+    for (const target of mutationTargetSymbols(mutation.owner)) {
+      for (const argument of callExpression.arguments) {
+        changed = addMemberKinds(target, new Set(['*']), callableKinds(argument)) || changed;
+        changed =
+          addMemberFunctionTargets(
+            target,
+            new Set(['*']),
+            functionTargetsForExpression(argument),
+          ) || changed;
+        changed =
+          addMemberReferences(target, new Set(['*']), referenceSymbolsForExpression(argument)) ||
+          changed;
+      }
+    }
+    return changed;
+  }
+
+  function addObjectAssignProvenance(callExpression) {
+    if (!isObjectAssignCall(callExpression) || callExpression.arguments.length === 0) return false;
+    let changed = false;
+    for (const target of mutationTargetSymbols(callExpression.arguments[0])) {
+      for (const source of callExpression.arguments.slice(1)) {
+        changed = addContainerProvenance(target, source) || changed;
+      }
+    }
+    return changed;
   }
 
   visitSourceFiles(sourceFiles, (node) => {
@@ -2405,6 +2723,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (ts.isFunctionLike(node) && node.body) {
         callableChanged =
           addFunctionReturnKinds(node, functionReturnKinds(node)) || callableChanged;
+      }
+      if (ts.isCallExpression(node)) {
+        callableChanged = addArrayMutationProvenance(node) || callableChanged;
+        callableChanged = addObjectAssignProvenance(node) || callableChanged;
       }
     });
   }

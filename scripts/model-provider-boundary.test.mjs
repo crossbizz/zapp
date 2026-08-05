@@ -513,6 +513,81 @@ test('round-5 allows harmless callback and cyclic-container flows', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('round-6 tracks loaders through callback array methods and reduce initial values', () => {
+  const result = runFixture('loader-callback-methods');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['flat-map', 'some', 'every', 'for-each', 'reduce-initial']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 allows harmless callback array methods and reduce initial values', () => {
+  const result = runFixture('loader-callback-methods-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-6 tracks loaders through array mutations, spreads, and Object.assign', () => {
+  const result = runFixture('loader-container-mutations');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['push', 'unshift', 'array-spread', 'object-assign', 'mutation-cycle']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 allows harmless cyclic array mutations, spreads, and Object.assign', () => {
+  const result = runFixture('loader-container-mutations-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-6 tracks static class fields and assignments through aliases of this', () => {
+  const result = runFixture('loader-class-aliases');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['static-class-field', 'this-alias']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 keeps static and instance class fields isolated in harmless alias flows', () => {
+  const result = runFixture('loader-class-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-6 normalizes nested Function.prototype call and apply invocations', () => {
+  const result = runFixture('loader-nested-invocations');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['call-call', 'apply-call', 'call-apply', 'apply-apply']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 does not normalize unrelated call and apply methods as loaders', () => {
+  const result = runFixture('loader-nested-invocations-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-6 tracks nested assigned literals through cyclic rest and default destructuring', () => {
+  const result = runFixture('loader-cyclic-nested-destructuring');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['object-rest-default', 'array-rest-default']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 allows harmless cyclic nested rest and default destructuring', () => {
+  const result = runFixture('loader-cyclic-nested-destructuring-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-5 keeps mixed callsites isolated in reverse order', () => {
   const result = runFixture('loader-mixed-callsite-reverse-control');
 
