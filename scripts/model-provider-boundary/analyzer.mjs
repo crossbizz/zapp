@@ -364,6 +364,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const contextualLoaderTargets = new Map();
   const contextualValueCache = new Map();
   const runtimeClassInstances = new Map();
+  const runtimeSymbolUsageBySourceFile = new Map();
   const readOnlyLiteralContainerSymbols = new Map();
   let collectLoaderContexts = false;
 
@@ -643,6 +644,69 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return false;
   }
 
+  function runtimeIdentifierUseIsReadOnly(identifier) {
+    const parent = identifier.parent;
+    if (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === identifier
+    ) {
+      const operation = parent.parent;
+      if (
+        ts.isCallExpression(operation) &&
+        operation.expression === parent &&
+        [...(accessMemberNames(parent) ?? [])].some(
+          (memberName) => memberName === 'push' || memberName === 'unshift',
+        )
+      ) {
+        return false;
+      }
+      return !(
+        (ts.isBinaryExpression(operation) && unwrapExpression(operation.left) === parent) ||
+        (ts.isDeleteExpression(operation) && operation.expression === parent) ||
+        ts.isPrefixUnaryExpression(operation) ||
+        ts.isPostfixUnaryExpression(operation)
+      );
+    }
+    if (ts.isSpreadAssignment(parent) && parent.expression === identifier) return true;
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === identifier &&
+      (ts.isObjectBindingPattern(parent.name) || ts.isArrayBindingPattern(parent.name))
+    ) {
+      return true;
+    }
+    return (
+      ts.isBinaryExpression(parent) &&
+      parent.right === identifier &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      (ts.isObjectLiteralExpression(unwrapExpression(parent.left)) ||
+        ts.isArrayLiteralExpression(unwrapExpression(parent.left)))
+    );
+  }
+
+  function runtimeSymbolUsage(sourceFile) {
+    if (runtimeSymbolUsageBySourceFile.has(sourceFile)) {
+      return runtimeSymbolUsageBySourceFile.get(sourceFile);
+    }
+    const usage = new Map();
+    function visit(node) {
+      if (ts.isIdentifier(node) && isRuntimeIdentifier(node)) {
+        const symbol = symbolAt(checker, node);
+        const identity = aliasedSymbol(checker, symbol) ?? symbol;
+        if (identity) {
+          const current = usage.get(identity) ?? { readOnly: true, referenceCount: 0 };
+          current.referenceCount += 1;
+          current.readOnly = current.readOnly && runtimeIdentifierUseIsReadOnly(node);
+          usage.set(identity, current);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+    runtimeSymbolUsageBySourceFile.set(sourceFile, usage);
+    return usage;
+  }
+
   function objectSpreadMembersAreKnown(expression, seenSymbols = new Set()) {
     const current = unwrapExpression(expression);
     if (ts.isObjectLiteralExpression(current)) {
@@ -658,22 +722,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       const symbol = symbolAt(checker, current);
       const identity = aliasedSymbol(checker, symbol) ?? symbol;
       if (!identity || seenSymbols.has(identity)) return false;
-      let hasAnotherRuntimeReference = false;
-      function visitReference(node) {
-        if (hasAnotherRuntimeReference) return;
-        if (
-          ts.isIdentifier(node) &&
-          node !== current &&
-          isRuntimeIdentifier(node) &&
-          (aliasedSymbol(checker, symbolAt(checker, node)) ?? symbolAt(checker, node)) === identity
-        ) {
-          hasAnotherRuntimeReference = true;
-          return;
-        }
-        ts.forEachChild(node, visitReference);
-      }
-      visitReference(current.getSourceFile());
-      if (hasAnotherRuntimeReference) return false;
+      const usage = runtimeSymbolUsage(current.getSourceFile()).get(identity);
+      if ((usage?.referenceCount ?? 0) > 1) return false;
       const declarations = identity.declarations ?? [];
       return (
         declarations.length > 0 &&
@@ -1438,59 +1488,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       readOnlyLiteralContainerSymbols.set(identity, false);
       return false;
     }
-    let readOnly = true;
-    const sourceFilesToScan = new Set(
-      declarations.map((declaration) => declaration.getSourceFile()),
+    const readOnly = declarations.every(
+      (declaration) =>
+        runtimeSymbolUsage(declaration.getSourceFile()).get(identity)?.readOnly !== false,
     );
-    for (const sourceFile of sourceFilesToScan) {
-      function visit(node) {
-        if (!readOnly) return;
-        if (
-          ts.isIdentifier(node) &&
-          isRuntimeIdentifier(node) &&
-          (aliasedSymbol(checker, symbolAt(checker, node)) ?? symbolAt(checker, node)) === identity
-        ) {
-          const parent = node.parent;
-          if (
-            (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
-            parent.expression === node
-          ) {
-            const operation = parent.parent;
-            if (
-              (ts.isBinaryExpression(operation) && unwrapExpression(operation.left) === parent) ||
-              (ts.isDeleteExpression(operation) && operation.expression === parent) ||
-              ts.isPrefixUnaryExpression(operation) ||
-              ts.isPostfixUnaryExpression(operation)
-            ) {
-              readOnly = false;
-            }
-            return;
-          }
-          if (ts.isSpreadAssignment(parent) && parent.expression === node) return;
-          if (
-            ts.isVariableDeclaration(parent) &&
-            parent.initializer === node &&
-            (ts.isObjectBindingPattern(parent.name) || ts.isArrayBindingPattern(parent.name))
-          ) {
-            return;
-          }
-          if (
-            ts.isBinaryExpression(parent) &&
-            parent.right === node &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            (ts.isObjectLiteralExpression(unwrapExpression(parent.left)) ||
-              ts.isArrayLiteralExpression(unwrapExpression(parent.left)))
-          ) {
-            return;
-          }
-          readOnly = false;
-          return;
-        }
-        ts.forEachChild(node, visit);
-      }
-      visit(sourceFile);
-      if (!readOnly) break;
-    }
     readOnlyLiteralContainerSymbols.set(identity, readOnly);
     return readOnly;
   }
@@ -2456,6 +2457,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const identity = valueSymbolIdentity(expression);
     const spreadStatement = containingTopLevelStatement(expression);
     if (!identity || !spreadStatement) return undefined;
+    if (hasReadOnlyLiteralContainer(identity, [...(identity.declarations ?? [])])) {
+      return undefined;
+    }
 
     const trackedSymbols = new Set([identity]);
     const isTrackedValue = (candidate) => {
@@ -2619,6 +2623,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const symbol = symbolAt(checker, owner);
     const identity = aliasedSymbol(checker, symbol) ?? symbol;
     if (!identity) return undefined;
+    if (hasReadOnlyLiteralContainer(identity, [...(identity.declarations ?? [])])) {
+      return undefined;
+    }
     const accessStatement = containingTopLevelStatement(access);
     if (!accessStatement) return undefined;
     const trackedSymbols = new Set([identity]);

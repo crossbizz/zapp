@@ -11,10 +11,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { shouldScanProductionFile } from './check-model-provider-boundary.mjs';
+import { analyzeProductionSources } from './model-provider-boundary/analyzer.mjs';
 import {
   baselineConstantsForTests,
   inventoryDigest,
@@ -971,6 +973,35 @@ test('AR-1 honors object spread overwrites and harmless defaults', () => {
   const result = runFixture('loader-unknown-object-spread-default-control');
 
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 keeps object-spread shape analysis bounded', async () => {
+  const lines = [
+    'export {};',
+    'const marker = require;',
+    "const provider = '@example/not-forbidden';",
+  ];
+  for (let index = 0; index < 500; index += 1) {
+    lines.push(`const base${index} = { load: console.log };`);
+    lines.push(`const out${index} = { ...base${index} };`);
+    lines.push(`out${index}.load(provider);`);
+  }
+
+  const startedAt = performance.now();
+  const inventory = await analyzeProductionSources(
+    projectRoot,
+    [
+      {
+        relativePath: 'apps/desktop/src/ipc/utils/spread-performance.ts',
+        text: lines.join('\n'),
+      },
+    ],
+    { modules: new Map([['ai', 'ai']]), packageImports: [] },
+  );
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.deepEqual(inventory, {});
+  assert.ok(elapsedMs < 6_000, `object-spread analysis took ${elapsedMs.toFixed(0)}ms`);
 });
 
 test('round-5 keeps mixed callsites isolated in reverse order', () => {
