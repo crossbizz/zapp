@@ -42,7 +42,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-9 Run + workspace routes
 - [x] CP-10 Specification routes
 - [x] CP-11 Release/integration route shells + RBAC
-- [ ] CP-12 Audit reads + org settings
+- [x] CP-12 Audit reads + org settings
 - [x] CP-13 Sequenced event ingest
 - [x] CP-14 LISTEN/NOTIFY → Redis fanout
 - [x] CP-15 Resumable SSE stream
