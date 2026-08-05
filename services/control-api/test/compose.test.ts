@@ -95,6 +95,9 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['POST', '/v1/invites/:token/accept'],
   ['PATCH', '/v1/organizations/:orgId/members/:userId'],
   ['DELETE', '/v1/organizations/:orgId/members/:userId'],
+  ['GET', '/v1/organizations/:orgId/audit-events'],
+  ['GET', '/v1/organizations/:orgId/settings'],
+  ['PATCH', '/v1/organizations/:orgId/settings'],
   // CP-4's tenant surface — the six that were missing from the running service.
   ['POST', '/v1/projects'],
   ['GET', '/v1/projects'],
@@ -130,6 +133,8 @@ describe('the composition server.ts performs', () => {
     const app = composed();
 
     const urls = [
+      `/v1/organizations/${newId('org')}/audit-events`,
+      `/v1/organizations/${newId('org')}/settings`,
       '/v1/projects',
       `/v1/projects/${newId('proj')}`,
       `/v1/projects/${newId('proj')}/contract`,

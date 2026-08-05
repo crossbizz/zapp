@@ -2,6 +2,7 @@ import { ApiErrorSchema, newId } from '@zapp/contracts';
 import {
   agentEvents,
   agentRuns,
+  auditEvents,
   branches,
   nextEventSequence,
   projectContracts,
@@ -102,6 +103,7 @@ interface Tenant {
   readonly projectIds: string[];
   readonly runIds: string[];
   readonly eventIds: string[];
+  readonly auditEventIds: string[];
   /** One secret per project, set through the API so the vault path is the real one. */
   readonly secretIds: string[];
 }
@@ -176,13 +178,14 @@ describe('the isolation suite itself', () => {
  * exactly that, silently and with a green tick. See the guard at the end of the
  * file.
  */
-const NEGATIVE_CONTROLS = 8;
+const NEGATIVE_CONTROLS = 9;
 let negativeControlsRun = 0;
 
 describe.skipIf(!hasDatabase)('tenant isolation', () => {
   let database: TestDatabase;
   let store: OrganizationStore;
   let app: AppInstance;
+  let baseUrl: string;
   let port: FakeAuthPort;
   let audit: InMemoryAuditSink;
   let a: Tenant;
@@ -229,6 +232,43 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       : { ...member.headers, [ORGANIZATION_HEADER]: organizationId };
   }
 
+  async function streamRows(member: Member, organizationId: string, runId: string): Promise<Row[]> {
+    const controller = new AbortController();
+    const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+      headers: { ...as(member, organizationId), accept: 'text/event-stream' },
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    const decoder = new TextDecoder();
+    const rows: Row[] = [];
+    let pending = '';
+    try {
+      while (rows.length < 2) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const value: unknown = chunk.value;
+        if (!(value instanceof Uint8Array)) throw new Error('SSE chunk is not bytes');
+        pending += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+        let boundary = pending.indexOf('\n\n');
+        while (boundary >= 0) {
+          const block = pending.slice(0, boundary);
+          pending = pending.slice(boundary + 2);
+          const data = block
+            .split('\n')
+            .find((line) => line.startsWith('data: '))
+            ?.slice('data: '.length);
+          if (data !== undefined) rows.push(JSON.parse(data) as Row);
+          boundary = pending.indexOf('\n\n');
+        }
+      }
+      return rows;
+    } finally {
+      controller.abort();
+    }
+  }
+
   /** An organization with three active members, two projects, two runs, four events. */
   async function seedTenant(slug: string): Promise<Tenant> {
     const owner = await signIn(`owner@${slug}.test`);
@@ -246,6 +286,19 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       audit: noAudit,
     });
     const organizationId = created.organization.id;
+    const auditEventId = newId('aud');
+    const auditEventIds = [auditEventId];
+    await database.db.insert(auditEvents).values({
+      id: auditEventId,
+      organizationId,
+      actorType: 'user',
+      actorId: owner.userId,
+      action: 'organization.created',
+      targetType: 'organization',
+      targetId: organizationId,
+      metadataJson: { seeded: true },
+      occurredAt: EVENT_TIME,
+    });
     await store.addMember({
       organizationId,
       userId: builder.userId,
@@ -358,6 +411,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       projectIds,
       runIds,
       eventIds,
+      auditEventIds,
       secretIds,
     };
   }
@@ -382,7 +436,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       // themselves are `test/plugins.test.ts`'s subject.
       limits: { config: TEST_RATE_LIMITS },
     });
-    await app.ready();
+    baseUrl = await app.listen({ host: '127.0.0.1', port: 0 });
 
     a = await seedTenant('acme');
     b = await seedTenant('beta');
@@ -586,6 +640,34 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       expectRefusal(response, 404, 'organization_not_found');
     });
 
+    it('does not read B’s audit trail or settings, or patch B’s settings', async () => {
+      const audit = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/audit-events`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(audit, 404, 'organization_not_found');
+
+      const settings = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(settings, 404, 'organization_not_found');
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: {
+          ...as(a.owner, a.organizationId),
+          'idempotency-key': 'isolation-settings-denied-01',
+        },
+        payload: { builderCanDeploy: true },
+      });
+      expectRefusal(patched, 404, 'organization_not_found');
+      expect(await store.getSettings(b.organizationId)).toEqual({ builderCanDeploy: false });
+    });
+
     it('cannot invite anyone into B', async () => {
       const response = await app.inject({
         method: 'POST',
@@ -647,14 +729,11 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       expect(ids.filter((id) => b.runIds.includes(id))).toEqual([]);
     });
 
-    it('never carry an event of the other tenant', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: `/v1/runs/${a.runIds[0] ?? ''}/events`,
-        headers: as(a.viewer, a.organizationId),
-      });
-      expectOnlyTenantRows(response, a, a.eventIds.slice(0, 2));
-      const ids = rowsOf(response).map((row) => row.id);
+    it('never carries an event of the other tenant', async () => {
+      const rows = await streamRows(a.viewer, a.organizationId, a.runIds[0] ?? '');
+      const ids = rows.map((row) => row.id);
+      expect(ids).toEqual(expect.arrayContaining(a.eventIds.slice(0, 2)));
+      for (const row of rows) expect(row.organizationId).toBe(a.organizationId);
       expect(ids.filter((id) => b.eventIds.includes(id))).toEqual([]);
     });
 
@@ -1001,12 +1080,11 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         organizationId: a.organizationId,
       });
 
-      const events = await app.inject({
-        method: 'GET',
-        url: `/v1/runs/${runId}/events`,
-        headers: as(a.viewer, a.organizationId),
-      });
-      expectOnlyTenantRows(events, a, a.eventIds.slice(0, 2));
+      const events = await streamRows(a.viewer, a.organizationId, runId);
+      expect(events.map((event) => event.id)).toEqual(
+        expect.arrayContaining(a.eventIds.slice(0, 2)),
+      );
+      for (const event of events) expect(event.organizationId).toBe(a.organizationId);
       negativeControlsRun += 1;
     });
 
@@ -1137,6 +1215,40 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { email: 'newcomer@beta.test', role: 'viewer' },
       });
       expect(invited.statusCode, invited.body).toBe(201);
+      negativeControlsRun += 1;
+    });
+
+    it('lets B read its own audit trail and settings without exposing either tenant', async () => {
+      const audit = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/audit-events`,
+        headers: as(b.owner, b.organizationId),
+      });
+      expectOnlyTenantRows(audit, b, b.auditEventIds);
+      expect(rowsOf(audit).map((row) => row.id)).not.toEqual(
+        expect.arrayContaining(a.auditEventIds),
+      );
+
+      const policy = { providerOrder: ['anthropic'] };
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: {
+          ...as(b.owner, b.organizationId),
+          'idempotency-key': 'isolation-settings-own-01',
+        },
+        payload: { defaultModelPolicy: policy },
+      });
+      expect(patched.statusCode, patched.body).toBe(200);
+      expect(patched.json()).toEqual({
+        settings: { builderCanDeploy: false, defaultModelPolicy: policy },
+      });
+
+      expect(await store.getSettings(a.organizationId)).toEqual({ builderCanDeploy: false });
+      expect(await store.getSettings(b.organizationId)).toEqual({
+        builderCanDeploy: false,
+        defaultModelPolicy: policy,
+      });
       negativeControlsRun += 1;
     });
 

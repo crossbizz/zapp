@@ -138,14 +138,6 @@ const MintTokenBody = z
       .min(1)
       .max(MAX_TOKEN_TTL_SECONDS)
       .default(DEFAULT_TOKEN_TTL_SECONDS),
-    /**
-     * Why this credential is being minted. Required, and long enough to be a
-     * sentence rather than a keystroke: the audit row is what an incident is
-     * reconstructed from, and "sandbox-service took a write token" answers a
-     * different question than "sandbox-service took a write token to push
-     * run_01…".
-     */
-    reason: z.string().trim().min(8).max(500),
     /** Attribution, when the caller has a run or a task to attribute to. */
     runId: idSchema('run').optional(),
     taskId: idSchema('task').optional(),
@@ -156,7 +148,6 @@ const RevokeTokensBody = z
   .object({
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
-    reason: z.string().trim().min(8).max(500),
   })
   .strict();
 
@@ -385,7 +376,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
     },
     async (request, reply) => {
       const caller = serviceOf(request);
-      const { organizationId, projectId, access, ttlSec, reason, runId, taskId } = request.body;
+      const { organizationId, projectId, access, ttlSec, runId, taskId } = request.body;
 
       let minted;
       try {
@@ -398,7 +389,6 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
           // a credential was some other service's doing, which is the property
           // that makes the audit row worth reading.
           requestingService: caller.service,
-          reason,
           ...(runId === undefined ? {} : { runId }),
           ...(taskId === undefined ? {} : { taskId }),
         });
@@ -445,7 +435,6 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
           organizationId: request.body.organizationId,
           projectId: request.body.projectId,
           requestingService: caller.service,
-          reason: request.body.reason,
         });
         return { revoked };
       } catch (error) {

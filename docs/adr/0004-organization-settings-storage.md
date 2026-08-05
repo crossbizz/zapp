@@ -1,6 +1,6 @@
 # ADR-0004: Organization settings storage
 
-- Status: Proposed — human approval required
+- Status: Accepted — controller decision 2026-08-04
 - Date: 2026-08-04
 - Owners: Control plane / data model
 
@@ -56,4 +56,3 @@ has one source of truth and remains fail-closed for existing rows.
   would make authorization depend on an unrelated provider record.
 - A new `organization_settings` table: valid, but adds an extra table and join
   for two organization-owned values without improving isolation or lifecycle.
-

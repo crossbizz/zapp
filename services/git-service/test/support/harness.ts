@@ -177,6 +177,10 @@ export function createFakeTokenService(): FakeTokenService {
       record('mint', input);
       return Promise.resolve(fake.minted);
     },
+    mintForRepository(input) {
+      record('mintForRepository', input);
+      return Promise.resolve(fake.minted);
+    },
     revokeForProject(input) {
       record('revokeForProject', input);
       return Promise.resolve(fake.revoked);

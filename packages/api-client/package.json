@@ -1,0 +1,26 @@
+{
+  "name": "@zapp/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "generate": "UPDATE_OPENAPI_ARTIFACTS=1 pnpm --filter @zapp/control-api test -- openapi-contract.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@zapp/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "vitest": "^3.2.7"
+  }
+}

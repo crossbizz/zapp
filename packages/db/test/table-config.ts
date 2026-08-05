@@ -29,6 +29,29 @@ export function indexNames(table: PgTable): (string | undefined)[] {
   return getTableConfig(table).indexes.map((index) => index.config.name);
 }
 
+export function indexColumns(table: PgTable): Record<string, string[]> {
+  const byName: Record<string, string[]> = {};
+  for (const index of getTableConfig(table).indexes) {
+    const name: unknown = index.config.name;
+    const columns: unknown = index.config.columns;
+    if (typeof name !== 'string' || !Array.isArray(columns)) {
+      throw new Error(`${tableName(table)} has an invalid index configuration`);
+    }
+    byName[name] = (columns as unknown[]).map((column) => {
+      if (
+        typeof column === 'object' &&
+        column !== null &&
+        'name' in column &&
+        typeof column.name === 'string'
+      ) {
+        return column.name;
+      }
+      return '<expression>';
+    });
+  }
+  return byName;
+}
+
 /** Each foreign key rendered as `column -> table.column`. */
 export function foreignKeys(table: PgTable): string[] {
   return getTableConfig(table).foreignKeys.map((foreignKey) => {

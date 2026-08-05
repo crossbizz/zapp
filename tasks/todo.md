@@ -42,11 +42,11 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-9 Run + workspace routes
 - [x] CP-10 Specification routes
 - [x] CP-11 Release/integration route shells + RBAC
-- [ ] CP-12 Audit reads + org settings
+- [x] CP-12 Audit reads + org settings
 - [x] CP-13 Sequenced event ingest
-- [ ] CP-14 LISTEN/NOTIFY → Redis fanout
-- [ ] CP-15 Resumable SSE stream
-- [ ] CP-16 OpenAPI + generated SDK
+- [x] CP-14 LISTEN/NOTIFY → Redis fanout
+- [x] CP-15 Resumable SSE stream
+- [x] CP-16 OpenAPI + generated SDK
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
 - [ ] WS-2 Modal images (forge-node-base, forge-web-test)
@@ -61,7 +61,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WS-11 Secret injection + network profiles + redaction
 - [ ] WS-12 Preview tokens + share records
 ### Plan 06
-- [ ] GIT-4 Nightly bundle backups + restore
+- [x] GIT-4 Nightly bundle backups + restore
 ### Plan 04 — Agent runtime core
 - [ ] AR-1 model-gateway streaming API
 - [ ] AR-2 Routing/retry/fallback

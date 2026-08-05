@@ -171,13 +171,12 @@ interface Wired {
   as: (session: TestSession) => Record<string, string>;
 }
 
-async function wire(builderCanDeploy = false): Promise<Wired> {
+async function wire(): Promise<Wired> {
   const data = new InMemoryTenantData();
   const releases = new RecordingReleasePort();
   const built = buildHarness({
     tenantDb: data.factory,
     releasePort: releases,
-    permissionContextFor: () => Promise.resolve({ builderCanDeploy }),
   });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
@@ -221,7 +220,7 @@ const candidateBody = (wired: Wired) => ({
 
 describe('release route shells', () => {
   it('lets Owner create, read, approve, deploy, rollback, and read strict evidence', async () => {
-    const wired = await wire(true);
+    const wired = await wire();
     const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-create-01'), payload: candidateBody(wired) });
     expect(created.statusCode, created.body).toBe(201);
     const releaseId = created.json<{ release: { id: string } }>().release.id;
@@ -268,8 +267,8 @@ describe('release route shells', () => {
     }
   });
 
-  it('allows Builder create/read but denies deployment unless injected settings allow it', async () => {
-    const denied = await wire(false);
+  it('allows Builder create/read but reads persisted organization settings before deployment', async () => {
+    const denied = await wire();
     const builder = await join(denied, BUILDER, 'builder');
     const created = await denied.built.app.inject({ method: 'POST', url: `/v1/projects/${denied.projectId}/releases`, headers: mutationHeaders(denied, builder, 'builder-create-01'), payload: candidateBody(denied) });
     expect(created.statusCode, created.body).toBe(201);
@@ -282,7 +281,9 @@ describe('release route shells', () => {
     const viewer = await join(denied, VIEWER, 'viewer');
     expect((await denied.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/approve`, headers: mutationHeaders(denied, viewer, 'viewer-approve-denied') })).statusCode).toBe(403);
 
-    const allowed = await wire(true);
+    const allowed = await wire();
+    const enabled = await allowed.built.app.inject({ method: 'PATCH', url: `/v1/organizations/${allowed.organizationId}/settings`, headers: mutationHeaders(allowed, allowed.owner, 'release-enable-builder-deploy-01'), payload: { builderCanDeploy: true } });
+    expect(enabled.statusCode, enabled.body).toBe(200);
     const allowedBuilder = await join(allowed, { ...BUILDER, email: 'allowed-builder@release.test' }, 'builder');
     const allowedCreated = await allowed.built.app.inject({ method: 'POST', url: `/v1/projects/${allowed.projectId}/releases`, headers: mutationHeaders(allowed, allowedBuilder, 'builder-create-02'), payload: candidateBody(allowed) });
     const allowedReleaseId = allowedCreated.json<{ release: { id: string } }>().release.id;
@@ -321,7 +322,7 @@ describe('release route shells', () => {
   });
 
   it('rejects a same-tenant different release returned for reads and mutations', async () => {
-    const wired = await wire(true);
+    const wired = await wire();
     const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-requested-source-01'), payload: candidateBody(wired) });
     expect(created.statusCode, created.body).toBe(201);
     const requestedReleaseId = created.json<{ release: { id: string } }>().release.id;

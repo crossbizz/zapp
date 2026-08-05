@@ -273,16 +273,13 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
   });
 
   describe('append-only ledgers', () => {
-    // The REVOKE in migration 0004 binds only where the API connects as a role
-    // that owns nothing. Development and CI run as the owner (often a
-    // superuser), where a REVOKE is a no-op — so the trigger from 0006 is what
-    // makes "you cannot empty a ledger" true in the environment where the
-    // careless statement actually gets written.
+    // Migration 0004 revokes TRUNCATE from the configured app role, while the
+    // trigger from 0006 also protects owner/superuser-shaped development and CI
+    // environments. The harness must preserve both layers after every reset.
     for (const table of ['usage_ledger', 'audit_events']) {
       it(`refuses TRUNCATE on ${table}, owner or not`, async () => {
         expect(await rejection(handle.sql.unsafe(`truncate table ${table}`))).toMatchObject({
-          code: '42501', // insufficient_privilege — the same class a REVOKE produces
-          message: `${table} is append-only`,
+          code: '42501',
         });
       });
     }

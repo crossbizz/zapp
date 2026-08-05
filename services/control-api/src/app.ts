@@ -14,7 +14,11 @@ import {
 import { z } from 'zod';
 
 import type { AuthConfig } from './auth/config.js';
-import { createInMemoryTokenDenylist, type TokenDenylist } from './auth/denylist.js';
+import {
+  createInMemoryTokenDenylist,
+  sessionFamilyKey,
+  type TokenDenylist,
+} from './auth/denylist.js';
 import { createInMemoryDeviceStore, type DeviceStore } from './auth/device.js';
 import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
@@ -26,6 +30,8 @@ import {
   type RateLimitConfig,
 } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
+import { registerOpenApi } from './openapi.js';
+import type { EventStreamDependencies } from './events/sse.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
 import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
@@ -46,6 +52,7 @@ import {
 import { createInMemoryRateLimiter, rateLimit, type RateLimiter } from './plugins/rate-limit.js';
 import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerAuditRoutes } from './routes/audit.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import {
@@ -62,7 +69,6 @@ import {
   registerIntegrationRoutes,
   type IntegrationPort,
 } from './routes/integrations.js';
-import type { PermissionContext } from './policy/permissions.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
@@ -132,8 +138,8 @@ export interface TenantDeps {
   readonly releasePort?: ReleasePort;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
-  /** CP-12 persists this setting; absent remains fail-closed for Builder deploys. */
-  readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
+  /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
+  readonly eventStream?: EventStreamDependencies;
 }
 
 /**
@@ -289,6 +295,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
+  registerOpenApi(app);
 
   // Liveness only, and deliberately outside `/v1`: it is infrastructure, not API, so
   // it carries no envelope and must never depend on a database or a downstream.
@@ -420,11 +427,30 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
+          registerAuditRoutes(app, { organizations: orgs.organizations });
           registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,
             orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+            eventStream:
+              tenant.eventStream ??
+              inDevelopmentOnly('event stream wakeups', SINGLE_INSTANCE, () => ({
+                wakeups: {
+                  subscribe: () => Promise.reject(new Error('Redis subscription unavailable')),
+                },
+              })),
+            revalidateEventStream: async (context) => {
+              if (context.expiresAt.getTime() <= now().getTime()) return false;
+              if (await denylist.isDenied(context.jti, sessionFamilyKey(context.sessionId))) {
+                return false;
+              }
+              const membership = await orgs.organizations.membership(
+                context.organizationId,
+                context.userId,
+              );
+              return membership?.status === 'active';
+            },
           });
           registerWorkspaceRoutes(app, {
             now,
@@ -432,7 +458,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
-            permissionContextFor: tenant.permissionContextFor ?? (() => Promise.resolve({})),
+            permissionContextFor: async (organizationId) =>
+              (await orgs.organizations.getSettings(organizationId)) ?? {},
           });
           registerIntegrationRoutes(app, {
             port: tenant.integrationPort ?? createUnavailableIntegrationPort(),

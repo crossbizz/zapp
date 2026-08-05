@@ -1,10 +1,15 @@
 import { createHash } from 'node:crypto';
 
-import { PageSchema, idSchema } from '@zapp/contracts';
+import { idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
+import {
+  registerRunEventStreamRoute,
+  type EventStreamAuthorizationContext,
+  type EventStreamDependencies,
+} from '../events/sse.js';
 import {
   OperationKeySchema,
   OrchestratorError,
@@ -15,7 +20,7 @@ import {
 } from '../orchestrator/port.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
-import { EventSchema, RunSchema, toEvent, toRun } from '../tenant/view.js';
+import { RunSchema, toRun } from '../tenant/view.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -31,10 +36,6 @@ const CreateRunBody = z
   })
   .strict();
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
-const EventQuery = z.object({
-  fromSequence: z.coerce.number().int().positive().optional(),
-  limit: z.coerce.number().int().positive().max(500).default(100),
-});
 
 const SIGNALS = {
   pause: {
@@ -70,6 +71,10 @@ const SIGNALS = {
 export interface RunRoutesDeps {
   readonly now: () => Date;
   readonly orchestrator: OrchestratorPort;
+  readonly eventStream: EventStreamDependencies;
+  readonly revalidateEventStream: (
+    context: EventStreamAuthorizationContext,
+  ) => Promise<boolean>;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -241,30 +246,10 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       return { run: toRun(run) };
     },
   );
-  app.get(
-    '/v1/runs/:runId/events',
-    {
-      preHandler: [app.requireSession, app.requireTenant],
-      schema: {
-        params: RunParams,
-        querystring: EventQuery,
-        response: { 200: PageSchema(EventSchema) },
-      },
-    },
-    async (request) => {
-      const ctx = tenantOf(request);
-      const run = await ctx.db.runs.getById(request.params.runId);
-      if (run === undefined) throw runNotFound();
-      authorize(ctx, 'view_project');
-      const items = await ctx.db.events.byRun(run.id, {
-        ...(request.query.fromSequence === undefined
-          ? {}
-          : { fromSequence: request.query.fromSequence }),
-        limit: request.query.limit,
-      });
-      return { items: items.map(toEvent), nextCursor: null };
-    },
-  );
+  registerRunEventStreamRoute(app, {
+    eventStream: deps.eventStream,
+    revalidate: deps.revalidateEventStream,
+  });
 }
 
 function operationOf(request: {

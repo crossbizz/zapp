@@ -59,7 +59,6 @@ const INPUT = {
   projectId: PROJECT,
   access: 'write',
   requestingService: 'sandbox-service',
-  reason: 'push the run branch',
   runId: newId('run'),
 } as const;
 
@@ -99,6 +98,57 @@ describe('the ephemeral username', () => {
 });
 
 describe('mint', () => {
+  it('publishes the non-secret restore identity before creating its Forgejo user', async () => {
+    const harness = service({
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 200,
+        body: { id: 501, clone_url: `https://git.test/${REF}.git` },
+      },
+    });
+    const allocated: { readonly username: string; readonly expiresAt: Date }[] = [];
+    const input = {
+      ...INPUT,
+      targetRef: REF,
+      expectedRepositoryId: 501,
+      onIdentityAllocated: (identity: { readonly username: string; readonly expiresAt: Date }) => {
+        expect(harness.forgejo.writes).toEqual([]);
+        allocated.push(identity);
+        return Promise.resolve();
+      },
+    };
+
+    const minted = await harness.tokens.mintForRepository(input);
+
+    expect(allocated).toEqual([{ username: minted.username, expiresAt: minted.expiresAt }]);
+    expect(harness.forgejo.writes[0]?.path).toBe('/admin/users');
+  });
+
+  it('refuses to mint a restore credential when the repository is replaced after grant', async () => {
+    const harness = service({
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 200,
+        body: { id: 501, clone_url: `https://git.test/${REF}.git` },
+        then: {
+          status: 200,
+          body: { id: 999, clone_url: `https://git.test/${REF}.git` },
+        },
+      },
+    });
+    await expect(
+      harness.tokens.mintForRepository({
+        ...INPUT,
+        targetRef: REF,
+        expectedRepositoryId: 501,
+      }),
+    ).rejects.toThrow('repository identity changed during credential grant');
+    expect(harness.forgejo.calls.some((call) => call.path.endsWith('/tokens'))).toBe(false);
+    expect(
+      harness.forgejo.calls.filter(
+        (call) => call.method === 'DELETE' && call.path.startsWith('/admin/users/'),
+      ),
+    ).toHaveLength(1);
+  });
+
   it('creates a restricted user, grants it one repository, and mints its token', async () => {
     const harness = service();
 
@@ -169,7 +219,7 @@ describe('mint', () => {
     expect(harness.forgejo.writes).toEqual([]);
   });
 
-  it('writes one audit row naming the caller, the reason and the run', async () => {
+  it('writes one audit row naming the caller and the run', async () => {
     const harness = service();
 
     const minted = await harness.tokens.mint(INPUT);
@@ -185,7 +235,6 @@ describe('mint', () => {
         access: 'write',
         ttlSec: DEFAULT_TOKEN_TTL_SECONDS,
         tokenUser: minted.username,
-        reason: 'push the run branch',
         runId: INPUT.runId,
         taskId: null,
       },
@@ -252,7 +301,6 @@ describe('revokeForProject', () => {
       organizationId: ORGANIZATION,
       projectId: PROJECT,
       requestingService: 'control-api',
-      reason: 'project deleted',
     });
 
     expect(revoked).toBe(2);
@@ -265,7 +313,7 @@ describe('revokeForProject', () => {
     ]);
     expect(harness.audit.events[0]).toMatchObject({
       action: 'git_token.revoked',
-      metadata: { revoked: 2, reason: 'project deleted' },
+      metadata: { revoked: 2 },
     });
   });
 
@@ -294,7 +342,6 @@ describe('revokeForProject', () => {
         organizationId: ORGANIZATION,
         projectId: PROJECT,
         requestingService: 'control-api',
-        reason: 'project deleted',
       }),
     ).toBe(51);
 
@@ -318,7 +365,6 @@ describe('revokeForProject', () => {
         organizationId: ORGANIZATION,
         projectId: PROJECT,
         requestingService: 'control-api',
-        reason: 'project deleted',
       }),
     ).toBe(0);
     expect(harness.audit.events).toEqual([]);

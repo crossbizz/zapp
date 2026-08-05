@@ -148,9 +148,9 @@ be built:
 **Files:** Create: `src/backup.ts`, `docs/runbooks/git-restore.md`, nightly CI/cron workflow
 **Effort:** M
 
-- [ ] Binding behavior: nightly `git bundle create` per repo → R2 `org/{orgId}/project/{projectId}/git-backups/{date}.bundle` (30-day retention, latest never deleted); restore runbook: bundle → fresh Forgejo repo → verify head SHAs vs `branches` table; quarterly restore drill task in ops calendar (OPS-15).
-- [ ] Verify: backup of seeded repo → delete repo → restore → clone matches original head.
-- [ ] Commit: `feat(git-service): nightly bundle backups + tested restore path`
+- [x] Binding behavior: nightly `git bundle create` per repo → R2 `org/{orgId}/project/{projectId}/git-backups/{date}.bundle` (30-day retention, latest never deleted); restore runbook: bundle → fresh Forgejo repo → verify head SHAs vs `branches` table; quarterly restore drill task in ops calendar (OPS-15).
+- [x] Verify: backup of seeded repo → delete repo → restore → clone matches original head.
+- [x] Commit: `feat(git-service): nightly bundle backups + tested restore path`
 
 ### Task INT-1 [M4]: GitHub App + webhooks
 
@@ -247,3 +247,11 @@ be built:
 
 - (empty)
 - 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.
+- 2026-08-04 GIT-4 implementation committed — independent review and live Forgejo/PostgreSQL/MinIO proof pending controller; task and tracker remain unchecked.
+- 2026-08-04 GIT-4 review 1/5 NEEDS_FIXES — unchecked pending workflow credential scoping, restore compensation, authoritative CLI coverage, retention/date validation, inferred artifact env, and executable restore evidence.
+- 2026-08-04 GIT-4 review 2/5 implementation committed — independent review and live Forgejo/PostgreSQL/MinIO proof pending controller; task and tracker remain unchecked.
+- 2026-08-04 GIT-4 review 3/5 implementation committed — immutable-ID cleanup, PostgreSQL drill lease, bounded R2 layout/reconciliation, and atomic evidence publication implemented; independent review and live proof pending controller; task and tracker remain unchecked.
+- 2026-08-04 GIT-4 review 4/5 implementation committed — automatic repository deletion removed; intent-first append-only restore recovery, caller-keyed manual replay, persistent leased drill target, and fresh-signal R2 ambiguity reconciliation implemented; independent review round 5 and live proof pending controller; task and tracker remain unchecked.
+- 2026-08-04 GIT-4 BLOCKED: final review 5/5 found a path-replacement race before admin-token mirror push, marker-only adoption without a prior immutable-ID receipt, and multi-document restore evidence accepted by jq; live restore proof canceled and task remains unchecked pending explicit approval for another remediation round.
+- 2026-08-04 GIT-4 final-review remediation implementation committed: restore push/ref reads now use an immutable-ID-checked repository credential, marker-only adoption is refused, and evidence requires one JSON document; fresh independent review and live proof remain pending, task and tracker stay unchecked.
+- 2026-08-04 GIT-4 done — nightly immutable bundle backups and append-only restore recovery now fence credential terminalization across processes, isolate conditional S3 uploads, and pass final CLEAN review plus the live Forgejo/PostgreSQL/MinIO backup-delete-restore-clone drill.

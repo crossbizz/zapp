@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadEnv, loadForgejoEnv } from '../src/env.js';
+import {
+  ArtifactEnvSchema,
+  loadArtifactEnv,
+  loadEnv,
+  loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
+} from '../src/env.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from '../src/sweep.js';
+import { DEFAULT_TOKEN_TTL_SECONDS } from '../src/tokens.js';
 
 const FORGEJO = {
   FORGEJO_URL: 'http://localhost:3300',
@@ -87,5 +94,121 @@ describe('loadForgejoEnv', () => {
     expect(() => loadForgejoEnv({ ...FORGEJO, FORGEJO_TIMEOUT_MS: '600000' })).toThrow(
       'Invalid environment: FORGEJO_TIMEOUT_MS',
     );
+  });
+});
+
+describe('loadArtifactEnv', () => {
+  const artifact = {
+    ARTIFACT_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
+    ARTIFACT_KEY: 'access-key-id',
+    ARTIFACT_SECRET: 'secret-access-key',
+    ARTIFACT_BUCKET: 'zapp-artifacts',
+  };
+
+  it('derives the normalized consumer shape directly from its schema', () => {
+    expect(
+      ArtifactEnvSchema.parse({
+        ...artifact,
+        ARTIFACT_ENDPOINT: 'https://account.r2.cloudflarestorage.com/',
+      }),
+    ).toEqual({
+      endpoint: 'https://account.r2.cloudflarestorage.com',
+      accessKeyId: 'access-key-id',
+      secretAccessKey: 'secret-access-key',
+      bucket: 'zapp-artifacts',
+      region: 'auto',
+      multipartThresholdBytes: 100 * 1024 * 1024,
+      multipartPartSizeBytes: 10 * 1024 * 1024,
+      multipartConcurrency: 4,
+      uploadDeadlineMs: 1_800_000,
+      maxAttempts: 3,
+      retryBaseDelayMs: 100,
+    });
+  });
+
+  it('requires the existing artifact endpoint, credential, and bucket names', () => {
+    expect(() => loadArtifactEnv({})).toThrow(
+      'Invalid environment: ARTIFACT_ENDPOINT, ARTIFACT_KEY, ARTIFACT_SECRET, ARTIFACT_BUCKET',
+    );
+  });
+
+  it('defaults Cloudflare R2 to region auto and accepts the local MinIO region', () => {
+    expect(loadArtifactEnv(artifact)).toMatchObject({ region: 'auto' });
+    expect(loadArtifactEnv({ ...artifact, ARTIFACT_REGION: 'us-east-1' })).toMatchObject({
+      region: 'us-east-1',
+    });
+  });
+
+  it('parses bounded multipart threshold, part, concurrency, deadline, and retry controls', () => {
+    expect(
+      loadArtifactEnv({
+        ...artifact,
+        ARTIFACT_MULTIPART_THRESHOLD_BYTES: String(20 * 1024 * 1024),
+        ARTIFACT_MULTIPART_PART_SIZE_BYTES: String(5 * 1024 * 1024),
+        ARTIFACT_MULTIPART_CONCURRENCY: '2',
+        ARTIFACT_UPLOAD_DEADLINE_MS: '120000',
+        ARTIFACT_UPLOAD_MAX_ATTEMPTS: '2',
+        ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS: '25',
+      }),
+    ).toMatchObject({
+      multipartThresholdBytes: 20 * 1024 * 1024,
+      multipartPartSizeBytes: 5 * 1024 * 1024,
+      multipartConcurrency: 2,
+      uploadDeadlineMs: 120_000,
+      maxAttempts: 2,
+      retryBaseDelayMs: 25,
+    });
+  });
+
+  it('never echoes a secret from an invalid configuration', () => {
+    const secret = 'r2-secret-never-log';
+    try {
+      loadArtifactEnv({ ...artifact, ARTIFACT_ENDPOINT: 'invalid', ARTIFACT_SECRET: secret });
+    } catch (error) {
+      expect((error as Error).message).toBe('Invalid environment: ARTIFACT_ENDPOINT');
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
+});
+
+describe('loadGitCommandDeadlineEnv', () => {
+  it('defaults backup commands to fifteen minutes and restore commands to four minutes', () => {
+    expect(loadGitCommandDeadlineEnv({})).toEqual({
+      backupCommandDeadlineMs: 900_000,
+      restoreCommandDeadlineMs: 240_000,
+    });
+  });
+
+  it('accepts independently configured backup and restore command deadlines', () => {
+    expect(
+      loadGitCommandDeadlineEnv({
+        GIT_BACKUP_COMMAND_DEADLINE_MS: '1200000',
+        GIT_RESTORE_COMMAND_DEADLINE_MS: '180000',
+      }),
+    ).toEqual({
+      backupCommandDeadlineMs: 1_200_000,
+      restoreCommandDeadlineMs: 180_000,
+    });
+  });
+
+  it('caps backup commands at two hours', () => {
+    expect(
+      loadGitCommandDeadlineEnv({ GIT_BACKUP_COMMAND_DEADLINE_MS: '7200000' })
+        .backupCommandDeadlineMs,
+    ).toBe(7_200_000);
+    expect(() =>
+      loadGitCommandDeadlineEnv({ GIT_BACKUP_COMMAND_DEADLINE_MS: '7200001' }),
+    ).toThrow('Invalid environment: GIT_BACKUP_COMMAND_DEADLINE_MS');
+  });
+
+  it('requires the restore deadline to remain strictly below the credential TTL', () => {
+    expect(DEFAULT_TOKEN_TTL_SECONDS * 1_000).toBe(300_000);
+    expect(
+      loadGitCommandDeadlineEnv({ GIT_RESTORE_COMMAND_DEADLINE_MS: '299999' })
+        .restoreCommandDeadlineMs,
+    ).toBe(299_999);
+    expect(() =>
+      loadGitCommandDeadlineEnv({ GIT_RESTORE_COMMAND_DEADLINE_MS: '300000' }),
+    ).toThrow('Invalid environment: GIT_RESTORE_COMMAND_DEADLINE_MS');
   });
 });

@@ -77,7 +77,6 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
       access,
       ttlSec,
       requestingService: 'sandbox-service',
-      reason: 'integration suite',
       runId: newId('run'),
     });
     minted.push(token.username);
@@ -260,7 +259,6 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
     const revoked = await tokens.revokeForProject({
       ...mine,
       requestingService: 'control-api',
-      reason: 'project deleted by its owner',
     });
     expect(revoked).toBe(2);
 

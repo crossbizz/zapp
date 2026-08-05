@@ -19,7 +19,6 @@ import type { OrchestratorPort } from '../../src/orchestrator/port.js';
 import type { SandboxServicePort } from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
-import type { PermissionContext } from '../../src/policy/permissions.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
@@ -127,6 +126,8 @@ export interface HarnessOptions {
   readonly config?: Partial<AuthConfig>;
   readonly users?: InMemoryUserStore;
   readonly organizations?: InMemoryOrganizationStore;
+  /** Supplies an audit sink that can be failed deliberately by atomicity tests. */
+  readonly audit?: InMemoryAuditSink;
   /** Tightens one or more classes; the rest stay out of the way. */
   readonly rateLimits?: Partial<RateLimitConfig>;
   /** For the suites that assert how far a forwarded address is believed. */
@@ -152,7 +153,6 @@ export interface HarnessOptions {
   readonly sandbox?: SandboxServicePort;
   readonly releasePort?: ReleasePort;
   readonly integrationPort?: IntegrationPort;
-  readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
    * shipping list; the suite that proves an unallowlisted caller is refused
@@ -181,7 +181,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
   let offset = 0;
   const now = (): Date => new Date(Date.now() + offset);
   const invites = createInMemoryInviteStore(now);
-  const audit = createInMemoryAuditSink();
+  const audit = options.audit ?? createInMemoryAuditSink();
   // One denylist for sessions and service tokens, as `composeApp` builds it —
   // so a suite would notice if the two ever started colliding on a key.
   const denylist = createInMemoryTokenDenylist(now);
@@ -211,9 +211,6 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.integrationPort === undefined
               ? {}
               : { integrationPort: options.integrationPort }),
-            ...(options.permissionContextFor === undefined
-              ? {}
-              : { permissionContextFor: options.permissionContextFor }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that

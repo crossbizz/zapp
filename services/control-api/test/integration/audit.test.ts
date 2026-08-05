@@ -1,3 +1,5 @@
+import { newId } from '@zapp/contracts';
+import { auditEvents } from '@zapp/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -38,6 +40,17 @@ const BOB = {
 
 /** The failure every rollback assertion is built on. */
 const AUDIT_FAILED = new Error('audit sink refused');
+
+function inContinuousIntegration(): boolean {
+  const flag = (process.env['CI'] ?? '').trim().toLowerCase();
+  return flag !== '' && flag !== 'false' && flag !== '0';
+}
+
+describe('the audit integration harness', () => {
+  it('refuses to be silently skipped in CI', () => {
+    expect(inContinuousIntegration() ? hasDatabase : true).toBe(true);
+  });
+});
 
 describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
   let database: TestDatabase;
@@ -160,6 +173,206 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       target_id: acme.id,
     });
     expect(written[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
+  });
+
+  it('walks filtered keyset pages without duplicates or foreign rows', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const bob = await signIn(BOB);
+    const foreign = await app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: bob.headers,
+      payload: { name: 'Foreign Audit Tenant' },
+    });
+    expect(foreign.statusCode, foreign.body).toBe(201);
+    const foreignOrganizationId = foreign.json<{ organization: { id: string } }>().organization.id;
+    const targetId = newId('proj');
+    const expected = Array.from({ length: 5 }, (_, index) => ({
+      id: newId('aud'),
+      organizationId: acme.id,
+      actorType: 'user',
+      actorId: acme.userId,
+      action: 'project.updated',
+      targetType: 'project',
+      targetId,
+      metadataJson: { page: index },
+      occurredAt: new Date(`2026-08-05T10:0${String(index)}:00.000Z`),
+    }));
+    const template = expected.at(0);
+    if (template === undefined) throw new Error('expected audit fixture is empty');
+    await database.db
+      .insert(auditEvents)
+      .values([
+        ...expected,
+        { ...template, id: newId('aud'), actorId: bob.userId },
+        { ...template, id: newId('aud'), action: 'project.created' },
+        { ...template, id: newId('aud'), targetId: newId('proj') },
+        { ...template, id: newId('aud'), organizationId: foreignOrganizationId },
+      ]);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = new URLSearchParams({
+        limit: '2',
+        actorId: acme.userId,
+        action: 'project.updated',
+        targetType: 'project',
+        targetId,
+        from: '2026-08-05T10:00:00.000Z',
+        to: '2026-08-05T11:00:00.000Z',
+      });
+      if (cursor !== null) query.set('cursor', cursor);
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${acme.id}/audit-events?${query.toString()}`,
+        headers: tenant,
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const page = response.json<{
+        items: { id: string; organizationId: string }[];
+        nextCursor: string | null;
+      }>();
+      expect(page.items.every((item) => item.organizationId === acme.id)).toBe(true);
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(seen).toEqual(
+      expected
+        .map((row) => row.id)
+        .sort()
+        .reverse(),
+    );
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('persists normalized settings and rolls state back when its audit write fails', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const defaults = await app.inject({
+      method: 'GET',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: tenant,
+    });
+    expect(defaults.statusCode, defaults.body).toBe(200);
+    expect(defaults.json()).toEqual({ settings: { builderCanDeploy: false } });
+
+    const policy = { route: ['quality', { fallback: null }] };
+    const policyPatch = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-policy-01' },
+      payload: { defaultModelPolicy: policy },
+    });
+    expect(policyPatch.statusCode, policyPatch.body).toBe(200);
+    const deployPatch = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-deploy-01' },
+      payload: { builderCanDeploy: true },
+    });
+    expect(deployPatch.statusCode, deployPatch.body).toBe(200);
+    expect(deployPatch.json()).toEqual({
+      settings: { builderCanDeploy: true, defaultModelPolicy: policy },
+    });
+
+    const [persisted] = await database.sql<{ settings_json: unknown }[]>`
+      select settings_json from organizations where id = ${acme.id}
+    `;
+    expect(persisted?.settings_json).toEqual({
+      builderCanDeploy: true,
+      defaultModelPolicy: policy,
+    });
+    const before = (await rows()).filter(
+      (row) => row.action === 'organization.settings_updated',
+    ).length;
+    auditFails = true;
+
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-audit-refused-01' },
+      payload: { builderCanDeploy: false },
+    });
+
+    expect(refused.statusCode, refused.body).toBe(500);
+    const [after] = await database.sql<{ settings_json: unknown }[]>`
+      select settings_json from organizations where id = ${acme.id}
+    `;
+    expect(after?.settings_json).toEqual(persisted?.settings_json);
+    expect(
+      (await rows()).filter((row) => row.action === 'organization.settings_updated'),
+    ).toHaveLength(before);
+  });
+
+  it('records a fresh-key same-value no-op without updating and rolls back failed completion', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const version = async (): Promise<string | undefined> => {
+      const [row] = await database.sql<{ xmin: string }[]>`
+        select xmin::text as xmin from organizations where id = ${acme.id}
+      `;
+      return row?.xmin;
+    };
+    const beforeVersion = await version();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-no-op-01' },
+      payload: { builderCanDeploy: false },
+    });
+
+    expect(first.statusCode, first.body).toBe(200);
+    expect(await version()).toBe(beforeVersion);
+    expect((await rows()).at(-1)?.metadata_json).toMatchObject({
+      changedFields: [],
+      noOp: true,
+    });
+
+    const beforeRows = await rows();
+    auditFails = true;
+    const request = {
+      method: 'PATCH' as const,
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-no-op-rollback-01' },
+      payload: { builderCanDeploy: false },
+    };
+    const failed = await app.inject(request);
+    expect(failed.statusCode, failed.body).toBe(500);
+    expect(await version()).toBe(beforeVersion);
+    expect(await rows()).toEqual(beforeRows);
+
+    auditFails = false;
+    const retried = await app.inject(request);
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(await version()).toBe(beforeVersion);
+    expect((await rows()).at(-1)?.metadata_json).toMatchObject({
+      changedFields: [],
+      noOp: true,
+    });
+  });
+
+  it('does not reapply an old completed settings operation over a newer one', async () => {
+    const acme = await found();
+    const operationA = 'op_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const operationB = 'op_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const update = (operationKey: string, builderCanDeploy: boolean) =>
+      store.updateSettings({
+        organizationId: acme.id,
+        patch: { builderCanDeploy },
+        operationKey,
+        audit: (tx) => sink.record(tx, settingsAuditRecord(acme.id, acme.userId, operationKey)),
+      });
+
+    expect(await update(operationA, true)).toMatchObject({ builderCanDeploy: true });
+    expect(await update(operationB, false)).toMatchObject({ builderCanDeploy: false });
+    expect(await update(operationA, true)).toMatchObject({ builderCanDeploy: false });
+
+    expect(
+      (await rows()).filter((row) => row.action === 'organization.settings_updated'),
+    ).toHaveLength(2);
   });
 
   it('loses the row when the mutation rolls back', async () => {
@@ -388,6 +601,23 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       targetType: 'organization',
       targetId: organizationId,
       metadata: { slug: 'acme' },
+      occurredAt: new Date(),
+    };
+  }
+
+  function settingsAuditRecord(
+    organizationId: string,
+    actorId: string,
+    operationKey: string,
+  ): AuditRecord {
+    return {
+      organizationId,
+      actorType: 'user',
+      actorId,
+      action: 'organization.settings_updated',
+      targetType: 'organization',
+      targetId: organizationId,
+      metadata: { changedFields: ['builderCanDeploy'], noOp: false, operationKey },
       occurredAt: new Date(),
     };
   }
