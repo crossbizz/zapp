@@ -32,6 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          # Architecture lint re-scans ADR-0005's immutable baseline commit.
+          fetch-depth: 0
           persist-credentials: false
 
       # Must run before setup-node: `cache: pnpm` shells out to `pnpm store path`,

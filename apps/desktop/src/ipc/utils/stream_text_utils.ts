@@ -1,4 +1,5 @@
 import log from "electron-log";
+import { Output } from "ai";
 import type { StreamingPatch } from "@/ipc/types";
 import { hashPrefix } from "@/lib/prefixHash";
 
@@ -24,21 +25,10 @@ const logger = log.scope("stream_text_utils");
  * at block end, breaking streaming.) `responseFormat` is unchanged, so the model
  * request is identical.
  */
-interface FastTextOutput {
-  name: "text";
-  responseFormat: Promise<{ type: "text" }>;
-  parseCompleteOutput(options: { text: string }): Promise<string>;
-  parsePartialOutput(options: { text: string }): Promise<{ partial: number }>;
-  createElementStreamTransform(): undefined;
-}
-
-export function fastTextOutput(): FastTextOutput {
+export function fastTextOutput(): ReturnType<typeof Output.text> {
+  const base = Output.text();
   return {
-    name: "text",
-    responseFormat: Promise.resolve({ type: "text" }),
-    async parseCompleteOutput({ text }: { text: string }) {
-      return text;
-    },
+    ...base,
     // `text` is the SDK's append-only accumulated output, so its length strictly
     // increases: the value changes every chunk (keeping text flushing) while
     // staying O(1) to stringify and diff.
@@ -49,10 +39,7 @@ export function fastTextOutput(): FastTextOutput {
     // Safe because nothing consumes `partialOutput`; we only use it as a cheap
     // per-chunk change signal to drive flushing. This holds as of ai@6.0.68;
     // worth rechecking on AI SDK version bumps.
-    createElementStreamTransform() {
-      return undefined;
-    },
-  };
+  } as unknown as ReturnType<typeof Output.text>;
 }
 
 /**

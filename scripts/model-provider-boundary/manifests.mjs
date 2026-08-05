@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 const DEPENDENCY_FIELDS = [
   'dependencies',
@@ -63,10 +64,39 @@ function isProviderPackageRoot(packageName) {
   return OFFICIAL_PROVIDER_PACKAGES.has(packageName);
 }
 
+function collectImportTargets(value, targets = []) {
+  if (typeof value === 'string') {
+    targets.push(value);
+  } else if (Array.isArray(value)) {
+    for (const entry of value) collectImportTargets(entry, targets);
+  } else if (value && typeof value === 'object') {
+    for (const entry of Object.values(value)) collectImportTargets(entry, targets);
+  }
+  return targets;
+}
+
+function packageDirectory(relativeManifestPath) {
+  const directory = path.posix.dirname(relativeManifestPath);
+  return directory === '.' ? '' : directory;
+}
+
+async function manifestText(entry) {
+  return entry.text ?? readFile(entry.absolutePath, 'utf8');
+}
+
 export async function buildForbiddenModuleMap(manifests) {
-  const forbiddenModules = new Map([['ai', 'ai']]);
-  for (const { absolutePath } of manifests) {
-    const manifest = JSON.parse(await readFile(absolutePath, 'utf8'));
+  const modules = new Map([['ai', 'ai']]);
+  const packageImports = [];
+  for (const entry of manifests) {
+    const manifest = JSON.parse(await manifestText(entry));
+    const directory = packageDirectory(entry.relativePath);
+    packageImports.push({
+      directory,
+      imports:
+        manifest.imports && typeof manifest.imports === 'object' && !Array.isArray(manifest.imports)
+          ? manifest.imports
+          : {},
+    });
     for (const field of DEPENDENCY_FIELDS) {
       const dependencies = manifest[field];
       if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
@@ -76,35 +106,80 @@ export async function buildForbiddenModuleMap(manifests) {
         const targetName = npmAliasTarget(version) ?? dependencyName;
         const targetRoot = packageRoot(targetName);
         if (targetRoot === 'ai' || isProviderPackageRoot(targetRoot)) {
-          forbiddenModules.set(dependencyName, targetRoot);
-          forbiddenModules.set(targetRoot, targetRoot);
+          modules.set(dependencyName, targetRoot);
+          modules.set(targetRoot, targetRoot);
         }
       }
     }
   }
-  return forbiddenModules;
+  packageImports.sort((left, right) => right.directory.length - left.directory.length);
+  return { modules, packageImports };
 }
 
-export function resolveForbiddenModule(moduleName, forbiddenModules) {
-  const requestedRoot = packageRoot(moduleName);
-  if (requestedRoot === 'ai') {
-    return 'ai';
+function importsMatch(specifier, key) {
+  if (key === specifier) return { capture: '' };
+  const star = key.indexOf('*');
+  if (star < 0 || key.indexOf('*', star + 1) >= 0) return undefined;
+  const prefix = key.slice(0, star);
+  const suffix = key.slice(star + 1);
+  if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) return undefined;
+  return { capture: specifier.slice(prefix.length, specifier.length - suffix.length) };
+}
+
+function containingPackage(policy, relativeSourcePath) {
+  return policy.packageImports.find(
+    ({ directory }) =>
+      directory === '' ||
+      relativeSourcePath === directory ||
+      relativeSourcePath.startsWith(`${directory}/`),
+  );
+}
+
+export function resolvePackageImportTargets(moduleName, policy, relativeSourcePath) {
+  if (!moduleName.startsWith('#')) return [];
+  const packageEntry = containingPackage(policy, relativeSourcePath);
+  if (!packageEntry) return [];
+
+  const matches = [];
+  for (const [key, value] of Object.entries(packageEntry.imports)) {
+    const match = importsMatch(moduleName, key);
+    if (!match) continue;
+    for (const target of collectImportTargets(value)) {
+      matches.push({
+        packageDirectory: packageEntry.directory,
+        target: target.replaceAll('*', match.capture),
+      });
+    }
+    if (key === moduleName) break;
   }
+  return matches;
+}
+
+function resolveDirectForbiddenModule(moduleName, modules) {
+  const requestedRoot = packageRoot(moduleName);
+  if (requestedRoot === 'ai') return 'ai';
   if (requestedRoot.startsWith('@ai-sdk/') && isProviderPackageRoot(requestedRoot)) {
     return moduleName;
   }
-  if (OFFICIAL_PROVIDER_PACKAGES.has(requestedRoot)) {
-    return moduleName;
+  if (OFFICIAL_PROVIDER_PACKAGES.has(requestedRoot)) return moduleName;
+  const canonicalRoot = modules.get(requestedRoot);
+  if (!canonicalRoot) return undefined;
+  return `${canonicalRoot}${moduleName.slice(requestedRoot.length)}`;
+}
+
+export function resolveForbiddenModule(moduleName, policy, relativeSourcePath = '') {
+  const direct = resolveDirectForbiddenModule(moduleName, policy.modules);
+  if (direct) return direct;
+  for (const { target } of resolvePackageImportTargets(moduleName, policy, relativeSourcePath)) {
+    const aliasTarget = npmAliasTarget(target) ?? target;
+    const resolved = resolveDirectForbiddenModule(aliasTarget, policy.modules);
+    if (resolved) return resolved;
   }
-  const canonicalRoot = forbiddenModules.get(requestedRoot);
-  if (!canonicalRoot) {
-    return undefined;
-  }
-  const suffix = moduleName.slice(requestedRoot.length);
-  return `${canonicalRoot}${suffix}`;
+  return undefined;
 }
 
 export const manifestInternalsForTests = {
+  collectImportTargets,
   npmAliasTarget,
   packageRoot,
 };

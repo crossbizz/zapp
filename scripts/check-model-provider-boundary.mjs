@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { analyzeProductionSources } from './model-provider-boundary/analyzer.mjs';
-import { compareToBaseline, validateBaseline } from './model-provider-boundary/baseline.mjs';
 import {
+  compareToBaseline,
+  validateAcceptedAdr,
+  validateBaseline,
+} from './model-provider-boundary/baseline.mjs';
+import {
+  discoverRepositoryInputsAtCommit,
   discoverRepositoryInputs,
+  selectReachableProductionSources,
   shouldScanProductionFile,
 } from './model-provider-boundary/discovery.mjs';
 import { buildForbiddenModuleMap } from './model-provider-boundary/manifests.mjs';
@@ -17,8 +24,20 @@ const BASELINE_RELATIVE_PATH = 'config/model-provider-boundary-baseline.json';
 export { compareToBaseline, shouldScanProductionFile };
 
 export async function scanRepository(rootDirectory) {
-  const { manifests, sourceFiles } = await discoverRepositoryInputs(rootDirectory);
+  const { manifests, sourceFiles: discoveredSources } =
+    await discoverRepositoryInputs(rootDirectory);
   const forbiddenModules = await buildForbiddenModuleMap(manifests);
+  const sourceFiles = await selectReachableProductionSources(discoveredSources, forbiddenModules);
+  return analyzeProductionSources(rootDirectory, sourceFiles, forbiddenModules);
+}
+
+export async function scanRepositoryAtCommit(rootDirectory, commit) {
+  const { manifests, sourceFiles: discoveredSources } = discoverRepositoryInputsAtCommit(
+    rootDirectory,
+    commit,
+  );
+  const forbiddenModules = await buildForbiddenModuleMap(manifests);
+  const sourceFiles = await selectReachableProductionSources(discoveredSources, forbiddenModules);
   return analyzeProductionSources(rootDirectory, sourceFiles, forbiddenModules);
 }
 
@@ -43,14 +62,45 @@ function parseArguments(argv) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  const [inventory, baselineText] = await Promise.all([
-    scanRepository(options.root),
-    readFile(options.baseline, 'utf8'),
-  ]);
+  const baselineText = await readFile(options.baseline, 'utf8');
   const acceptedBaselinePath = path.resolve(options.root, BASELINE_RELATIVE_PATH);
-  const baselineFiles = validateBaseline(JSON.parse(baselineText), {
-    accepted: path.resolve(options.baseline) === acceptedBaselinePath,
-  });
+  const accepted = path.resolve(options.baseline) === acceptedBaselinePath;
+  const baseline = JSON.parse(baselineText);
+  const baselineFiles = validateBaseline(baseline, { accepted });
+
+  if (accepted) {
+    const adrText = await readFile(path.resolve(options.root, baseline.adr), 'utf8');
+    validateAcceptedAdr(adrText, baseline);
+    const resolvedCommit = execFileSync(
+      'git',
+      ['-C', options.root, 'rev-parse', `${baseline.baselineCommit}^{commit}`],
+      { encoding: 'utf8' },
+    ).trim();
+    if (resolvedCommit !== baseline.baselineCommit) {
+      throw new Error(
+        `baseline commit resolves to ${resolvedCommit}, expected ${baseline.baselineCommit}`,
+      );
+    }
+    const resolvedTree = execFileSync(
+      'git',
+      ['-C', options.root, 'show', '-s', '--format=%T', baseline.baselineCommit],
+      { encoding: 'utf8' },
+    ).trim();
+    if (resolvedTree !== baseline.baselineTree) {
+      throw new Error(
+        `baseline tree resolves to ${resolvedTree}, expected ${baseline.baselineTree}`,
+      );
+    }
+    const anchorInventory = await scanRepositoryAtCommit(options.root, baseline.baselineCommit);
+    const anchorViolations = compareToBaseline(anchorInventory, baselineFiles);
+    if (anchorViolations.length > 0) {
+      throw new Error(
+        `accepted baseline is not the exact anchor inventory:\n${anchorViolations.join('\n')}`,
+      );
+    }
+  }
+
+  const inventory = await scanRepository(options.root);
   const violations = compareToBaseline(inventory, baselineFiles);
   if (violations.length > 0) {
     process.stderr.write(
@@ -60,7 +110,9 @@ async function main() {
     return;
   }
   process.stdout.write(
-    `Model-provider boundary clean: ${Object.keys(inventory).length} exact inherited paths.\n`,
+    `Model-provider boundary clean: ${Object.keys(inventory).length} exact inherited paths${
+      accepted ? ` anchored to ${baseline.baselineCommit}` : ''
+    }.\n`,
   );
 }
 

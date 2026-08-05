@@ -3,10 +3,11 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import { resolveForbiddenModule } from './manifests.mjs';
+import { resolveForbiddenModule, resolvePackageImportTargets } from './manifests.mjs';
 
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 const TRUSTED_TYPESCRIPT_RESOLVER = 'apps/desktop/shared/node_module_resolution.ts';
+const TRUSTED_PLAYWRIGHT_LOADER = 'apps/desktop/src/ipc/utils/playwright_bootstrap.ts';
 const TRUSTED_TYPESCRIPT_LOADER_PATHS = new Set([
   'apps/desktop/workers/code_explorer/code_explorer_worker.ts',
   'apps/desktop/workers/supabase_dependency_analysis/supabase_dependency_analysis_worker.ts',
@@ -54,7 +55,7 @@ function scriptKind(fileName) {
 function localModuleCandidates(basePath) {
   const extension = path.extname(basePath);
   const candidates = [];
-  if (extension) {
+  if (SOURCE_EXTENSIONS.includes(extension)) {
     candidates.push(basePath);
     const withoutExtension = basePath.slice(0, -extension.length);
     if (['.js', '.jsx', '.mjs', '.cjs'].includes(extension)) {
@@ -93,7 +94,7 @@ function createProgram(rootDirectory, sources) {
     sourceByProgramPath.has(path.resolve(fileName)) || originalFileExists(fileName);
   host.readFile = (fileName) =>
     sourceByProgramPath.get(path.resolve(fileName))?.text ?? originalReadFile(fileName);
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+  host.getSourceFile = (fileName, languageVersion, onError) => {
     const source = sourceByProgramPath.get(path.resolve(fileName));
     if (source) {
       return ts.createSourceFile(
@@ -305,7 +306,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const sources = await Promise.all(
     sourceEntries.map(async (entry) => ({
       ...entry,
-      text: await readFile(entry.absolutePath, 'utf8'),
+      text: entry.text ?? (await readFile(entry.absolutePath, 'utf8')),
     })),
   );
   const { program, sourceByProgramPath } = createProgram(rootDirectory, sources);
@@ -334,8 +335,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const localImportRecords = [];
   const localExportRecords = [];
   const importEqualsRecords = [];
+  const localLoaderRecords = [];
   const exportedOrigins = new Map(sourceFiles.map((sourceFile) => [sourceFile, new Map()]));
   const loaderAliases = new Set();
+  const createRequireSymbols = new Set();
   const loaderOrigins = new Map();
   const trustedLoaderCounts = new Map();
 
@@ -369,6 +372,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return existing.size !== size;
   }
 
+  function sourceRelativePath(sourceFile) {
+    return entryBySourceFile.get(sourceFile)?.relativePath ?? '';
+  }
+
   function recordDirectBinding(sourceFile, symbol, values) {
     if (!symbol) return;
     addOrigins(symbol, values);
@@ -378,7 +385,28 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function collectImportDeclaration(statement, sourceFile) {
     const requestedModule = moduleName(statement.moduleSpecifier);
     if (!requestedModule) return;
-    const forbiddenModule = resolveForbiddenModule(requestedModule, forbiddenModules);
+    if (
+      (requestedModule === 'node:module' || requestedModule === 'module') &&
+      statement.importClause &&
+      !statement.importClause.isTypeOnly &&
+      statement.importClause.namedBindings &&
+      ts.isNamedImports(statement.importClause.namedBindings)
+    ) {
+      for (const specifier of statement.importClause.namedBindings.elements) {
+        if (
+          !specifier.isTypeOnly &&
+          (specifier.propertyName?.text ?? specifier.name.text) === 'createRequire'
+        ) {
+          const symbol = symbolAt(checker, specifier.name);
+          if (symbol) createRequireSymbols.add(symbol);
+        }
+      }
+    }
+    const forbiddenModule = resolveForbiddenModule(
+      requestedModule,
+      forbiddenModules,
+      sourceRelativePath(sourceFile),
+    );
     if (!forbiddenModule) {
       if (statement.importClause && !statement.importClause.isTypeOnly) {
         if (statement.importClause.name) {
@@ -450,7 +478,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       ? moduleName(statement.moduleSpecifier)
       : undefined;
     const forbiddenModule = requestedModule
-      ? resolveForbiddenModule(requestedModule, forbiddenModules)
+      ? resolveForbiddenModule(requestedModule, forbiddenModules, sourceRelativePath(sourceFile))
       : undefined;
     if (!forbiddenModule) {
       localExportRecords.push({ sourceFile, statement });
@@ -546,6 +574,122 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return isModuleRequire(current);
   }
 
+  function isCreateRequireCallee(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return createRequireSymbols.has(symbolAt(checker, current));
+    }
+    if (ts.isPropertyAccessExpression(current) && current.name.text === 'createRequire') {
+      const owner = unwrapExpression(current.expression);
+      return (
+        (ts.isIdentifier(owner) &&
+          (isNamespaceImportFrom(owner, 'node:module') ||
+            isNamespaceImportFrom(owner, 'module'))) ||
+        isNodeModuleLoaderCall(owner)
+      );
+    }
+    if (
+      ts.isElementAccessExpression(current) &&
+      current.argumentExpression &&
+      ts.isStringLiteralLike(current.argumentExpression) &&
+      current.argumentExpression.text === 'createRequire'
+    ) {
+      return isNodeModuleLoaderCall(unwrapExpression(current.expression));
+    }
+    return false;
+  }
+
+  function isNodeModuleLoaderCall(expression) {
+    const current = unwrapExpression(expression);
+    if (!ts.isCallExpression(current) || !isLoaderCallee(current.expression)) return false;
+    const target = current.arguments[0];
+    return (
+      !!target &&
+      ts.isStringLiteralLike(target) &&
+      (target.text === 'node:module' || target.text === 'module')
+    );
+  }
+
+  function isLoaderValue(expression) {
+    const current = unwrapExpression(expression);
+    return (
+      isLoaderCallee(current) ||
+      (ts.isCallExpression(current) && isCreateRequireCallee(current.expression))
+    );
+  }
+
+  function addLoaderIdentifier(identifier) {
+    const symbol = symbolAt(checker, identifier);
+    if (!symbol || loaderAliases.has(symbol)) return false;
+    loaderAliases.add(symbol);
+    return true;
+  }
+
+  function addCreateRequireIdentifier(identifier) {
+    const symbol = symbolAt(checker, identifier);
+    if (!symbol || createRequireSymbols.has(symbol)) return false;
+    createRequireSymbols.add(symbol);
+    return true;
+  }
+
+  function addCreateRequireDestructuredFactories(target) {
+    const current = unwrapExpression(target);
+    const properties = ts.isObjectBindingPattern(current)
+      ? current.elements
+      : ts.isObjectLiteralExpression(current)
+        ? current.properties
+        : [];
+    let changed = false;
+    for (const property of properties) {
+      if (ts.isBindingElement(property)) {
+        const propertyName = property.propertyName?.getText() ?? property.name.getText();
+        if (propertyName === 'createRequire' && ts.isIdentifier(property.name)) {
+          changed = addCreateRequireIdentifier(property.name) || changed;
+        }
+      } else if (
+        ts.isShorthandPropertyAssignment(property) &&
+        property.name.text === 'createRequire'
+      ) {
+        changed = addCreateRequireIdentifier(property.name) || changed;
+      } else if (
+        ts.isPropertyAssignment(property) &&
+        propertyNameText(property.name) === 'createRequire' &&
+        ts.isIdentifier(unwrapExpression(property.initializer))
+      ) {
+        changed = addCreateRequireIdentifier(unwrapExpression(property.initializer)) || changed;
+      }
+    }
+    return changed;
+  }
+
+  function addModuleDestructuredLoaders(target) {
+    const current = unwrapExpression(target);
+    if (ts.isObjectBindingPattern(current)) {
+      let changed = false;
+      for (const element of current.elements) {
+        const propertyName = element.propertyName?.getText() ?? element.name.getText();
+        if (propertyName === 'require' && ts.isIdentifier(element.name)) {
+          changed = addLoaderIdentifier(element.name) || changed;
+        }
+      }
+      return changed;
+    }
+    if (!ts.isObjectLiteralExpression(current)) return false;
+    let changed = false;
+    for (const property of current.properties) {
+      if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'require') {
+        changed = addLoaderIdentifier(property.name) || changed;
+      } else if (
+        ts.isPropertyAssignment(property) &&
+        propertyNameText(property.name) === 'require' &&
+        ts.isIdentifier(unwrapExpression(property.initializer))
+      ) {
+        changed = addLoaderIdentifier(unwrapExpression(property.initializer)) || changed;
+      }
+    }
+    return changed;
+  }
+
   let loaderChanged = true;
   while (loaderChanged) {
     loaderChanged = false;
@@ -554,24 +698,43 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
         node.initializer &&
-        isLoaderCallee(node.initializer)
+        isCreateRequireCallee(node.initializer)
       ) {
-        const symbol = symbolAt(checker, node.name);
-        if (symbol && !loaderAliases.has(symbol)) {
-          loaderAliases.add(symbol);
-          loaderChanged = true;
-        }
+        loaderChanged = addCreateRequireIdentifier(node.name) || loaderChanged;
       } else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         ts.isIdentifier(unwrapExpression(node.left)) &&
-        isLoaderCallee(node.right)
+        isCreateRequireCallee(node.right)
       ) {
-        const symbol = symbolAt(checker, unwrapExpression(node.left));
-        if (symbol && !loaderAliases.has(symbol)) {
-          loaderAliases.add(symbol);
-          loaderChanged = true;
-        }
+        loaderChanged = addCreateRequireIdentifier(unwrapExpression(node.left)) || loaderChanged;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isObjectBindingPattern(node.name) &&
+        node.initializer &&
+        isNodeModuleLoaderCall(node.initializer)
+      ) {
+        loaderChanged = addCreateRequireDestructuredFactories(node.name) || loaderChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        isNodeModuleLoaderCall(node.right)
+      ) {
+        loaderChanged = addCreateRequireDestructuredFactories(node.left) || loaderChanged;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        isLoaderValue(node.initializer)
+      ) {
+        loaderChanged = addLoaderIdentifier(node.name) || loaderChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(unwrapExpression(node.left)) &&
+        isLoaderValue(node.right)
+      ) {
+        loaderChanged = addLoaderIdentifier(unwrapExpression(node.left)) || loaderChanged;
       } else if (
         ts.isVariableDeclaration(node) &&
         ts.isObjectBindingPattern(node.name) &&
@@ -579,16 +742,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         ts.isIdentifier(unwrapExpression(node.initializer)) &&
         isUnshadowedIdentifier(unwrapExpression(node.initializer), 'module')
       ) {
-        for (const element of node.name.elements) {
-          const propertyName = element.propertyName?.getText() ?? element.name.getText();
-          if (propertyName === 'require' && ts.isIdentifier(element.name)) {
-            const symbol = symbolAt(checker, element.name);
-            if (symbol && !loaderAliases.has(symbol)) {
-              loaderAliases.add(symbol);
-              loaderChanged = true;
-            }
-          }
-        }
+        loaderChanged = addModuleDestructuredLoaders(node.name) || loaderChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(unwrapExpression(node.right)) &&
+        isUnshadowedIdentifier(unwrapExpression(node.right), 'module')
+      ) {
+        loaderChanged = addModuleDestructuredLoaders(node.left) || loaderChanged;
       }
     });
   }
@@ -645,6 +806,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         isTrustedTypeScriptCompilerPath(current.arguments[0])
       ) {
         return new Set(['@typescript/typescript-runtime']);
+      }
+      if (isTrustedPlaywrightEntryPath(current)) {
+        return new Set(['playwright']);
       }
     }
     return undefined;
@@ -714,6 +878,45 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return true;
   }
 
+  function isTrustedPlaywrightEntryPath(expression) {
+    const loaderEntry = entryBySourceFile.get(expression.getSourceFile());
+    if (loaderEntry?.relativePath !== TRUSTED_PLAYWRIGHT_LOADER) return false;
+    const trustedCount = trustedLoaderCounts.get(TRUSTED_PLAYWRIGHT_LOADER) ?? 0;
+    if (trustedCount >= 1 || expression.arguments.length !== 1) return false;
+    const entryResolver = unwrapExpression(expression.arguments[0]);
+    if (
+      !ts.isCallExpression(entryResolver) ||
+      !ts.isIdentifier(entryResolver.expression) ||
+      entryResolver.expression.text !== 'getNodeModuleEntryPath' ||
+      entryResolver.arguments.length !== 2 ||
+      !ts.isStringLiteralLike(entryResolver.arguments[1]) ||
+      entryResolver.arguments[1].text !== 'index.js' ||
+      !ts.isIdentifier(entryResolver.arguments[0])
+    ) {
+      return false;
+    }
+    const packagePathSymbol = symbolAt(checker, entryResolver.arguments[0]);
+    const declaration = packagePathSymbol?.valueDeclaration;
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) {
+      return false;
+    }
+    const packageResolver = unwrapExpression(declaration.initializer);
+    if (
+      !ts.isCallExpression(packageResolver) ||
+      !ts.isIdentifier(packageResolver.expression) ||
+      packageResolver.expression.text !== 'resolveNodeModulePackageJsonPathSync' ||
+      packageResolver.arguments.length !== 2 ||
+      !ts.isArrayLiteralExpression(packageResolver.arguments[1]) ||
+      packageResolver.arguments[1].elements.length !== 1 ||
+      !ts.isStringLiteralLike(packageResolver.arguments[1].elements[0]) ||
+      packageResolver.arguments[1].elements[0].text !== 'playwright'
+    ) {
+      return false;
+    }
+    trustedLoaderCounts.set(TRUSTED_PLAYWRIGHT_LOADER, trustedCount + 1);
+    return true;
+  }
+
   for (const { sourceFile, statement } of importEqualsRecords) {
     const targetExpression = statement.moduleReference.expression;
     const targets = targetExpression ? staticTargets(targetExpression) : undefined;
@@ -723,7 +926,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     const values = new Set();
     for (const target of targets) {
-      const forbiddenModule = resolveForbiddenModule(target, forbiddenModules);
+      const forbiddenModule = resolveForbiddenModule(
+        target,
+        forbiddenModules,
+        sourceRelativePath(sourceFile),
+      );
       if (forbiddenModule) values.add(origin(forbiddenModule, '*'));
     }
     recordDirectBinding(sourceFile, symbolAt(checker, statement.name), values);
@@ -741,13 +948,26 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return;
     }
     const values = new Set();
+    const localTargets = new Set();
     for (const target of targets) {
-      const forbiddenModule = resolveForbiddenModule(target, forbiddenModules);
-      if (forbiddenModule) values.add(origin(forbiddenModule, '*'));
+      const forbiddenModule = resolveForbiddenModule(
+        target,
+        forbiddenModules,
+        sourceRelativePath(sourceFile),
+      );
+      if (forbiddenModule) {
+        values.add(origin(forbiddenModule, '*'));
+      } else {
+        const localTarget = resolveLocalSourceFile(sourceFile, target);
+        if (localTarget) localTargets.add(localTarget);
+      }
     }
     if (values.size > 0) {
       loaderOrigins.set(node, values);
       for (const value of values) addImport(sourceFile, value.replace(/#\*$/, '#<dynamic>'));
+    }
+    if (localTargets.size > 0) {
+      localLoaderRecords.push({ node, sourceFile, targetSourceFiles: localTargets });
     }
   });
 
@@ -876,17 +1096,28 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   }
 
   function resolveLocalSourceFile(sourceFile, requestedModule) {
-    let basePath;
+    if (!requestedModule) return undefined;
+    const basePaths = [];
     if (requestedModule.startsWith('.')) {
-      basePath = path.resolve(path.dirname(sourceFile.fileName), requestedModule);
+      basePaths.push(path.resolve(path.dirname(sourceFile.fileName), requestedModule));
     } else if (requestedModule.startsWith('@/')) {
-      basePath = path.resolve(rootDirectory, 'apps/desktop/src', requestedModule.slice(2));
+      basePaths.push(path.resolve(rootDirectory, 'apps/desktop/src', requestedModule.slice(2)));
+    } else if (requestedModule.startsWith('#')) {
+      for (const resolved of resolvePackageImportTargets(
+        requestedModule,
+        forbiddenModules,
+        sourceRelativePath(sourceFile),
+      )) {
+        if (resolved.target.startsWith('./')) {
+          basePaths.push(path.resolve(rootDirectory, resolved.packageDirectory, resolved.target));
+        }
+      }
     } else {
       return undefined;
     }
-    const programPath = localModuleCandidates(basePath).find((candidate) =>
-      sourceByProgramPath.has(path.resolve(candidate)),
-    );
+    const programPath = basePaths
+      .flatMap((basePath) => localModuleCandidates(basePath))
+      .find((candidate) => sourceByProgramPath.has(path.resolve(candidate)));
     return programPath ? program.getSourceFile(programPath) : undefined;
   }
 
@@ -898,6 +1129,24 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return exportedName === '*'
       ? union(...exports.values())
       : union(exact, appendMember(wildcard, exportedName));
+  }
+
+  function propagateLocalLoaders() {
+    let loaderOriginsChanged = false;
+    for (const record of localLoaderRecords) {
+      const values = union(
+        ...[...record.targetSourceFiles].map((targetSourceFile) =>
+          exportedValues(targetSourceFile, '*'),
+        ),
+      );
+      if (values.size === 0) continue;
+      const existing = loaderOrigins.get(record.node) ?? new Set();
+      const size = existing.size;
+      for (const value of values) existing.add(value);
+      loaderOrigins.set(record.node, existing);
+      loaderOriginsChanged = existing.size !== size || loaderOriginsChanged;
+    }
+    return loaderOriginsChanged;
   }
 
   function hasModifier(node, kind) {
@@ -1003,6 +1252,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
     });
     changed = propagateExports() || changed;
+    changed = propagateLocalLoaders() || changed;
   }
 
   const runtimeSymbols = new Set();
@@ -1023,6 +1273,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   for (const record of localImportRecords) {
     if (!runtimeSymbols.has(record.symbol)) continue;
     for (const value of originsForSymbol(record.symbol)) addImport(record.sourceFile, value);
+  }
+  for (const record of localLoaderRecords) {
+    for (const value of loaderOrigins.get(record.node) ?? []) {
+      addImport(record.sourceFile, value);
+    }
   }
 
   for (const { sourceFile, statement } of localExportRecords) {

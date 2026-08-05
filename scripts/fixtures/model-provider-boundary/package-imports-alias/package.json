@@ -1,0 +1,10 @@
+{
+  "name": "package-imports-alias-fixture",
+  "private": true,
+  "imports": {
+    "#provider": "openai"
+  },
+  "dependencies": {
+    "openai": "1.0.0"
+  }
+}

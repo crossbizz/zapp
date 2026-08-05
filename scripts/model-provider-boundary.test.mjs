@@ -17,10 +17,12 @@ import test from 'node:test';
 import { shouldScanProductionFile } from './check-model-provider-boundary.mjs';
 import {
   baselineConstantsForTests,
+  inventoryDigest,
   validateBaseline,
 } from './model-provider-boundary/baseline.mjs';
 
 const checkerPath = fileURLToPath(new URL('./check-model-provider-boundary.mjs', import.meta.url));
+const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const fixturesDirectory = fileURLToPath(
   new URL('./fixtures/model-provider-boundary/', import.meta.url),
 );
@@ -146,6 +148,20 @@ test('rejects provider loads through an aliased require', () => {
   assert.match(result.stderr, /new-provider path: .*aliased-require\.ts/);
 });
 
+test('rejects provider loads through a createRequire alias', () => {
+  const result = runFixture('create-require');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require\.ts/);
+});
+
+test('rejects provider loads through assignment destructuring from module', () => {
+  const result = runFixture('assignment-destructured-require');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*assignment-destructured-require\.ts/);
+});
+
 test('rejects require calls with a provider target and extra arguments', () => {
   const result = runFixture('require-extra-args');
 
@@ -209,6 +225,13 @@ test('default-denies ai imported through an npm manifest alias', () => {
   assert.match(result.stderr, /new-provider path: .*ai-package-alias\.ts/);
 });
 
+test('default-denies providers imported through a package imports-map alias', () => {
+  const result = runFixture('package-imports-alias');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*package-imports-alias\.ts/);
+});
+
 test('rejects call growth through an assignment alias', () => {
   const result = runFixture('assignment-alias');
 
@@ -218,6 +241,20 @@ test('rejects call growth through an assignment alias', () => {
 
 test('rejects a new consumer of an inherited local provider wrapper', () => {
   const result = runFixture('cross-file-wrapper');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*wrapper-consumer\.ts/);
+});
+
+test('rejects a new CommonJS consumer of an inherited local provider wrapper', () => {
+  const result = runFixture('local-require-wrapper');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*wrapper-consumer\.ts/);
+});
+
+test('rejects a new dynamic-import consumer of an inherited local provider wrapper', () => {
+  const result = runFixture('local-dynamic-import-wrapper');
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /new-provider path: .*wrapper-consumer\.ts/);
@@ -248,6 +285,21 @@ test('does not exclude a production directory merely named testing', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /new-provider path: .*testing\/provider-runtime\.ts/);
+});
+
+test('scans test-looking modules that are reachable from a production root', () => {
+  const result = runFixture('reachable-test-looking');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*provider\.test\.ts/);
+  assert.match(result.stderr, /new-provider path: .*provider\.spec\.ts/);
+  assert.match(result.stderr, /new-provider path: .*__tests__\/provider-wrapper\.ts/);
+});
+
+test('does not make a test-looking module runtime-reachable through a type-only edge', () => {
+  const result = runFixture('type-only-reachability');
+
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('scans an in-repo symlink tracked by Git', () => {
@@ -300,7 +352,7 @@ test('never reads a tracked production symlink into the excluded Pro tree', () =
   }
 });
 
-test('rejects a baseline reduction until the baseline shrinks in the same change', () => {
+test('rejects a reversible reduction against the immutable anchor inventory', () => {
   const result = runFixture('reduction');
 
   assert.equal(result.status, 1);
@@ -309,6 +361,13 @@ test('rejects a baseline reduction until the baseline shrinks in the same change
 
 test('validates the accepted baseline schema, commit, and exact path set', () => {
   assert.doesNotThrow(() => validateBaseline(acceptedBaseline, { accepted: true }));
+
+  assert.equal(baselineConstantsForTests.ACCEPTED_PATHS.length, 8);
+  assert.deepEqual(acceptedBaseline.files['apps/desktop/src/ipc/utils/stream_text_utils.ts'], {
+    providerCalls: { 'call:ai#Output': 1 },
+    providerImports: { 'import:ai#Output': 1 },
+    providerUses: { 'use:ai#Output': 2 },
+  });
 
   const wrongSchema = structuredClone(acceptedBaseline);
   wrongSchema.schemaVersion += 1;
@@ -322,14 +381,58 @@ test('validates the accepted baseline schema, commit, and exact path set', () =>
   );
 
   const wrongPaths = structuredClone(acceptedBaseline);
-  delete wrongPaths.files[baselineConstantsForTests.ACCEPTED_PATHS[0]];
+  wrongPaths.files = Object.fromEntries(
+    Object.entries(wrongPaths.files).filter(
+      ([relativePath]) => relativePath !== baselineConstantsForTests.ACCEPTED_PATHS[0],
+    ),
+  );
   assert.throws(
     () => validateBaseline(wrongPaths, { accepted: true }),
-    /exactly these seven paths/,
+    /exactly these eight paths/,
+  );
+
+  const casuallyBlessedGrowth = structuredClone(acceptedBaseline);
+  casuallyBlessedGrowth.files['apps/desktop/src/ipc/utils/stream_text_utils.ts'].providerCalls[
+    'call:ai#Output'
+  ] += 1;
+  casuallyBlessedGrowth.inventorySha256 = inventoryDigest(casuallyBlessedGrowth.files);
+  assert.throws(
+    () => validateBaseline(casuallyBlessedGrowth, { accepted: true }),
+    /inventory digest.*migrate the anchor and ADR/,
   );
 });
 
-test('excludes tests, type-only imports, and the unvendored Pro tree', () => {
+test('derives the accepted inventory from its declared Git anchor', async () => {
+  const checkerModule = await import('./check-model-provider-boundary.mjs');
+
+  assert.equal(typeof checkerModule.scanRepositoryAtCommit, 'function');
+  const anchorInventory = await checkerModule.scanRepositoryAtCommit(
+    projectRoot,
+    acceptedBaseline.baselineCommit,
+  );
+  assert.deepEqual(anchorInventory, acceptedBaseline.files);
+});
+
+test('validates the accepted ADR decision content and binds it to the baseline', async () => {
+  const adrPath = path.join(projectRoot, 'docs/adr/0005-desktop-provider-migration-window.md');
+  assert.equal(existsSync(adrPath), true, 'ADR-0005 must be present in the checked-out branch');
+
+  const baselineModule = await import('./model-provider-boundary/baseline.mjs');
+  assert.equal(typeof baselineModule.validateAcceptedAdr, 'function');
+  const adrText = readFileSync(adrPath, 'utf8');
+  assert.doesNotThrow(() => baselineModule.validateAcceptedAdr(adrText, acceptedBaseline));
+
+  const weakenedDecision = adrText.replace(
+    'exception ends when MAC-6 lands and never extends to new call sites',
+    'exception ends when MAC-6 lands and may extend to new call sites',
+  );
+  assert.throws(
+    () => baselineModule.validateAcceptedAdr(weakenedDecision, acceptedBaseline),
+    /ADR-0005|digest|decision/,
+  );
+});
+
+test('discovers test-looking candidates while excluding type-only uses and the Pro tree', () => {
   const result = runFixture('excluded');
 
   assert.equal(result.status, 0, result.stderr);
