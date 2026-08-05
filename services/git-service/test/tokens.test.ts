@@ -59,7 +59,6 @@ const INPUT = {
   projectId: PROJECT,
   access: 'write',
   requestingService: 'sandbox-service',
-  reason: 'push the run branch',
   runId: newId('run'),
 } as const;
 
@@ -220,7 +219,7 @@ describe('mint', () => {
     expect(harness.forgejo.writes).toEqual([]);
   });
 
-  it('writes one audit row naming the caller, the reason and the run', async () => {
+  it('writes one audit row naming the caller and the run', async () => {
     const harness = service();
 
     const minted = await harness.tokens.mint(INPUT);
@@ -236,7 +235,6 @@ describe('mint', () => {
         access: 'write',
         ttlSec: DEFAULT_TOKEN_TTL_SECONDS,
         tokenUser: minted.username,
-        reason: 'push the run branch',
         runId: INPUT.runId,
         taskId: null,
       },
@@ -303,7 +301,6 @@ describe('revokeForProject', () => {
       organizationId: ORGANIZATION,
       projectId: PROJECT,
       requestingService: 'control-api',
-      reason: 'project deleted',
     });
 
     expect(revoked).toBe(2);
@@ -316,7 +313,7 @@ describe('revokeForProject', () => {
     ]);
     expect(harness.audit.events[0]).toMatchObject({
       action: 'git_token.revoked',
-      metadata: { revoked: 2, reason: 'project deleted' },
+      metadata: { revoked: 2 },
     });
   });
 
@@ -345,7 +342,6 @@ describe('revokeForProject', () => {
         organizationId: ORGANIZATION,
         projectId: PROJECT,
         requestingService: 'control-api',
-        reason: 'project deleted',
       }),
     ).toBe(51);
 
@@ -369,7 +365,6 @@ describe('revokeForProject', () => {
         organizationId: ORGANIZATION,
         projectId: PROJECT,
         requestingService: 'control-api',
-        reason: 'project deleted',
       }),
     ).toBe(0);
     expect(harness.audit.events).toEqual([]);

@@ -36,8 +36,6 @@ import {
 
 export { GIT_AUDIT_ACTIONS, GitAuditActionSchema, type GitAuditAction } from '@zapp/contracts';
 
-const GitAuditReasonSchema = z.string().trim().min(8).max(500);
-
 /** The reviewed non-secret context for one issued repository credential. */
 export const GitTokenMintedAuditMetadataSchema = z
   .object({
@@ -46,7 +44,6 @@ export const GitTokenMintedAuditMetadataSchema = z
     ttlSec: z.number().int().positive().max(MAX_TOKEN_TTL_SECONDS),
     expiresAt: z.string().datetime({ offset: true }),
     tokenUser: z.string().regex(EPHEMERAL_USERNAME_PATTERN, 'Invalid ephemeral Git username'),
-    reason: GitAuditReasonSchema,
     runId: idSchema('run').nullable(),
     taskId: idSchema('task').nullable(),
   })
@@ -58,7 +55,6 @@ export const GitTokenRevokedAuditMetadataSchema = z
   .object({
     internalRepoRef: InternalRepoRefSchema,
     revoked: z.number().int().positive(),
-    reason: GitAuditReasonSchema,
   })
   .strict();
 export type GitTokenRevokedAuditMetadata = z.infer<typeof GitTokenRevokedAuditMetadataSchema>;

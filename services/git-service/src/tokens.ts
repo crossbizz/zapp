@@ -121,8 +121,6 @@ export interface MintTokenInput {
   readonly ttlSec?: number;
   /** Who asked, from the verified service token — never from a request body. */
   readonly requestingService: ServiceName;
-  /** Why. Written to the audit row; a grant nobody can explain is one nobody can review. */
-  readonly reason: string;
   /** Run and task attribution, when the caller has one. */
   readonly runId?: string;
   readonly taskId?: string;
@@ -180,7 +178,6 @@ export interface TokenService {
     readonly organizationId: string;
     readonly projectId: string;
     readonly requestingService: ServiceName;
-    readonly reason: string;
   }): Promise<number>;
   /** Deletes every ephemeral user whose deadline has passed. Idempotent; safe to run often. */
   sweepExpired(now?: Date): Promise<number>;
@@ -329,7 +326,6 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
           ttlSec,
           expiresAt: expiresAt.toISOString(),
           tokenUser: username,
-          reason: input.reason,
           runId: input.runId ?? null,
           taskId: input.taskId ?? null,
         },
@@ -421,7 +417,6 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
           metadata: {
             internalRepoRef: ref,
             revoked: ephemeral.length,
-            reason: input.reason,
           },
         });
       }
