@@ -2861,7 +2861,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
       } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'assign') {
         changed =
-          addCallableKinds(symbolAt(checker, property.name), CALLABLE_OBJECT_ASSIGN) || changed;
+          addCallableKinds(
+            checker.getShorthandAssignmentValueSymbol(property),
+            CALLABLE_OBJECT_ASSIGN,
+          ) || changed;
       } else if (
         ts.isPropertyAssignment(property) &&
         propertyNameText(property.name) === 'assign' &&
