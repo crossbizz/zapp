@@ -33,15 +33,20 @@ const acceptedBaseline = JSON.parse(
   ),
 );
 
-function runFixture(name) {
+function runFixture(name, spawnOptions = {}) {
   const fixtureRoot = `${fixturesDirectory}/${name}`;
   const fixtureBaseline = `${fixtureRoot}/baseline.json`;
-  return runRoot(fixtureRoot, existsSync(fixtureBaseline) ? fixtureBaseline : baselinePath);
+  return runRoot(
+    fixtureRoot,
+    existsSync(fixtureBaseline) ? fixtureBaseline : baselinePath,
+    spawnOptions,
+  );
 }
 
-function runRoot(root, baseline = baselinePath) {
+function runRoot(root, baseline = baselinePath, spawnOptions = {}) {
   return spawnSync(process.execPath, [checkerPath, '--root', root, '--baseline', baseline], {
     encoding: 'utf8',
+    ...spawnOptions,
   });
 }
 
@@ -786,6 +791,28 @@ test('AR-1 recursively normalizes nested Function.prototype call and apply invoc
 test('AR-1 allows recursively nested intrinsic invocations of harmless targets', () => {
   const result = runFixture('loader-recursive-intrinsic-invocations-control');
 
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 normalizes every finite intrinsic invocation chain', () => {
+  const result = runFixture('loader-intrinsic-depth');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['unsafe-depth-33', 'unsafe-depth-257']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 allows finite intrinsic invocation chains with harmless targets', () => {
+  const result = runFixture('loader-intrinsic-depth-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 terminates cyclic intrinsic aliases', () => {
+  const result = runFixture('loader-intrinsic-cycle-control', { timeout: 5_000 });
+
+  assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, result.stderr);
 });
 

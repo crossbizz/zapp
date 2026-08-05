@@ -18,7 +18,6 @@ const CALLABLE_OBJECT_ASSIGN = 4;
 const CALLABLE_INTRINSIC_CALL = 8;
 const CALLABLE_INTRINSIC_APPLY = 16;
 const CALLABLE_INTRINSIC_INVOCATION = CALLABLE_INTRINSIC_CALL | CALLABLE_INTRINSIC_APPLY;
-const MAX_INTRINSIC_INVOCATION_DEPTH = 32;
 const MAY_BE_TRUTHY = 1;
 const MAY_BE_FALSY = 2;
 const MAY_BE_NULLISH = 1;
@@ -2369,9 +2368,29 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function normalizeIntrinsicInvocation(invocation) {
     let current = invocation;
-    for (let depth = 0; depth < MAX_INTRINSIC_INVOCATION_DEPTH; depth += 1) {
+    const visitedInvocations = [];
+    while (true) {
       const intrinsicKinds = current.callee.kinds & CALLABLE_INTRINSIC_INVOCATION;
       if (intrinsicKinds === 0) return current;
+      const targetIdentity = current.thisExpression ?? current.thisValue;
+      const repeated = visitedInvocations.some(
+        (visited) =>
+          visited.intrinsicKinds === intrinsicKinds &&
+          visited.targetIdentity === targetIdentity &&
+          visited.argumentExpressions.length === current.argumentExpressions.length &&
+          visited.argumentExpressions.every(
+            (expression, index) => expression === current.argumentExpressions[index],
+          ) &&
+          visited.argumentValues.length === current.argumentValues.length &&
+          visited.argumentValues.every((value, index) => value === current.argumentValues[index]),
+      );
+      if (repeated) return current;
+      visitedInvocations.push({
+        argumentExpressions: current.argumentExpressions,
+        argumentValues: current.argumentValues,
+        intrinsicKinds,
+        targetIdentity,
+      });
       const argumentsForTarget = intrinsicInvocationArguments(intrinsicKinds, {
         expressions: current.argumentExpressions,
         values: current.argumentValues,
@@ -2384,7 +2403,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         thisValue: current.argumentValues[0] ?? emptyCallableValue(),
       };
     }
-    return current;
   }
 
   function nestedIntrinsicInvocation(callExpression, environment, state) {
