@@ -5,6 +5,7 @@ import { internalRepoRef, newId } from '@zapp/contracts';
 import { describe, expect, it } from 'vitest';
 
 import * as backupScript from '../scripts/backup.js';
+import { createRecordingGitAuditSink } from '../src/audit.js';
 import type {
   BackupGit,
   BackupInventory,
@@ -16,6 +17,7 @@ import type {
   RestoreRemoteGit,
 } from '../src/backup.js';
 import type { ForgejoClient, ForgejoRequest, ForgejoResponse } from '../src/forgejo/client.js';
+import { createTokenService } from '../src/tokens.js';
 import { createFakeForgejo } from './support/fake-forgejo.js';
 
 const ORGANIZATION_ID = newId('org');
@@ -210,10 +212,27 @@ class StatefulForgejo implements ForgejoClient {
   }
 }
 
+interface RestoreCredentialAllocation {
+  readonly version: 1;
+  readonly intentKey: string;
+  readonly operationId: string;
+  readonly targetRef: string;
+  readonly repositoryId: number;
+  readonly generation: number;
+  readonly username: string;
+  readonly expiresAt: string;
+}
+
 interface RestoreOperation {
   readonly intentKey: string;
   readonly targetRef: string;
   resolveTarget(): Promise<{ readonly repositoryId: number; readonly cloneUrl: string }>;
+  reserveCredentialCleanup(identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }): Promise<RestoreCredentialAllocation>;
+  recordCredentialCreated(allocation: RestoreCredentialAllocation): Promise<void>;
+  completeCredentialCleanup(allocation: RestoreCredentialAllocation): Promise<void>;
   recordPhase(
     phase: 'push-started' | 'push-complete' | 'verified',
     result?: {
@@ -228,6 +247,7 @@ type BeginRestoreOperation = (
   deps: {
     readonly store: BackupObjectStore;
     readonly client: ForgejoClient;
+    readonly now?: () => Date;
   },
   input: {
     readonly kind: 'manual' | 'drill';
@@ -554,6 +574,7 @@ describe('intent-first restore recovery', () => {
             expiresAt: window.expiresAt,
           });
           activeCredentials.add(username);
+          await input.recordCredentialCreated(allocation);
           return {
             cloneUrl: input.cloneUrl,
             git: boundGit,
@@ -594,12 +615,214 @@ describe('intent-first restore recovery', () => {
       .map(([key, value]) => ({ key, body: JSON.parse(value.toString('utf8')) as object }));
     expect(cleanupReceipts.map(({ key }) => key)).toEqual([
       expect.stringMatching(/00000001\.allocated\.json$/),
+      expect.stringMatching(/00000001\.created\.json$/),
       expect.stringMatching(/00000001\.released\.json$/),
       expect.stringMatching(/00000002\.allocated\.json$/),
+      expect.stringMatching(/00000002\.created\.json$/),
       expect.stringMatching(/00000002\.released\.json$/),
     ]);
     expect(JSON.stringify(cleanupReceipts)).not.toMatch(/token|password/i);
     expect(completedAfterFailure).toBe(false);
+  });
+
+  it('cannot release a creator before its Forgejo user creation is resolved', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    let releaseCreate: (() => void) | undefined;
+    const createMayFinish = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    let signalCreateStarted: (() => void) | undefined;
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreateStarted = resolve;
+    });
+    const users = new Set<string>();
+    const grants = new Set<string>();
+    let repository:
+      | {
+          readonly id: number;
+          readonly clone_url: string;
+          readonly description: string;
+          readonly empty: boolean;
+        }
+      | undefined;
+    const forgejo: ForgejoClient = {
+      baseUrl: 'https://git.test',
+      async send<T>(request: ForgejoRequest): Promise<ForgejoResponse<T>> {
+        if (request.method === 'GET' && request.path.startsWith('/orgs/')) {
+          return { status: 200, body: { username: 'organization' } as T };
+        }
+        if (request.method === 'GET' && request.path.startsWith('/repos/')) {
+          return repository === undefined
+            ? { status: 404, body: undefined }
+            : { status: 200, body: repository as T };
+        }
+        if (request.method === 'POST' && request.path.endsWith('/repos')) {
+          const body = request.body as { readonly description: string };
+          repository = {
+            id: 501,
+            clone_url: 'https://git.test/restore/repository.git',
+            description: body.description,
+            empty: true,
+          };
+          return { status: 201, body: repository as T };
+        }
+        if (request.method === 'POST' && request.path === '/admin/users') {
+          const body = request.body as { readonly username: string };
+          signalCreateStarted?.();
+          await createMayFinish;
+          users.add(body.username);
+          return { status: 201, body: {} as T };
+        }
+        if (request.method === 'PUT' && request.path.includes('/collaborators/')) {
+          const username = decodeURIComponent(request.path.slice(request.path.lastIndexOf('/') + 1));
+          if (!users.has(username)) {
+            throw new Error('cannot grant a missing restore user');
+          }
+          grants.add(username);
+          return { status: 204, body: undefined };
+        }
+        if (request.method === 'POST' && request.path.endsWith('/tokens')) {
+          return { status: 201, body: { sha1: 'unit-test-token' } as T };
+        }
+        if (request.method === 'DELETE' && request.path.startsWith('/admin/users/')) {
+          const username = decodeURIComponent(
+            request.path.slice('/admin/users/'.length).replace(/\?purge=true$/, ''),
+          );
+          const existed = users.delete(username);
+          grants.delete(username);
+          return { status: existed ? 204 : 404, body: undefined };
+        }
+        throw new Error(`unexpected Forgejo request: ${request.method} ${request.path}`);
+      },
+    };
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-credential-create-race',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const creator = await begin(operationDeps, input);
+    const target = await creator.resolveTarget();
+    const issuer = backupScript.createForgejoRestoreCredentialIssuer(
+      forgejo,
+      createTokenService({
+        client: forgejo,
+        audit: createRecordingGitAuditSink(),
+        now: () => now,
+      }),
+      240_000,
+      { now: () => now },
+    );
+    const issueInput = {
+      sourceOrganizationId: SOURCE.organizationId,
+      sourceProjectId: SOURCE.projectId,
+      targetRef: creator.targetRef,
+      repositoryId: target.repositoryId,
+      cloneUrl: target.cloneUrl,
+      reserveCredentialCleanup: async (identity: {
+        readonly username: string;
+        readonly expiresAt: Date;
+      }) => await creator.reserveCredentialCleanup(identity),
+      recordCredentialCreated: async (allocation: RestoreCredentialAllocation) => {
+        await creator.recordCredentialCreated(allocation);
+      },
+      completeCredentialCleanup: async (allocation: RestoreCredentialAllocation) => {
+        await creator.completeCredentialCleanup(allocation);
+      },
+    };
+
+    const issuing = issuer.issue(issueInput);
+    await createStarted;
+    const concurrentOutcome = await begin(operationDeps, input).then(
+      () => 'continued' as const,
+      (error: unknown) =>
+        error instanceof Error ? error.message : 'non-error credential coordination failure',
+    );
+    releaseCreate?.();
+    await issuing;
+    expect(grants.size).toBe(1);
+
+    const recovery = await begin(operationDeps, input);
+    await recovery.resolveTarget();
+    await recovery.recordPhase('verified', {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    });
+
+    expect(concurrentOutcome).toBe('Restore credential creator is still pending');
+    expect(users).toEqual(new Set());
+    expect(grants).toEqual(new Set());
+    const credentialReceipts = [...store.values]
+      .filter(([key]) => key.includes('.credentials/'))
+      .map(([key, value]) => ({ key, body: value.toString('utf8') }));
+    expect(credentialReceipts.map(({ key }) => key)).toEqual([
+      expect.stringMatching(/00000001\.allocated\.json$/),
+      expect.stringMatching(/00000001\.created\.json$/),
+      expect.stringMatching(/00000001\.released\.json$/),
+    ]);
+    expect(JSON.stringify(credentialReceipts)).not.toMatch(/unit-test-token|password/i);
+  });
+
+  it('recovers a pre-create crash only after the allocated identity expires', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-pre-create-crash',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const beforeExpiry = new Date('2026-08-04T10:04:59.999Z');
+    const creator = await begin({ store, client: forgejo, now: () => beforeExpiry }, input);
+    await creator.resolveTarget();
+    await creator.reserveCredentialCleanup({
+      username: 'zt-1785837900-000000000001',
+      expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+    });
+
+    await expect(
+      begin({ store, client: forgejo, now: () => beforeExpiry }, input),
+    ).rejects.toThrow('Restore credential creator is still pending');
+    expect(
+      [...store.values.keys()].some((key) => key.endsWith('.released.json')),
+    ).toBe(false);
+
+    const beforeCreateRequestWindowEnds = new Date('2026-08-04T10:05:29.999Z');
+    await expect(
+      begin(
+        { store, client: forgejo, now: () => beforeCreateRequestWindowEnds },
+        input,
+      ),
+    ).rejects.toThrow('Restore credential creator is still pending');
+
+    const afterCreateRequestWindow = new Date('2026-08-04T10:05:30.001Z');
+    const recovery = await begin(
+      { store, client: forgejo, now: () => afterCreateRequestWindow },
+      input,
+    );
+    await recovery.resolveTarget();
+    await recovery.recordPhase('verified', {
+      checkedBranches: 0,
+      branches: [],
+      refs: [],
+    });
+
+    expect(
+      [...store.values.keys()].filter((key) => key.endsWith('.released.json')),
+    ).toHaveLength(1);
   });
 
   it('computes the restore deadline after issuance latency and caps it before credential expiry', async () => {
@@ -639,6 +862,7 @@ describe('intent-first restore recovery', () => {
           username: identity.username,
           expiresAt: identity.expiresAt.toISOString(),
         }),
+      recordCredentialCreated: () => Promise.resolve(),
       completeCredentialCleanup: () => Promise.resolve(),
     };
     const issuer = createIssuer(

@@ -267,6 +267,8 @@ function retryable(error: unknown): boolean {
 
 export function createS3BackupObjectStore(options: {
   readonly client: S3ClientPort;
+  /** One disposable transport per conditional streamed PUT. */
+  readonly createConditionalClient: () => S3ClientPort;
   readonly bucket: string;
   readonly timeoutMs: number;
   readonly multipartThresholdBytes?: number;
@@ -323,13 +325,14 @@ export function createS3BackupObjectStore(options: {
     });
 
   async function sendWithRetry(
+    client: S3ClientPort,
     command: () => S3ClientPortCommand,
     signal: AbortSignal,
   ): Promise<unknown> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
       try {
-        return await options.client.send(command(), { abortSignal: signal });
+        return await client.send(command(), { abortSignal: signal });
       } catch (error) {
         lastError = error;
         if (attempt === config.maxAttempts || !retryable(error) || signal.aborted) {
@@ -361,6 +364,7 @@ export function createS3BackupObjectStore(options: {
     const reconciliationSignal = AbortSignal.timeout(config.timeoutMs);
     try {
       await sendWithRetry(
+        options.client,
         () => new HeadObjectCommand({ Bucket: config.bucket, Key: key }),
         reconciliationSignal,
       );
@@ -424,6 +428,7 @@ export function createS3BackupObjectStore(options: {
   ): Promise<BackupPutResult> {
     const layout = multipartUploadLayout(source.contentLength, config.multipartPartSizeBytes);
     const created = await sendWithRetry(
+      options.client,
       () =>
         new CreateMultipartUploadCommand({
           Bucket: config.bucket,
@@ -458,6 +463,7 @@ export function createS3BackupObjectStore(options: {
           const start = index * partSizeBytes;
           const endExclusive = Math.min(start + partSizeBytes, source.contentLength);
           const response = await sendWithRetry(
+            options.client,
             () =>
               new UploadPartCommand({
                 Bucket: config.bucket,
@@ -523,8 +529,10 @@ export function createS3BackupObjectStore(options: {
       }
       const deadline = AbortSignal.timeout(config.uploadDeadlineMs);
       if (source.contentLength < config.multipartThresholdBytes) {
+        const conditionalClient = options.createConditionalClient();
         try {
           await sendWithRetry(
+            conditionalClient,
             () =>
               new PutObjectCommand({
                 Bucket: config.bucket,
@@ -539,25 +547,19 @@ export function createS3BackupObjectStore(options: {
           return 'created';
         } catch (error) {
           if (httpStatus(error) === 412) {
-            // S3-compatible servers may reject If-None-Match before consuming
-            // the streamed body. Discard that request's pooled socket before
-            // the next operation; the 412 still proves this key was not
-            // overwritten by this writer.
-            options.client.destroy();
             return 'existing';
           }
           if (deadline.aborted || retryable(error)) {
             if (await finalObjectExists(key)) {
-              // A conditional streamed PUT can be rejected before MinIO/R2
-              // consumes its body. Smithy's body writer then reports a reset,
-              // and that socket can poison the client's next pooled request.
-              // The object is already reconciled as present, so discard only
-              // local pooled connections before returning the immutable result.
-              options.client.destroy();
               return 'existing';
             }
           }
           throw error;
+        } finally {
+          // Conditional stream failures can poison their keep-alive socket.
+          // This client owns only this PUT, so destroying it cannot abort a
+          // concurrent multipart part or an independent reconciliation HEAD.
+          conditionalClient.destroy();
         }
       }
 
@@ -643,7 +645,7 @@ export function createR2BackupObjectStore(config: {
   readonly retryBaseDelayMs?: number;
 }): BackupObjectStore {
   const endpoint = new URL(config.endpoint);
-  const client = new S3Client({
+  const clientOptions = {
     endpoint: endpoint.toString().replace(/\/$/, ''),
     region: config.region,
     maxAttempts: 1,
@@ -657,9 +659,12 @@ export function createR2BackupObjectStore(config: {
       endpoint.hostname === 'localhost' ||
       endpoint.hostname === '127.0.0.1' ||
       endpoint.hostname === 'minio',
-  });
+  };
+  const createClient = (): S3Client => new S3Client(clientOptions);
+  const client = createClient();
   return createS3BackupObjectStore({
     client,
+    createConditionalClient: createClient,
     bucket: config.bucket,
     timeoutMs: config.timeoutMs ?? 30_000,
     ...(config.multipartThresholdBytes === undefined

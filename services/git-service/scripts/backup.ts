@@ -34,6 +34,7 @@ import {
   loadDatabaseUrl,
   loadForgejoEnv,
   loadGitCommandDeadlineEnv,
+  MAX_FORGEJO_TIMEOUT_MS,
 } from '../src/env.js';
 import { createForgejoClient, type ForgejoClient } from '../src/forgejo/client.js';
 import { createTokenService, DEFAULT_TOKEN_TTL_SECONDS, type TokenService } from '../src/tokens.js';
@@ -221,6 +222,8 @@ const RestoreCredentialReleaseSchema = z
   })
   .strict();
 
+const RestoreCredentialCreatedSchema = RestoreCredentialReleaseSchema;
+
 export interface ResolvedForgejoRestoreTarget {
   readonly repositoryId: number;
   readonly cloneUrl: string;
@@ -235,6 +238,7 @@ export interface RestoreOperation {
     readonly username: string;
     readonly expiresAt: Date;
   }): Promise<RestoreCredentialAllocation>;
+  recordCredentialCreated(allocation: RestoreCredentialAllocation): Promise<void>;
   completeCredentialCleanup(allocation: RestoreCredentialAllocation): Promise<void>;
   recordPhase(phase: RestorePhase, result?: RestoreRepositoryResult): Promise<void>;
 }
@@ -250,6 +254,7 @@ export interface RestoreCredentialIssuer {
       readonly username: string;
       readonly expiresAt: Date;
     }): Promise<RestoreCredentialAllocation>;
+    recordCredentialCreated(allocation: RestoreCredentialAllocation): Promise<void>;
     completeCredentialCleanup(allocation: RestoreCredentialAllocation): Promise<void>;
   }): Promise<{
     readonly cloneUrl: string;
@@ -288,6 +293,17 @@ export function createForgejoRestoreCredentialIssuer(
           reason: 'restore a verified Git bundle into its receipt-owned target',
           onIdentityAllocated: async (identity) => {
             allocation = await input.reserveCredentialCleanup(identity);
+          },
+          onIdentityCreated: async (identity) => {
+            const reserved = allocation;
+            if (
+              reserved === undefined ||
+              reserved.username !== identity.username ||
+              reserved.expiresAt !== identity.expiresAt.toISOString()
+            ) {
+              throw new Error('Restore credential creation has no durable allocation');
+            }
+            await input.recordCredentialCreated(reserved);
           },
         });
         const reservedAllocation = allocation;
@@ -337,10 +353,9 @@ export function createForgejoRestoreCredentialIssuer(
               path: `/admin/users/${encodeURIComponent(allocation.username)}?purge=true`,
               allow: [404],
             });
-            await input.completeCredentialCleanup(allocation);
           } catch {
-            // Replay drains the durable allocation before another credential
-            // can be issued; expiry sweep remains the bounded final defense.
+            // The durable allocation (and created receipt, if one was written)
+            // remains pending. Replay retries deletion before it can verify.
           }
         }
         throw error;
@@ -431,6 +446,10 @@ function credentialReleaseKey(prefix: string, generation: number): string {
   return `${prefix}${String(generation).padStart(8, '0')}.released.json`;
 }
 
+function credentialCreatedKey(prefix: string, generation: number): string {
+  return `${prefix}${String(generation).padStart(8, '0')}.created.json`;
+}
+
 function jsonDigest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
@@ -476,7 +495,9 @@ async function readCredentialCleanupState(
   readonly allocations: readonly {
     readonly key: string;
     readonly releaseKey: string;
+    readonly createdKey: string;
     readonly allocation: RestoreCredentialAllocation;
+    readonly created: boolean;
     readonly released: boolean;
   }[];
   readonly nextGeneration: number;
@@ -484,10 +505,11 @@ async function readCredentialCleanupState(
   const prefix = credentialReceiptPrefix(intentKey);
   const keys = await listCredentialReceiptKeys(store, prefix);
   const allocationKeys = new Map<number, string>();
+  const createdKeys = new Map<number, string>();
   const releaseKeys = new Map<number, string>();
   for (const key of keys) {
     const suffix = key.slice(prefix.length);
-    const match = /^(\d{8})\.(allocated|released)\.json$/.exec(suffix);
+    const match = /^(\d{8})\.(allocated|created|released)\.json$/.exec(suffix);
     if (match?.[1] === undefined || match[2] === undefined) {
       throw new Error('Restore credential receipt key is invalid');
     }
@@ -495,7 +517,12 @@ async function readCredentialCleanupState(
     if (!Number.isSafeInteger(generation) || generation <= 0) {
       throw new Error('Restore credential receipt key is invalid');
     }
-    const collection = match[2] === 'allocated' ? allocationKeys : releaseKeys;
+    const collection =
+      match[2] === 'allocated'
+        ? allocationKeys
+        : match[2] === 'created'
+          ? createdKeys
+          : releaseKeys;
     if (collection.has(generation)) {
       throw new Error('Restore credential receipt generation is duplicated');
     }
@@ -504,11 +531,16 @@ async function readCredentialCleanupState(
   if ([...releaseKeys.keys()].some((generation) => !allocationKeys.has(generation))) {
     throw new Error('Restore credential release has no allocation');
   }
+  if ([...createdKeys.keys()].some((generation) => !allocationKeys.has(generation))) {
+    throw new Error('Restore credential creation has no allocation');
+  }
 
   const allocations: {
     key: string;
     releaseKey: string;
+    createdKey: string;
     allocation: RestoreCredentialAllocation;
+    created: boolean;
     released: boolean;
   }[] = [];
   for (const [generation, key] of [...allocationKeys].sort(([left], [right]) => left - right)) {
@@ -523,6 +555,20 @@ async function readCredentialCleanupState(
       throw new Error('Restore credential allocation receipt is invalid');
     }
     const releaseKey = credentialReleaseKey(prefix, generation);
+    const createdKey = credentialCreatedKey(prefix, generation);
+    const created = createdKeys.has(generation);
+    if (created) {
+      const creation = RestoreCredentialCreatedSchema.safeParse(
+        await readSmallJson(store, createdKey),
+      );
+      if (
+        !creation.success ||
+        creation.data.allocationKey !== key ||
+        creation.data.allocationDigest !== jsonDigest(parsed.data)
+      ) {
+        throw new Error('Restore credential creation receipt is invalid');
+      }
+    }
     const released = releaseKeys.has(generation);
     if (released) {
       const release = RestoreCredentialReleaseSchema.safeParse(
@@ -536,7 +582,14 @@ async function readCredentialCleanupState(
         throw new Error('Restore credential release receipt is invalid');
       }
     }
-    allocations.push({ key, releaseKey, allocation: parsed.data, released });
+    allocations.push({
+      key,
+      releaseKey,
+      createdKey,
+      allocation: parsed.data,
+      created,
+      released,
+    });
   }
 
   const lastGeneration = allocations.at(-1)?.allocation.generation ?? 0;
@@ -707,7 +760,11 @@ async function resolveIntentTarget(
 }
 
 export async function beginRestoreOperation(
-  deps: { readonly store: BackupObjectStore; readonly client: ForgejoClient },
+  deps: {
+    readonly store: BackupObjectStore;
+    readonly client: ForgejoClient;
+    readonly now?: () => Date;
+  },
   input: z.input<typeof RestoreOperationInputSchema>,
 ): Promise<RestoreOperation> {
   const parsed = RestoreOperationInputSchema.safeParse(input);
@@ -758,22 +815,45 @@ export async function beginRestoreOperation(
     projectId: targetProjectId,
   });
   let resolvedTarget: ResolvedForgejoRestoreTarget | undefined;
+  const now = deps.now ?? ((): Date => new Date());
+
+  const credentialBinding = (allocation: RestoreCredentialAllocation) => {
+    const prefix = credentialReceiptPrefix(intentKey);
+    const allocationKey = credentialAllocationKey(prefix, allocation.generation);
+    return {
+      prefix,
+      allocationKey,
+      binding: {
+        version: 1 as const,
+        allocationKey,
+        allocationDigest: jsonDigest(allocation),
+      },
+    };
+  };
 
   const completeCredentialCleanup = async (
     allocationInput: RestoreCredentialAllocation,
   ): Promise<void> => {
     const allocation = RestoreCredentialAllocationSchema.parse(allocationInput);
-    const prefix = credentialReceiptPrefix(intentKey);
-    const allocationKey = credentialAllocationKey(prefix, allocation.generation);
+    const { prefix, binding } = credentialBinding(allocation);
     await putExactJson(
       deps.store,
       credentialReleaseKey(prefix, allocation.generation),
-      RestoreCredentialReleaseSchema.parse({
-        version: 1,
-        allocationKey,
-        allocationDigest: jsonDigest(allocation),
-      }),
+      RestoreCredentialReleaseSchema.parse(binding),
       'Restore credential release receipt conflicts with replayed state',
+    );
+  };
+
+  const recordCredentialCreated = async (
+    allocationInput: RestoreCredentialAllocation,
+  ): Promise<void> => {
+    const allocation = RestoreCredentialAllocationSchema.parse(allocationInput);
+    const { prefix, binding } = credentialBinding(allocation);
+    await putExactJson(
+      deps.store,
+      credentialCreatedKey(prefix, allocation.generation),
+      RestoreCredentialCreatedSchema.parse(binding),
+      'Restore credential creation receipt conflicts with replayed state',
     );
   };
 
@@ -782,6 +862,11 @@ export async function beginRestoreOperation(
     for (const entry of state.allocations) {
       if (entry.released) {
         continue;
+      }
+      const expiresAtMs = new Date(entry.allocation.expiresAt).getTime();
+      const creationImpossibleAtMs = expiresAtMs + MAX_FORGEJO_TIMEOUT_MS;
+      if (!entry.created && now().getTime() < creationImpossibleAtMs) {
+        throw new Error('Restore credential creator is still pending');
       }
       await deps.client.send({
         method: 'DELETE',
@@ -839,6 +924,7 @@ export async function beginRestoreOperation(
       return resolvedTarget;
     },
     reserveCredentialCleanup,
+    recordCredentialCreated,
     completeCredentialCleanup,
     recordPhase: async (phase, result) => {
       if (resolvedTarget === undefined) {
@@ -953,6 +1039,9 @@ export function createBackupOperations(deps: {
               cloneUrl: target.cloneUrl,
               reserveCredentialCleanup: async (allocation) =>
                 await operation.reserveCredentialCleanup(allocation),
+              recordCredentialCreated: async (allocation) => {
+                await operation.recordCredentialCreated(allocation);
+              },
               completeCredentialCleanup: async (allocation) => {
                 await operation.completeCredentialCleanup(allocation);
               },
@@ -1020,6 +1109,9 @@ export function createBackupOperations(deps: {
                 cloneUrl: target.cloneUrl,
                 reserveCredentialCleanup: async (allocation) =>
                   await operation.reserveCredentialCleanup(allocation),
+                recordCredentialCreated: async (allocation) => {
+                  await operation.recordCredentialCreated(allocation);
+                },
                 completeCredentialCleanup: async (allocation) => {
                   await operation.completeCredentialCleanup(allocation);
                 },

@@ -94,6 +94,7 @@ function multipartStore(
 ): BackupObjectStore {
   return createS3BackupObjectStore({
     client,
+    createConditionalClient: () => client,
     bucket: 'zapp-artifacts',
     timeoutMs: 3_000,
     multipartThresholdBytes: 10 * 1024 * 1024,
@@ -461,44 +462,163 @@ describe('createS3BackupObjectStore', () => {
     ]);
   });
 
-  it('discards pooled connections after a reconciled conditional stream reset', async () => {
+  it('disposes each isolated conditional client after success or stream reset', async () => {
     let stored = false;
-    let poisoned = false;
+    let conditionalClients = 0;
     let destroyed = 0;
-    const client: S3ClientPort & { destroy(): void } = {
+    let sharedDestroyed = 0;
+    const client: S3ClientPort = {
       send: (command) => {
-        if (command.constructor.name === 'PutObjectCommand') {
-          if (!stored) {
-            stored = true;
-            return Promise.resolve({});
-          }
-          poisoned = true;
-          return Promise.reject(
-            Object.assign(new Error('precondition rejected before consuming stream'), {
-              code: 'ECONNRESET',
-              $metadata: { httpStatusCode: 412 },
-            }),
-          );
-        }
         if (command.constructor.name === 'HeadObjectCommand') {
-          return poisoned
-            ? Promise.reject(Object.assign(new Error('poisoned pooled socket'), { code: 'ECONNRESET' }))
-            : Promise.resolve({ ContentLength: 12 });
+          return Promise.resolve({ ContentLength: 12 });
         }
         return Promise.resolve({});
       },
       destroy: () => {
-        destroyed += 1;
-        poisoned = false;
+        sharedDestroyed += 1;
       },
     };
-    const store = multipartStore(client, { maxAttempts: 1 });
+    const store = createS3BackupObjectStore({
+      client,
+      createConditionalClient: () => {
+        conditionalClients += 1;
+        return {
+          send: () => {
+            if (!stored) {
+              stored = true;
+              return Promise.resolve({});
+            }
+            return Promise.reject(
+              Object.assign(new Error('precondition rejected before consuming stream'), {
+                code: 'ECONNRESET',
+                $metadata: { httpStatusCode: 412 },
+              }),
+            );
+          },
+          destroy: () => {
+            destroyed += 1;
+          },
+        };
+      },
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+      multipartThresholdBytes: 10 * MIB,
+      multipartPartSizeBytes: 5 * MIB,
+      multipartConcurrency: 2,
+      uploadDeadlineMs: 5_000,
+      maxAttempts: 1,
+      retryBaseDelayMs: 1,
+    });
     const upload = source(12).source;
 
     await expect(store.put('conditional-reset.json', upload)).resolves.toBe('created');
     await expect(store.put('conditional-reset.json', upload)).resolves.toBe('existing');
     await expect(store.exists('conditional-reset.json')).resolves.toBe(true);
-    expect(destroyed).toBe(1);
+    expect(conditionalClients).toBe(2);
+    expect(destroyed).toBe(2);
+    expect(sharedDestroyed).toBe(0);
+  });
+
+  it('does not abort a concurrent multipart upload when a conditional request resets', async () => {
+    const sharedCalls: string[] = [];
+    const conditionalCalls: RecordedS3Call[] = [];
+    const pendingParts: {
+      readonly partNumber: number;
+      readonly resolve: (value: { readonly ETag: string }) => void;
+      readonly reject: (error: Error) => void;
+    }[] = [];
+    let allowParts = false;
+    let signalPartStarted: (() => void) | undefined;
+    const partStarted = new Promise<void>((resolve) => {
+      signalPartStarted = resolve;
+    });
+    let sharedDestroyed = 0;
+    let conditionalDestroyed = 0;
+    const shared: S3ClientPort = {
+      send(command) {
+        const name = command.constructor.name;
+        const input = command.input as unknown as Record<string, unknown>;
+        sharedCalls.push(name);
+        if (name === 'CreateMultipartUploadCommand') {
+          return Promise.resolve({ UploadId: 'concurrent-upload' });
+        }
+        if (name === 'UploadPartCommand') {
+          const partNumber = Number(input['PartNumber']);
+          signalPartStarted?.();
+          if (allowParts) {
+            return Promise.resolve({ ETag: `etag-${String(partNumber)}` });
+          }
+          return new Promise((resolve, reject) => {
+            pendingParts.push({ partNumber, resolve, reject });
+          });
+        }
+        if (name === 'PutObjectCommand') {
+          return Promise.reject(
+            Object.assign(new Error('conditional stream reset'), {
+              code: 'ECONNRESET',
+              $metadata: { httpStatusCode: 412 },
+            }),
+          );
+        }
+        return Promise.resolve({});
+      },
+      destroy() {
+        sharedDestroyed += 1;
+        for (const part of pendingParts.splice(0)) {
+          part.reject(new Error('shared client destroy aborted multipart part'));
+        }
+      },
+    };
+    const conditional: S3ClientPort = {
+      send(command, options) {
+        conditionalCalls.push({
+          name: command.constructor.name,
+          input: command.input as unknown as Record<string, unknown>,
+          signal: options?.abortSignal,
+        });
+        return Promise.reject(
+          Object.assign(new Error('conditional stream reset'), {
+            code: 'ECONNRESET',
+            $metadata: { httpStatusCode: 412 },
+          }),
+        );
+      },
+      destroy() {
+        conditionalDestroyed += 1;
+      },
+    };
+    const options = {
+      client: shared,
+      createConditionalClient: () => conditional,
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+      multipartThresholdBytes: 10 * MIB,
+      multipartPartSizeBytes: 5 * MIB,
+      multipartConcurrency: 2,
+      uploadDeadlineMs: 5_000,
+      maxAttempts: 1,
+      retryBaseDelayMs: 1,
+    };
+    const store = createS3BackupObjectStore(options);
+
+    const multipart = store.put('multipart.bundle', source(11 * MIB).source).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    await partStarted;
+    const conditionalResult = await store.put('existing.json', source(12).source);
+    allowParts = true;
+    for (const part of pendingParts.splice(0)) {
+      part.resolve({ ETag: `etag-${String(part.partNumber)}` });
+    }
+    const multipartOutcome = await multipart;
+
+    expect(conditionalResult).toBe('existing');
+    expect(multipartOutcome).toEqual({ result: 'created' });
+    expect(sharedCalls).toContain('CompleteMultipartUploadCommand');
+    expect(sharedDestroyed).toBe(0);
+    expect(conditionalDestroyed).toBe(1);
+    expect(conditionalCalls[0]?.input).toMatchObject({ IfNoneMatch: '*' });
   });
 
   it('reconciles an aborted single PUT with a fresh independently bounded HEAD signal', async () => {
@@ -802,7 +922,12 @@ describe('createS3BackupObjectStore', () => {
 
   it('checks existence with HeadObject and treats only 404 as absent', async () => {
     const client = new FakeS3();
-    const store = createS3BackupObjectStore({ client, bucket: 'zapp-artifacts', timeoutMs: 3_000 });
+    const store = createS3BackupObjectStore({
+      client,
+      createConditionalClient: () => client,
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+    });
     await expect(store.exists('present')).resolves.toBe(true);
 
     client.error = Object.assign(new Error('not found'), { $metadata: { httpStatusCode: 404 } });
@@ -816,7 +941,12 @@ describe('createS3BackupObjectStore', () => {
     const client = new FakeS3();
     const body = Readable.from('bundle bytes');
     client.responses.push({ Body: body });
-    const store = createS3BackupObjectStore({ client, bucket: 'zapp-artifacts', timeoutMs: 3_000 });
+    const store = createS3BackupObjectStore({
+      client,
+      createConditionalClient: () => client,
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+    });
 
     await expect(store.get('key')).resolves.toBe(body);
     expect(client.calls[0]?.name).toBe('GetObjectCommand');
@@ -830,7 +960,12 @@ describe('createS3BackupObjectStore', () => {
       ],
       NextContinuationToken: 'opaque-next-page',
     });
-    const store = createS3BackupObjectStore({ client, bucket: 'zapp-artifacts', timeoutMs: 3_000 });
+    const store = createS3BackupObjectStore({
+      client,
+      createConditionalClient: () => client,
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+    });
 
     await expect(store.list('prefix/', 'opaque-current-page')).resolves.toEqual({
       objects: [
@@ -853,7 +988,12 @@ describe('createS3BackupObjectStore', () => {
 
   it('deletes exactly the supplied object key with a deadline', async () => {
     const client = new FakeS3();
-    const store = createS3BackupObjectStore({ client, bucket: 'zapp-artifacts', timeoutMs: 3_000 });
+    const store = createS3BackupObjectStore({
+      client,
+      createConditionalClient: () => client,
+      bucket: 'zapp-artifacts',
+      timeoutMs: 3_000,
+    });
 
     await store.delete('org/exact/project/exact/git-backups/old.bundle');
 

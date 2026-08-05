@@ -7,6 +7,7 @@ import { DEFAULT_TOKEN_TTL_SECONDS } from './tokens.js';
 
 const MIB = 1024 * 1024;
 const RESTORE_CREDENTIAL_TTL_MS = DEFAULT_TOKEN_TTL_SECONDS * 1_000;
+export const MAX_FORGEJO_TIMEOUT_MS = 30_000;
 
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
@@ -93,7 +94,12 @@ const ForgejoEnvSchema = z.object({
    * Five seconds: an order of magnitude more than a healthy create takes (tens
    * of milliseconds), and half of `GIT_CREATE_DEADLINE_MS`.
    */
-  FORGEJO_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5_000),
+  FORGEJO_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(MAX_FORGEJO_TIMEOUT_MS)
+    .default(5_000),
 });
 
 export interface ForgejoEnv {

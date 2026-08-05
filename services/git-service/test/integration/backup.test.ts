@@ -344,6 +344,9 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
               cloneUrl: target.cloneUrl,
               reserveCredentialCleanup: async (allocation) =>
                 await failedOperation.reserveCredentialCleanup(allocation),
+              recordCredentialCreated: async (allocation) => {
+                await failedOperation.recordCredentialCreated(allocation);
+              },
               completeCredentialCleanup: async (allocation) => {
                 await failedOperation.completeCredentialCleanup(allocation);
               },
@@ -388,6 +391,9 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
             cloneUrl: target.cloneUrl,
             reserveCredentialCleanup: async (allocation) =>
               await retryOperation.reserveCredentialCleanup(allocation),
+            recordCredentialCreated: async (allocation) => {
+              await retryOperation.recordCredentialCreated(allocation);
+            },
             completeCredentialCleanup: async (allocation) => {
               await retryOperation.completeCredentialCleanup(allocation);
             },

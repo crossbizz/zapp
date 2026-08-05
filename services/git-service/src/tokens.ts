@@ -150,6 +150,15 @@ export interface MintRepositoryTokenInput extends MintTokenInput {
     readonly username: string;
     readonly expiresAt: Date;
   }) => Promise<void>;
+  /**
+   * Confirms that Forgejo finished creating the identity, before any repository
+   * grant or token exists. Restore cleanup uses this durable boundary to decide
+   * whether a 404 can be terminal or must remain pending until expiry.
+   */
+  readonly onIdentityCreated?: (identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }) => Promise<void>;
 }
 
 export interface TokenService {
@@ -228,6 +237,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
     ref: string,
     expectedRepositoryId?: number,
     onIdentityAllocated?: MintRepositoryTokenInput['onIdentityAllocated'],
+    onIdentityCreated?: MintRepositoryTokenInput['onIdentityCreated'],
   ): Promise<MintedToken> {
     const ttlSec = input.ttlSec ?? DEFAULT_TOKEN_TTL_SECONDS;
     if (!Number.isInteger(ttlSec) || ttlSec <= 0 || ttlSec > MAX_TOKEN_TTL_SECONDS) {
@@ -253,22 +263,27 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
 
     await onIdentityAllocated?.({ username, expiresAt });
 
+    if (now().getTime() >= expiresAt.getTime()) {
+      throw new Error('Credential identity expired before Forgejo creation');
+    }
+
     const password = randomBytes(24).toString('base64url');
 
-    await client.send({
-      method: 'POST',
-      path: '/admin/users',
-      body: {
-        username,
-        email: `${username}@ephemeral.zapp.invalid`,
-        password,
-        must_change_password: false,
-        restricted: true,
-        visibility: 'private',
-      },
-    });
-
     try {
+      await client.send({
+        method: 'POST',
+        path: '/admin/users',
+        body: {
+          username,
+          email: `${username}@ephemeral.zapp.invalid`,
+          password,
+          must_change_password: false,
+          restricted: true,
+          visibility: 'private',
+        },
+      });
+      await onIdentityCreated?.({ username, expiresAt });
+
       await client.send({
         method: 'PUT',
         path: `${path}/collaborators/${encodeURIComponent(username)}`,
@@ -344,6 +359,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
         input.targetRef,
         input.expectedRepositoryId,
         input.onIdentityAllocated,
+        input.onIdentityCreated,
       );
     },
 
