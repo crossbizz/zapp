@@ -1,6 +1,6 @@
 # ADR-0007: Kernel-backed workspace exec containment
 
-- Status: Proposed — human approval required
+- Status: Accepted — controller decision 2026-08-04
 - Date: 2026-08-04
 - Owners: Workspace runtime / sandbox security / infrastructure
 

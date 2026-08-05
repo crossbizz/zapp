@@ -1,6 +1,6 @@
 # ADR-0005: Temporary desktop provider-call migration window
 
-- Status: Proposed — human approval required
+- Status: Accepted — controller decision 2026-08-04
 - Date: 2026-08-04
 - Owners: Agent runtime / macOS app
 
