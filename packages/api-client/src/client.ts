@@ -291,11 +291,14 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       }
       const payload = await response.text();
       if (payload.trim().length === 0) throw new ZappProtocolError();
+      let parsed: unknown;
       try {
-        return JSON.parse(payload) as SuccessfulResponse<Operation<Path, Method>>;
+        parsed = JSON.parse(payload) as unknown;
       } catch {
         throw new ZappProtocolError();
       }
+      if (parsed === null) throw new ZappProtocolError();
+      return parsed as SuccessfulResponse<Operation<Path, Method>>;
     },
 
     subscribeRunEvents(

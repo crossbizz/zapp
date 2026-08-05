@@ -690,6 +690,14 @@ describe('createZappClient', () => {
         }),
     ],
     [
+      'literal null',
+      () =>
+        new Response('null', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ],
+    [
       'missing content type',
       () => ({
         ok: true,
