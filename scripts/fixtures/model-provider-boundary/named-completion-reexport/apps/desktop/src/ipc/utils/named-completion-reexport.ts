@@ -1,0 +1,1 @@
+export { streamText } from 'ai';

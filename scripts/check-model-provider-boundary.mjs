@@ -329,14 +329,13 @@ function collectFileInventory(relativePath, sourceText) {
       statement.moduleSpecifier
     ) {
       const moduleName = getModuleName(statement.moduleSpecifier);
-      if (moduleName && isProviderPackage(moduleName)) {
+      const providerModule = moduleName ? isProviderPackage(moduleName) : false;
+      if (moduleName && (providerModule || moduleName === 'ai')) {
         if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
           for (const specifier of statement.exportClause.elements) {
-            if (!specifier.isTypeOnly) {
-              increment(
-                providerImports,
-                `import:${moduleName}#${specifier.propertyName?.text ?? specifier.name.text}`,
-              );
+            const importedName = specifier.propertyName?.text ?? specifier.name.text;
+            if (!specifier.isTypeOnly && (providerModule || COMPLETION_APIS.has(importedName))) {
+              increment(providerImports, `import:${moduleName}#${importedName}`);
             }
           }
         } else {

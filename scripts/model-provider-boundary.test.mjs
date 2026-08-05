@@ -75,6 +75,32 @@ test('rejects dynamically loaded completion APIs in production', () => {
   );
 });
 
+test('rejects named completion re-exports from ai in production', () => {
+  const result = runFixture('named-completion-reexport');
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /new-provider path: apps\/desktop\/src\/ipc\/utils\/named-completion-reexport\.ts/,
+  );
+});
+
+test('rejects star re-exports from ai in production', () => {
+  const result = runFixture('star-completion-reexport');
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /new-provider path: apps\/desktop\/src\/ipc\/utils\/star-completion-reexport\.ts/,
+  );
+});
+
+test('allows type-only re-exports from ai', () => {
+  const result = runFixture('type-only-reexport');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('excludes tests, type-only imports, and the unvendored Pro tree', () => {
   const result = runFixture('excluded');
 
