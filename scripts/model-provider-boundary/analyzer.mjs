@@ -2603,7 +2603,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return found && snapshotsOnly;
     };
     let containerState;
-    let refined = false;
 
     for (const statement of expression.getSourceFile().statements) {
       if (statement === spreadStatement) break;
@@ -2620,7 +2619,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             containerState = declaration.initializer
               ? exactLiteralContainerState(declaration.initializer)
               : undefined;
-            refined = false;
             trackedSymbols.clear();
             trackedSymbols.add(identity);
           } else if (declarationIdentity && declaration.initializer) {
@@ -2663,7 +2661,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           } else {
             containerState.members.set(memberName, current.right);
           }
-          refined = true;
           continue;
         }
         const assignmentIdentity = valueSymbolIdentity(left);
@@ -2671,7 +2668,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           const assignsTrackedValue = isTrackedValue(current.right);
           if (assignmentIdentity === identity && !assignsTrackedValue) {
             containerState = exactLiteralContainerState(current.right);
-            refined = false;
             trackedSymbols.clear();
             trackedSymbols.add(identity);
           } else if (assignmentIdentity !== identity) {
@@ -2692,7 +2688,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         } else {
           containerState.elements.unshift(...current.arguments);
         }
-        refined = true;
         continue;
       }
       if (
@@ -2704,12 +2699,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         if (!containerState) return undefined;
         applyObjectAssignSources(containerState, current.arguments.slice(1));
         if (containerState.hasUnknownSource) return undefined;
-        refined = true;
         continue;
       }
       if (referencesTrackedValue(current)) return undefined;
     }
-    if (!refined || !containerState) return undefined;
+    if (!containerState) return undefined;
 
     const members = new Map();
     const knownDefinedMembers = new Set();

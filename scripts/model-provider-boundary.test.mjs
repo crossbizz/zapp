@@ -773,7 +773,7 @@ test('AR-1 snapshots direct and aliased array mutations at each object spread', 
   }
 });
 
-test('AR-1 keeps harmless indexes clean after cached array spreads', () => {
+test('AR-1 keeps current and earlier snapshot indexes clean across later array mutations', () => {
   const result = runFixture('loader-cached-array-spread-mutations-control');
 
   assert.equal(result.status, 0, result.stderr);
