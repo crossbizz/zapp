@@ -14,14 +14,18 @@ import {
   createDbBackupInventory,
   createGitBundleCommands,
   createR2BackupObjectStore,
-  latestBackupKey,
+  RestoreRepositoryResultSchema,
+  RESTORE_CREDENTIAL_SAFETY_MARGIN_MS,
   restoreRepositoryBackup,
   runNightlyBackups,
+  selectRestoreDrillBackup,
   type BackupGit,
   type BackupInventory,
   type BackupObjectStore,
   type NightlyBackupReport,
   type RestorePhase,
+  type RestorePreparationGit,
+  type RestoreRemoteGit,
   type RestoreRepositoryResult,
 } from '../src/backup.js';
 import { createDbGitAuditSink } from '../src/audit.js';
@@ -32,7 +36,7 @@ import {
   loadGitCommandDeadlineEnv,
 } from '../src/env.js';
 import { createForgejoClient, type ForgejoClient } from '../src/forgejo/client.js';
-import { createTokenService, type TokenService } from '../src/tokens.js';
+import { createTokenService, DEFAULT_TOKEN_TTL_SECONDS, type TokenService } from '../src/tokens.js';
 
 const RestoreIdempotencyKeySchema = z
   .string()
@@ -200,6 +204,7 @@ export interface ResolvedForgejoRestoreTarget {
 export interface RestoreOperation {
   readonly intentKey: string;
   readonly targetRef: string;
+  readonly completedResult?: RestoreRepositoryResult;
   resolveTarget(): Promise<ResolvedForgejoRestoreTarget>;
   recordPhase(phase: RestorePhase, result?: RestoreRepositoryResult): Promise<void>;
 }
@@ -213,7 +218,9 @@ export interface RestoreCredentialIssuer {
     readonly cloneUrl: string;
   }): Promise<{
     readonly cloneUrl: string;
-    readonly git: BackupGit;
+    readonly git: RestoreRemoteGit;
+    readonly expiresAt: Date;
+    readonly deadlineAt: Date;
     release(): Promise<void>;
   }>;
 }
@@ -222,7 +229,16 @@ export function createForgejoRestoreCredentialIssuer(
   client: ForgejoClient,
   tokens: Pick<TokenService, 'mintForRepository'>,
   commandDeadlineMs: number,
+  options: { readonly now?: () => Date } = {},
 ): RestoreCredentialIssuer {
+  if (
+    !Number.isInteger(commandDeadlineMs) ||
+    commandDeadlineMs < 100 ||
+    commandDeadlineMs >= DEFAULT_TOKEN_TTL_SECONDS * 1_000
+  ) {
+    throw new Error('Invalid restore command deadline');
+  }
+  const now = options.now ?? ((): Date => new Date());
   return {
     issue: async (input) => {
       const minted = await tokens.mintForRepository({
@@ -235,6 +251,19 @@ export function createForgejoRestoreCredentialIssuer(
         reason: 'restore a verified Git bundle into its receipt-owned target',
       });
       try {
+        const expiresAtMs = minted.expiresAt.getTime();
+        const issuedAtMs = now().getTime();
+        const deadlineAtMs = Math.min(
+          issuedAtMs + commandDeadlineMs,
+          expiresAtMs - RESTORE_CREDENTIAL_SAFETY_MARGIN_MS,
+        );
+        if (
+          !Number.isFinite(expiresAtMs) ||
+          !Number.isFinite(issuedAtMs) ||
+          deadlineAtMs <= issuedAtMs
+        ) {
+          throw new Error('Restore credential expires before its command window');
+        }
         return {
           cloneUrl: minted.cloneUrl,
           git: createGitBundleCommands({
@@ -242,6 +271,8 @@ export function createForgejoRestoreCredentialIssuer(
             password: minted.token,
             timeoutMs: commandDeadlineMs,
           }),
+          expiresAt: new Date(expiresAtMs),
+          deadlineAt: new Date(deadlineAtMs),
           release: async () => {
             await client.send({
               method: 'DELETE',
@@ -276,8 +307,26 @@ const RestorePhaseReceiptSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
+    result: RestoreRepositoryResultSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.phase === 'verified' &&
+      (value.result === undefined || value.resultDigest === undefined)
+    ) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'verified result is required' });
+    }
+    if (
+      value.phase !== 'verified' &&
+      (value.result !== undefined || value.resultDigest !== undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'result is only valid when verified',
+      });
+    }
+  });
 
 async function readSmallJson(store: BackupObjectStore, key: string): Promise<unknown> {
   const stream = await store.get(key);
@@ -325,6 +374,43 @@ async function readTargetReceipt(
     throw new Error('Restore target receipt is invalid');
   }
   return parsed.data;
+}
+
+async function readCompletedRestoreResult(
+  store: BackupObjectStore,
+  intentKey: string,
+  intent: RestoreIntent,
+  targetRef: string,
+): Promise<RestoreRepositoryResult | undefined> {
+  const verifiedKey = intentKey.replace(/\.json$/, '.verified.json');
+  if (!(await store.exists(verifiedKey))) {
+    return undefined;
+  }
+  const parsed = RestorePhaseReceiptSchema.safeParse(await readSmallJson(store, verifiedKey));
+  if (
+    !parsed.success ||
+    parsed.data.phase !== 'verified' ||
+    parsed.data.intentKey !== intentKey ||
+    parsed.data.operationId !== intent.operationId ||
+    parsed.data.backupKey !== intent.backupKey ||
+    parsed.data.result === undefined ||
+    parsed.data.resultDigest !==
+      createHash('sha256').update(JSON.stringify(parsed.data.result)).digest('hex')
+  ) {
+    throw new Error('Restore verified receipt is invalid');
+  }
+  if (!(await store.exists(intent.targetReceiptKey))) {
+    throw new Error('Restore verified receipt has no immutable target receipt');
+  }
+  const targetReceipt = await readTargetReceipt(store, intent.targetReceiptKey);
+  if (
+    targetReceipt.targetRef !== targetRef ||
+    targetReceipt.repositoryId !== parsed.data.repositoryId ||
+    targetReceipt.targetMarker !== intent.targetMarker
+  ) {
+    throw new Error('Restore verified receipt does not match the immutable target receipt');
+  }
+  return parsed.data.result;
 }
 
 async function ensureRestoreOrganization(client: ForgejoClient, owner: string): Promise<void> {
@@ -486,10 +572,17 @@ export async function beginRestoreOperation(
     organizationId: targetOrganizationId,
     projectId: targetProjectId,
   });
+  const completedResult = await readCompletedRestoreResult(
+    deps.store,
+    intentKey,
+    intent,
+    targetRef,
+  );
   let resolvedTarget: ResolvedForgejoRestoreTarget | undefined;
   return {
     intentKey,
     targetRef,
+    ...(completedResult === undefined ? {} : { completedResult }),
     resolveTarget: async () => {
       resolvedTarget = await resolveIntentTarget(deps, intentKey, intent);
       return resolvedTarget;
@@ -498,6 +591,8 @@ export async function beginRestoreOperation(
       if (resolvedTarget === undefined) {
         throw new Error('Restore target must be resolved before recording progress');
       }
+      const verifiedResult =
+        result === undefined ? undefined : RestoreRepositoryResultSchema.parse(result);
       const receipt = RestorePhaseReceiptSchema.parse({
         version: 1,
         intentKey,
@@ -505,10 +600,13 @@ export async function beginRestoreOperation(
         backupKey: intent.backupKey,
         repositoryId: resolvedTarget.repositoryId,
         phase,
-        ...(result === undefined
+        ...(verifiedResult === undefined
           ? {}
           : {
-              resultDigest: createHash('sha256').update(JSON.stringify(result)).digest('hex'),
+              resultDigest: createHash('sha256')
+                .update(JSON.stringify(verifiedResult))
+                .digest('hex'),
+              result: verifiedResult,
             }),
       });
       await putExactJson(
@@ -543,7 +641,7 @@ export function createBackupOperations(deps: {
   readonly inventory: BackupInventory;
   readonly store: BackupObjectStore;
   readonly git: BackupGit;
-  readonly restoreGit: BackupGit;
+  readonly restoreGit: RestorePreparationGit;
   readonly client: ForgejoClient;
   readonly restoreCredentials: RestoreCredentialIssuer;
   readonly restoreDrillLease: RestoreDrillLease;
@@ -564,10 +662,6 @@ export function createBackupOperations(deps: {
       if (repository === undefined) {
         throw new Error('Restore source is not a provisioned internal repository');
       }
-      const expectedBranches = await inventory.expectedBranches(
-        selector.organizationId,
-        selector.projectId,
-      );
       const operation = await beginRestoreOperation(
         { store, client },
         {
@@ -576,6 +670,17 @@ export function createBackupOperations(deps: {
           source: repository,
           backupKey: selector.key,
         },
+      );
+      if (operation.completedResult !== undefined) {
+        return {
+          status: 'restored',
+          projectId: selector.projectId,
+          ...operation.completedResult,
+        };
+      }
+      const expectedBranches = await inventory.expectedBranches(
+        selector.organizationId,
+        selector.projectId,
       );
       const result = await restoreRepositoryBackup(
         {
@@ -602,11 +707,14 @@ export function createBackupOperations(deps: {
 
     restoreDrill: async () =>
       await deps.restoreDrillLease.runExclusive(async () => {
-        const [repository] = await inventory.listProvisionedRepositories();
-        if (repository === undefined) {
+        const repositories = await inventory.listProvisionedRepositories();
+        if (repositories.length === 0) {
           throw new Error('No provisioned internal repository is available for the restore drill');
         }
-        const key = await latestBackupKey(store, repository);
+        const { repository, key } = await selectRestoreDrillBackup(
+          { store, git: restoreGit },
+          repositories,
+        );
         const expectedBranches = await inventory.expectedBranches(
           repository.organizationId,
           repository.projectId,

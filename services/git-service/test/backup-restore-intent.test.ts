@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 
 import { internalRepoRef, newId } from '@zapp/contracts';
@@ -12,6 +13,7 @@ import type {
   BackupPutResult,
   BackupRepository,
   BackupUploadSource,
+  RestoreRemoteGit,
 } from '../src/backup.js';
 import type { ForgejoClient, ForgejoRequest, ForgejoResponse } from '../src/forgejo/client.js';
 import { createFakeForgejo } from './support/fake-forgejo.js';
@@ -77,18 +79,25 @@ class ReceiptStore implements BackupObjectStore {
 
 class RestoreGit implements BackupGit {
   readonly phases: string[] = [];
+  readonly refs = new Map([['refs/heads/main', 'a'.repeat(40)]]);
   failPushes = 0;
 
   createBundle(): Promise<void> {
     return Promise.reject(new Error('not used by restore'));
   }
 
-  verifyBundle(): Promise<void> {
+  verifyBundle(bundlePath: string): Promise<void> {
+    void bundlePath;
     this.phases.push('bundle-verified');
     return Promise.resolve();
   }
 
-  mirrorPush(): Promise<void> {
+  prepareRestore(_bundlePath: string, mirrorPath: string) {
+    this.phases.push('mirror-prepared');
+    return Promise.resolve({ kind: 'bundle' as const, mirrorPath });
+  }
+
+  pushMirror(): Promise<void> {
     this.phases.push('mirror-pushed');
     if (this.failPushes > 0) {
       this.failPushes -= 1;
@@ -97,20 +106,45 @@ class RestoreGit implements BackupGit {
     return Promise.resolve();
   }
 
-  remoteRefs(): Promise<ReadonlyMap<string, string>> {
+  remoteRefs(targetCloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>> {
+    void targetCloneUrl;
+    void timeoutMs;
     this.phases.push('refs-read');
-    return Promise.resolve(new Map([['refs/heads/main', 'a'.repeat(40)]]));
+    return Promise.resolve(new Map(this.refs));
   }
 }
 
-function credentialsFor(git: BackupGit) {
+class CandidateRestoreGit extends RestoreGit {
+  readonly verifiedBodies: string[] = [];
+
+  override async verifyBundle(bundlePath: string): Promise<void> {
+    const body = await readFile(bundlePath, 'utf8');
+    this.verifiedBodies.push(body);
+    if (body === 'corrupt bundle') {
+      throw new Error('corrupt bundle');
+    }
+    await super.verifyBundle(bundlePath);
+  }
+}
+
+function credentialWindow() {
+  const issuedAt = Date.now();
   return {
-    issue: (input: { readonly cloneUrl: string }) =>
-      Promise.resolve({
+    expiresAt: new Date(issuedAt + 300_000),
+    deadlineAt: new Date(issuedAt + 240_000),
+  };
+}
+
+function credentialsFor(git: RestoreRemoteGit) {
+  return {
+    issue: (input: { readonly cloneUrl: string }) => {
+      return Promise.resolve({
         cloneUrl: input.cloneUrl,
         git,
+        ...credentialWindow(),
         release: () => Promise.resolve(),
-      }),
+      });
+    },
   };
 }
 
@@ -404,9 +438,142 @@ describe('intent-first restore recovery', () => {
       ]),
     );
     expect(backupGit.phases).toEqual([]);
-    expect(restoreGit.phases).toEqual(['bundle-verified']);
+    expect(restoreGit.phases).toEqual(['bundle-verified', 'mirror-prepared']);
     expect(boundGit.phases).toEqual(['mirror-pushed', 'refs-read']);
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
+  });
+
+  it('returns the immutable verified result on completed manual replay without touching newer refs', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const restoreGit = new RestoreGit();
+    const boundGit = new RestoreGit();
+    const forgejo = new StatefulForgejo();
+    let issuedCredentials = 0;
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
+      },
+      store,
+      git: restoreGit,
+      restoreGit,
+      client: forgejo,
+      restoreCredentials: {
+        issue: (input) => {
+          issuedCredentials += 1;
+          return Promise.resolve({
+            cloneUrl: input.cloneUrl,
+            git: boundGit,
+            ...credentialWindow(),
+            release: () => Promise.resolve(),
+          });
+        },
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+    const selector = {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      key: BACKUP_KEY,
+      idempotencyKey: 'incident-2026-08-04-completed-replay',
+    };
+    const first = await operations.restore(selector);
+    const restorePhases = [...restoreGit.phases];
+    const boundPhases = [...boundGit.phases];
+
+    boundGit.refs.set('refs/heads/main', 'b'.repeat(40));
+    boundGit.refs.set('refs/heads/newer', 'c'.repeat(40));
+
+    await expect(operations.restore(selector)).resolves.toEqual(first);
+    expect(restoreGit.phases).toEqual(restorePhases);
+    expect(boundGit.phases).toEqual(boundPhases);
+    expect(boundGit.refs).toEqual(
+      new Map([
+        ['refs/heads/main', 'b'.repeat(40)],
+        ['refs/heads/newer', 'c'.repeat(40)],
+      ]),
+    );
+    expect(issuedCredentials).toBe(1);
+  });
+
+  it('computes the restore deadline after issuance latency and caps it before credential expiry', async () => {
+    const start = new Date('2026-08-04T10:00:00.000Z').getTime();
+    let nowMs = start;
+    const expiresAt = new Date(start + 300_000);
+    const createIssuer = backupScript.createForgejoRestoreCredentialIssuer as unknown as (
+      client: ForgejoClient,
+      tokens: {
+        mintForRepository(): Promise<{
+          readonly token: string;
+          readonly username: string;
+          readonly cloneUrl: string;
+          readonly expiresAt: Date;
+        }>;
+      },
+      commandDeadlineMs: number,
+      options: { readonly now: () => Date },
+    ) => ReturnType<typeof backupScript.createForgejoRestoreCredentialIssuer>;
+    const issuer = createIssuer(
+      createFakeForgejo(),
+      {
+        mintForRepository: () => {
+          nowMs += 20_000;
+          return Promise.resolve({
+            token: 'restricted-token',
+            username: 'zt-credential-user',
+            cloneUrl: 'https://git.test/restore/repository.git',
+            expiresAt,
+          });
+        },
+      },
+      240_000,
+      { now: () => new Date(nowMs) },
+    );
+
+    const credential = await issuer.issue({
+      sourceOrganizationId: ORGANIZATION_ID,
+      sourceProjectId: PROJECT_ID,
+      targetRef: SOURCE.internalRepoRef,
+      repositoryId: 501,
+      cloneUrl: 'https://git.test/restore/repository.git',
+    });
+
+    expect(credential.expiresAt).toEqual(expiresAt);
+    expect(credential.deadlineAt).toEqual(new Date(start + 260_000));
+    const cappedIssuer = createIssuer(
+      createFakeForgejo(),
+      {
+        mintForRepository: () =>
+          Promise.resolve({
+            token: 'restricted-token',
+            username: 'zt-capped-credential-user',
+            cloneUrl: 'https://git.test/restore/repository.git',
+            expiresAt,
+          }),
+      },
+      299_999,
+      { now: () => new Date(nowMs) },
+    );
+    const capped = await cappedIssuer.issue({
+      sourceOrganizationId: ORGANIZATION_ID,
+      sourceProjectId: PROJECT_ID,
+      targetRef: SOURCE.internalRepoRef,
+      repositoryId: 501,
+      cloneUrl: 'https://git.test/restore/repository.git',
+    });
+    expect(capped.deadlineAt).toEqual(new Date(start + 295_000));
+    expect(() =>
+      createIssuer(
+        createFakeForgejo(),
+        {
+          mintForRepository: () => Promise.reject(new Error('must reject before minting')),
+        },
+        300_000,
+        { now: () => new Date(nowMs) },
+      ),
+    ).toThrow('Invalid restore command deadline');
   });
 
   it('uses immutable-repository-bound Git access after the target path is replaced', async () => {
@@ -415,7 +582,7 @@ describe('intent-first restore recovery', () => {
     const forgejo = new StatefulForgejo();
     const adminGit = new RestoreGit();
     const boundGit = new RestoreGit();
-    boundGit.mirrorPush = () => {
+    boundGit.pushMirror = () => {
       boundGit.phases.push('bound-push-refused');
       return Promise.reject(new Error('repository-bound credential cannot reach replacement'));
     };
@@ -440,6 +607,7 @@ describe('intent-first restore recovery', () => {
           return Promise.resolve({
             cloneUrl: 'https://git.test/restore/repository.git',
             git: boundGit,
+            ...credentialWindow(),
             release: () => Promise.resolve(),
           });
         },
@@ -467,7 +635,7 @@ describe('intent-first restore recovery', () => {
     const forgejo = new StatefulForgejo();
     const adminGit = new RestoreGit();
     const boundGit = new RestoreGit();
-    boundGit.mirrorPush = () => {
+    boundGit.pushMirror = () => {
       boundGit.phases.push('mirror-pushed');
       forgejo.repository = {
         id: 999,
@@ -495,6 +663,7 @@ describe('intent-first restore recovery', () => {
           Promise.resolve({
             cloneUrl: input.cloneUrl,
             git: boundGit,
+            ...credentialWindow(),
             release: () => Promise.resolve(),
           }),
       },
@@ -551,6 +720,54 @@ describe('intent-first restore recovery', () => {
       forgejo.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/repos')),
     ).toHaveLength(1);
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
+  });
+
+  it('selects the first repository whose latest backup verifies for the restore drill', async () => {
+    const secondProjectId = newId('proj');
+    const secondSource: BackupRepository = {
+      ...SOURCE,
+      projectId: secondProjectId,
+      internalRepoRef: internalRepoRef({
+        organizationId: ORGANIZATION_ID,
+        projectId: secondProjectId,
+      }),
+      cloneUrl: `https://git.test/source/${secondProjectId}.git`,
+    };
+    const secondKey = `org/${ORGANIZATION_ID}/project/${secondProjectId}/git-backups/2026-08-04.bundle`;
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('corrupt bundle'));
+    store.values.set(secondKey, Buffer.from('verified bundle'));
+    const restoreGit = new CandidateRestoreGit();
+    const boundGit = new RestoreGit();
+    const forgejo = new StatefulForgejo();
+    const expectedBranchProjects: string[] = [];
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE, secondSource]),
+        expectedBranches: (_organizationId, projectId) => {
+          expectedBranchProjects.push(projectId);
+          return Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]);
+        },
+      },
+      store,
+      git: restoreGit,
+      restoreGit,
+      client: forgejo,
+      restoreCredentials: credentialsFor(boundGit),
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+
+    await expect(operations.restoreDrill()).resolves.toMatchObject({
+      status: 'restore-drill-verified',
+      projectId: secondProjectId,
+    });
+    expect(restoreGit.verifiedBodies).toEqual([
+      'corrupt bundle',
+      'verified bundle',
+      'verified bundle',
+    ]);
+    expect(expectedBranchProjects).toEqual([secondProjectId]);
   });
 
   it('leaves a created target intact but refuses marker-only recovery after receipt loss', async () => {

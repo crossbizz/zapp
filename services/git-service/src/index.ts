@@ -20,9 +20,12 @@ export {
   createS3BackupObjectStore,
   enforceBackupRetention,
   latestBackupKey,
+  RESTORE_CREDENTIAL_SAFETY_MARGIN_MS,
+  RestoreRepositoryResultSchema,
   restoreRepositoryBackup,
   runNightlyBackups,
   runRepositoryBackup,
+  selectRestoreDrillBackup,
   type BackupGit,
   type BackupInventory,
   type BackupObject,
@@ -31,6 +34,8 @@ export {
   type ExpectedBranch,
   type NightlyBackupReport,
   type RepositoryBackupResult,
+  type RestorePreparationGit,
+  type RestoreRemoteGit,
   type RestoreRepositoryResult,
 } from './backup.js';
 export { composeApp, type ServiceComposition, type ServiceRuntime } from './compose.js';

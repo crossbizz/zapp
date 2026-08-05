@@ -54,14 +54,10 @@ describe('the restore-drill lease', () => {
       git: {
         createBundle: () => Promise.reject(new Error('not used')),
         verifyBundle: () => Promise.reject(new Error('not used')),
-        mirrorPush: () => Promise.reject(new Error('not used')),
-        remoteRefs: () => Promise.reject(new Error('not used')),
       },
       restoreGit: {
-        createBundle: () => Promise.reject(new Error('not used')),
         verifyBundle: () => Promise.reject(new Error('not used')),
-        mirrorPush: () => Promise.reject(new Error('not used')),
-        remoteRefs: () => Promise.reject(new Error('not used')),
+        prepareRestore: () => Promise.reject(new Error('not used')),
       },
       client: createFakeForgejo(),
       restoreCredentials: {

@@ -20,6 +20,7 @@ import {
   type BackupRepository,
   type BackupUploadSource,
   type ExpectedBranch,
+  type ResolvedRestoreTarget,
 } from '../src/backup.js';
 
 const ORGANIZATION_ID = 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9';
@@ -116,7 +117,8 @@ class MemoryStore implements BackupObjectStore {
 class FakeGit implements BackupGit {
   readonly created: { cloneUrl: string; bundlePath: string }[] = [];
   readonly verified: string[] = [];
-  readonly pushed: { bundlePath: string; targetCloneUrl: string }[] = [];
+  readonly prepared: { bundlePath: string; mirrorPath: string }[] = [];
+  readonly pushed: { mirrorPath: string; targetCloneUrl: string; timeoutMs: number }[] = [];
   readonly heads = new Map<string, string>();
   readonly refs = new Map<string, string>();
   fail: 'create' | 'verify' | 'push' | undefined;
@@ -137,15 +139,22 @@ class FakeGit implements BackupGit {
     return Promise.resolve();
   }
 
-  mirrorPush(bundlePath: string, targetCloneUrl: string): Promise<void> {
-    this.pushed.push({ bundlePath, targetCloneUrl });
+  prepareRestore(bundlePath: string, mirrorPath: string) {
+    this.prepared.push({ bundlePath, mirrorPath });
+    return Promise.resolve({ kind: 'bundle' as const, mirrorPath });
+  }
+
+  pushMirror(mirrorPath: string, targetCloneUrl: string, timeoutMs: number): Promise<void> {
+    this.pushed.push({ mirrorPath, targetCloneUrl, timeoutMs });
     if (this.fail === 'push') {
       return Promise.reject(new Error('forgejo-admin-secret-was-here'));
     }
     return Promise.resolve();
   }
 
-  remoteRefs(): Promise<ReadonlyMap<string, string>> {
+  remoteRefs(targetCloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>> {
+    void targetCloneUrl;
+    void timeoutMs;
     return Promise.resolve(
       new Map([
         ...[...this.heads].map(([name, sha]) => [`refs/heads/${name}`, sha] as const),
@@ -153,6 +162,17 @@ class FakeGit implements BackupGit {
       ]),
     );
   }
+}
+
+function restoreTarget(git: FakeGit, cloneUrl: string): ResolvedRestoreTarget {
+  const issuedAt = Date.now();
+  return {
+    cloneUrl,
+    git,
+    expiresAt: new Date(issuedAt + 300_000),
+    deadlineAt: new Date(issuedAt + 240_000),
+    release: () => Promise.resolve(),
+  };
 }
 
 function keyFor(projectId: string, date: string): string {
@@ -417,6 +437,147 @@ describe('restoreRepositoryBackup', () => {
     { name: 'unborn', headCommitSha: null },
   ];
 
+  it('prepares locally before issuance and spends one remaining credential budget across remote commands', async () => {
+    const store = new MemoryStore();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    let nowMs = NOW.getTime();
+    const events: string[] = [];
+    const remoteBudgets: number[] = [];
+    const localGit = {
+      verifyBundle: () => Promise.resolve(),
+      prepareRestore: (_bundlePath: string, mirrorPath: string) => {
+        events.push('local-prepared');
+        nowMs += 60_000;
+        return Promise.resolve({ kind: 'bundle' as const, mirrorPath });
+      },
+    };
+    const remoteGit = {
+      pushMirror: (_mirrorPath: string, _cloneUrl: string, timeoutMs: number) => {
+        events.push('mirror-pushed');
+        remoteBudgets.push(timeoutMs);
+        nowMs += 230_000;
+        return Promise.resolve();
+      },
+      remoteRefs: (_cloneUrl: string, timeoutMs?: number) => {
+        events.push('refs-read');
+        remoteBudgets.push(timeoutMs ?? -1);
+        return Promise.resolve(new Map([['refs/heads/main', 'a'.repeat(40)]]));
+      },
+    };
+    const dependencies = {
+      store,
+      git: localGit,
+      now: () => new Date(nowMs),
+      resolveTarget: () => {
+        expect(events).toEqual(['local-prepared']);
+        events.push('credential-issued');
+        nowMs += 20_000;
+        return Promise.resolve({
+          cloneUrl: 'https://git.test/drill/repository.git',
+          git: remoteGit,
+          expiresAt: new Date(nowMs + 300_000),
+          deadlineAt: new Date(nowMs + 240_000),
+          release: () => Promise.resolve(),
+        });
+      },
+    };
+
+    await expect(
+      restoreRepositoryBackup(dependencies, {
+        key,
+        expectedBranches: [{ name: 'main', headCommitSha: 'a'.repeat(40) }],
+      }),
+    ).resolves.toMatchObject({ checkedBranches: 1 });
+    expect(events).toEqual(['local-prepared', 'credential-issued', 'mirror-pushed', 'refs-read']);
+    expect(remoteBudgets).toEqual([240_000, 10_000]);
+  });
+
+  it('refuses the next remote command once the cumulative credential deadline is exhausted', async () => {
+    const store = new MemoryStore();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    let nowMs = NOW.getTime();
+    let refReads = 0;
+    const localGit = {
+      verifyBundle: () => Promise.resolve(),
+      prepareRestore: (_bundlePath: string, mirrorPath: string) =>
+        Promise.resolve({ kind: 'bundle' as const, mirrorPath }),
+    };
+    const remoteGit = {
+      pushMirror: (_mirrorPath: string, _cloneUrl: string, timeoutMs: number) => {
+        expect(timeoutMs).toBe(100);
+        nowMs += 100;
+        return Promise.resolve();
+      },
+      remoteRefs: () => {
+        refReads += 1;
+        return Promise.resolve(new Map([['refs/heads/main', 'a'.repeat(40)]]));
+      },
+    };
+    const dependencies = {
+      store,
+      git: localGit,
+      now: () => new Date(nowMs),
+      resolveTarget: () =>
+        Promise.resolve({
+          cloneUrl: 'https://git.test/drill/repository.git',
+          git: remoteGit,
+          expiresAt: new Date(nowMs + 5_100),
+          deadlineAt: new Date(nowMs + 100),
+          release: () => Promise.resolve(),
+        }),
+    };
+
+    await expect(
+      restoreRepositoryBackup(dependencies, {
+        key,
+        expectedBranches: [{ name: 'main', headCommitSha: 'a'.repeat(40) }],
+      }),
+    ).rejects.toThrow('Restore credential deadline expired');
+    expect(refReads).toBe(0);
+  });
+
+  it('rejects a runtime credential window that crosses the expiry safety margin before mutation', async () => {
+    const store = new MemoryStore();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
+    const nowMs = NOW.getTime();
+    let remoteMutations = 0;
+    const localGit = {
+      verifyBundle: () => Promise.resolve(),
+      prepareRestore: (_bundlePath: string, mirrorPath: string) =>
+        Promise.resolve({ kind: 'bundle' as const, mirrorPath }),
+    };
+    const remoteGit = {
+      pushMirror: () => {
+        remoteMutations += 1;
+        return Promise.resolve();
+      },
+      remoteRefs: () => Promise.resolve(new Map([['refs/heads/main', 'a'.repeat(40)]])),
+    };
+
+    await expect(
+      restoreRepositoryBackup(
+        {
+          store,
+          git: localGit,
+          now: () => new Date(nowMs),
+          resolveTarget: () =>
+            Promise.resolve({
+              cloneUrl: 'https://git.test/drill/repository.git',
+              git: remoteGit,
+              expiresAt: new Date(nowMs + 300_000),
+              deadlineAt: new Date(nowMs + 295_001),
+              release: () => Promise.resolve(),
+            }),
+        },
+        { key, expectedBranches: [{ name: 'main', headCommitSha: 'a'.repeat(40) }] },
+      ),
+    ).rejects.toThrow('Restore credential deadline is invalid');
+    expect(remoteMutations).toBe(0);
+  });
+
   it('streams the bundle to scratch, verifies before mirror-push, and checks every non-null branch', async () => {
     const store = new MemoryStore();
     const git = new FakeGit();
@@ -432,11 +593,7 @@ describe('restoreRepositoryBackup', () => {
         store,
         git,
         resolveTarget: () =>
-          Promise.resolve({
-            cloneUrl: 'https://git.test/drill/repository.git',
-            git,
-            release: () => Promise.resolve(),
-          }),
+          Promise.resolve(restoreTarget(git, 'https://git.test/drill/repository.git')),
       },
       { key, expectedBranches: branches },
     );
@@ -454,12 +611,13 @@ describe('restoreRepositoryBackup', () => {
       ],
     });
     expect(git.verified).toHaveLength(1);
-    expect(git.pushed).toEqual([
-      {
-        bundlePath: git.verified[0],
-        targetCloneUrl: 'https://git.test/drill/repository.git',
-      },
-    ]);
+    expect(git.prepared).toHaveLength(1);
+    expect(git.prepared[0]?.bundlePath).toBe(git.verified[0]);
+    expect(git.prepared[0]?.mirrorPath).toBeTypeOf('string');
+    expect(git.pushed).toHaveLength(1);
+    expect(git.pushed[0]?.mirrorPath).toBe(git.prepared[0]?.mirrorPath);
+    expect(git.pushed[0]?.targetCloneUrl).toBe('https://git.test/drill/repository.git');
+    expect(git.pushed[0]?.timeoutMs).toBeGreaterThan(0);
     await expect(access(dirname(git.verified[0] ?? ''))).rejects.toThrow();
   });
 
@@ -479,11 +637,7 @@ describe('restoreRepositoryBackup', () => {
         resolveTarget: () => {
           expect(git.verified).toHaveLength(1);
           resolutions += 1;
-          return Promise.resolve({
-            cloneUrl: 'https://git.test/drill/persistent.git',
-            git,
-            release: () => Promise.resolve(),
-          });
+          return Promise.resolve(restoreTarget(git, 'https://git.test/drill/persistent.git'));
         },
       },
       { key, expectedBranches: branches },
@@ -508,11 +662,7 @@ describe('restoreRepositoryBackup', () => {
           git,
           resolveTarget: () => {
             resolutions += 1;
-            return Promise.resolve({
-              cloneUrl: 'https://git.test/drill/persistent.git',
-              git,
-              release: () => Promise.resolve(),
-            });
+            return Promise.resolve(restoreTarget(git, 'https://git.test/drill/persistent.git'));
           },
         },
         { key, expectedBranches: branches },
@@ -546,11 +696,7 @@ describe('restoreRepositoryBackup', () => {
             store,
             git,
             resolveTarget: () =>
-              Promise.resolve({
-                cloneUrl: 'https://git.test/drill/repository.git',
-                git,
-                release: () => Promise.resolve(),
-              }),
+              Promise.resolve(restoreTarget(git, 'https://git.test/drill/repository.git')),
           },
           { key, expectedBranches: branches },
         ),
@@ -572,11 +718,7 @@ describe('restoreRepositoryBackup', () => {
           store,
           git,
           resolveTarget: () =>
-            Promise.resolve({
-              cloneUrl: 'https://git.test/drill/repository.git',
-              git,
-              release: () => Promise.resolve(),
-            }),
+            Promise.resolve(restoreTarget(git, 'https://git.test/drill/repository.git')),
           recordPhase: (phase) => {
             expect(git.pushed).toHaveLength(0);
             phases.push(phase);
@@ -604,11 +746,7 @@ describe('restoreRepositoryBackup', () => {
           git,
           resolveTarget: () => {
             resolutions += 1;
-            return Promise.resolve({
-              cloneUrl: 'https://git.test/drill/repository.git',
-              git,
-              release: () => Promise.resolve(),
-            });
+            return Promise.resolve(restoreTarget(git, 'https://git.test/drill/repository.git'));
           },
         },
         { key, expectedBranches: branches },

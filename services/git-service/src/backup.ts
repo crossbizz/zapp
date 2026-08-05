@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -27,6 +27,8 @@ import {
 } from '@aws-sdk/client-s3';
 import { and, asc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
+
+import { DEFAULT_TOKEN_TTL_SECONDS } from './tokens.js';
 
 export const BackupDateSchema = z
   .string()
@@ -129,7 +131,7 @@ const RestoredRefEvidenceSchema = z
   })
   .strict();
 
-const RestoreRepositoryResultSchema = z
+export const RestoreRepositoryResultSchema = z
   .object({
     checkedBranches: z.number().int().nonnegative(),
     branches: z.array(BranchRestoreEvidenceSchema),
@@ -665,9 +667,22 @@ export function createR2BackupObjectStore(config: {
 export interface BackupGit {
   createBundle(cloneUrl: string, bundlePath: string): Promise<void>;
   verifyBundle(bundlePath: string): Promise<void>;
-  mirrorPush(bundlePath: string, targetCloneUrl: string): Promise<void>;
-  remoteRefs(targetCloneUrl: string): Promise<ReadonlyMap<string, string>>;
 }
+
+export type PreparedRestore =
+  { readonly kind: 'bundle'; readonly mirrorPath: string } | { readonly kind: 'empty' };
+
+export interface RestorePreparationGit {
+  verifyBundle(bundlePath: string): Promise<void>;
+  prepareRestore(bundlePath: string, mirrorPath: string): Promise<PreparedRestore>;
+}
+
+export interface RestoreRemoteGit {
+  pushMirror(mirrorPath: string, targetCloneUrl: string, timeoutMs: number): Promise<void>;
+  remoteRefs(targetCloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>>;
+}
+
+export type GitBundleCommands = BackupGit & RestorePreparationGit & RestoreRemoteGit;
 
 export interface GitCommandCall {
   readonly args: readonly string[];
@@ -705,6 +720,23 @@ case "$1" in
 esac
 `;
 
+const EMPTY_REPOSITORY_BACKUP = Buffer.from(
+  'zapp.build git backup\nversion=1\nrepository=empty\n',
+  'utf8',
+);
+
+async function isEmptyRepositoryBackup(bundlePath: string): Promise<boolean> {
+  try {
+    const details = await stat(bundlePath);
+    if (!details.isFile() || details.size !== EMPTY_REPOSITORY_BACKUP.byteLength) {
+      return false;
+    }
+    return (await readFile(bundlePath)).equals(EMPTY_REPOSITORY_BACKUP);
+  } catch {
+    return false;
+  }
+}
+
 function safeGitUrl(value: string): string {
   const parsed = SafeCloneUrlSchema.safeParse(value);
   if (!parsed.success) {
@@ -718,7 +750,7 @@ export function createGitBundleCommands(options: {
   readonly password: string;
   readonly timeoutMs: number;
   readonly executor?: GitCommandExecutor;
-}): BackupGit {
+}): GitBundleCommands {
   const parsed = z
     .object({
       username: z.string().min(1),
@@ -759,11 +791,18 @@ export function createGitBundleCommands(options: {
     }
   }
 
-  async function execute(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+  async function execute(
+    args: readonly string[],
+    env: NodeJS.ProcessEnv,
+    timeoutMs = commandConfig.timeoutMs,
+  ): Promise<string> {
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 7_200_000) {
+      throw new Error('Invalid Git command deadline');
+    }
     const result = await executor({
       args,
       env,
-      signal: AbortSignal.timeout(commandConfig.timeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     return result.stdout;
   }
@@ -781,7 +820,12 @@ export function createGitBundleCommands(options: {
             throw new Error('Git clone for backup failed');
           }
           try {
-            await execute(['-C', mirror, 'bundle', 'create', bundlePath, '--all'], env);
+            const refs = await execute(['-C', mirror, 'for-each-ref', '--format=%(refname)'], env);
+            if (refs.trim() === '') {
+              await writeFile(bundlePath, EMPTY_REPOSITORY_BACKUP, { flag: 'wx' });
+            } else {
+              await execute(['-C', mirror, 'bundle', 'create', bundlePath, '--all'], env);
+            }
           } catch {
             throw new Error('Git bundle creation command failed');
           }
@@ -792,6 +836,9 @@ export function createGitBundleCommands(options: {
     },
 
     async verifyBundle(bundlePath: string): Promise<void> {
+      if (await isEmptyRepositoryBackup(bundlePath)) {
+        return;
+      }
       try {
         await execute(['bundle', 'verify', bundlePath], {
           PATH: process.env['PATH'] ?? '',
@@ -804,33 +851,44 @@ export function createGitBundleCommands(options: {
       }
     },
 
-    async mirrorPush(bundlePath: string, targetCloneUrl: string): Promise<void> {
-      const url = safeGitUrl(targetCloneUrl);
-      const directory = await mkdtemp(join(tmpdir(), 'zapp-git-restore-mirror-'));
-      const mirror = join(directory, 'repository.git');
-      try {
-        await withAskpass(async (env) => {
-          try {
-            await execute(['clone', '--mirror', bundlePath, mirror], env);
-          } catch {
-            throw new Error('Git bundle mirror creation failed');
-          }
-          try {
-            await execute(['-C', mirror, 'push', '--mirror', url], env);
-          } catch {
-            throw new Error('Git mirror push command failed');
-          }
-        });
-      } finally {
-        await rm(directory, { recursive: true, force: true });
+    async prepareRestore(bundlePath: string, mirrorPath: string): Promise<PreparedRestore> {
+      if (await isEmptyRepositoryBackup(bundlePath)) {
+        return { kind: 'empty' };
       }
+      try {
+        await execute(['clone', '--mirror', bundlePath, mirrorPath], {
+          PATH: process.env['PATH'] ?? '',
+          LANG: process.env['LANG'] ?? 'C',
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_NOSYSTEM: '1',
+        });
+      } catch {
+        throw new Error('Git bundle mirror preparation failed');
+      }
+      return { kind: 'bundle', mirrorPath };
     },
 
-    async remoteRefs(targetCloneUrl: string): Promise<ReadonlyMap<string, string>> {
+    async pushMirror(mirrorPath: string, targetCloneUrl: string, timeoutMs: number): Promise<void> {
+      const url = safeGitUrl(targetCloneUrl);
+      await withAskpass(async (env) => {
+        try {
+          await execute(['-C', mirrorPath, 'push', '--mirror', url], env, timeoutMs);
+        } catch {
+          throw new Error('Git mirror push command failed');
+        }
+      });
+    },
+
+    async remoteRefs(
+      targetCloneUrl: string,
+      timeoutMs: number,
+    ): Promise<ReadonlyMap<string, string>> {
       const url = safeGitUrl(targetCloneUrl);
       let stdout: string;
       try {
-        stdout = await withAskpass(async (env) => await execute(['ls-remote', '--refs', url], env));
+        stdout = await withAskpass(
+          async (env) => await execute(['ls-remote', '--refs', url], env, timeoutMs),
+        );
       } catch {
         throw new Error('Git remote ref listing failed');
       }
@@ -1053,13 +1111,22 @@ export async function latestBackupKey(
     }
     const next = parsed.data.continuationToken;
     if (next === undefined) {
-      return newest ?? Promise.reject(new Error('No Git backup exists for project'));
+      if (newest === undefined) {
+        throw new NoGitBackupError();
+      }
+      return newest;
     }
     if (seenTokens.has(next)) {
       throw new Error('Object listing pagination did not advance');
     }
     seenTokens.add(next);
     continuationToken = next;
+  }
+}
+
+class NoGitBackupError extends Error {
+  constructor() {
+    super('No Git backup exists for project');
   }
 }
 
@@ -1072,7 +1139,7 @@ export interface RepositoryBackupResult {
 
 async function verifyStoredBundle(
   store: BackupObjectStore,
-  git: BackupGit,
+  git: Pick<BackupGit, 'verifyBundle'>,
   key: string,
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'zapp-git-backup-verify-'));
@@ -1087,6 +1154,31 @@ async function verifyStoredBundle(
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+export async function selectRestoreDrillBackup(
+  deps: { readonly store: BackupObjectStore; readonly git: RestorePreparationGit },
+  repositoryInputs: readonly BackupRepository[],
+): Promise<{ readonly repository: BackupRepository; readonly key: string }> {
+  const repositories = z.array(BackupRepositorySchema).parse(repositoryInputs);
+  for (const repository of repositories) {
+    let key: string;
+    try {
+      key = await latestBackupKey(deps.store, repository);
+    } catch (error) {
+      if (error instanceof NoGitBackupError) {
+        continue;
+      }
+      throw error;
+    }
+    try {
+      await verifyStoredBundle(deps.store, deps.git, key);
+      return { repository, key };
+    } catch {
+      // A drill may use another tenant-scoped candidate, but never an unverified object.
+    }
+  }
+  throw new Error('No verified Git backup is available for the restore drill');
 }
 
 export async function runRepositoryBackup(
@@ -1239,19 +1331,50 @@ const RestoreInputSchema = z
 export interface ResolvedRestoreTarget {
   readonly cloneUrl: string;
   /** Push and ref reads use this repository-bound credential, never backup admin access. */
-  readonly git: BackupGit;
+  readonly git: RestoreRemoteGit;
+  /** Actual token expiry returned by the issuer; runtime enforcement never trusts config alone. */
+  readonly expiresAt: Date;
+  /** One absolute command window shared by every credential-bound Git operation. */
+  readonly deadlineAt: Date;
   /** Revokes the one ephemeral grant issued for this restore attempt. */
   release(): Promise<void>;
 }
 
 export type RestorePhase = 'push-started' | 'push-complete' | 'verified';
 
+export const RESTORE_CREDENTIAL_SAFETY_MARGIN_MS = 5_000;
+
+function remainingRestoreCredentialBudgetMs(
+  target: ResolvedRestoreTarget,
+  now: () => Date,
+): number {
+  const currentMs = now().getTime();
+  const expiresAtMs = target.expiresAt.getTime();
+  const deadlineAtMs = target.deadlineAt.getTime();
+  const credentialTtlMs = DEFAULT_TOKEN_TTL_SECONDS * 1_000;
+  if (
+    !Number.isFinite(currentMs) ||
+    !Number.isFinite(expiresAtMs) ||
+    !Number.isFinite(deadlineAtMs) ||
+    deadlineAtMs > expiresAtMs - RESTORE_CREDENTIAL_SAFETY_MARGIN_MS ||
+    deadlineAtMs - currentMs >= credentialTtlMs
+  ) {
+    throw new Error('Restore credential deadline is invalid');
+  }
+  const remainingMs = Math.floor(deadlineAtMs - currentMs);
+  if (remainingMs <= 0) {
+    throw new Error('Restore credential deadline expired');
+  }
+  return remainingMs;
+}
+
 export async function restoreRepositoryBackup(
   deps: {
     readonly store: BackupObjectStore;
-    readonly git: BackupGit;
+    readonly git: RestorePreparationGit;
     readonly resolveTarget: () => Promise<ResolvedRestoreTarget>;
     readonly recordPhase?: (phase: RestorePhase, result?: RestoreRepositoryResult) => Promise<void>;
+    readonly now?: () => Date;
   },
   input: z.input<typeof RestoreInputSchema>,
 ): Promise<RestoreRepositoryResult> {
@@ -1261,6 +1384,7 @@ export async function restoreRepositoryBackup(
   }
   const directory = await mkdtemp(join(tmpdir(), 'zapp-git-restore-'));
   const bundlePath = join(directory, 'repository.bundle');
+  const mirrorPath = join(directory, 'repository.git');
   let resolvedTarget: ResolvedRestoreTarget | undefined;
   try {
     try {
@@ -1277,24 +1401,43 @@ export async function restoreRepositoryBackup(
     } catch {
       throw new Error('Git bundle verification failed');
     }
+    let prepared: PreparedRestore;
+    try {
+      prepared = await deps.git.prepareRestore(bundlePath, mirrorPath);
+    } catch {
+      throw new Error('Git restore preparation failed');
+    }
     try {
       resolvedTarget = await deps.resolveTarget();
       resolvedTarget = { ...resolvedTarget, cloneUrl: safeGitUrl(resolvedTarget.cloneUrl) };
     } catch {
       throw new Error('Restore target resolution failed');
     }
+    const now = deps.now ?? ((): Date => new Date());
+    remainingRestoreCredentialBudgetMs(resolvedTarget, now);
     await deps.recordPhase?.('push-started');
-    try {
-      await resolvedTarget.git.mirrorPush(bundlePath, resolvedTarget.cloneUrl);
-    } catch {
-      throw new Error('Bundle mirror push failed');
+    if (prepared.kind === 'bundle') {
+      const pushBudgetMs = remainingRestoreCredentialBudgetMs(resolvedTarget, now);
+      try {
+        await resolvedTarget.git.pushMirror(
+          prepared.mirrorPath,
+          resolvedTarget.cloneUrl,
+          pushBudgetMs,
+        );
+      } catch {
+        throw new Error('Bundle mirror push failed');
+      }
     }
     await deps.recordPhase?.('push-complete');
     let actual: ReadonlyMap<string, string>;
+    const refsBudgetMs = remainingRestoreCredentialBudgetMs(resolvedTarget, now);
     try {
-      actual = await resolvedTarget.git.remoteRefs(resolvedTarget.cloneUrl);
+      actual = await resolvedTarget.git.remoteRefs(resolvedTarget.cloneUrl, refsBudgetMs);
     } catch {
       throw new Error('Restored branch listing failed');
+    }
+    if (prepared.kind === 'empty' && actual.size > 0) {
+      throw new Error('Restored empty repository contains refs');
     }
     const expected = parsed.data.expectedBranches.filter((branch) => branch.headCommitSha !== null);
     const branchEvidence = expected
