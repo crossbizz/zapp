@@ -4231,6 +4231,35 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       return merged;
     };
+    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation) => {
+      let mayChangeIdentity = false;
+      const visit = (node) => {
+        if (mayChangeIdentity) return;
+        if (
+          (ts.isBinaryExpression(node) &&
+            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+          (ts.isPrefixUnaryExpression(node) &&
+            (node.operator === ts.SyntaxKind.PlusPlusToken ||
+              node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+          ts.isPostfixUnaryExpression(node) ||
+          ts.isCallExpression(node) ||
+          ts.isNewExpression(node) ||
+          ts.isDeleteExpression(node) ||
+          ts.isAwaitExpression(node) ||
+          ts.isYieldExpression(node) ||
+          ts.isTaggedTemplateExpression(node) ||
+          ts.isSpreadElement(node)
+        ) {
+          mayChangeIdentity = true;
+          return;
+        }
+        ts.forEachChild(node, visit);
+      };
+
+      for (const expression of [mutation.owner, ...mutationCall.arguments]) visit(expression);
+      return mayChangeIdentity;
+    };
     const applyStatement = (statement, state) => {
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
@@ -4258,7 +4287,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           if (identity) state.set(identity, identitiesForExpression(expression.right, state));
           return true;
         }
-        if (ts.isCallExpression(expression) && arrayMutationForCall(expression)) return true;
+        if (ts.isCallExpression(expression)) {
+          const mutation = arrayMutationForCall(expression);
+          if (mutation && !mutationEvaluationMayChangeIdentity(expression, mutation)) return true;
+        }
         return ts.isStringLiteralLike(expression);
       }
       if (ts.isBlock(statement)) {

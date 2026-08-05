@@ -771,6 +771,7 @@ test('AR-1 tracks runtime-reachable mutations on active array identities', () =>
     'reachable-switch-mutation-unsafe',
     'known-false-detach-unsafe',
     'array-sibling-survives-detach-unsafe',
+    'mutation-argument-reattaches-alias-unsafe',
   ]) {
     assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
   }
