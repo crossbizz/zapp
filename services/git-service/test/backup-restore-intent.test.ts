@@ -162,6 +162,7 @@ function credentialsFor(git: RestoreRemoteGit) {
 class StatefulForgejo implements ForgejoClient {
   readonly baseUrl = 'https://git.test';
   readonly calls: ForgejoRequest[] = [];
+  deleteUser: ((username: string) => Promise<void>) | undefined;
   repository:
     | {
         readonly id: number;
@@ -192,6 +193,15 @@ class StatefulForgejo implements ForgejoClient {
         empty: true,
       };
       return Promise.resolve({ status: 201, body: this.repository as T });
+    }
+    if (request.method === 'DELETE' && request.path.startsWith('/admin/users/')) {
+      const username = decodeURIComponent(
+        request.path.slice('/admin/users/'.length).replace(/\?purge=true$/, ''),
+      );
+      return (this.deleteUser?.(username) ?? Promise.resolve()).then(() => ({
+        status: 204,
+        body: undefined,
+      }));
     }
     if (request.method === 'DELETE') {
       return Promise.reject(new Error('repository deletion is forbidden'));
@@ -517,6 +527,13 @@ describe('intent-first restore recovery', () => {
     const forgejo = new StatefulForgejo();
     let issuedCredentials = 0;
     const releaseAttempts: number[] = [];
+    const activeCredentials = new Set<string>();
+    const cleanupDeletes: string[] = [];
+    forgejo.deleteUser = (username) => {
+      cleanupDeletes.push(username);
+      activeCredentials.delete(username);
+      return Promise.resolve();
+    };
     const operations = backupScript.createBackupOperations({
       inventory: {
         listProvisionedRepositories: () => Promise.resolve([SOURCE]),
@@ -527,20 +544,29 @@ describe('intent-first restore recovery', () => {
       restoreGit,
       client: forgejo,
       restoreCredentials: {
-        issue: (input) => {
+        issue: async (input) => {
           issuedCredentials += 1;
           const issueNumber = issuedCredentials;
-          return Promise.resolve({
+          const username = `zt-190000000${String(issueNumber)}-00000000000${String(issueNumber)}`;
+          const window = credentialWindow();
+          const allocation = await input.reserveCredentialCleanup({
+            username,
+            expiresAt: window.expiresAt,
+          });
+          activeCredentials.add(username);
+          return {
             cloneUrl: input.cloneUrl,
             git: boundGit,
-            ...credentialWindow(),
-            release: () => {
+            ...window,
+            release: async () => {
               releaseAttempts.push(issueNumber);
-              return issueNumber === 1
-                ? Promise.reject(new Error('synthetic revocation failure'))
-                : Promise.resolve();
+              if (issueNumber === 1) {
+                throw new Error('synthetic revocation failure');
+              }
+              activeCredentials.delete(username);
+              await input.completeCredentialCleanup(allocation);
             },
-          });
+          };
         },
       },
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
@@ -560,7 +586,19 @@ describe('intent-first restore recovery', () => {
     await expect(operations.restore(selector)).resolves.toMatchObject({ status: 'restored' });
 
     expect(issuedCredentials).toBe(2);
-    expect(releaseAttempts).toContain(2);
+    expect(releaseAttempts).toEqual([1, 1, 2]);
+    expect(activeCredentials).toEqual(new Set());
+    expect(cleanupDeletes).toEqual(['zt-1900000001-000000000001']);
+    const cleanupReceipts = [...store.values]
+      .filter(([key]) => key.includes('.credentials/'))
+      .map(([key, value]) => ({ key, body: JSON.parse(value.toString('utf8')) as object }));
+    expect(cleanupReceipts.map(({ key }) => key)).toEqual([
+      expect.stringMatching(/00000001\.allocated\.json$/),
+      expect.stringMatching(/00000001\.released\.json$/),
+      expect.stringMatching(/00000002\.allocated\.json$/),
+      expect.stringMatching(/00000002\.released\.json$/),
+    ]);
+    expect(JSON.stringify(cleanupReceipts)).not.toMatch(/token|password/i);
     expect(completedAfterFailure).toBe(false);
   });
 
@@ -571,7 +609,12 @@ describe('intent-first restore recovery', () => {
     const createIssuer = backupScript.createForgejoRestoreCredentialIssuer as unknown as (
       client: ForgejoClient,
       tokens: {
-        mintForRepository(): Promise<{
+        mintForRepository(input: {
+          onIdentityAllocated?: (identity: {
+            readonly username: string;
+            readonly expiresAt: Date;
+          }) => Promise<void>;
+        }): Promise<{
           readonly token: string;
           readonly username: string;
           readonly cloneUrl: string;
@@ -581,17 +624,36 @@ describe('intent-first restore recovery', () => {
       commandDeadlineMs: number,
       options: { readonly now: () => Date },
     ) => ReturnType<typeof backupScript.createForgejoRestoreCredentialIssuer>;
+    const cleanupCallbacks = {
+      reserveCredentialCleanup: (identity: {
+        readonly username: string;
+        readonly expiresAt: Date;
+      }) =>
+        Promise.resolve({
+          version: 1 as const,
+          intentKey: 'git-restore-intents/manual/test.json',
+          operationId: 'a'.repeat(64),
+          targetRef: SOURCE.internalRepoRef,
+          repositoryId: 501,
+          generation: 1,
+          username: identity.username,
+          expiresAt: identity.expiresAt.toISOString(),
+        }),
+      completeCredentialCleanup: () => Promise.resolve(),
+    };
     const issuer = createIssuer(
       createFakeForgejo(),
       {
-        mintForRepository: () => {
+        mintForRepository: async (input) => {
           nowMs += 20_000;
-          return Promise.resolve({
+          const username = 'zt-1900000001-000000000001';
+          await input.onIdentityAllocated?.({ username, expiresAt });
+          return {
             token: 'restricted-token',
-            username: 'zt-credential-user',
+            username,
             cloneUrl: 'https://git.test/restore/repository.git',
             expiresAt,
-          });
+          };
         },
       },
       240_000,
@@ -604,6 +666,7 @@ describe('intent-first restore recovery', () => {
       targetRef: SOURCE.internalRepoRef,
       repositoryId: 501,
       cloneUrl: 'https://git.test/restore/repository.git',
+      ...cleanupCallbacks,
     });
 
     expect(credential.expiresAt).toEqual(expiresAt);
@@ -611,13 +674,16 @@ describe('intent-first restore recovery', () => {
     const cappedIssuer = createIssuer(
       createFakeForgejo(),
       {
-        mintForRepository: () =>
-          Promise.resolve({
+        mintForRepository: async (input) => {
+          const username = 'zt-1900000002-000000000002';
+          await input.onIdentityAllocated?.({ username, expiresAt });
+          return {
             token: 'restricted-token',
-            username: 'zt-capped-credential-user',
+            username,
             cloneUrl: 'https://git.test/restore/repository.git',
             expiresAt,
-          }),
+          };
+        },
       },
       299_999,
       { now: () => new Date(nowMs) },
@@ -628,6 +694,7 @@ describe('intent-first restore recovery', () => {
       targetRef: SOURCE.internalRepoRef,
       repositoryId: 501,
       cloneUrl: 'https://git.test/restore/repository.git',
+      ...cleanupCallbacks,
     });
     expect(capped.deadlineAt).toEqual(new Date(start + 295_000));
     expect(() =>

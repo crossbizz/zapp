@@ -37,6 +37,8 @@ class FakeS3 implements S3ClientPort {
   error: Error | undefined;
   handler: ((call: RecordedS3Call) => unknown) | undefined;
 
+  destroy(): void {}
+
   send(
     command: S3ClientPortCommand,
     options?: { readonly abortSignal?: AbortSignal },
@@ -457,6 +459,46 @@ describe('createS3BackupObjectStore', () => {
       'PutObjectCommand',
       'HeadObjectCommand',
     ]);
+  });
+
+  it('discards pooled connections after a reconciled conditional stream reset', async () => {
+    let stored = false;
+    let poisoned = false;
+    let destroyed = 0;
+    const client: S3ClientPort & { destroy(): void } = {
+      send: (command) => {
+        if (command.constructor.name === 'PutObjectCommand') {
+          if (!stored) {
+            stored = true;
+            return Promise.resolve({});
+          }
+          poisoned = true;
+          return Promise.reject(
+            Object.assign(new Error('precondition rejected before consuming stream'), {
+              code: 'ECONNRESET',
+              $metadata: { httpStatusCode: 412 },
+            }),
+          );
+        }
+        if (command.constructor.name === 'HeadObjectCommand') {
+          return poisoned
+            ? Promise.reject(Object.assign(new Error('poisoned pooled socket'), { code: 'ECONNRESET' }))
+            : Promise.resolve({ ContentLength: 12 });
+        }
+        return Promise.resolve({});
+      },
+      destroy: () => {
+        destroyed += 1;
+        poisoned = false;
+      },
+    };
+    const store = multipartStore(client, { maxAttempts: 1 });
+    const upload = source(12).source;
+
+    await expect(store.put('conditional-reset.json', upload)).resolves.toBe('created');
+    await expect(store.put('conditional-reset.json', upload)).resolves.toBe('existing');
+    await expect(store.exists('conditional-reset.json')).resolves.toBe(true);
+    expect(destroyed).toBe(1);
   });
 
   it('reconciles an aborted single PUT with a fresh independently bounded HEAD signal', async () => {

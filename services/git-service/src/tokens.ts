@@ -142,6 +142,14 @@ export interface MintRepositoryTokenInput extends MintTokenInput {
   readonly targetRef: string;
   /** Forgejo's immutable repository id from the append-only target receipt. */
   readonly expectedRepositoryId: number;
+  /**
+   * Persists the non-secret identity before Forgejo creates it, so a crashed or
+   * failed restore can resume revocation without retaining the token/password.
+   */
+  readonly onIdentityAllocated?: (identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }) => Promise<void>;
 }
 
 export interface TokenService {
@@ -219,6 +227,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
     input: MintTokenInput,
     ref: string,
     expectedRepositoryId?: number,
+    onIdentityAllocated?: MintRepositoryTokenInput['onIdentityAllocated'],
   ): Promise<MintedToken> {
     const ttlSec = input.ttlSec ?? DEFAULT_TOKEN_TTL_SECONDS;
     if (!Number.isInteger(ttlSec) || ttlSec <= 0 || ttlSec > MAX_TOKEN_TTL_SECONDS) {
@@ -241,6 +250,8 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
     if (expectedRepositoryId !== undefined && repository.body?.id !== expectedRepositoryId) {
       throw new Error('Restore repository identity does not match the durable receipt');
     }
+
+    await onIdentityAllocated?.({ username, expiresAt });
 
     const password = randomBytes(24).toString('base64url');
 
@@ -328,7 +339,12 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
       if (!Number.isInteger(input.expectedRepositoryId) || input.expectedRepositoryId <= 0) {
         throw new Error('Invalid expected repository identity');
       }
-      return await mintRepositoryToken(input, input.targetRef, input.expectedRepositoryId);
+      return await mintRepositoryToken(
+        input,
+        input.targetRef,
+        input.expectedRepositoryId,
+        input.onIdentityAllocated,
+      );
     },
 
     async revokeForProject(input): Promise<number> {

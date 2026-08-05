@@ -198,6 +198,29 @@ const RestoreTargetReceiptSchema = z
 
 type RestoreTargetReceipt = z.infer<typeof RestoreTargetReceiptSchema>;
 
+const RestoreCredentialAllocationSchema = z
+  .object({
+    version: z.literal(1),
+    intentKey: z.string().min(1),
+    operationId: z.string().regex(/^[0-9a-f]{64}$/),
+    targetRef: z.string().min(1),
+    repositoryId: z.number().int().positive(),
+    generation: z.number().int().positive(),
+    username: z.string().regex(/^zt-\d{10,12}-[0-9a-f]{12}$/),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+
+type RestoreCredentialAllocation = z.infer<typeof RestoreCredentialAllocationSchema>;
+
+const RestoreCredentialReleaseSchema = z
+  .object({
+    version: z.literal(1),
+    allocationKey: z.string().min(1),
+    allocationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
 export interface ResolvedForgejoRestoreTarget {
   readonly repositoryId: number;
   readonly cloneUrl: string;
@@ -208,6 +231,11 @@ export interface RestoreOperation {
   readonly targetRef: string;
   readonly completedResult?: RestoreRepositoryResult;
   resolveTarget(): Promise<ResolvedForgejoRestoreTarget>;
+  reserveCredentialCleanup(identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }): Promise<RestoreCredentialAllocation>;
+  completeCredentialCleanup(allocation: RestoreCredentialAllocation): Promise<void>;
   recordPhase(phase: RestorePhase, result?: RestoreRepositoryResult): Promise<void>;
 }
 
@@ -218,6 +246,11 @@ export interface RestoreCredentialIssuer {
     readonly targetRef: string;
     readonly repositoryId: number;
     readonly cloneUrl: string;
+    reserveCredentialCleanup(identity: {
+      readonly username: string;
+      readonly expiresAt: Date;
+    }): Promise<RestoreCredentialAllocation>;
+    completeCredentialCleanup(allocation: RestoreCredentialAllocation): Promise<void>;
   }): Promise<{
     readonly cloneUrl: string;
     readonly git: RestoreRemoteGit;
@@ -243,16 +276,28 @@ export function createForgejoRestoreCredentialIssuer(
   const now = options.now ?? ((): Date => new Date());
   return {
     issue: async (input) => {
-      const minted = await tokens.mintForRepository({
-        organizationId: input.sourceOrganizationId,
-        projectId: input.sourceProjectId,
-        targetRef: input.targetRef,
-        expectedRepositoryId: input.repositoryId,
-        access: 'write',
-        requestingService: 'git-service',
-        reason: 'restore a verified Git bundle into its receipt-owned target',
-      });
+      let allocation: RestoreCredentialAllocation | undefined;
       try {
+        const minted = await tokens.mintForRepository({
+          organizationId: input.sourceOrganizationId,
+          projectId: input.sourceProjectId,
+          targetRef: input.targetRef,
+          expectedRepositoryId: input.repositoryId,
+          access: 'write',
+          requestingService: 'git-service',
+          reason: 'restore a verified Git bundle into its receipt-owned target',
+          onIdentityAllocated: async (identity) => {
+            allocation = await input.reserveCredentialCleanup(identity);
+          },
+        });
+        const reservedAllocation = allocation;
+        if (
+          reservedAllocation === undefined ||
+          reservedAllocation.username !== minted.username ||
+          reservedAllocation.expiresAt !== minted.expiresAt.toISOString()
+        ) {
+          throw new Error('Restore credential cleanup identity was not durably reserved');
+        }
         const expiresAtMs = minted.expiresAt.getTime();
         const issuedAtMs = now().getTime();
         const deadlineAtMs = Math.min(
@@ -281,16 +326,23 @@ export function createForgejoRestoreCredentialIssuer(
               path: `/admin/users/${encodeURIComponent(minted.username)}?purge=true`,
               allow: [404],
             });
+            await input.completeCredentialCleanup(reservedAllocation);
           },
         };
       } catch (error) {
-        await client
-          .send({
-            method: 'DELETE',
-            path: `/admin/users/${encodeURIComponent(minted.username)}?purge=true`,
-            allow: [404],
-          })
-          .catch(() => undefined);
+        if (allocation !== undefined) {
+          try {
+            await client.send({
+              method: 'DELETE',
+              path: `/admin/users/${encodeURIComponent(allocation.username)}?purge=true`,
+              allow: [404],
+            });
+            await input.completeCredentialCleanup(allocation);
+          } catch {
+            // Replay drains the durable allocation before another credential
+            // can be issued; expiry sweep remains the bounded final defense.
+          }
+        }
         throw error;
       }
     },
@@ -365,6 +417,133 @@ async function putExactJson(
   if (JSON.stringify(await readSmallJson(store, key)) !== json) {
     throw new Error(conflictMessage);
   }
+}
+
+function credentialReceiptPrefix(intentKey: string): string {
+  return intentKey.replace(/\.json$/, '.credentials/');
+}
+
+function credentialAllocationKey(prefix: string, generation: number): string {
+  return `${prefix}${String(generation).padStart(8, '0')}.allocated.json`;
+}
+
+function credentialReleaseKey(prefix: string, generation: number): string {
+  return `${prefix}${String(generation).padStart(8, '0')}.released.json`;
+}
+
+function jsonDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+async function listCredentialReceiptKeys(
+  store: BackupObjectStore,
+  prefix: string,
+): Promise<readonly string[]> {
+  const keys: string[] = [];
+  const seenTokens = new Set<string>();
+  let continuationToken: string | undefined;
+  for (;;) {
+    const page = await store.list(prefix, continuationToken);
+    const parsed = z
+      .object({
+        objects: z.array(z.object({ key: z.string().min(1), lastModified: z.date() }).strict()),
+        continuationToken: z.string().min(1).optional(),
+      })
+      .strict()
+      .safeParse(page);
+    if (!parsed.success || parsed.data.objects.some((object) => !object.key.startsWith(prefix))) {
+      throw new Error('Restore credential receipt listing is invalid');
+    }
+    keys.push(...parsed.data.objects.map((object) => object.key));
+    const next = parsed.data.continuationToken;
+    if (next === undefined) {
+      return keys;
+    }
+    if (seenTokens.has(next)) {
+      throw new Error('Restore credential receipt pagination did not advance');
+    }
+    seenTokens.add(next);
+    continuationToken = next;
+  }
+}
+
+async function readCredentialCleanupState(
+  store: BackupObjectStore,
+  intentKey: string,
+  intent: RestoreIntent,
+  targetRef: string,
+): Promise<{
+  readonly allocations: readonly {
+    readonly key: string;
+    readonly releaseKey: string;
+    readonly allocation: RestoreCredentialAllocation;
+    readonly released: boolean;
+  }[];
+  readonly nextGeneration: number;
+}> {
+  const prefix = credentialReceiptPrefix(intentKey);
+  const keys = await listCredentialReceiptKeys(store, prefix);
+  const allocationKeys = new Map<number, string>();
+  const releaseKeys = new Map<number, string>();
+  for (const key of keys) {
+    const suffix = key.slice(prefix.length);
+    const match = /^(\d{8})\.(allocated|released)\.json$/.exec(suffix);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      throw new Error('Restore credential receipt key is invalid');
+    }
+    const generation = Number(match[1]);
+    if (!Number.isSafeInteger(generation) || generation <= 0) {
+      throw new Error('Restore credential receipt key is invalid');
+    }
+    const collection = match[2] === 'allocated' ? allocationKeys : releaseKeys;
+    if (collection.has(generation)) {
+      throw new Error('Restore credential receipt generation is duplicated');
+    }
+    collection.set(generation, key);
+  }
+  if ([...releaseKeys.keys()].some((generation) => !allocationKeys.has(generation))) {
+    throw new Error('Restore credential release has no allocation');
+  }
+
+  const allocations: {
+    key: string;
+    releaseKey: string;
+    allocation: RestoreCredentialAllocation;
+    released: boolean;
+  }[] = [];
+  for (const [generation, key] of [...allocationKeys].sort(([left], [right]) => left - right)) {
+    const parsed = RestoreCredentialAllocationSchema.safeParse(await readSmallJson(store, key));
+    if (
+      !parsed.success ||
+      parsed.data.intentKey !== intentKey ||
+      parsed.data.operationId !== intent.operationId ||
+      parsed.data.targetRef !== targetRef ||
+      parsed.data.generation !== generation
+    ) {
+      throw new Error('Restore credential allocation receipt is invalid');
+    }
+    const releaseKey = credentialReleaseKey(prefix, generation);
+    const released = releaseKeys.has(generation);
+    if (released) {
+      const release = RestoreCredentialReleaseSchema.safeParse(
+        await readSmallJson(store, releaseKey),
+      );
+      if (
+        !release.success ||
+        release.data.allocationKey !== key ||
+        release.data.allocationDigest !== jsonDigest(parsed.data)
+      ) {
+        throw new Error('Restore credential release receipt is invalid');
+      }
+    }
+    allocations.push({ key, releaseKey, allocation: parsed.data, released });
+  }
+
+  const lastGeneration = allocations.at(-1)?.allocation.generation ?? 0;
+  if (lastGeneration >= 99_999_999) {
+    throw new Error('Restore credential receipt generations are exhausted');
+  }
+  return { allocations, nextGeneration: lastGeneration + 1 };
 }
 
 async function readTargetReceipt(
@@ -578,13 +757,79 @@ export async function beginRestoreOperation(
     organizationId: targetOrganizationId,
     projectId: targetProjectId,
   });
+  let resolvedTarget: ResolvedForgejoRestoreTarget | undefined;
+
+  const completeCredentialCleanup = async (
+    allocationInput: RestoreCredentialAllocation,
+  ): Promise<void> => {
+    const allocation = RestoreCredentialAllocationSchema.parse(allocationInput);
+    const prefix = credentialReceiptPrefix(intentKey);
+    const allocationKey = credentialAllocationKey(prefix, allocation.generation);
+    await putExactJson(
+      deps.store,
+      credentialReleaseKey(prefix, allocation.generation),
+      RestoreCredentialReleaseSchema.parse({
+        version: 1,
+        allocationKey,
+        allocationDigest: jsonDigest(allocation),
+      }),
+      'Restore credential release receipt conflicts with replayed state',
+    );
+  };
+
+  const cleanupOutstandingCredentials = async (): Promise<void> => {
+    const state = await readCredentialCleanupState(deps.store, intentKey, intent, targetRef);
+    for (const entry of state.allocations) {
+      if (entry.released) {
+        continue;
+      }
+      await deps.client.send({
+        method: 'DELETE',
+        path: `/admin/users/${encodeURIComponent(entry.allocation.username)}?purge=true`,
+        allow: [404],
+      });
+      await completeCredentialCleanup(entry.allocation);
+    }
+  };
+
+  const reserveCredentialCleanup = async (identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }): Promise<RestoreCredentialAllocation> => {
+    if (resolvedTarget === undefined) {
+      throw new Error('Restore target must be resolved before allocating a credential');
+    }
+    await cleanupOutstandingCredentials();
+    const state = await readCredentialCleanupState(deps.store, intentKey, intent, targetRef);
+    const allocation = RestoreCredentialAllocationSchema.parse({
+      version: 1,
+      intentKey,
+      operationId: intent.operationId,
+      targetRef,
+      repositoryId: resolvedTarget.repositoryId,
+      generation: state.nextGeneration,
+      username: identity.username,
+      expiresAt: identity.expiresAt.toISOString(),
+    });
+    await putExactJson(
+      deps.store,
+      credentialAllocationKey(
+        credentialReceiptPrefix(intentKey),
+        allocation.generation,
+      ),
+      allocation,
+      'Restore credential allocation conflicts with a concurrent attempt',
+    );
+    return allocation;
+  };
+
+  await cleanupOutstandingCredentials();
   const completedResult = await readCompletedRestoreResult(
     deps.store,
     intentKey,
     intent,
     targetRef,
   );
-  let resolvedTarget: ResolvedForgejoRestoreTarget | undefined;
   return {
     intentKey,
     targetRef,
@@ -593,9 +838,14 @@ export async function beginRestoreOperation(
       resolvedTarget = await resolveIntentTarget(deps, intentKey, intent);
       return resolvedTarget;
     },
+    reserveCredentialCleanup,
+    completeCredentialCleanup,
     recordPhase: async (phase, result) => {
       if (resolvedTarget === undefined) {
         throw new Error('Restore target must be resolved before recording progress');
+      }
+      if (phase === 'verified') {
+        await cleanupOutstandingCredentials();
       }
       const verifiedResult =
         result === undefined ? undefined : RestoreRepositoryResultSchema.parse(result);
@@ -701,6 +951,11 @@ export function createBackupOperations(deps: {
               targetRef: operation.targetRef,
               repositoryId: target.repositoryId,
               cloneUrl: target.cloneUrl,
+              reserveCredentialCleanup: async (allocation) =>
+                await operation.reserveCredentialCleanup(allocation),
+              completeCredentialCleanup: async (allocation) => {
+                await operation.completeCredentialCleanup(allocation);
+              },
             });
           },
           recordPhase: async (phase, result) => {
@@ -763,6 +1018,11 @@ export function createBackupOperations(deps: {
                 targetRef: operation.targetRef,
                 repositoryId: target.repositoryId,
                 cloneUrl: target.cloneUrl,
+                reserveCredentialCleanup: async (allocation) =>
+                  await operation.reserveCredentialCleanup(allocation),
+                completeCredentialCleanup: async (allocation) => {
+                  await operation.completeCredentialCleanup(allocation);
+                },
               });
             },
             recordPhase: async (phase, result) => {

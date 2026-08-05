@@ -238,6 +238,20 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     }
     if (store !== undefined) {
       const activeStore = store;
+      const intentKeys = [...restoreReceiptKeys].filter((key) =>
+        /^git-restore-intents\/(?:manual|drill)\/[0-9a-f]{64}\.json$/.test(key),
+      );
+      for (const intentKey of intentKeys) {
+        let continuationToken: string | undefined;
+        const prefix = intentKey.replace(/\.json$/, '.credentials/');
+        do {
+          const page = await activeStore.list(prefix, continuationToken);
+          for (const object of page.objects) {
+            restoreReceiptKeys.add(object.key);
+          }
+          continuationToken = page.continuationToken;
+        } while (continuationToken !== undefined);
+      }
       await Promise.all(
         [...restoreReceiptKeys].map(async (key) => {
           await activeStore.delete(key);
@@ -328,6 +342,11 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
               targetRef: failedOperation.targetRef,
               repositoryId: target.repositoryId,
               cloneUrl: target.cloneUrl,
+              reserveCredentialCleanup: async (allocation) =>
+                await failedOperation.reserveCredentialCleanup(allocation),
+              completeCredentialCleanup: async (allocation) => {
+                await failedOperation.completeCredentialCleanup(allocation);
+              },
             });
           },
           recordPhase: async (phase, result) => {
@@ -367,6 +386,11 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
             targetRef: retryOperation.targetRef,
             repositoryId: target.repositoryId,
             cloneUrl: target.cloneUrl,
+            reserveCredentialCleanup: async (allocation) =>
+              await retryOperation.reserveCredentialCleanup(allocation),
+            completeCredentialCleanup: async (allocation) => {
+              await retryOperation.completeCredentialCleanup(allocation);
+            },
           });
           restoredCloneUrl = credential.cloneUrl;
           return credential;

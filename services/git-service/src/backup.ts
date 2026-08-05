@@ -185,6 +185,8 @@ export interface S3ClientPort {
     command: S3ClientPortCommand,
     options?: { readonly abortSignal?: AbortSignal },
   ): Promise<unknown>;
+  /** Closes pooled sockets without invalidating future requests on the client. */
+  destroy(): void;
 }
 
 function httpStatus(error: unknown): number | undefined {
@@ -537,10 +539,21 @@ export function createS3BackupObjectStore(options: {
           return 'created';
         } catch (error) {
           if (httpStatus(error) === 412) {
+            // S3-compatible servers may reject If-None-Match before consuming
+            // the streamed body. Discard that request's pooled socket before
+            // the next operation; the 412 still proves this key was not
+            // overwritten by this writer.
+            options.client.destroy();
             return 'existing';
           }
           if (deadline.aborted || retryable(error)) {
             if (await finalObjectExists(key)) {
+              // A conditional streamed PUT can be rejected before MinIO/R2
+              // consumes its body. Smithy's body writer then reports a reset,
+              // and that socket can poison the client's next pooled request.
+              // The object is already reconciled as present, so discard only
+              // local pooled connections before returning the immutable result.
+              options.client.destroy();
               return 'existing';
             }
           }

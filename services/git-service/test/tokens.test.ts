@@ -99,6 +99,31 @@ describe('the ephemeral username', () => {
 });
 
 describe('mint', () => {
+  it('publishes the non-secret restore identity before creating its Forgejo user', async () => {
+    const harness = service({
+      [`GET /repos/${OWNER}/${NAME}`]: {
+        status: 200,
+        body: { id: 501, clone_url: `https://git.test/${REF}.git` },
+      },
+    });
+    const allocated: { readonly username: string; readonly expiresAt: Date }[] = [];
+    const input = {
+      ...INPUT,
+      targetRef: REF,
+      expectedRepositoryId: 501,
+      onIdentityAllocated: (identity: { readonly username: string; readonly expiresAt: Date }) => {
+        expect(harness.forgejo.writes).toEqual([]);
+        allocated.push(identity);
+        return Promise.resolve();
+      },
+    };
+
+    const minted = await harness.tokens.mintForRepository(input);
+
+    expect(allocated).toEqual([{ username: minted.username, expiresAt: minted.expiresAt }]);
+    expect(harness.forgejo.writes[0]?.path).toBe('/admin/users');
+  });
+
   it('refuses to mint a restore credential when the repository is replaced after grant', async () => {
     const harness = service({
       [`GET /repos/${OWNER}/${NAME}`]: {
