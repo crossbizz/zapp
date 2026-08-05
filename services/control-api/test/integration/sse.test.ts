@@ -1,6 +1,6 @@
 import { AgentEventSchema, newId } from '@zapp/contracts';
 import { agentEvents, agentRuns, organizations, projects, users } from '@zapp/db';
-import { ServerResponse } from 'node:http';
+import { OutgoingMessage, ServerResponse } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -195,6 +195,30 @@ async function eventually(assertion: () => void, timeoutMs = 2_000): Promise<voi
   }
 }
 
+async function expectSettlesWithin(promise: Promise<unknown>, timeoutMs = 500): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`Promise did not settle within ${String(timeoutMs)} ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+  }
+}
+
 describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   let database: TestDatabase;
   let app: AppInstance | undefined;
@@ -208,6 +232,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   let usersStore: InMemoryUserStore;
   let organizationStore: InMemoryOrganizationStore;
   let eventReadCount: number;
+  let eventReadRanges: { readonly fromSequence?: number; readonly limit?: number }[];
 
   beforeAll(async () => {
     database = await setUpTestDatabase();
@@ -295,10 +320,17 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     authorization = `Bearer ${tokens.access.token}`;
 
     eventReadCount = 0;
+    eventReadRanges = [];
     await startApp();
   }, 120_000);
 
-  async function startApp(eventStream: Partial<EventStreamDependencies> = {}): Promise<void> {
+  async function startApp(
+    eventStream: Partial<EventStreamDependencies> = {},
+    hooks: {
+      readonly beforeEventRead?: () => Promise<void>;
+      readonly afterEventRead?: () => void;
+    } = {},
+  ): Promise<void> {
     if (app !== undefined) await app.close();
     const tenantDb = createTenantDbFactory(database.db);
     const nextApp = buildApp({
@@ -314,7 +346,16 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
               ...scoped.events,
               async byRun(requestRunId, range) {
                 eventReadCount += 1;
-                return await scoped.events.byRun(requestRunId, range);
+                eventReadRanges.push({
+                  ...(range?.fromSequence === undefined
+                    ? {}
+                    : { fromSequence: range.fromSequence }),
+                  ...(range?.limit === undefined ? {} : { limit: range.limit }),
+                });
+                await hooks.beforeEventRead?.();
+                const rows = await scoped.events.byRun(requestRunId, range);
+                hooks.afterEventRead?.();
+                return rows;
               },
             },
           };
@@ -444,10 +485,12 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     ['after', '-1'],
     ['after', '1.5'],
     ['after', '01'],
+    ['after', '9007199254740991'],
     ['after', '9007199254740992'],
     ['Last-Event-ID', '-1'],
     ['Last-Event-ID', '1.5'],
     ['Last-Event-ID', '01'],
+    ['Last-Event-ID', '9007199254740991'],
     ['Last-Event-ID', '9007199254740992'],
   ])('rejects invalid supplied %s cursor %s before streaming', async (kind, value) => {
     // Break caught: coercive cursor parsing accepts negatives, fractions,
@@ -460,6 +503,37 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     });
     expect(response.status).toBe(400);
     expect(response.headers.get('content-type') ?? '').not.toContain('text/event-stream');
+    expect(eventReadRanges).toEqual([]);
+  });
+
+  it('queries safely from the highest incrementable cursor', async () => {
+    // Break caught: rejecting the whole safe-integer boundary loses a valid
+    // resume point; adding one twice sends an unsafe number to PostgreSQL.
+    const controller = new AbortController();
+    await connect({ after: '9007199254740990', signal: controller.signal });
+    await eventually(() => {
+      expect(eventReadRanges).toEqual([
+        { fromSequence: Number.MAX_SAFE_INTEGER, limit: 100 },
+      ]);
+    });
+    controller.abort();
+  });
+
+  it('never increments a stored maximum-safe sequence for another replay page', async () => {
+    await insertEvents([
+      ...Array.from({ length: 99 }, (_value, index) => index + 1),
+      Number.MAX_SAFE_INTEGER,
+    ]);
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    expect((await readMessages(response, 100, 5_000)).map((message) => message.id)).toEqual([
+      ...Array.from({ length: 99 }, (_value, index) => index + 1),
+      Number.MAX_SAFE_INTEGER,
+    ]);
+    await eventually(() => {
+      expect(eventReadRanges).toEqual([{ fromSequence: 1, limit: 100 }]);
+    });
+    controller.abort();
   });
 
   it('returns 404 for a run outside the selected tenant before hijacking', async () => {
@@ -488,6 +562,52 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     // Break caught: the route hijacks clients that requested JSON and leaves them hanging.
     const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
       headers: { ...requestHeaders(), accept: 'application/json' },
+    });
+    expect(response.status).toBe(406);
+  });
+
+  it('uses exact, then type wildcard, then global wildcard Accept quality', async () => {
+    // Break caught: choosing the largest q across matching ranges lets */* undo
+    // an explicit text/event-stream refusal.
+    const refused = [
+      'text/event-stream;q=0, */*;q=1',
+      'text/*;q=0, */*;q=1',
+      '*/*;q=0',
+    ];
+    for (const accept of refused) {
+      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: { ...requestHeaders(), accept },
+      });
+      expect(response.status, accept).toBe(406);
+    }
+
+    const permitted = [
+      'text/event-stream;q=0.2, text/*;q=0, */*;q=0',
+      'text/*;q=0.2, */*;q=0',
+      '*/*;q=0.2',
+    ];
+    for (const accept of permitted) {
+      const controller = new AbortController();
+      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: { ...requestHeaders(), accept },
+        signal: controller.signal,
+      });
+      expect(response.status, accept).toBe(200);
+      controller.abort();
+    }
+  });
+
+  it.each([
+    'text/event-stream;q=wat',
+    'text/event-stream;q=1.001',
+    'text/event-stream;q=0.1234',
+    'text/event-stream;q=0;q=1',
+    'text/event-stream;broken',
+  ])('returns 406 for malformed Accept value %s', async (accept) => {
+    // Break caught: Number coercion or ignored malformed parameters negotiates
+    // an SSE stream from an invalid Accept field.
+    const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+      headers: { ...requestHeaders(), accept },
     });
     expect(response.status).toBe(406);
   });
@@ -612,6 +732,237 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     releasePoll();
     expect((await readMessages(response, 1)).map((message) => message.id)).toEqual([2]);
     controller.abort();
+  });
+
+  it('closes an idle active stream before Fastify waits for its handler', async () => {
+    // Break caught: removing route-level preClose cleanup makes app.close wait
+    // forever for an idle SSE handler that is itself waiting on Redis.
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    const closePromise = app?.close();
+    if (closePromise === undefined) throw new Error('SSE app was not started');
+    let settled = false;
+    try {
+      await expectSettlesWithin(closePromise);
+      settled = true;
+    } finally {
+      if (!settled) controller.abort();
+      await closePromise;
+      await cancelResponseBody(response);
+      controller.abort();
+    }
+
+    expect(wakeups.closed).toBe(1);
+    expect(timers.cleared).toHaveLength(2);
+    expect(new Set(timers.cleared).size).toBe(2);
+  });
+
+  it('closes a backpressured active stream before Fastify waits for its handler', async () => {
+    // Break caught: shutdown aborts only ordinary waiters and strands a handler
+    // waiting for drain, so app.close never settles under socket pressure.
+    await insertEvents([1]);
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    let blockedResponse: ServerResponse | undefined;
+    const captureBlockedResponse = (response: ServerResponse): void => {
+      blockedResponse = response;
+    };
+    const writeSpy = vi.spyOn(ServerResponse.prototype, 'write');
+    writeSpy.mockImplementation(function (this: ServerResponse, chunk: unknown) {
+      writeSpy.mockRestore();
+      if (typeof chunk !== 'string') throw new Error('Expected an SSE string write');
+      this.write(chunk);
+      captureBlockedResponse(this);
+      return false;
+    });
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    await eventually(() => {
+      expect(blockedResponse).toBeDefined();
+    });
+
+    const closePromise = app?.close();
+    if (closePromise === undefined) throw new Error('SSE app was not started');
+    let settled = false;
+    try {
+      await expectSettlesWithin(closePromise);
+      settled = true;
+    } finally {
+      if (!settled) {
+        blockedResponse?.emit('drain');
+        controller.abort();
+      }
+      await closePromise;
+      await cancelResponseBody(response);
+      controller.abort();
+    }
+
+    expect(wakeups.closed).toBe(1);
+    expect(timers.cleared).toHaveLength(2);
+    expect(new Set(timers.cleared).size).toBe(2);
+    expect(blockedResponse?.listenerCount('drain')).toBe(0);
+  });
+
+  it('replays bounded pages in database order without gaps or duplicates', async () => {
+    // Break caught: omitting the fixed limit materializes a run's complete event
+    // history in one read instead of advancing through bounded database pages.
+    await insertEvents(Array.from({ length: 205 }, (_value, index) => index + 1));
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    const messages = await readMessages(response, 205, 5_000);
+    controller.abort();
+
+    expect(messages.map((message) => message.id)).toEqual(
+      Array.from({ length: 205 }, (_value, index) => index + 1),
+    );
+    expect(eventReadRanges).toEqual([
+      { fromSequence: 1, limit: 100 },
+      { fromSequence: 101, limit: 100 },
+      { fromSequence: 201, limit: 100 },
+    ]);
+  });
+
+  it('advances through a full hidden-only page to the next visible event', async () => {
+    // Break caught: stopping when a page emits no frames strands the cursor on
+    // 100 internal rows and never reaches the user-visible event on page two.
+    await insertEvents([
+      ...Array.from({ length: 100 }, (_value, index) => ({
+        sequence: index + 1,
+        visibility: 'internal' as const,
+      })),
+      { sequence: 101, visibility: 'user' },
+    ]);
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    expect((await readMessages(response, 1)).map((message) => message.id)).toEqual([101]);
+    controller.abort();
+
+    expect(eventReadRanges).toEqual([
+      { fromSequence: 1, limit: 100 },
+      { fromSequence: 101, limit: 100 },
+    ]);
+  });
+
+  it('does not fetch the next replay page while an event frame owns pressure', async () => {
+    // Break caught: page iteration continues after write(false), reading page
+    // two before the socket has accepted page one's first frame.
+    await insertEvents(Array.from({ length: 101 }, (_value, index) => index + 1));
+    let blockedResponse: ServerResponse | undefined;
+    const captureBlockedResponse = (response: ServerResponse): void => {
+      blockedResponse = response;
+    };
+    const writeSpy = vi.spyOn(ServerResponse.prototype, 'write');
+    writeSpy.mockImplementation(function (this: ServerResponse, chunk: unknown) {
+      if (typeof chunk !== 'string') throw new Error('Expected an SSE string write');
+      const result = OutgoingMessage.prototype.write.call(this, chunk, 'utf8');
+      if (blockedResponse === undefined && chunk.startsWith('id:')) {
+        captureBlockedResponse(this);
+        return false;
+      }
+      return result;
+    });
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    await eventually(() => {
+      expect(blockedResponse).toBeDefined();
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(eventReadRanges).toEqual([{ fromSequence: 1, limit: 100 }]);
+
+    blockedResponse?.emit('drain');
+    expect((await readMessages(response, 101, 5_000)).map((message) => message.id)).toEqual(
+      Array.from({ length: 101 }, (_value, index) => index + 1),
+    );
+    expect(eventReadRanges).toEqual([
+      { fromSequence: 1, limit: 100 },
+      { fromSequence: 101, limit: 100 },
+    ]);
+    controller.abort();
+  });
+
+  it('does not write events or fetch another page while a heartbeat owns pressure', async () => {
+    // Break caught: a heartbeat write(false) racing an in-flight DB read lets
+    // event frames and the next replay page bypass the shared pressure gate.
+    await insertEvents(Array.from({ length: 101 }, (_value, index) => index + 1));
+    const timers = new ManualTimers();
+    let readStarted!: () => void;
+    let releaseRead!: () => void;
+    let readFinished!: () => void;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const finished = new Promise<void>((resolve) => {
+      readFinished = resolve;
+    });
+    await startApp({ timers }, {
+      beforeEventRead: () => {
+        readStarted();
+        return release;
+      },
+      afterEventRead: readFinished,
+    });
+
+    let blockedResponse: ServerResponse | undefined;
+    const captureBlockedResponse = (response: ServerResponse): void => {
+      blockedResponse = response;
+    };
+    let heartbeatWrites = 0;
+    let eventWrites = 0;
+    const writeSpy = vi.spyOn(ServerResponse.prototype, 'write');
+    writeSpy.mockImplementation(function (this: ServerResponse, chunk: unknown) {
+      if (typeof chunk !== 'string') throw new Error('Expected an SSE string write');
+      const result = OutgoingMessage.prototype.write.call(this, chunk, 'utf8');
+      if (chunk.startsWith(': heartbeat')) {
+        heartbeatWrites += 1;
+        if (blockedResponse === undefined) {
+          captureBlockedResponse(this);
+          return false;
+        }
+      }
+      if (chunk.startsWith('id:')) eventWrites += 1;
+      return result;
+    });
+
+    const controller = new AbortController();
+    const responsePromise = connect({ signal: controller.signal });
+    await started;
+    await responsePromise;
+    timers.fire(SSE_HEARTBEAT_INTERVAL_MS, 'interval');
+    await eventually(() => {
+      expect(blockedResponse).toBeDefined();
+    });
+    timers.fire(SSE_HEARTBEAT_INTERVAL_MS, 'interval');
+    timers.fire(SSE_HEARTBEAT_INTERVAL_MS, 'interval');
+    releaseRead();
+
+    try {
+      await finished;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(heartbeatWrites).toBe(1);
+      expect(eventWrites).toBe(0);
+      expect(eventReadRanges).toEqual([{ fromSequence: 1, limit: 100 }]);
+
+      blockedResponse?.emit('drain');
+      await eventually(() => {
+        expect(eventWrites).toBeGreaterThan(0);
+        expect(eventReadRanges).toEqual([
+          { fromSequence: 1, limit: 100 },
+          { fromSequence: 101, limit: 100 },
+        ]);
+      });
+    } finally {
+      blockedResponse?.emit('drain');
+      controller.abort();
+    }
   });
 
   it('does not read the database again while socket backpressure awaits drain', async () => {
@@ -760,7 +1111,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
         type: 'task.started' as const,
         payloadJson: { sequence },
         visibility,
-        occurredAt: new Date(`2026-08-04T12:00:${String(sequence).padStart(2, '0')}.000Z`),
+        occurredAt: new Date(Date.UTC(2026, 7, 4, 12, 0, 0, sequence % 1_000)),
         projectId,
         phaseId: null,
         taskId: null,

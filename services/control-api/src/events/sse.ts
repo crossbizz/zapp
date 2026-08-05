@@ -15,9 +15,12 @@ const EventPingSchema = z.object({ sequence: z.number().int().positive().safe() 
 const EventAccessDecisionSchema = z
   .object({ access: z.enum(['user', 'support']) })
   .strict();
+const HTTP_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const QUALITY_VALUE = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/;
 
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 export const SSE_MAX_CONNECTION_MS = 4 * 60 * 60 * 1_000;
+const SSE_REPLAY_PAGE_SIZE = 100;
 
 export interface EventWakeupSubscription {
   next(): Promise<unknown>;
@@ -69,22 +72,72 @@ function asError(error: unknown): Error {
 
 function acceptsEventStream(value: string | undefined): boolean {
   if (value === undefined) return false;
-  return value.split(',').some((entry) => {
-    const [mediaRange, ...parameters] = entry.trim().toLowerCase().split(';');
-    const quality = parameters.find((parameter) => parameter.trim().startsWith('q='));
-    if (quality !== undefined) {
-      const value = Number(quality.trim().slice(2));
-      if (!Number.isFinite(value) || value <= 0 || value > 1) return false;
+  let selected: { readonly specificity: number; readonly quality: number } | undefined;
+  for (const rawEntry of value.split(',')) {
+    const [rawMediaRange, ...parameters] = rawEntry.split(';');
+    const mediaRange = rawMediaRange?.trim().toLowerCase();
+    if (mediaRange === undefined || mediaRange === '') return false;
+    const slash = mediaRange.indexOf('/');
+    if (slash <= 0 || slash !== mediaRange.lastIndexOf('/')) return false;
+    const type = mediaRange.slice(0, slash);
+    const subtype = mediaRange.slice(slash + 1);
+    if (
+      (type !== '*' && !HTTP_TOKEN.test(type)) ||
+      (subtype !== '*' && !HTTP_TOKEN.test(subtype)) ||
+      (type === '*' && subtype !== '*')
+    ) {
+      return false;
     }
-    return mediaRange === 'text/event-stream' || mediaRange === 'text/*' || mediaRange === '*/*';
-  });
+
+    let quality = 1;
+    let qualitySeen = false;
+    for (const rawParameter of parameters) {
+      const parameter = rawParameter.trim();
+      const equals = parameter.indexOf('=');
+      if (equals <= 0) return false;
+      const name = parameter.slice(0, equals).trim();
+      const parameterValue = parameter.slice(equals + 1).trim();
+      if (!HTTP_TOKEN.test(name) || parameterValue === '') return false;
+      if (name.toLowerCase() === 'q') {
+        if (qualitySeen || !QUALITY_VALUE.test(parameterValue)) return false;
+        qualitySeen = true;
+        quality = Number(parameterValue);
+      } else if (!HTTP_TOKEN.test(parameterValue)) {
+        return false;
+      }
+    }
+
+    const specificity =
+      type === 'text' && subtype === 'event-stream'
+        ? 2
+        : type === 'text' && subtype === '*'
+          ? 1
+          : type === '*' && subtype === '*'
+            ? 0
+            : undefined;
+    if (specificity === undefined) continue;
+    if (selected === undefined || specificity > selected.specificity) {
+      selected = { specificity, quality };
+    } else if (specificity === selected.specificity && quality > selected.quality) {
+      selected = { specificity, quality };
+    }
+  }
+  return selected !== undefined && selected.quality > 0;
 }
 
 function parseCursor(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
   const parsed = CursorSchema.safeParse(value);
-  if (!parsed.success || String(parsed.data) !== value) {
-    throw new ApiError('invalid_event_cursor', 400, `${name} must be a nonnegative safe integer.`);
+  if (
+    !parsed.success ||
+    String(parsed.data) !== value ||
+    parsed.data === Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ApiError(
+      'invalid_event_cursor',
+      400,
+      `${name} must be a nonnegative integer less than ${String(Number.MAX_SAFE_INTEGER)}.`,
+    );
   }
   return parsed.data;
 }
@@ -123,18 +176,21 @@ async function closeQuietly(
   }
 }
 
-async function waitForDrain(reply: FastifyReply): Promise<void> {
+async function waitForDrain(reply: FastifyReply, signal: AbortSignal): Promise<void> {
   if (reply.raw.destroyed || reply.raw.writableEnded) return;
   await new Promise<void>((resolve) => {
     const finish = (): void => {
       reply.raw.removeListener('drain', finish);
       reply.raw.removeListener('close', finish);
       reply.raw.removeListener('error', finish);
+      signal.removeEventListener('abort', finish);
       resolve();
     };
     reply.raw.once('drain', finish);
     reply.raw.once('close', finish);
     reply.raw.once('error', finish);
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
   });
 }
 
@@ -145,14 +201,17 @@ async function streamEvents(input: {
   readonly after: number;
   readonly access: 'user' | 'support';
   readonly dependencies: EventStreamDependencies;
+  readonly shutdownSignal: AbortSignal;
 }): Promise<void> {
-  const { reply, tenantDb, runId, access, dependencies } = input;
+  const { reply, tenantDb, runId, access, dependencies, shutdownSignal } = input;
   let cursor = input.after;
   let closed = false;
   let backpressured = false;
   let pendingDrain: Promise<void> | undefined;
   let subscription: EventWakeupSubscription | undefined;
   let pendingWakeup: Promise<unknown> | undefined;
+  let writeQueue = Promise.resolve();
+  let heartbeatPending = false;
   const closeController = new AbortController();
   const timers: EventStreamTimers = dependencies.timers ?? {
     setInterval: (callback, delayMs) => setInterval(callback, delayMs),
@@ -176,14 +235,35 @@ async function streamEvents(input: {
     closed = true;
     closeController.abort();
   };
+  const stopForShutdown = (): void => {
+    stop();
+    if (!reply.raw.writableEnded) reply.raw.end();
+    if (!reply.raw.destroyed) reply.raw.destroy();
+  };
   const isClosed = (): boolean => closed;
   const beginBackpressure = (): Promise<void> => {
     backpressured = true;
-    pendingDrain ??= waitForDrain(reply).finally(() => {
+    pendingDrain ??= waitForDrain(reply, closeController.signal).finally(() => {
       backpressured = false;
       pendingDrain = undefined;
     });
     return pendingDrain;
+  };
+  const writeFrame = (frame: string): Promise<void> => {
+    const operation = writeQueue.then(async () => {
+      if (backpressured) await pendingDrain;
+      if (isClosed()) return;
+      if (!reply.raw.write(frame)) await beginBackpressure();
+    });
+    writeQueue = operation.catch(() => undefined);
+    return operation;
+  };
+  const waitForWriter = async (): Promise<void> => {
+    for (;;) {
+      const pending = writeQueue;
+      await pending;
+      if (pending === writeQueue) return;
+    }
   };
 
   reply.hijack();
@@ -196,15 +276,20 @@ async function streamEvents(input: {
   reply.raw.flushHeaders();
   reply.raw.on('close', stop);
   reply.raw.on('error', stop);
+  shutdownSignal.addEventListener('abort', stopForShutdown, { once: true });
+  if (shutdownSignal.aborted) stopForShutdown();
 
   const heartbeat = timers.setInterval(() => {
-    if (closed || backpressured) return;
-    try {
-      if (!reply.raw.write(': heartbeat\n\n')) void beginBackpressure();
-    } catch (error) {
-      report(error);
-      stop();
-    }
+    if (closed || heartbeatPending) return;
+    heartbeatPending = true;
+    void writeFrame(': heartbeat\n\n')
+      .catch((error: unknown) => {
+        report(error);
+        stop();
+      })
+      .finally(() => {
+        heartbeatPending = false;
+      });
   }, SSE_HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
   const lifetime = timers.setTimeout(() => {
@@ -253,28 +338,32 @@ async function streamEvents(input: {
     }
 
     const readAndWrite = async (): Promise<void> => {
-      if (closed) return;
-      if (backpressured) {
-        await pendingDrain;
+      while (!isClosed()) {
+        await waitForWriter();
         if (isClosed()) return;
-      }
-      const rows = await tenantDb.events.byRun(runId, { fromSequence: cursor + 1 });
-      for (const row of rows) {
-        if (isClosed()) return;
-        cursor = Math.max(cursor, row.sequence);
-        if (row.visibility === 'internal') continue;
-        if (row.visibility === 'support' && access !== 'support') continue;
-        const event = toAgentEvent(row);
-        const block = `id: ${String(event.sequence)}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-        try {
-          if (!reply.raw.write(block)) {
-            await beginBackpressure();
+        if (cursor === Number.MAX_SAFE_INTEGER) return;
+        const rows = await tenantDb.events.byRun(runId, {
+          fromSequence: cursor + 1,
+          limit: SSE_REPLAY_PAGE_SIZE,
+        });
+        await waitForWriter();
+        for (const row of rows) {
+          await waitForWriter();
+          if (isClosed()) return;
+          cursor = Math.max(cursor, row.sequence);
+          if (row.visibility === 'internal') continue;
+          if (row.visibility === 'support' && access !== 'support') continue;
+          const event = toAgentEvent(row);
+          const block = `id: ${String(event.sequence)}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+          try {
+            await writeFrame(block);
+          } catch (error) {
+            report(error);
+            stop();
+            return;
           }
-        } catch (error) {
-          report(error);
-          stop();
-          return;
         }
+        if (rows.length < SSE_REPLAY_PAGE_SIZE) return;
       }
     };
 
@@ -302,6 +391,7 @@ async function streamEvents(input: {
     timers.clearTimeout(lifetime);
     reply.raw.removeListener('close', stop);
     reply.raw.removeListener('error', stop);
+    shutdownSignal.removeEventListener('abort', stopForShutdown);
     await closeQuietly(subscription, report);
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
   }
@@ -311,6 +401,20 @@ export function registerRunEventStreamRoute(
   app: AppInstance,
   dependencies: RunEventStreamRouteDependencies,
 ): void {
+  const activeStreams = new Set<{
+    readonly controller: AbortController;
+    readonly completed: Promise<void>;
+  }>();
+  app.addHook('preClose', async () => {
+    const streams = [...activeStreams];
+    for (const stream of streams) stream.controller.abort();
+    await Promise.all(
+      streams.map((stream) => {
+        return stream.completed;
+      }),
+    );
+  });
+
   app.get(
     '/v1/runs/:runId/events',
     {
@@ -351,14 +455,29 @@ export function registerRunEventStreamRoute(
         await dependencies.eventStream.supportAccess?.audit({ ...accessContext, access: 'support' });
       }
 
-      await streamEvents({
-        reply,
-        tenantDb: ctx.db,
-        runId: run.id,
-        after: queryAfter ?? lastEventId ?? 0,
-        access: decision.access,
-        dependencies: dependencies.eventStream,
-      });
+      const shutdownController = new AbortController();
+      let markCompleted!: () => void;
+      const activeStream = {
+        controller: shutdownController,
+        completed: new Promise<void>((resolve) => {
+          markCompleted = resolve;
+        }),
+      };
+      activeStreams.add(activeStream);
+      try {
+        await streamEvents({
+          reply,
+          tenantDb: ctx.db,
+          runId: run.id,
+          after: queryAfter ?? lastEventId ?? 0,
+          access: decision.access,
+          dependencies: dependencies.eventStream,
+          shutdownSignal: shutdownController.signal,
+        });
+      } finally {
+        activeStreams.delete(activeStream);
+        markCompleted();
+      }
     },
   );
 }

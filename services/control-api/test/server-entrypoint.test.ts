@@ -117,6 +117,13 @@ describe('control-api production entrypoint', () => {
 
     await import('../src/server.js');
 
+    expect(production.composeApp).toHaveBeenCalledOnce();
+    expect(production.composeApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redis: production.redis,
+        eventWakeups: production.redis,
+      }),
+    );
     expect(production.app.listen).not.toHaveBeenCalled();
     expect(production.createEventPublisherLifecycle).toHaveBeenCalledOnce();
     const lifecycleInput = production.createEventPublisherLifecycle.mock.calls[0]?.[0];
