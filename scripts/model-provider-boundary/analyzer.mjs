@@ -2038,7 +2038,18 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     function visit(node, visitState = nextState) {
       if (node !== functionLike && ts.isFunctionLike(node)) return;
       if (ts.isIfStatement(node)) {
-        const { truthiness } = runtimePossibilities(node.expression, environment, visitState);
+        const conditionExpression = unwrapExpression(node.expression);
+        const condition =
+          ts.isCallExpression(conditionExpression) &&
+          (inspectBodyCalls ||
+            record.thisValue ||
+            (inspectRuntimeInstanceCalls &&
+              callTargetsRuntimeInstance(conditionExpression, environment, visitState)))
+            ? callableValue(node.expression, environment, visitState)
+            : undefined;
+        const truthiness =
+          condition?.truthiness ??
+          runtimePossibilities(node.expression, environment, visitState).truthiness;
         const thenReachable = (truthiness & MAY_BE_TRUTHY) !== 0;
         const elseReachable = (truthiness & MAY_BE_FALSY) !== 0;
         const branchState =

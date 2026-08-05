@@ -828,6 +828,7 @@ test('AR-1 preserves mutations on the matching factory-created class instance', 
     'map-factory-second-instance-unsafe',
     'map-mutator-same-instance-unsafe',
     'factory-branch-configured-instance',
+    'factory-contextual-loader-if-condition',
     'factory-unknown-branch-conservative',
     'factory-parameterized-loader-instance',
   ]) {

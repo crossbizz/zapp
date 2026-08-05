@@ -27,7 +27,3 @@ function configured(armed) {
 
 const armed = configured(true);
 armed.fire();
-
-declare const unknown: boolean;
-const maybeArmed = configured(unknown);
-maybeArmed.fire();
