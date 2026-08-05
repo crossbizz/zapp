@@ -267,3 +267,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-13 done — sequenced service-only event ingest persists full replay context, audits each committed batch, and sends transactional PostgreSQL NOTIFY.
 - 2026-08-04 CP-14 done — committed event notifications now publish Zod-validated high-water pings through Redis, with bounded LISTEN retry and a 2-second database polling fallback.
 - 2026-08-04 CP-15 implementation committed — resumable tenant-scoped SSE now has bounded replay, bounded shutdown, and serialized backpressure; review pending.
+- 2026-08-04 CP-15 BLOCKED: final review 5/5 found shutdown still waits indefinitely for an already-stalled database `byRun()` read and valid bare post-`q` Accept extensions are rejected; task/tracker remain unchecked pending explicit approval for another remediation round.
