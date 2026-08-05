@@ -2416,6 +2416,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           }
         }
         if (ts.isStringLiteralLike(expression)) continue;
+        if (ts.isCallExpression(expression)) continue;
         return undefined;
       }
       if (
