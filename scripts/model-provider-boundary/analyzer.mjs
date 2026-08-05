@@ -3007,28 +3007,31 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         : [];
     let changed = false;
     for (const property of properties) {
+      let memberNames;
+      let alias;
       if (ts.isBindingElement(property)) {
-        const propertyName = property.propertyName?.getText() ?? property.name.getText();
-        if (propertyName === 'assign' && ts.isIdentifier(property.name)) {
-          changed =
-            addCallableKinds(symbolAt(checker, property.name), CALLABLE_OBJECT_ASSIGN) || changed;
+        memberNames = property.propertyName
+          ? declarationMemberNames(property.propertyName)
+          : ts.isIdentifier(property.name)
+            ? new Set([property.name.text])
+            : undefined;
+        alias = ts.isIdentifier(property.name) ? symbolAt(checker, property.name) : undefined;
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        memberNames = new Set([property.name.text]);
+        alias = checker.getShorthandAssignmentValueSymbol(property);
+      } else if (ts.isPropertyAssignment(property)) {
+        memberNames = declarationMemberNames(property.name);
+        let assignmentTarget = unwrapExpression(property.initializer);
+        if (
+          ts.isBinaryExpression(assignmentTarget) &&
+          assignmentTarget.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+          assignmentTarget = unwrapExpression(assignmentTarget.left);
         }
-      } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'assign') {
-        changed =
-          addCallableKinds(
-            checker.getShorthandAssignmentValueSymbol(property),
-            CALLABLE_OBJECT_ASSIGN,
-          ) || changed;
-      } else if (
-        ts.isPropertyAssignment(property) &&
-        propertyNameText(property.name) === 'assign' &&
-        ts.isIdentifier(unwrapExpression(property.initializer))
-      ) {
-        changed =
-          addCallableKinds(
-            symbolAt(checker, unwrapExpression(property.initializer)),
-            CALLABLE_OBJECT_ASSIGN,
-          ) || changed;
+        alias = ts.isIdentifier(assignmentTarget) ? symbolAt(checker, assignmentTarget) : undefined;
+      }
+      if (memberNames?.has('assign')) {
+        changed = addCallableKinds(alias, CALLABLE_OBJECT_ASSIGN) || changed;
       }
     }
     return changed;

@@ -601,6 +601,25 @@ test('AR-1 allows harmless or unrelated destructured assign functions', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 tracks computed and defaulted Object.assign destructuring aliases', () => {
+  const result = runFixture('loader-object-assign-computed-defaulted-aliases');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'computed-key-positive',
+    'computed-literal-positive',
+    'default-target-positive',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 keeps non-assign computed keys and harmless defaults clean', () => {
+  const result = runFixture('loader-object-assign-computed-defaulted-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks push and unshift container identity through aliases and late assignment', () => {
   const result = runFixture('loader-mutated-container-identity');
 
