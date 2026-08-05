@@ -1,0 +1,15 @@
+{
+  "files": {
+    "apps/desktop/src/ipc/utils/inherited-provider.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai#createOpenAI": 1
+      },
+      "providerImports": {
+        "import:@ai-sdk/openai#createOpenAI": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai#createOpenAI": 1
+      }
+    }
+  }
+}

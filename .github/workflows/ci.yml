@@ -98,6 +98,9 @@ jobs:
       # --continue keeps going past the first failing task, so one CI round-trip
       # reports every lint AND test failure instead of a lint error masking the
       # tests behind it. Tasks whose dependencies failed are still skipped.
+      - name: Architecture lint
+        run: pnpm lint:architecture
+
       - name: Lint, typecheck, build, test
         run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
 
