@@ -447,3 +447,145 @@ jobs:
         env:
           FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
         run: pnpm --filter @zapp/control-api run test:gate5
+
+  # GIT-4's backup claim is destructive inside disposable infrastructure: it
+  # creates a private repository, bundles it into S3-compatible storage,
+  # deletes the source, restores through a restricted credential, verifies all
+  # refs, and clones the result. This dedicated job names the one live test file
+  # directly, so a missing file or missing service cannot silently become a
+  # skipped green integration job.
+  git-backup-live:
+    name: git backup live recovery gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      forgejo:
+        image: codeberg.org/forgejo/forgejo:9
+        env:
+          USER_UID: "1000"
+          USER_GID: "1000"
+          FORGEJO__security__INSTALL_LOCK: "true"
+          FORGEJO__database__DB_TYPE: sqlite3
+          FORGEJO__database__PATH: /data/gitea/forgejo.db
+          FORGEJO__server__OFFLINE_MODE: "true"
+          FORGEJO__server__ROOT_URL: http://localhost:3000/
+          FORGEJO__service__DISABLE_REGISTRATION: "true"
+          FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: "true"
+          FORGEJO__service__DEFAULT_USER_VISIBILITY: private
+          FORGEJO__service__DEFAULT_ORG_VISIBILITY: private
+          FORGEJO__repository__DEFAULT_PRIVATE: private
+          FORGEJO__actions__ENABLED: "false"
+          FORGEJO__mailer__ENABLED: "false"
+          FORGEJO__cron__ENABLED: "false"
+        ports:
+          - 3000:3000
+        options: >-
+          --health-cmd "wget -q -O /dev/null http://127.0.0.1:3000/api/healthz"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+          --health-start-period 30s
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      GIT_BACKUP_LIVE: '1'
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
+      FORGEJO_URL: http://localhost:3000
+      ARTIFACT_ENDPOINT: http://localhost:9000
+      ARTIFACT_KEY: minioadmin
+      ARTIFACT_SECRET: minioadmin
+      ARTIFACT_BUCKET: zapp-git-backups
+      ARTIFACT_REGION: us-east-1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start MinIO service
+        run: |
+          set -euo pipefail
+          docker run --detach --name zapp-git-backup-minio --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs zapp-git-backup-minio
+          exit 1
+
+      - name: Create MinIO backup bucket
+        run: |
+          pnpm --filter @zapp/git-service exec node --input-type=module <<'NODE'
+          import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
+          const client = new S3Client({
+            endpoint: process.env.ARTIFACT_ENDPOINT,
+            region: process.env.ARTIFACT_REGION,
+            forcePathStyle: true,
+            credentials: {
+              accessKeyId: process.env.ARTIFACT_KEY,
+              secretAccessKey: process.env.ARTIFACT_SECRET,
+            },
+          });
+          await client.send(new CreateBucketCommand({ Bucket: process.env.ARTIFACT_BUCKET }));
+          NODE
+
+      - name: Seed the Forgejo admin token
+        id: forgejo
+        run: |
+          set -euo pipefail
+          container="$(docker ps --filter 'ancestor=codeberg.org/forgejo/forgejo:9' --format '{{.ID}}' | head -1)"
+          if [ -z "$container" ]; then
+            echo "::error::no forgejo service container found"
+            docker ps
+            exit 1
+          fi
+          password="$(openssl rand -hex 24)"
+          docker exec -u git "$container" forgejo admin user create \
+            --admin --username zapp-ci --email ci@zapp.local \
+            --password "$password" --must-change-password=false
+          token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
+            --username zapp-ci --token-name ci --scopes all --raw | tr -d '\r\n')"
+          if [ -z "$token" ]; then
+            echo "::error::failed to mint a Forgejo admin token"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Build workspace dependencies
+        run: pnpm turbo run build --filter=@zapp/git-service
+
+      - name: Live backup recovery gate
+        env:
+          FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
+        run: pnpm --filter @zapp/git-service exec vitest run test/integration/backup.test.ts --no-file-parallelism

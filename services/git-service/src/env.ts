@@ -3,6 +3,11 @@ import { z } from 'zod';
 
 import { LOG_LEVELS } from './logging.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from './sweep.js';
+import { DEFAULT_TOKEN_TTL_SECONDS } from './tokens.js';
+
+const MIB = 1024 * 1024;
+const RESTORE_CREDENTIAL_TTL_MS = DEFAULT_TOKEN_TTL_SECONDS * 1_000;
+export const MAX_FORGEJO_TIMEOUT_MS = 30_000;
 
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
@@ -89,7 +94,12 @@ const ForgejoEnvSchema = z.object({
    * Five seconds: an order of magnitude more than a healthy create takes (tens
    * of milliseconds), and half of `GIT_CREATE_DEADLINE_MS`.
    */
-  FORGEJO_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5_000),
+  FORGEJO_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(MAX_FORGEJO_TIMEOUT_MS)
+    .default(5_000),
 });
 
 export interface ForgejoEnv {
@@ -109,6 +119,82 @@ export function loadForgejoEnv(source: unknown = process.env): ForgejoEnv {
     adminToken: env.FORGEJO_ADMIN_TOKEN,
     timeoutMs: env.FORGEJO_TIMEOUT_MS,
   };
+}
+
+export const ArtifactEnvSchema = z
+  .object({
+    ARTIFACT_ENDPOINT: z.string().url(),
+    ARTIFACT_KEY: z.string().min(1),
+    ARTIFACT_SECRET: z.string().min(1),
+    ARTIFACT_BUCKET: z
+      .string()
+      .min(3)
+      .max(63)
+      .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/),
+    ARTIFACT_REGION: z.string().min(1).default('auto'),
+    ARTIFACT_MULTIPART_THRESHOLD_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(5 * 1024 * MIB)
+      .default(100 * MIB),
+    ARTIFACT_MULTIPART_PART_SIZE_BYTES: z.coerce
+      .number()
+      .int()
+      .min(5 * MIB)
+      .max(5 * 1024 * MIB)
+      .default(10 * MIB),
+    ARTIFACT_MULTIPART_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(4),
+    ARTIFACT_UPLOAD_DEADLINE_MS: z.coerce.number().int().min(100).max(7_200_000).default(1_800_000),
+    ARTIFACT_UPLOAD_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+    ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(0).max(10_000).default(100),
+  })
+  .transform((env) => ({
+    endpoint: env.ARTIFACT_ENDPOINT.replace(/\/+$/, ''),
+    accessKeyId: env.ARTIFACT_KEY,
+    secretAccessKey: env.ARTIFACT_SECRET,
+    bucket: env.ARTIFACT_BUCKET,
+    region: env.ARTIFACT_REGION,
+    multipartThresholdBytes: env.ARTIFACT_MULTIPART_THRESHOLD_BYTES,
+    multipartPartSizeBytes: env.ARTIFACT_MULTIPART_PART_SIZE_BYTES,
+    multipartConcurrency: env.ARTIFACT_MULTIPART_CONCURRENCY,
+    uploadDeadlineMs: env.ARTIFACT_UPLOAD_DEADLINE_MS,
+    maxAttempts: env.ARTIFACT_UPLOAD_MAX_ATTEMPTS,
+    retryBaseDelayMs: env.ARTIFACT_UPLOAD_RETRY_BASE_DELAY_MS,
+  }));
+
+export type ArtifactEnv = z.infer<typeof ArtifactEnvSchema>;
+
+/** Cloudflare R2 in production and the S3-compatible MinIO stack in development. */
+export function loadArtifactEnv(source: unknown = process.env): ArtifactEnv {
+  return defineEnv(ArtifactEnvSchema, source);
+}
+
+const GitCommandDeadlineEnvSchema = z
+  .object({
+    GIT_BACKUP_COMMAND_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(7_200_000)
+      .default(900_000),
+    GIT_RESTORE_COMMAND_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(RESTORE_CREDENTIAL_TTL_MS - 1)
+      .default(240_000),
+  })
+  .transform((env) => ({
+    backupCommandDeadlineMs: env.GIT_BACKUP_COMMAND_DEADLINE_MS,
+    restoreCommandDeadlineMs: env.GIT_RESTORE_COMMAND_DEADLINE_MS,
+  }));
+
+export type GitCommandDeadlineEnv = z.infer<typeof GitCommandDeadlineEnvSchema>;
+
+/** Independent Git subprocess budgets for scheduled backup and restore operations. */
+export function loadGitCommandDeadlineEnv(source: unknown = process.env): GitCommandDeadlineEnv {
+  return defineEnv(GitCommandDeadlineEnvSchema, source);
 }
 
 /**

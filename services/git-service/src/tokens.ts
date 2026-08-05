@@ -137,9 +137,39 @@ export interface MintedToken {
   readonly expiresAt: Date;
 }
 
+export interface MintRepositoryTokenInput extends MintTokenInput {
+  /** The validated restore target, which can differ from the source project during a drill. */
+  readonly targetRef: string;
+  /** Forgejo's immutable repository id from the append-only target receipt. */
+  readonly expectedRepositoryId: number;
+  /**
+   * Persists the non-secret identity before Forgejo creates it, so a crashed or
+   * failed restore can resume revocation without retaining the token/password.
+   */
+  readonly onIdentityAllocated?: (identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }) => Promise<void>;
+  /**
+   * Confirms that Forgejo finished creating the identity, before any repository
+   * grant or token exists. Restore cleanup uses this durable boundary to decide
+   * whether a 404 can be terminal or must remain pending until expiry.
+   */
+  readonly onIdentityCreated?: (identity: {
+    readonly username: string;
+    readonly expiresAt: Date;
+  }) => Promise<void>;
+}
+
 export interface TokenService {
   /** @throws Error for a TTL over the ceiling; {@link ForgejoError} if the Git host refuses. */
   mint(input: MintTokenInput): Promise<MintedToken>;
+  /**
+   * Mints only after the collaborator grant is proven to belong to the received
+   * immutable repository id. Used by restore so a path replacement cannot
+   * inherit a force-push credential.
+   */
+  mintForRepository(input: MintRepositoryTokenInput): Promise<MintedToken>;
   /**
    * Revokes every outstanding grant on a project's repository. Called when a
    * project is deleted: the repository goes, and every credential that could
@@ -170,6 +200,7 @@ interface TokenResponse {
 }
 
 interface RepositoryResponse {
+  readonly id?: number;
   readonly clone_url?: string;
 }
 
@@ -201,126 +232,135 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
     });
   }
 
-  return {
-    async mint(input: MintTokenInput): Promise<MintedToken> {
-      const ttlSec = input.ttlSec ?? DEFAULT_TOKEN_TTL_SECONDS;
-      if (!Number.isInteger(ttlSec) || ttlSec <= 0 || ttlSec > MAX_TOKEN_TTL_SECONDS) {
-        // Refused at minting, so a caller that wants a long-lived credential
-        // fails at its own call rather than quietly receiving one.
-        throw new Error(
-          `mint: ttlSec must be a whole number of seconds in 1…${String(MAX_TOKEN_TTL_SECONDS)}`,
-        );
-      }
+  async function mintRepositoryToken(
+    input: MintTokenInput,
+    ref: string,
+    expectedRepositoryId?: number,
+    onIdentityAllocated?: MintRepositoryTokenInput['onIdentityAllocated'],
+    onIdentityCreated?: MintRepositoryTokenInput['onIdentityCreated'],
+  ): Promise<MintedToken> {
+    const ttlSec = input.ttlSec ?? DEFAULT_TOKEN_TTL_SECONDS;
+    if (!Number.isInteger(ttlSec) || ttlSec <= 0 || ttlSec > MAX_TOKEN_TTL_SECONDS) {
+      throw new Error(
+        `mint: ttlSec must be a whole number of seconds in 1…${String(MAX_TOKEN_TTL_SECONDS)}`,
+      );
+    }
 
-      const ref = internalRepoRef(input);
-      const path = repoPath(ref);
-      const issuedAt = now();
-      const expiresAt = new Date(issuedAt.getTime() + ttlSec * 1000);
-      const username = ephemeralUsername(expiresAt);
-      const access = FORGEJO_ACCESS[input.access];
+    const path = repoPath(ref);
+    const issuedAt = now();
+    const expiresAt = new Date(issuedAt.getTime() + ttlSec * 1000);
+    const username = ephemeralUsername(expiresAt);
+    const access = FORGEJO_ACCESS[input.access];
 
-      // Read first, and not only for the clone URL: a repository that is not
-      // there must not result in a user account that outlives the request.
-      const repository = await client.send<RepositoryResponse>({ method: 'GET', path });
-      const cloneUrl = repository.body?.clone_url;
-      if (cloneUrl === undefined || cloneUrl === '') {
-        throw new ForgejoError('GET', path, 0, 'repository response carried no clone_url');
-      }
+    const repository = await client.send<RepositoryResponse>({ method: 'GET', path });
+    let cloneUrl = repository.body?.clone_url;
+    if (cloneUrl === undefined || cloneUrl === '') {
+      throw new ForgejoError('GET', path, 0, 'repository response carried no clone_url');
+    }
+    if (expectedRepositoryId !== undefined && repository.body?.id !== expectedRepositoryId) {
+      throw new Error('Restore repository identity does not match the durable receipt');
+    }
 
-      // Used once, below, to mint the token. Never stored, never returned, never
-      // logged — Forgejo's token endpoint is the only thing that ever sees it.
-      const password = randomBytes(24).toString('base64url');
+    await onIdentityAllocated?.({ username, expiresAt });
 
+    if (now().getTime() >= expiresAt.getTime()) {
+      throw new Error('Credential identity expired before Forgejo creation');
+    }
+
+    const password = randomBytes(24).toString('base64url');
+
+    try {
       await client.send({
         method: 'POST',
         path: '/admin/users',
         body: {
           username,
-          // A domain nobody can receive at, so a misconfigured mailer cannot send
-          // anything anywhere. Notifications are off in every environment
-          // (`app.ini`), and this is the second line of that.
           email: `${username}@ephemeral.zapp.invalid`,
           password,
           must_change_password: false,
-          /**
-           * The word that does the work. A restricted Forgejo user sees nothing
-           * it has not been explicitly granted — not other repositories, not
-           * public ones, not the organization it is a collaborator in. Without
-           * it, a token scoped `read:repository` would read every repository the
-           * account can see, which for an unrestricted account is a great many.
-           */
           restricted: true,
           visibility: 'private',
         },
       });
+      await onIdentityCreated?.({ username, expiresAt });
 
-      try {
-        await client.send({
-          method: 'PUT',
-          path: `${path}/collaborators/${encodeURIComponent(username)}`,
-          body: { permission: access.permission },
-        });
+      await client.send({
+        method: 'PUT',
+        path: `${path}/collaborators/${encodeURIComponent(username)}`,
+        body: { permission: access.permission },
+      });
 
-        const minted = await client.send<TokenResponse>({
-          method: 'POST',
-          path: `/users/${encodeURIComponent(username)}/tokens`,
-          // Basic auth as the ephemeral user: Forgejo's token endpoint refuses
-          // token auth, which is the whole reason the account has a password.
-          auth: { kind: 'basic', username, password },
-          body: {
-            name: `zapp-${String(Math.floor(issuedAt.getTime() / 1000))}`,
-            scopes: [access.scope],
-          },
-        });
-
-        const token = minted.body?.sha1;
-        if (token === undefined || token === '') {
-          throw new ForgejoError('POST', `/users/${username}/tokens`, 0, 'no token in response');
+      if (expectedRepositoryId !== undefined) {
+        const grantedRepository = await client.send<RepositoryResponse>({ method: 'GET', path });
+        if (grantedRepository.body?.id !== expectedRepositoryId) {
+          throw new Error('Restore repository identity changed during credential grant');
         }
-
-        /**
-         * The audit row, before the token is returned and after it exists.
-         *
-         * Deliberately in this order and inside the compensation below: a
-         * credential that was handed out with no record of it is the one outcome
-         * this trail exists to prevent, so if the row cannot be written the grant
-         * is destroyed and the caller gets an error. The reverse order — record
-         * first — would leave rows describing credentials that were never issued,
-         * which is the less dangerous failure but makes the trail unreliable in
-         * the other direction.
-         */
-        await audit.record({
-          organizationId: input.organizationId,
-          action: 'git_token.minted',
-          projectId: input.projectId,
-          requestingService: input.requestingService,
-          occurredAt: issuedAt,
-          metadata: {
-            internalRepoRef: ref,
-            access: input.access,
-            ttlSec,
-            expiresAt: expiresAt.toISOString(),
-            // The identity, not the secret: enough to tie a Forgejo access-log
-            // line back to this row, and worth nothing on its own.
-            tokenUser: username,
-            reason: input.reason,
-            runId: input.runId ?? null,
-            taskId: input.taskId ?? null,
-          },
-        });
-
-        return { token, username, cloneUrl, expiresAt };
-      } catch (error) {
-        // Everything after the account was created is compensated: a failed
-        // grant must not leave a usable identity behind, and an unswept
-        // ephemeral user with a token is exactly that.
-        await deleteUser(username).catch(() => {
-          // The sweep will find it: the deadline is in the name. Swallowed
-          // rather than masking the original failure, which is the one the
-          // caller needs.
-        });
-        throw error;
+        cloneUrl = grantedRepository.body.clone_url;
+        if (cloneUrl === undefined || cloneUrl === '') {
+          throw new ForgejoError('GET', path, 0, 'repository response carried no clone_url');
+        }
       }
+
+      const minted = await client.send<TokenResponse>({
+        method: 'POST',
+        path: `/users/${encodeURIComponent(username)}/tokens`,
+        auth: { kind: 'basic', username, password },
+        body: {
+          name: `zapp-${String(Math.floor(issuedAt.getTime() / 1000))}`,
+          scopes: [access.scope],
+        },
+      });
+
+      const token = minted.body?.sha1;
+      if (token === undefined || token === '') {
+        throw new ForgejoError('POST', `/users/${username}/tokens`, 0, 'no token in response');
+      }
+
+      await audit.record({
+        organizationId: input.organizationId,
+        action: 'git_token.minted',
+        projectId: input.projectId,
+        requestingService: input.requestingService,
+        occurredAt: issuedAt,
+        metadata: {
+          internalRepoRef: ref,
+          access: input.access,
+          ttlSec,
+          expiresAt: expiresAt.toISOString(),
+          tokenUser: username,
+          reason: input.reason,
+          runId: input.runId ?? null,
+          taskId: input.taskId ?? null,
+        },
+      });
+
+      return { token, username, cloneUrl, expiresAt };
+    } catch (error) {
+      await deleteUser(username).catch(() => {
+        // The restart-safe expiry sweep remains the fallback for this identity.
+      });
+      throw error;
+    }
+  }
+
+  return {
+    async mint(input: MintTokenInput): Promise<MintedToken> {
+      const ref = internalRepoRef(input);
+      return await mintRepositoryToken(input, ref);
+    },
+
+    async mintForRepository(input: MintRepositoryTokenInput): Promise<MintedToken> {
+      parseInternalRepoRef(input.targetRef);
+      if (!Number.isInteger(input.expectedRepositoryId) || input.expectedRepositoryId <= 0) {
+        throw new Error('Invalid expected repository identity');
+      }
+      return await mintRepositoryToken(
+        input,
+        input.targetRef,
+        input.expectedRepositoryId,
+        input.onIdentityAllocated,
+        input.onIdentityCreated,
+      );
     },
 
     async revokeForProject(input): Promise<number> {

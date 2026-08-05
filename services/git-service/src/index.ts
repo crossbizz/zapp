@@ -11,13 +11,45 @@
  */
 export { buildApp, type AppDeps, type AppInstance } from './app.js';
 export { GIT_AUDIT_ACTIONS, type GitAuditAction, type GitAuditEvent } from './audit.js';
+export {
+  BackupDateSchema,
+  backupKey,
+  createDbBackupInventory,
+  createGitBundleCommands,
+  createR2BackupObjectStore,
+  createS3BackupObjectStore,
+  enforceBackupRetention,
+  latestBackupKey,
+  RESTORE_CREDENTIAL_SAFETY_MARGIN_MS,
+  RestoreRepositoryResultSchema,
+  restoreRepositoryBackup,
+  runNightlyBackups,
+  runRepositoryBackup,
+  selectRestoreDrillBackup,
+  type BackupGit,
+  type BackupInventory,
+  type BackupObject,
+  type BackupObjectStore,
+  type BackupRepository,
+  type ExpectedBranch,
+  type NightlyBackupReport,
+  type RepositoryBackupResult,
+  type RestorePreparationGit,
+  type RestoreRemoteGit,
+  type RestoreRepositoryResult,
+} from './backup.js';
 export { composeApp, type ServiceComposition, type ServiceRuntime } from './compose.js';
 export {
+  ArtifactEnvSchema,
+  loadArtifactEnv,
   loadDatabaseUrl,
   loadEnv,
   loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
   loadServiceTokenConfig,
+  type ArtifactEnv,
   type ForgejoEnv,
+  type GitCommandDeadlineEnv,
   type ServiceEnv,
 } from './env.js';
 export { GIT_SERVICE_AUDIENCE, SERVICE_TOKEN_HEADER } from './internal/service-auth.js';
