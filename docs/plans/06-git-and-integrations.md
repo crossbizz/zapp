@@ -148,9 +148,9 @@ be built:
 **Files:** Create: `src/backup.ts`, `docs/runbooks/git-restore.md`, nightly CI/cron workflow
 **Effort:** M
 
-- [ ] Binding behavior: nightly `git bundle create` per repo → R2 `org/{orgId}/project/{projectId}/git-backups/{date}.bundle` (30-day retention, latest never deleted); restore runbook: bundle → fresh Forgejo repo → verify head SHAs vs `branches` table; quarterly restore drill task in ops calendar (OPS-15).
-- [ ] Verify: backup of seeded repo → delete repo → restore → clone matches original head.
-- [ ] Commit: `feat(git-service): nightly bundle backups + tested restore path`
+- [x] Binding behavior: nightly `git bundle create` per repo → R2 `org/{orgId}/project/{projectId}/git-backups/{date}.bundle` (30-day retention, latest never deleted); restore runbook: bundle → fresh Forgejo repo → verify head SHAs vs `branches` table; quarterly restore drill task in ops calendar (OPS-15).
+- [x] Verify: backup of seeded repo → delete repo → restore → clone matches original head.
+- [x] Commit: `feat(git-service): nightly bundle backups + tested restore path`
 
 ### Task INT-1 [M4]: GitHub App + webhooks
 
@@ -254,3 +254,4 @@ be built:
 - 2026-08-04 GIT-4 review 4/5 implementation committed — automatic repository deletion removed; intent-first append-only restore recovery, caller-keyed manual replay, persistent leased drill target, and fresh-signal R2 ambiguity reconciliation implemented; independent review round 5 and live proof pending controller; task and tracker remain unchecked.
 - 2026-08-04 GIT-4 BLOCKED: final review 5/5 found a path-replacement race before admin-token mirror push, marker-only adoption without a prior immutable-ID receipt, and multi-document restore evidence accepted by jq; live restore proof canceled and task remains unchecked pending explicit approval for another remediation round.
 - 2026-08-04 GIT-4 final-review remediation implementation committed: restore push/ref reads now use an immutable-ID-checked repository credential, marker-only adoption is refused, and evidence requires one JSON document; fresh independent review and live proof remain pending, task and tracker stay unchecked.
+- 2026-08-04 GIT-4 done — nightly immutable bundle backups and append-only restore recovery now fence credential terminalization across processes, isolate conditional S3 uploads, and pass final CLEAN review plus the live Forgejo/PostgreSQL/MinIO backup-delete-restore-clone drill.
