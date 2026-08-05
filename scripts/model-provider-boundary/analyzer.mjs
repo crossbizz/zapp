@@ -18,6 +18,7 @@ const CALLABLE_OBJECT_ASSIGN = 4;
 const CALLABLE_INTRINSIC_CALL = 8;
 const CALLABLE_INTRINSIC_APPLY = 16;
 const CALLABLE_INTRINSIC_INVOCATION = CALLABLE_INTRINSIC_CALL | CALLABLE_INTRINSIC_APPLY;
+const MAX_INTRINSIC_INVOCATION_DEPTH = 32;
 const MAY_BE_TRUTHY = 1;
 const MAY_BE_FALSY = 2;
 const MAY_BE_NULLISH = 1;
@@ -2227,6 +2228,61 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     };
   }
 
+  function intrinsicInvocationArguments(intrinsicKinds, passedArguments) {
+    const argumentAlternatives = [];
+    if ((intrinsicKinds & CALLABLE_INTRINSIC_CALL) !== 0) {
+      argumentAlternatives.push({
+        expressions: passedArguments.expressions.slice(1),
+        values: passedArguments.values.slice(1),
+      });
+    }
+    if ((intrinsicKinds & CALLABLE_INTRINSIC_APPLY) !== 0) {
+      argumentAlternatives.push(
+        arrayInvocationArguments(
+          passedArguments.expressions[1],
+          passedArguments.values[1] ?? emptyCallableValue(),
+        ),
+      );
+    }
+    const argumentCount = Math.max(0, ...argumentAlternatives.map(({ values }) => values.length));
+    return {
+      expressions: Array.from({ length: argumentCount }, (_, index) => {
+        const expressions = argumentAlternatives.map(({ expressions }) => expressions[index]);
+        return expressions.every((expression) => expression === expressions[0])
+          ? expressions[0]
+          : undefined;
+      }),
+      values: Array.from({ length: argumentCount }, (_, index) =>
+        mergeCallableValues(...argumentAlternatives.map(({ values }) => values[index])),
+      ),
+    };
+  }
+
+  function invocationTargetValue(expression, value) {
+    const kinds = expression ? callableKinds(expression) : 0;
+    return kinds === 0 ? value : { ...value, kinds: value.kinds | kinds };
+  }
+
+  function normalizeIntrinsicInvocation(invocation) {
+    let current = invocation;
+    for (let depth = 0; depth < MAX_INTRINSIC_INVOCATION_DEPTH; depth += 1) {
+      const intrinsicKinds = current.callee.kinds & CALLABLE_INTRINSIC_INVOCATION;
+      if (intrinsicKinds === 0) return current;
+      const argumentsForTarget = intrinsicInvocationArguments(intrinsicKinds, {
+        expressions: current.argumentExpressions,
+        values: current.argumentValues,
+      });
+      current = {
+        argumentExpressions: argumentsForTarget.expressions,
+        argumentValues: argumentsForTarget.values,
+        callee: invocationTargetValue(current.thisExpression, current.thisValue),
+        thisExpression: current.argumentExpressions[0],
+        thisValue: current.argumentValues[0] ?? emptyCallableValue(),
+      };
+    }
+    return current;
+  }
+
   function nestedIntrinsicInvocation(callExpression, environment, state) {
     const callee = unwrapExpression(callExpression.expression);
     if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
@@ -2256,37 +2312,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           : emptyCallableValue(),
       );
     }
-
-    const argumentAlternatives = [];
-    if ((intrinsicKinds & CALLABLE_INTRINSIC_CALL) !== 0) {
-      argumentAlternatives.push({
-        expressions: passedArguments.expressions.slice(1),
-        values: passedArguments.values.slice(1),
-      });
-    }
-    if ((intrinsicKinds & CALLABLE_INTRINSIC_APPLY) !== 0) {
-      argumentAlternatives.push(
-        arrayInvocationArguments(
-          passedArguments.expressions[1],
-          passedArguments.values[1] ?? emptyCallableValue(),
-        ),
-      );
-    }
-    const argumentCount = Math.max(0, ...argumentAlternatives.map(({ values }) => values.length));
-    const argumentExpressions = Array.from({ length: argumentCount }, (_, index) => {
-      const expressions = argumentAlternatives.map(({ expressions }) => expressions[index]);
-      return expressions.every((expression) => expression === expressions[0])
-        ? expressions[0]
-        : undefined;
+    return normalizeIntrinsicInvocation({
+      argumentExpressions: passedArguments.expressions,
+      argumentValues: passedArguments.values,
+      callee: invocationTargetValue(
+        callee.expression,
+        callableValue(callee.expression, environment, state),
+      ),
+      thisExpression: callExpression.arguments[0],
+      thisValue: callableValue(callExpression.arguments[0], environment, state),
     });
-    const argumentValues = Array.from({ length: argumentCount }, (_, index) =>
-      mergeCallableValues(...argumentAlternatives.map(({ values }) => values[index])),
-    );
-    return {
-      argumentExpressions,
-      argumentValues,
-      callee: callableValue(callExpression.arguments[0], environment, state),
-    };
   }
 
   function invocationForCall(callExpression, environment, state) {
