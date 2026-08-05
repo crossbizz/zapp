@@ -364,6 +364,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const contextualLoaderTargets = new Map();
   const contextualValueCache = new Map();
   const runtimeClassInstances = new Map();
+  const readOnlyLiteralContainerSymbols = new Map();
   let collectLoaderContexts = false;
 
   function originsForSymbol(symbol) {
@@ -698,6 +699,63 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return objectSpreadMembersAreKnown(current.right, seenSymbols);
     }
     return false;
+  }
+
+  function definitelyPresentObjectSpreadMembers(expression, seenSymbols = new Set()) {
+    const current = unwrapExpression(expression);
+    if (ts.isObjectLiteralExpression(current)) {
+      const members = new Set();
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          for (const memberName of definitelyPresentObjectSpreadMembers(
+            property.expression,
+            seenSymbols,
+          )) {
+            members.add(memberName);
+          }
+          continue;
+        }
+        for (const memberName of declarationMemberNames(property.name) ?? []) {
+          members.add(memberName);
+        }
+      }
+      return members;
+    }
+    if (ts.isIdentifier(current)) {
+      if (!objectSpreadMembersAreKnown(current)) return new Set();
+      const symbol = symbolAt(checker, current);
+      const identity = aliasedSymbol(checker, symbol) ?? symbol;
+      if (!identity || seenSymbols.has(identity)) return new Set();
+      const declarations = identity.declarations ?? [];
+      const initializers = declarations
+        .filter(
+          (declaration) =>
+            ts.isVariableDeclaration(declaration) &&
+            !!declaration.initializer &&
+            (ts.getCombinedNodeFlags(declaration.parent) & ts.NodeFlags.Const) !== 0,
+        )
+        .map((declaration) => declaration.initializer);
+      if (initializers.length === 0 || initializers.length !== declarations.length) {
+        return new Set();
+      }
+      const candidates = initializers.map((initializer) =>
+        definitelyPresentObjectSpreadMembers(initializer, new Set([...seenSymbols, identity])),
+      );
+      return new Set(
+        [...candidates[0]].filter((memberName) =>
+          candidates.every((candidate) => candidate.has(memberName)),
+        ),
+      );
+    }
+    if (ts.isConditionalExpression(current)) {
+      const whenTrue = definitelyPresentObjectSpreadMembers(current.whenTrue, seenSymbols);
+      const whenFalse = definitelyPresentObjectSpreadMembers(current.whenFalse, seenSymbols);
+      return new Set([...whenTrue].filter((memberName) => whenFalse.has(memberName)));
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return definitelyPresentObjectSpreadMembers(current.right, seenSymbols);
+    }
+    return new Set();
   }
 
   function isModuleRequire(expression) {
@@ -1362,6 +1420,81 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return value;
   }
 
+  function hasReadOnlyLiteralContainer(identity, declarations) {
+    if (readOnlyLiteralContainerSymbols.has(identity)) {
+      return readOnlyLiteralContainerSymbols.get(identity);
+    }
+    const hasLiteralDeclarations =
+      declarations.length > 0 &&
+      declarations.every(
+        (declaration) =>
+          ts.isVariableDeclaration(declaration) &&
+          !!declaration.initializer &&
+          (ts.getCombinedNodeFlags(declaration.parent) & ts.NodeFlags.Const) !== 0 &&
+          (ts.isObjectLiteralExpression(unwrapExpression(declaration.initializer)) ||
+            ts.isArrayLiteralExpression(unwrapExpression(declaration.initializer))),
+      );
+    if (!hasLiteralDeclarations) {
+      readOnlyLiteralContainerSymbols.set(identity, false);
+      return false;
+    }
+    let readOnly = true;
+    const sourceFilesToScan = new Set(
+      declarations.map((declaration) => declaration.getSourceFile()),
+    );
+    for (const sourceFile of sourceFilesToScan) {
+      function visit(node) {
+        if (!readOnly) return;
+        if (
+          ts.isIdentifier(node) &&
+          isRuntimeIdentifier(node) &&
+          (aliasedSymbol(checker, symbolAt(checker, node)) ?? symbolAt(checker, node)) === identity
+        ) {
+          const parent = node.parent;
+          if (
+            (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+            parent.expression === node
+          ) {
+            const operation = parent.parent;
+            if (
+              (ts.isBinaryExpression(operation) && unwrapExpression(operation.left) === parent) ||
+              (ts.isDeleteExpression(operation) && operation.expression === parent) ||
+              ts.isPrefixUnaryExpression(operation) ||
+              ts.isPostfixUnaryExpression(operation)
+            ) {
+              readOnly = false;
+            }
+            return;
+          }
+          if (ts.isSpreadAssignment(parent) && parent.expression === node) return;
+          if (
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === node &&
+            (ts.isObjectBindingPattern(parent.name) || ts.isArrayBindingPattern(parent.name))
+          ) {
+            return;
+          }
+          if (
+            ts.isBinaryExpression(parent) &&
+            parent.right === node &&
+            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            (ts.isObjectLiteralExpression(unwrapExpression(parent.left)) ||
+              ts.isArrayLiteralExpression(unwrapExpression(parent.left)))
+          ) {
+            return;
+          }
+          readOnly = false;
+          return;
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(sourceFile);
+      if (!readOnly) break;
+    }
+    readOnlyLiteralContainerSymbols.set(identity, readOnly);
+    return readOnly;
+  }
+
   function callableValueForSymbol(symbol, environment, state) {
     if (!symbol) return emptyCallableValue();
     const target = aliasedSymbol(checker, symbol);
@@ -1373,11 +1506,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       ...state,
       seenSymbols: new Set([...state.seenSymbols, identity]),
     };
-    const values = [storedCallableValue(symbol)];
-    for (const declaration of union(
-      new Set(symbol.declarations ?? []),
-      new Set(target?.declarations ?? []),
-    )) {
+    const declarations = [
+      ...union(new Set(symbol.declarations ?? []), new Set(target?.declarations ?? [])),
+    ];
+    const values = hasReadOnlyLiteralContainer(identity, declarations)
+      ? []
+      : [storedCallableValue(symbol)];
+    for (const declaration of declarations) {
       if (ts.isFunctionLike(declaration) && declaration.body) {
         values.push({
           functions: [{ environment: capturedEnvironment(environment), functionLike: declaration }],
@@ -2314,6 +2449,151 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return valueSymbolIdentity(expression) === expectedSymbol;
   }
 
+  function exactTopLevelSpreadValue(expression, environment, runtimeState) {
+    if (!collectLoaderContexts || !ts.isIdentifier(expression)) return undefined;
+    const parent = expression.parent;
+    if (!ts.isSpreadAssignment(parent) || parent.expression !== expression) return undefined;
+    const identity = valueSymbolIdentity(expression);
+    const spreadStatement = containingTopLevelStatement(expression);
+    if (!identity || !spreadStatement) return undefined;
+
+    const trackedSymbols = new Set([identity]);
+    const isTrackedValue = (candidate) => {
+      const candidateIdentity = valueSymbolIdentity(candidate);
+      return !!candidateIdentity && trackedSymbols.has(candidateIdentity);
+    };
+    const referencesTrackedValue = (node) => {
+      let found = false;
+      function visit(current) {
+        if (found) return;
+        if (ts.isIdentifier(current) && isTrackedValue(current)) {
+          found = true;
+          return;
+        }
+        ts.forEachChild(current, visit);
+      }
+      visit(node);
+      return found;
+    };
+    let containerState;
+    let refined = false;
+
+    for (const statement of expression.getSourceFile().statements) {
+      if (statement === spreadStatement) break;
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name)) {
+            if (declaration.initializer && referencesTrackedValue(declaration.initializer)) {
+              return undefined;
+            }
+            continue;
+          }
+          const declarationIdentity = valueSymbolIdentity(declaration.name);
+          if (declarationIdentity === identity) {
+            containerState = declaration.initializer
+              ? exactLiteralContainerState(declaration.initializer)
+              : undefined;
+            refined = false;
+            trackedSymbols.clear();
+            trackedSymbols.add(identity);
+          } else if (declarationIdentity && declaration.initializer) {
+            if (isTrackedValue(declaration.initializer)) {
+              trackedSymbols.add(declarationIdentity);
+            } else {
+              trackedSymbols.delete(declarationIdentity);
+              if (referencesTrackedValue(declaration.initializer)) return undefined;
+            }
+          }
+        }
+        continue;
+      }
+      if (!ts.isExpressionStatement(statement)) {
+        if (referencesTrackedValue(statement)) return undefined;
+        continue;
+      }
+      const current = unwrapExpression(statement.expression);
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const left = unwrapExpression(current.left);
+        if (
+          (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left)) &&
+          isTrackedValue(left.expression)
+        ) {
+          const memberNames = accessMemberNames(left);
+          if (!containerState || !memberNames || memberNames.size !== 1) return undefined;
+          const memberName = [...memberNames][0];
+          if (containerState.kind === 'array') {
+            const index = exactArrayIndex(memberName);
+            if (index === undefined) return undefined;
+            containerState.elements[index] = current.right;
+          } else {
+            containerState.members.set(memberName, current.right);
+          }
+          refined = true;
+          continue;
+        }
+        const assignmentIdentity = valueSymbolIdentity(left);
+        if (assignmentIdentity) {
+          const assignsTrackedValue = isTrackedValue(current.right);
+          if (assignmentIdentity === identity && !assignsTrackedValue) {
+            containerState = exactLiteralContainerState(current.right);
+            refined = false;
+            trackedSymbols.clear();
+            trackedSymbols.add(identity);
+          } else if (assignmentIdentity !== identity) {
+            if (assignsTrackedValue) trackedSymbols.add(assignmentIdentity);
+            else trackedSymbols.delete(assignmentIdentity);
+          }
+          continue;
+        }
+        if (assignmentIncludesTrackedSymbol(left, trackedSymbols)) return undefined;
+      }
+      if (
+        ts.isCallExpression(current) &&
+        isObjectAssignCall(current) &&
+        current.arguments[0] &&
+        isTrackedValue(current.arguments[0])
+      ) {
+        if (!containerState) return undefined;
+        applyObjectAssignSources(containerState, current.arguments.slice(1));
+        if (containerState.hasUnknownSource) return undefined;
+        refined = true;
+        continue;
+      }
+      if (referencesTrackedValue(current)) return undefined;
+    }
+    if (!refined || !containerState) return undefined;
+
+    const members = new Map();
+    const knownDefinedMembers = new Set();
+    const knownPresentMembers = new Set();
+    const nextState = {
+      ...runtimeState,
+      seenSymbols: new Set([...runtimeState.seenSymbols, identity]),
+    };
+    const entries =
+      containerState.kind === 'array'
+        ? containerState.elements.map((value, index) => [String(index), value])
+        : [...containerState.members];
+    for (const [memberName, valueExpression] of entries) {
+      if (!valueExpression) continue;
+      members.set(memberName, callableValue(valueExpression, environment, nextState));
+      knownPresentMembers.add(memberName);
+      if (isDefinitelyDefinedValue(valueExpression)) knownDefinedMembers.add(memberName);
+    }
+    return {
+      arrayLike: containerState.kind === 'array',
+      functions: [],
+      knownDefinedMembers,
+      knownPresentMembers,
+      kinds: 0,
+      members,
+      strings: undefined,
+    };
+  }
+
   function exactArrayIndex(memberName) {
     const index = Number(memberName);
     return Number.isInteger(index) &&
@@ -2839,6 +3119,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (isUnshadowedIdentifier(current, 'require')) {
         return { functions: [], kinds: CALLABLE_LOADER, members: new Map(), strings: undefined };
       }
+      const exactSpreadValue = exactTopLevelSpreadValue(current, environment, state);
+      if (exactSpreadValue) return exactSpreadValue;
       return callableValueForSymbol(symbolAt(checker, current), environment, state);
     }
     if (current.kind === ts.SyntaxKind.ThisKeyword) {
@@ -3030,11 +3312,24 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         if (ts.isSpreadAssignment(property)) {
           const spread = callableValue(property.expression, environment, state);
           const spreadMembersAreKnown = objectSpreadMembersAreKnown(property.expression);
+          const definitelyPresentMembers = definitelyPresentObjectSpreadMembers(
+            property.expression,
+          );
           if (!spreadMembersAreKnown) {
             knownDefinedMembers.clear();
           }
           for (const [memberName, memberValue] of spread.members) {
-            members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+            const definitelyOverwrites =
+              memberName !== '*' &&
+              (definitelyPresentMembers.has(memberName) ||
+                spread.knownPresentMembers?.has(memberName) ||
+                spread.knownDefinedMembers?.has(memberName));
+            members.set(
+              memberName,
+              definitelyOverwrites
+                ? memberValue
+                : mergeCallableValues(members.get(memberName), memberValue),
+            );
             if (spreadMembersAreKnown) knownDefinedMembers.delete(memberName);
             if (spreadMembersAreKnown && spread.knownDefinedMembers?.has(memberName)) {
               knownDefinedMembers.add(memberName);
@@ -3061,7 +3356,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           memberIsDefinitelyDefined = true;
         }
         for (const memberName of memberNames ?? ['*']) {
-          members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+          if (memberName === '*') {
+            members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+            knownDefinedMembers.clear();
+          } else {
+            members.set(memberName, memberValue);
+            knownDefinedMembers.delete(memberName);
+          }
           if (memberName !== '*' && memberIsDefinitelyDefined) {
             knownDefinedMembers.add(memberName);
           }
