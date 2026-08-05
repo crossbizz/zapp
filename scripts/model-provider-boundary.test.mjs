@@ -377,6 +377,154 @@ test('keeps generic helper provenance isolated by call edge', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('round-5 tracks nested object-rest declaration provenance', () => {
+  const result = runFixture('loader-object-rest-declaration');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-object-rest-declaration\.ts/);
+});
+
+test('round-5 tracks nested array-rest declaration provenance', () => {
+  const result = runFixture('loader-array-rest-declaration');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-rest-declaration\.ts/);
+});
+
+test('round-5 tracks object-rest destructuring assignment provenance', () => {
+  const result = runFixture('loader-object-rest-assignment');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-object-rest-assignment\.ts/);
+});
+
+test('round-5 tracks array-rest destructuring assignment provenance', () => {
+  const result = runFixture('loader-array-rest-assignment');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-rest-assignment\.ts/);
+});
+
+test('round-5 tracks loader provenance through logical OR', () => {
+  const result = runFixture('loader-logical-or');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-logical-or\.ts/);
+});
+
+test('round-5 tracks loader provenance through logical AND', () => {
+  const result = runFixture('loader-logical-and');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-logical-and\.ts/);
+});
+
+test('round-5 tracks loader provenance through nullish coalescing', () => {
+  const result = runFixture('loader-logical-nullish');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-logical-nullish\.ts/);
+});
+
+test('round-5 tracks createRequire through logical forwarding', () => {
+  const result = runFixture('create-require-logical');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-logical\.ts/);
+});
+
+test('round-5 tracks require.call invocation', () => {
+  const result = runFixture('loader-call');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-call\.ts/);
+});
+
+test('round-5 tracks require.apply invocation arguments', () => {
+  const result = runFixture('loader-apply');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-apply\.ts/);
+});
+
+test('round-5 tracks createRequire apply followed by loader call', () => {
+  const result = runFixture('create-require-call-apply');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-call-apply\.ts/);
+});
+
+test('round-5 tracks class-field and constructor loader provenance', () => {
+  const result = runFixture('loader-class-constructor');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-class-constructor\.ts/);
+});
+
+test('round-5 tracks loader provenance through Array.map', () => {
+  const result = runFixture('loader-array-map');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-map\.ts/);
+});
+
+test('round-5 tracks loader provenance through filter and find', () => {
+  const result = runFixture('loader-array-filter-find');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-filter-find\.ts/);
+});
+
+test('round-5 tracks loader provenance through Array.reduce', () => {
+  const result = runFixture('loader-array-reduce');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-reduce\.ts/);
+});
+
+test('round-5 tracks loaders through mutated cyclic containers', () => {
+  const result = runFixture('loader-mutated-cycle');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-mutated-cycle\.ts/);
+});
+
+test('round-5 allows harmless structural binding flows', () => {
+  const result = runFixture('structural-binding-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-5 allows unreachable logical loader branches', () => {
+  const result = runFixture('loader-logical-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-5 allows harmless call, apply, and class flows', () => {
+  const result = runFixture('loader-invocation-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-5 allows harmless callback and cyclic-container flows', () => {
+  const result = runFixture('loader-callback-cycle-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-5 keeps mixed callsites isolated in reverse order', () => {
+  const result = runFixture('loader-mixed-callsite-reverse-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('round-5 keeps mixed callsites isolated across branches', () => {
+  const result = runFixture('loader-mixed-branch-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('tracks a createRequire factory through argument and return provenance', () => {
   const result = runFixture('create-require-identity');
 
