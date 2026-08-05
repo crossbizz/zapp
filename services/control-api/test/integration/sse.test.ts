@@ -4,10 +4,7 @@ import { OutgoingMessage, ServerResponse } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
-import {
-  createInMemoryTokenDenylist,
-  type TokenDenylist,
-} from '../../src/auth/denylist.js';
+import { createInMemoryTokenDenylist, type TokenDenylist } from '../../src/auth/denylist.js';
 import { createSessionSigner } from '../../src/auth/session.js';
 import type {
   EventWakeupSource,
@@ -26,11 +23,7 @@ import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { createRedisConnection } from '../../src/redis/client.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import {
-  InMemoryUserStore,
-  TEST_AUTH_CONFIG,
-  TEST_RATE_LIMITS,
-} from '../support/harness.js';
+import { InMemoryUserStore, TEST_AUTH_CONFIG, TEST_RATE_LIMITS } from '../support/harness.js';
 import { InMemoryOrganizationStore } from '../support/org-store.js';
 import {
   hasDatabase,
@@ -88,8 +81,15 @@ class TestWakeupSource implements EventWakeupSource {
   }
 }
 
+interface ManualTimer {
+  readonly callback: () => void;
+  readonly delayMs: number;
+  readonly kind: 'interval' | 'timeout';
+  unref(): void;
+}
+
 class ManualTimers implements EventStreamTimers {
-  readonly scheduled: { callback: () => void; delayMs: number; kind: 'interval' | 'timeout' }[] = [];
+  readonly scheduled: ManualTimer[] = [];
   readonly cleared: EventStreamTimerHandle[] = [];
 
   setInterval(callback: () => void, delayMs: number): EventStreamTimerHandle {
@@ -113,9 +113,19 @@ class ManualTimers implements EventStreamTimers {
   }
 
   fire(delayMs: number, kind: 'interval' | 'timeout'): void {
-    const timer = this.scheduled.find((candidate) => candidate.delayMs === delayMs && candidate.kind === kind);
+    const timer = this.scheduled.find(
+      (candidate) => candidate.delayMs === delayMs && candidate.kind === kind,
+    );
     if (timer === undefined) throw new Error(`No ${kind} scheduled for ${String(delayMs)} ms`);
     timer.callback();
+  }
+
+  latest(delayMs: number, kind: 'interval' | 'timeout'): ManualTimer {
+    const timer = this.scheduled
+      .filter((candidate) => candidate.delayMs === delayMs && candidate.kind === kind)
+      .at(-1);
+    if (timer === undefined) throw new Error(`No ${kind} scheduled for ${String(delayMs)} ms`);
+    return timer;
   }
 }
 
@@ -194,10 +204,7 @@ async function readBlock(response: Response, timeoutMs = 2_000): Promise<string>
   }
 }
 
-async function eventually(
-  assertion: () => void | Promise<void>,
-  timeoutMs = 2_000,
-): Promise<void> {
+async function eventually(assertion: () => void | Promise<void>, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -334,7 +341,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       status: 'active',
     });
     clock = new Date();
-    const tokens = await createSessionSigner({ secret: TEST_AUTH_CONFIG.sessionSecret }).mintSession({
+    const tokens = await createSessionSigner({
+      secret: TEST_AUTH_CONFIG.sessionSecret,
+    }).mintSession({
       userId,
       now: clock,
     });
@@ -533,9 +542,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     // alternate spellings, or integers whose sequence cannot be represented safely.
     const url = `${baseUrl}/v1/runs/${runId}/events${kind === 'after' ? `?after=${value}` : ''}`;
     const response = await fetch(url, {
-      headers: requestHeaders(
-        kind === 'Last-Event-ID' ? { lastEventId: value } : {},
-      ),
+      headers: requestHeaders(kind === 'Last-Event-ID' ? { lastEventId: value } : {}),
     });
     expect(response.status).toBe(400);
     expect(response.headers.get('content-type') ?? '').not.toContain('text/event-stream');
@@ -548,9 +555,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     const controller = new AbortController();
     await connect({ after: '9007199254740990', signal: controller.signal });
     await eventually(() => {
-      expect(eventReadRanges).toEqual([
-        { fromSequence: Number.MAX_SAFE_INTEGER, limit: 100 },
-      ]);
+      expect(eventReadRanges).toEqual([{ fromSequence: Number.MAX_SAFE_INTEGER, limit: 100 }]);
     });
     controller.abort();
   });
@@ -621,11 +626,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   it('uses exact, then type wildcard, then global wildcard Accept quality', async () => {
     // Break caught: choosing the largest q across matching ranges lets */* undo
     // an explicit text/event-stream refusal.
-    const refused = [
-      'text/event-stream;q=0, */*;q=1',
-      'text/*;q=0, */*;q=1',
-      '*/*;q=0',
-    ];
+    const refused = ['text/event-stream;q=0, */*;q=1', 'text/*;q=0, */*;q=1', '*/*;q=0'];
     for (const accept of refused) {
       const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
         headers: { ...requestHeaders(), accept },
@@ -1055,13 +1056,16 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     const finished = new Promise<void>((resolve) => {
       readFinished = resolve;
     });
-    await startApp({ timers }, {
-      beforeEventRead: () => {
-        readStarted();
-        return release;
+    await startApp(
+      { timers },
+      {
+        beforeEventRead: () => {
+          readStarted();
+          return release;
+        },
+        afterEventRead: readFinished,
       },
-      afterEventRead: readFinished,
-    });
+    );
 
     let blockedResponse: ServerResponse | undefined;
     const captureBlockedResponse = (response: ServerResponse): void => {
@@ -1255,10 +1259,12 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
 
     clock = new Date(accessExpiresAt.getTime() + 1);
     timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    const authorizationDeadline = timers.latest(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
     expect((await reader.read()).done).toBe(true);
+    expect(timers.cleared).toContain(authorizationDeadline);
   });
 
   it('fails closed when active stream revalidation never settles', async () => {
@@ -1273,11 +1279,56 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
 
     denylistHangs = true;
     timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    const authorizationDeadline = timers.latest(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
     timers.fire(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
     expect((await reader.read()).done).toBe(true);
+    expect(timers.cleared).toContain(authorizationDeadline);
+  });
+
+  it('clears the authorization deadline and abort listener when the client closes mid-check', async () => {
+    const timers = new ManualTimers();
+    const errors: Error[] = [];
+    await startApp({
+      timers,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    const controller = new AbortController();
+    await connect({ signal: controller.signal });
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    denylistHangs = true;
+    const addAbort = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+    const removeAbort = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    const authorizationDeadline = timers.latest(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
+    const authorizationAbortListeners = addAbort.mock.calls
+      .filter(([type]) => type === 'abort')
+      .map(([, listener]) => listener);
+    expect(authorizationAbortListeners).toHaveLength(1);
+
+    controller.abort();
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect(timers.cleared).toContain(authorizationDeadline);
+    expect(
+      authorizationAbortListeners.every((listener) =>
+        removeAbort.mock.calls.some(
+          ([type, removedListener]) => type === 'abort' && removedListener === listener,
+        ),
+      ),
+    ).toBe(true);
+
+    authorizationDeadline.callback();
+    await Promise.resolve();
+    expect(errors).toEqual([]);
   });
 
   it('ends a support stream when support access is lost', async () => {
@@ -1443,11 +1494,13 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     };
   }
 
-  async function connect(input: {
-    after?: string;
-    lastEventId?: string;
-    signal?: AbortSignal;
-  } = {}): Promise<Response> {
+  async function connect(
+    input: {
+      after?: string;
+      lastEventId?: string;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<Response> {
     const response = await fetch(
       `${baseUrl}/v1/runs/${runId}/events${input.after === undefined ? '' : `?after=${input.after}`}`,
       {
@@ -1470,18 +1523,18 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
         const sequence = typeof input === 'number' ? input : input.sequence;
         const visibility = typeof input === 'number' ? 'user' : input.visibility;
         return {
-        id: newId('evt'),
-        organizationId,
-        runId,
-        sequence,
-        type: 'task.started' as const,
-        payloadJson: { sequence },
-        visibility,
-        occurredAt: new Date(Date.UTC(2026, 7, 4, 12, 0, 0, sequence % 1_000)),
-        projectId,
-        phaseId: null,
-        taskId: null,
-        agentId: null,
+          id: newId('evt'),
+          organizationId,
+          runId,
+          sequence,
+          type: 'task.started' as const,
+          payloadJson: { sequence },
+          visibility,
+          occurredAt: new Date(Date.UTC(2026, 7, 4, 12, 0, 0, sequence % 1_000)),
+          projectId,
+          phaseId: null,
+          taskId: null,
+          agentId: null,
         };
       }),
     );

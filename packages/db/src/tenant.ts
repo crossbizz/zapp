@@ -85,6 +85,41 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
+async function reserveForReplay(db: Database, signal: AbortSignal | undefined) {
+  const reservation = db.$client.reserve();
+  if (signal === undefined) return await reservation;
+
+  let rejectAbort!: (reason: Error) => void;
+  const abort = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = (): void => {
+    rejectAbort(aborted());
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (isAborted(signal)) onAbort();
+
+  try {
+    return await Promise.race([reservation, abort]);
+  } catch (error) {
+    if (isAborted(signal)) {
+      // postgres.js does not expose removal of a queued reservation. If the
+      // pool hands it out after this caller has gone away, release it without
+      // ever dispatching a statement on that connection.
+      void reservation.then(
+        (reserved) => {
+          reserved.release();
+        },
+        () => undefined,
+      );
+      throw aborted();
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * Binds a database handle to one organization.
  *
@@ -159,8 +194,11 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
                 parameters.push(range.limit);
                 return ` limit $${String(parameters.length)}`;
               })();
-        const pending = db.$client.unsafe<RawAgentEventRow[]>(
-          `select id,
+        const reserved = await reserveForReplay(db, range.signal);
+        try {
+          if (isAborted(range.signal)) throw aborted();
+          const pending = reserved.unsafe<RawAgentEventRow[]>(
+            `select id,
                   organization_id as "organizationId",
                   run_id as "runId",
                   sequence,
@@ -175,55 +213,40 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
              from agent_events
             where ${filters.join(' and ')}
             order by sequence asc${limit}`,
-          parameters,
-        );
-        const driverPending = pending as typeof pending & { readonly state: object | null };
-        let settled = false;
-        let cancellationScheduled = false;
-        const cancel = (): void => {
-          if (cancellationScheduled) return;
-          cancellationScheduled = true;
-          // postgres.js 3.4 assigns `state` only when a connection owns the
-          // query. Calling cancel() before that assignment can reject the
-          // promise and still strand the deferred query in the pool. Wait for
-          // assignment, then use the driver's real PostgreSQL cancellation.
-          const cancelWhenAssigned = (): void => {
-            if (settled) return;
-            if (driverPending.state !== null) {
-              pending.cancel();
-              return;
-            }
-            setImmediate(cancelWhenAssigned);
+            parameters,
+          );
+          const cancel = (): void => {
+            pending.cancel();
           };
-          setImmediate(cancelWhenAssigned);
-        };
-        range.signal?.addEventListener('abort', cancel, { once: true });
-        void pending.execute();
-        if (isAborted(range.signal)) cancel();
-        try {
-          const rows = await pending;
-          if (isAborted(range.signal)) throw aborted();
-          return rows.map((row) => ({
-            id: row.id,
-            organizationId: row.organizationId,
-            runId: row.runId,
-            sequence: Number(row.sequence),
-            type: row.type as AgentEventRow['type'],
-            payloadJson: row.payloadJson,
-            visibility: row.visibility as AgentEventRow['visibility'],
-            occurredAt:
-              row.occurredAt instanceof Date ? row.occurredAt : new Date(row.occurredAt),
-            projectId: row.projectId,
-            phaseId: row.phaseId,
-            taskId: row.taskId,
-            agentId: row.agentId,
-          }));
-        } catch (error) {
-          if (isAborted(range.signal)) throw aborted();
-          throw error;
+          range.signal?.addEventListener('abort', cancel, { once: true });
+          void pending.execute();
+          if (isAborted(range.signal)) cancel();
+          try {
+            const rows = await pending;
+            if (isAborted(range.signal)) throw aborted();
+            return rows.map((row) => ({
+              id: row.id,
+              organizationId: row.organizationId,
+              runId: row.runId,
+              sequence: Number(row.sequence),
+              type: row.type as AgentEventRow['type'],
+              payloadJson: row.payloadJson,
+              visibility: row.visibility as AgentEventRow['visibility'],
+              occurredAt:
+                row.occurredAt instanceof Date ? row.occurredAt : new Date(row.occurredAt),
+              projectId: row.projectId,
+              phaseId: row.phaseId,
+              taskId: row.taskId,
+              agentId: row.agentId,
+            }));
+          } catch (error) {
+            if (isAborted(range.signal)) throw aborted();
+            throw error;
+          } finally {
+            range.signal?.removeEventListener('abort', cancel);
+          }
         } finally {
-          settled = true;
-          range.signal?.removeEventListener('abort', cancel);
+          reserved.release();
         }
       },
     },

@@ -21,8 +21,9 @@ Expand CP-15's internal file contract and preserve its public API:
 - `EventRange` accepts an optional `AbortSignal`; the postgres.js-backed event
   repository executes replay through a cancel-capable pending query and maps a
   caller abort to `AbortError` after sending PostgreSQL's cancellation request.
-  Pre-aborted reads never start, and cancellation waits for postgres.js to
-  assign the pending query before invoking its driver canceller.
+  Pre-aborted reads never start. Replay first races an abortable pool
+  reservation, auto-releasing a reservation that arrives after cancellation;
+  only an assigned query invokes the driver's PostgreSQL canceller.
 - The app composes a stream revalidator from the existing token denylist,
   access-token expiry, and organization membership store. Active streams run it
   every 60 seconds with a five-second deadline and fail closed on revocation,

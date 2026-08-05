@@ -1,5 +1,6 @@
 import { newId } from '@zapp/contracts';
 import { eq } from 'drizzle-orm';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createDb } from '../../src/client.js';
@@ -162,7 +163,106 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           if (timeout !== undefined) clearTimeout(timeout);
         }
       } finally {
-        await probe.sql.end({ timeout: 0 });
+        await probe.close();
+      }
+    });
+
+    it('cancels a pool-queued read before a connection is released and recovers full capacity', async () => {
+      const probe = createDb(handle.url);
+      const scoped = forOrg(probe.db, alpha.organizationId);
+      let announceLock!: () => void;
+      let releaseLock!: () => void;
+      const lockAcquired = new Promise<void>((resolve) => {
+        announceLock = resolve;
+      });
+      const lockReleased = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const lock = handle.sql.begin(async (tx) => {
+        await tx.unsafe('lock table agent_events in access exclusive mode');
+        announceLock();
+        await lockReleased;
+      });
+
+      const countQueries = async (marker: string): Promise<number> => {
+        const [row] = await handle.sql<{ count: number }[]>`
+          select count(*)::int as count
+            from pg_stat_activity
+           where datname = current_database()
+             and pid <> pg_backend_pid()
+             and state = 'active'
+             and query like ${`%${marker}%`}
+        `;
+        return row?.count ?? 0;
+      };
+      const waitForCount = async (marker: string, expected: number): Promise<void> => {
+        const deadline = Date.now() + 2_000;
+        while (Date.now() < deadline) {
+          if ((await countQueries(marker)) === expected) return;
+          await delay(10);
+        }
+        expect(await countQueries(marker)).toBe(expected);
+      };
+
+      let blockers: Promise<unknown>[] = [];
+      let queued: Promise<unknown> | undefined;
+      try {
+        await lockAcquired;
+        blockers = Array.from({ length: 10 }, () => scoped.events.byRun(alpha.runId));
+        await waitForCount('from agent_events', 10);
+
+        const controller = new AbortController();
+        queued = scoped.events.byRun(alpha.runId, { signal: controller.signal });
+        controller.abort();
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+          await expect(
+            Promise.race([
+              queued,
+              new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(() => {
+                  reject(new Error('pool-queued event replay did not cancel before slot release'));
+                }, 500);
+              }),
+            ]),
+          ).rejects.toMatchObject({ name: 'AbortError' });
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
+
+        releaseLock();
+        await lock;
+        await Promise.all(blockers);
+
+        const reservations: { release(): void }[] = [];
+        const acquisitions = Array.from({ length: 10 }, async () => {
+          const reservation = await probe.sql.reserve();
+          reservations.push(reservation);
+          return reservation;
+        });
+        let recoveryTimeout: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            Promise.all(acquisitions),
+            new Promise<never>((_resolve, reject) => {
+              recoveryTimeout = setTimeout(() => {
+                reject(new Error('database pool did not recover all ten connection slots'));
+              }, 1_000);
+            }),
+          ]);
+          expect(reservations).toHaveLength(10);
+        } finally {
+          if (recoveryTimeout !== undefined) clearTimeout(recoveryTimeout);
+          for (const reservation of reservations.splice(0)) reservation.release();
+          await Promise.allSettled(acquisitions);
+          for (const reservation of reservations.splice(0)) reservation.release();
+        }
+      } finally {
+        releaseLock();
+        await lock;
+        await Promise.allSettled(blockers);
+        await queued?.catch(() => undefined);
+        await probe.close();
       }
     });
   });
