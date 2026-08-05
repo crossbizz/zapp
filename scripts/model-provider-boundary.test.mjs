@@ -556,6 +556,21 @@ test('round-6 allows harmless cyclic array mutations, spreads, and Object.assign
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 tracks Object.assign aliases', () => {
+  const result = runFixture('loader-object-assign-aliases');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['property-alias', 'destructured-alias']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 allows unrelated assign functions and harmless Object.assign aliases', () => {
+  const result = runFixture('loader-object-assign-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks push and unshift container identity through aliases and late assignment', () => {
   const result = runFixture('loader-mutated-container-identity');
 

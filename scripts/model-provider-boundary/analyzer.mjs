@@ -14,6 +14,7 @@ const TRUSTED_TYPESCRIPT_LOADER_PATHS = new Set([
 ]);
 const CALLABLE_LOADER = 1;
 const CALLABLE_CREATE_REQUIRE = 2;
+const CALLABLE_OBJECT_ASSIGN = 4;
 const MAY_BE_TRUTHY = 1;
 const MAY_BE_FALSY = 2;
 const MAY_BE_NULLISH = 1;
@@ -1699,18 +1700,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   }
 
   function isObjectAssignCall(callExpression) {
-    const callee = unwrapExpression(callExpression.expression);
-    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
-      return false;
-    }
-    const memberNames = accessMemberNames(callee);
-    const owner = unwrapExpression(callee.expression);
-    return (
-      memberNames?.size === 1 &&
-      memberNames.has('assign') &&
-      ts.isIdentifier(owner) &&
-      isUnshadowedIdentifier(owner, 'Object')
-    );
+    return (callableKinds(callExpression.expression) & CALLABLE_OBJECT_ASSIGN) !== 0;
   }
 
   function assignObjectMembers(target, sources) {
@@ -2244,6 +2234,15 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       let kinds =
         callableKindsForSymbol(symbolForValue(current)) |
         memberKindsForOwner(current.expression, memberNames);
+      const owner = unwrapExpression(current.expression);
+      if (
+        memberNames?.size === 1 &&
+        memberNames.has('assign') &&
+        ts.isIdentifier(owner) &&
+        isUnshadowedIdentifier(owner, 'Object')
+      ) {
+        kinds |= CALLABLE_OBJECT_ASSIGN;
+      }
       if (isNodeModuleNamespaceValue(current.expression)) {
         if (!memberNames) {
           unresolvedNodeModuleMembers.set(current, current.getSourceFile());
@@ -2421,6 +2420,39 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           addCallableKinds(
             symbolAt(checker, unwrapExpression(property.initializer)),
             CALLABLE_LOADER,
+          ) || changed;
+      }
+    }
+    return changed;
+  }
+
+  function addObjectAssignDestructuredAliases(target) {
+    const current = unwrapExpression(target);
+    const properties = ts.isObjectBindingPattern(current)
+      ? current.elements
+      : ts.isObjectLiteralExpression(current)
+        ? current.properties
+        : [];
+    let changed = false;
+    for (const property of properties) {
+      if (ts.isBindingElement(property)) {
+        const propertyName = property.propertyName?.getText() ?? property.name.getText();
+        if (propertyName === 'assign' && ts.isIdentifier(property.name)) {
+          changed =
+            addCallableKinds(symbolAt(checker, property.name), CALLABLE_OBJECT_ASSIGN) || changed;
+        }
+      } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'assign') {
+        changed =
+          addCallableKinds(symbolAt(checker, property.name), CALLABLE_OBJECT_ASSIGN) || changed;
+      } else if (
+        ts.isPropertyAssignment(property) &&
+        propertyNameText(property.name) === 'assign' &&
+        ts.isIdentifier(unwrapExpression(property.initializer))
+      ) {
+        changed =
+          addCallableKinds(
+            symbolAt(checker, unwrapExpression(property.initializer)),
+            CALLABLE_OBJECT_ASSIGN,
           ) || changed;
       }
     }
@@ -2725,6 +2757,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         isUnshadowedIdentifier(unwrapExpression(node.right), 'module')
       ) {
         callableChanged = addModuleDestructuredLoaders(node.left) || callableChanged;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isObjectBindingPattern(node.name) &&
+        node.initializer &&
+        ts.isIdentifier(unwrapExpression(node.initializer)) &&
+        isUnshadowedIdentifier(unwrapExpression(node.initializer), 'Object')
+      ) {
+        callableChanged = addObjectAssignDestructuredAliases(node.name) || callableChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(unwrapExpression(node.right)) &&
+        isUnshadowedIdentifier(unwrapExpression(node.right), 'Object')
+      ) {
+        callableChanged = addObjectAssignDestructuredAliases(node.left) || callableChanged;
       }
       if (ts.isFunctionDeclaration(node) && node.name) {
         callableChanged =
