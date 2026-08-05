@@ -212,3 +212,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
+- 2026-08-05 WS-3 review fixes verified / smoke pending — isolated branch `task/WS-3` at `e8f08bb` passed independent spec and quality review, workspace-agent current Node and Node 22.23.1 suites 74/74, and uncached repository test/lint/typecheck/build 17/17, 14/14, 13/13, 8/8. WS-3 remains unchecked and off `main` until WS-2's real Modal dev VM capability smoke passes.
