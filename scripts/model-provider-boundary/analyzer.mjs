@@ -4336,7 +4336,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         [...memberNames].every((memberName) => container.members.has(memberName))
       );
     }
-    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation, dataOnlyState) => {
+    const expressionEvaluationMayChangeIdentity = (expression, dataOnlyState) => {
       let mayChangeIdentity = false;
       const visit = (node) => {
         if (mayChangeIdentity) return;
@@ -4379,9 +4379,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         ts.forEachChild(node, visit);
       };
 
-      for (const expression of [mutation.owner, ...mutationCall.arguments]) visit(expression);
+      visit(expression);
       return mayChangeIdentity;
     };
+    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation, dataOnlyState) =>
+      [mutation.owner, ...mutationCall.arguments].some((expression) =>
+        expressionEvaluationMayChangeIdentity(expression, dataOnlyState),
+      );
     const applyStatement = (statement, state, dataOnlyState) => {
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
@@ -4437,6 +4441,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         return statement.statements.every((nested) => applyStatement(nested, state, dataOnlyState));
       }
       if (ts.isIfStatement(statement)) {
+        if (expressionEvaluationMayChangeIdentity(statement.expression, dataOnlyState)) {
+          return false;
+        }
         const { truthiness } = runtimePossibilities(statement.expression);
         const thenReachable = (truthiness & MAY_BE_TRUTHY) !== 0;
         const elseReachable = (truthiness & MAY_BE_FALSY) !== 0;
