@@ -561,6 +561,28 @@ test('AR-1 detects require selected by Array.reduce computed callback indexes', 
   }
 });
 
+test('AR-1 preserves sparse Array.reduce indexes with leading, internal, and trailing holes', () => {
+  const result = runFixture('loader-array-reduce-sparse-index');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'sparse-no-initial-positive',
+    'sparse-explicit-initial-positive',
+    'internal-hole-no-initial-require',
+    'trailing-hole-no-initial-require',
+    'leading-hole-explicit-initial-require',
+    'trailing-hole-explicit-initial-require',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 skips sparse Array.reduce holes without synthesizing compacted indexes', () => {
+  const result = runFixture('loader-array-reduce-sparse-index-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks loaders through array mutations, spreads, and Object.assign', () => {
   const result = runFixture('loader-container-mutations');
 

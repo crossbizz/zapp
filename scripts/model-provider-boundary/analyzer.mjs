@@ -1937,11 +1937,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return instance;
   }
 
-  function arrayElements(value) {
+  function arrayEntries(value) {
     return [...materializedMembers(value)]
       .filter(([memberName]) => Number.isInteger(Number(memberName)))
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .map(([, memberValue]) => memberValue);
+      .sort(([left], [right]) => Number(left) - Number(right));
+  }
+
+  function arrayElements(value) {
+    return arrayEntries(value).map(([, memberValue]) => memberValue);
   }
 
   function invokeFunctions(value, argumentValues, state) {
@@ -2259,17 +2262,17 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       });
       return emptyCallableValue();
     }
+    const entries = arrayEntries(owner);
     let accumulator;
     let remaining;
     if (initialValue) {
       accumulator = initialValue;
-      remaining = elements;
+      remaining = entries;
     } else {
-      accumulator = elements[0] ?? emptyCallableValue();
-      remaining = elements.slice(1);
+      accumulator = entries[0]?.[1] ?? emptyCallableValue();
+      remaining = entries.slice(1);
     }
-    const firstIndex = initialValue ? 0 : 1;
-    remaining.forEach((element, index) => {
+    remaining.forEach(([index, element]) => {
       accumulator = invokeFunctions(
         callback,
         [
@@ -2279,7 +2282,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             functions: [],
             kinds: 0,
             members: new Map(),
-            strings: new Set([String(firstIndex + index)]),
+            strings: new Set([index]),
           },
           owner,
         ],
