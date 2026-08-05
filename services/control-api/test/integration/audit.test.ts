@@ -1,3 +1,5 @@
+import { newId } from '@zapp/contracts';
+import { auditEvents } from '@zapp/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -38,6 +40,17 @@ const BOB = {
 
 /** The failure every rollback assertion is built on. */
 const AUDIT_FAILED = new Error('audit sink refused');
+
+function inContinuousIntegration(): boolean {
+  const flag = (process.env['CI'] ?? '').trim().toLowerCase();
+  return flag !== '' && flag !== 'false' && flag !== '0';
+}
+
+describe('the audit integration harness', () => {
+  it('refuses to be silently skipped in CI', () => {
+    expect(inContinuousIntegration() ? hasDatabase : true).toBe(true);
+  });
+});
 
 describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
   let database: TestDatabase;
@@ -162,39 +175,77 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     expect(written[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
   });
 
-  it('reads the real audit table with combined filters', async () => {
+  it('walks filtered keyset pages without duplicates or foreign rows', async () => {
     const acme = await found();
     const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
-    const created = await app.inject({
+    const bob = await signIn(BOB);
+    const foreign = await app.inject({
       method: 'POST',
-      url: '/v1/projects',
-      headers: tenant,
-      payload: { name: 'Filtered Project' },
+      url: '/v1/organizations',
+      headers: bob.headers,
+      payload: { name: 'Foreign Audit Tenant' },
     });
-    expect(created.statusCode, created.body).toBe(201);
-    const projectId = created.json<{ project: { id: string } }>().project.id;
-    const query = new URLSearchParams({
+    expect(foreign.statusCode, foreign.body).toBe(201);
+    const foreignOrganizationId = foreign.json<{ organization: { id: string } }>().organization.id;
+    const targetId = newId('proj');
+    const expected = Array.from({ length: 5 }, (_, index) => ({
+      id: newId('aud'),
+      organizationId: acme.id,
+      actorType: 'user',
       actorId: acme.userId,
-      action: 'project.created',
+      action: 'project.updated',
       targetType: 'project',
-      targetId: projectId,
-      from: '2026-01-01T00:00:00.000Z',
-      to: '2027-01-01T00:00:00.000Z',
-    });
+      targetId,
+      metadataJson: { page: index },
+      occurredAt: new Date(`2026-08-05T10:0${String(index)}:00.000Z`),
+    }));
+    const template = expected.at(0);
+    if (template === undefined) throw new Error('expected audit fixture is empty');
+    await database.db
+      .insert(auditEvents)
+      .values([
+        ...expected,
+        { ...template, id: newId('aud'), actorId: bob.userId },
+        { ...template, id: newId('aud'), action: 'project.created' },
+        { ...template, id: newId('aud'), targetId: newId('proj') },
+        { ...template, id: newId('aud'), organizationId: foreignOrganizationId },
+      ]);
 
-    const response = await app.inject({
-      method: 'GET',
-      url: `/v1/organizations/${acme.id}/audit-events?${query.toString()}`,
-      headers: tenant,
-    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = new URLSearchParams({
+        limit: '2',
+        actorId: acme.userId,
+        action: 'project.updated',
+        targetType: 'project',
+        targetId,
+        from: '2026-08-05T10:00:00.000Z',
+        to: '2026-08-05T11:00:00.000Z',
+      });
+      if (cursor !== null) query.set('cursor', cursor);
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${acme.id}/audit-events?${query.toString()}`,
+        headers: tenant,
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const page = response.json<{
+        items: { id: string; organizationId: string }[];
+        nextCursor: string | null;
+      }>();
+      expect(page.items.every((item) => item.organizationId === acme.id)).toBe(true);
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
 
-    expect(response.statusCode, response.body).toBe(200);
-    expect(
-      response.json<{ items: { action: string; targetId: string }[]; nextCursor: null }>(),
-    ).toMatchObject({
-      items: [{ action: 'project.created', targetId: projectId }],
-      nextCursor: null,
-    });
+    expect(seen).toEqual(
+      expected
+        .map((row) => row.id)
+        .sort()
+        .reverse(),
+    );
+    expect(new Set(seen).size).toBe(seen.length);
   });
 
   it('persists normalized settings and rolls state back when its audit write fails', async () => {
@@ -254,6 +305,53 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     expect(
       (await rows()).filter((row) => row.action === 'organization.settings_updated'),
     ).toHaveLength(before);
+  });
+
+  it('records a fresh-key same-value no-op without updating and rolls back failed completion', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const version = async (): Promise<string | undefined> => {
+      const [row] = await database.sql<{ xmin: string }[]>`
+        select xmin::text as xmin from organizations where id = ${acme.id}
+      `;
+      return row?.xmin;
+    };
+    const beforeVersion = await version();
+    const first = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-no-op-01' },
+      payload: { builderCanDeploy: false },
+    });
+
+    expect(first.statusCode, first.body).toBe(200);
+    expect(await version()).toBe(beforeVersion);
+    expect((await rows()).at(-1)?.metadata_json).toMatchObject({
+      changedFields: [],
+      noOp: true,
+    });
+
+    const beforeRows = await rows();
+    auditFails = true;
+    const request = {
+      method: 'PATCH' as const,
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-no-op-rollback-01' },
+      payload: { builderCanDeploy: false },
+    };
+    const failed = await app.inject(request);
+    expect(failed.statusCode, failed.body).toBe(500);
+    expect(await version()).toBe(beforeVersion);
+    expect(await rows()).toEqual(beforeRows);
+
+    auditFails = false;
+    const retried = await app.inject(request);
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(await version()).toBe(beforeVersion);
+    expect((await rows()).at(-1)?.metadata_json).toMatchObject({
+      changedFields: [],
+      noOp: true,
+    });
   });
 
   it('does not reapply an old completed settings operation over a newer one', async () => {
@@ -519,7 +617,7 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       action: 'organization.settings_updated',
       targetType: 'organization',
       targetId: organizationId,
-      metadata: { fields: ['builderCanDeploy'], operationKey },
+      metadata: { changedFields: ['builderCanDeploy'], noOp: false, operationKey },
       occurredAt: new Date(),
     };
   }

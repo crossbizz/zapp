@@ -1,7 +1,8 @@
-import { newId } from '@zapp/contracts';
+import { idSchema, newId } from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
 import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
+import { z } from 'zod';
 
 /**
  * The audit trail.
@@ -119,26 +120,33 @@ export const AUDIT_ACTIONS = [
   'secret.decrypted',
 ] as const;
 
-export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
+export type AuditAction = z.infer<typeof AuditActionSchema>;
 
 /** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export type AuditTargetType =
-  | 'organization'
-  | 'membership'
-  | 'invite'
-  | 'project'
-  | 'specification'
-  | 'run'
-  | 'workspace'
-  | 'secret'
-  | 'release'
-  | 'integration_connection';
+export const AUDIT_TARGET_TYPES = [
+  'organization',
+  'membership',
+  'invite',
+  'project',
+  'specification',
+  'run',
+  'workspace',
+  'secret',
+  'release',
+  'integration_connection',
+] as const;
+export const AuditTargetTypeSchema = z.enum(AUDIT_TARGET_TYPES);
+export type AuditTargetType = z.infer<typeof AuditTargetTypeSchema>;
 
 /** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
-export type AuditActorType = 'user' | 'service' | 'agent' | 'support';
+export const AUDIT_ACTOR_TYPES = ['user', 'service', 'agent', 'support'] as const;
+export const AuditActorTypeSchema = z.enum(AUDIT_ACTOR_TYPES);
+export type AuditActorType = z.infer<typeof AuditActorTypeSchema>;
 
 /** What a metadata field may hold. Nothing that can nest. */
-export type AuditScalar = string | number | boolean | null;
+export const AuditScalarSchema = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+export type AuditScalar = z.infer<typeof AuditScalarSchema>;
 
 /**
  * One metadata value.
@@ -147,27 +155,42 @@ export type AuditScalar = string | number | boolean | null;
  * one shape that genuinely needs a list, and a list of scalars still cannot
  * smuggle an object, a buffer or a whole request body into the table.
  */
-export type AuditValue = AuditScalar | readonly AuditScalar[];
+export const AuditValueSchema = z.union([AuditScalarSchema, z.array(AuditScalarSchema)]);
+export type AuditValue = z.infer<typeof AuditValueSchema>;
 
 /**
  * Tenant-safe context: which role, which fields changed. Never a credential —
  * an invite token, a secret value and a session token are all things this table
  * would otherwise preserve for years.
  */
-export type AuditMetadata = Readonly<Record<string, AuditValue>>;
+export const AuditMetadataSchema = z.record(AuditValueSchema);
+export type AuditMetadata = z.infer<typeof AuditMetadataSchema>;
+
+export const AuditActorSchema = z
+  .object({ type: AuditActorTypeSchema, id: z.string().min(1) })
+  .strict();
+export type AuditActor = z.infer<typeof AuditActorSchema>;
+
+export const AuditTargetSchema = z
+  .object({ type: AuditTargetTypeSchema, id: z.string().nullable() })
+  .strict();
+export type AuditTarget = z.infer<typeof AuditTargetSchema>;
 
 /** One row of PRD §23.6 `audit_events`, minus the id the sink mints. */
-export interface AuditRecord {
-  readonly organizationId: string;
-  readonly actorType: AuditActorType;
-  readonly actorId: string;
-  readonly action: AuditAction;
-  readonly targetType: AuditTargetType;
-  /** Null for an action with no single target. */
-  readonly targetId: string | null;
-  readonly metadata: AuditMetadata;
-  readonly occurredAt: Date;
-}
+export const AuditRecordSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    actorType: AuditActorTypeSchema,
+    actorId: z.string().min(1),
+    action: AuditActionSchema,
+    targetType: AuditTargetTypeSchema,
+    /** Null for an action with no single target. */
+    targetId: z.string().nullable(),
+    metadata: AuditMetadataSchema,
+    occurredAt: z.date(),
+  })
+  .strict();
+export type AuditRecord = z.infer<typeof AuditRecordSchema>;
 
 /**
  * What a store hands its audit hook where it has no transaction to offer — the
@@ -219,15 +242,21 @@ export interface InMemoryAuditSink extends AuditSink {
  */
 export function createInMemoryAuditSink(): InMemoryAuditSink {
   const events: AuditRecord[] = [];
+
+  function append(event: AuditRecord): Promise<void> {
+    return new Promise((resolve) => {
+      events.push(AuditRecordSchema.parse(event));
+      resolve();
+    });
+  }
+
   return {
     events,
     record(_tx, event) {
-      events.push(event);
-      return Promise.resolve();
+      return append(event);
     },
     recordDetached(event) {
-      events.push(event);
-      return Promise.resolve();
+      return append(event);
     },
   };
 }
@@ -241,16 +270,17 @@ export function createInMemoryAuditSink(): InMemoryAuditSink {
  */
 export function createDbAuditSink(db: Executor): AuditSink {
   async function insert(tx: Executor, event: AuditRecord): Promise<void> {
+    const parsed = AuditRecordSchema.parse(event);
     await tx.insert(auditEvents).values({
       id: newId('aud'),
-      organizationId: event.organizationId,
-      actorType: event.actorType,
-      actorId: event.actorId,
-      action: event.action,
-      targetType: event.targetType,
-      targetId: event.targetId,
-      metadataJson: event.metadata,
-      occurredAt: event.occurredAt,
+      organizationId: parsed.organizationId,
+      actorType: parsed.actorType,
+      actorId: parsed.actorId,
+      action: parsed.action,
+      targetType: parsed.targetType,
+      targetId: parsed.targetId,
+      metadataJson: parsed.metadata,
+      occurredAt: parsed.occurredAt,
     });
   }
 
@@ -271,12 +301,15 @@ export function createDbAuditSink(db: Executor): AuditSink {
 }
 
 /** What a route passes; everything else is filled in from the request. */
-export interface AuditEntry {
-  readonly organizationId: string;
-  readonly action: AuditAction;
-  readonly target: { readonly type: AuditTargetType; readonly id: string | null };
-  readonly metadata?: AuditMetadata;
-}
+export const AuditEntrySchema = z
+  .object({
+    organizationId: idSchema('org'),
+    action: AuditActionSchema,
+    target: AuditTargetSchema,
+    metadata: AuditMetadataSchema.optional(),
+  })
+  .strict();
+export type AuditEntry = z.infer<typeof AuditEntrySchema>;
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -313,51 +346,25 @@ export interface AuditLogOptions {
   readonly now: () => Date;
 }
 
-/**
- * Rejects anything that could carry more than it says it does.
- *
- * The types already say scalars; this is the second half of the same rule, for
- * the values that arrive from a database column or a JSON body and are typed
- * only by assertion. A throw here fails the mutation, which is the right
- * outcome: a row we cannot vouch for should not be written, and a metadata
- * object with something unexpected in it is a bug to fix, not to store.
- */
-function assertScalars(metadata: AuditMetadata): void {
-  const scalar = (value: unknown): boolean =>
-    value === null || ['string', 'number', 'boolean'].includes(typeof value);
-
-  for (const [field, value] of Object.entries(metadata)) {
-    const ok = Array.isArray(value) ? value.every(scalar) : scalar(value);
-    if (!ok) {
-      throw new Error(`audit metadata field "${field}" is not a scalar`);
-    }
-  }
-}
-
 export const auditLog = fp<AuditLogOptions>(
   (app, options, done) => {
     const { sink, now } = options;
 
-    function toRecord(
-      actor: { readonly type: AuditActorType; readonly id: string },
-      entry: AuditEntry,
-    ): AuditRecord {
-      const metadata = entry.metadata ?? {};
-      assertScalars(metadata);
-
-      return {
-        organizationId: entry.organizationId,
+    function toRecord(actor: AuditActor, entry: AuditEntry): AuditRecord {
+      const parsed = AuditEntrySchema.parse(entry);
+      return AuditRecordSchema.parse({
+        organizationId: parsed.organizationId,
         actorType: actor.type,
         actorId: actor.id,
-        action: entry.action,
-        targetType: entry.target.type,
-        targetId: entry.target.id,
-        metadata,
+        action: parsed.action,
+        targetType: parsed.target.type,
+        targetId: parsed.target.id,
+        metadata: parsed.metadata ?? {},
         occurredAt: now(),
-      };
+      });
     }
 
-    function userActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+    function userActor(request: FastifyRequest): AuditActor {
       const auth = request.auth;
       if (auth === undefined) {
         // Not reachable from a route with `requireSession`, which is all of
@@ -369,7 +376,7 @@ export const auditLog = fp<AuditLogOptions>(
       return { type: 'user', id: auth.userId };
     }
 
-    function serviceActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+    function serviceActor(request: FastifyRequest): AuditActor {
       const service = request.service;
       if (service === undefined) {
         // Same argument, and the reverse mistake: a route that called this

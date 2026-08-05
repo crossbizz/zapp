@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { IdempotencyHeader } from '@zapp/contracts';
 import type { FastifyReply, FastifyRequest, RouteOptions } from 'fastify';
 import fp from 'fastify-plugin';
+import { z } from 'zod';
 
 import { ApiError } from '../errors.js';
 import type { RedisCommands } from '../redis/client.js';
@@ -258,6 +259,14 @@ export function createInMemoryIdempotencyStore(
  */
 const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,255}$/;
 
+/** The public wire contract and the reservation hook share one key grammar. */
+export const IdempotencyKeySchema = z.string().regex(KEY_PATTERN);
+
+/** Route schema for mutations that expose their idempotency requirement in OpenAPI. */
+export const IdempotencyHeadersSchema = z
+  .object({ [IdempotencyHeader]: IdempotencyKeySchema })
+  .passthrough();
+
 /**
  * A stable rendering of the request body — object key order is not part of what
  * a client asked for, so `{a,b}` and `{b,a}` must not read as two different
@@ -389,7 +398,7 @@ export const idempotency = fp<IdempotencyOptions>(
       if (submitted === '') {
         return;
       }
-      if (!KEY_PATTERN.test(submitted)) {
+      if (!IdempotencyKeySchema.safeParse(submitted).success) {
         throw new ApiError(
           'idempotency_key_invalid',
           400,

@@ -1516,19 +1516,23 @@
                             "additionalProperties": {
                               "anyOf": [
                                 {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "number"
-                                },
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "enum": [
-                                    "null"
-                                  ],
-                                  "nullable": true
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "enum": [
+                                        "null"
+                                      ],
+                                      "nullable": true
+                                    }
+                                  ]
                                 },
                                 {
                                   "type": "array",
@@ -1846,40 +1850,86 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "builderCanDeploy": {
-                    "type": "boolean"
-                  },
-                  "defaultModelPolicy": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "builderCanDeploy": {
                         "type": "boolean"
                       },
-                      {
-                        "enum": [
-                          "null"
-                        ],
-                        "nullable": true
-                      },
-                      {
-                        "type": "array",
-                        "items": {}
-                      },
-                      {
-                        "type": "object",
-                        "additionalProperties": {}
+                      "defaultModelPolicy": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "enum": [
+                              "null"
+                            ],
+                            "nullable": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": {}
+                          }
+                        ]
                       }
-                    ]
+                    },
+                    "required": [
+                      "builderCanDeploy"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "builderCanDeploy": {
+                        "type": "boolean"
+                      },
+                      "defaultModelPolicy": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "enum": [
+                              "null"
+                            ],
+                            "nullable": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": {}
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "defaultModelPolicy"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -1892,6 +1942,15 @@
             },
             "in": "path",
             "name": "orgId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
             "required": true
           }
         ],

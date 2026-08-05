@@ -121,6 +121,28 @@ void client.request('/v1/projects', {
   query: { includeArchived: true },
 });
 
+void client.request('/v1/organizations/{orgId}/settings', {
+  method: 'PATCH',
+  path: { orgId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA' },
+  headers: { 'idempotency-key': 'settings-types-01' },
+  body: { builderCanDeploy: true },
+});
+
+// @ts-expect-error settings PATCH requires the public Idempotency-Key header
+void client.request('/v1/organizations/{orgId}/settings', {
+  method: 'PATCH',
+  path: { orgId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA' },
+  body: { builderCanDeploy: true },
+});
+
+void client.request('/v1/organizations/{orgId}/settings', {
+  method: 'PATCH',
+  path: { orgId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA' },
+  headers: { 'idempotency-key': 'settings-types-02' },
+  // @ts-expect-error settings PATCH requires at least one organization-owned key
+  body: {},
+});
+
 // @ts-expect-error callers cannot select their own response type
 void client.request<{ invented: true }>('/v1/auth/device/token', {
   method: 'POST',

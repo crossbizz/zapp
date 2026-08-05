@@ -8,43 +8,26 @@ import {
   OrganizationSettingsSchema,
   type OrganizationStore,
 } from '../orgs/store.js';
-import { AUDIT_ACTIONS, type AuditMetadata, type AuditValue } from '../plugins/audit.js';
+import {
+  AuditActionSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditTargetTypeSchema,
+} from '../plugins/audit.js';
+import { IdempotencyHeadersSchema } from '../plugins/idempotency.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { DEFAULT_PAGE_SIZE } from '../pagination.js';
 import { operationOf } from './runs.js';
 
 const OrganizationParams = z.object({ orgId: idSchema('org') }).strict();
-const AuditActionSchema = z.enum(AUDIT_ACTIONS);
-const ActorTypeSchema = z.enum(['user', 'service', 'agent', 'support']);
-const TargetTypeSchema = z.enum([
-  'organization',
-  'membership',
-  'invite',
-  'project',
-  'specification',
-  'run',
-  'workspace',
-  'secret',
-  'release',
-  'integration_connection',
-]);
-const AuditValueSchema: z.ZodType<AuditValue> = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-  z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])),
-]);
-const AuditMetadataSchema: z.ZodType<AuditMetadata> = z.record(AuditValueSchema);
-
 const AuditEventSchema = z
   .object({
     id: idSchema('aud'),
     organizationId: idSchema('org'),
-    actorType: ActorTypeSchema,
+    actorType: AuditActorTypeSchema,
     actorId: z.string().min(1),
     action: AuditActionSchema,
-    targetType: TargetTypeSchema,
+    targetType: AuditTargetTypeSchema,
     targetId: z.string().nullable(),
     metadata: AuditMetadataSchema,
     occurredAt: z.string().datetime(),
@@ -57,7 +40,7 @@ const AuditListQuery = z
     cursor: idSchema('aud').optional(),
     actorId: z.string().min(1).max(255).optional(),
     action: AuditActionSchema.optional(),
-    targetType: TargetTypeSchema.optional(),
+    targetType: AuditTargetTypeSchema.optional(),
     targetId: z.string().min(1).max(255).optional(),
     from: z.string().datetime({ offset: true }).optional(),
     to: z.string().datetime({ offset: true }).optional(),
@@ -145,6 +128,7 @@ export function registerAuditRoutes(app: AppInstance, deps: AuditRoutesDeps): vo
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
       schema: {
         params: OrganizationParams,
+        headers: IdempotencyHeadersSchema,
         body: OrganizationSettingsPatchSchema,
         response: { 200: SettingsResponseSchema },
       },
@@ -153,17 +137,20 @@ export function registerAuditRoutes(app: AppInstance, deps: AuditRoutesDeps): vo
       const ctx = tenantOf(request);
       authorize(ctx, 'manage_organization');
       const operationKey = operationOf(request);
-      const fields = Object.keys(request.body).sort();
       const settings = await deps.organizations.updateSettings({
         organizationId: ctx.organizationId,
         patch: request.body,
         operationKey,
-        audit: async (tx) => {
+        audit: async (tx, update) => {
           await request.audit(tx, {
             organizationId: ctx.organizationId,
             action: 'organization.settings_updated',
             target: { type: 'organization', id: ctx.organizationId },
-            metadata: { fields, operationKey },
+            metadata: {
+              changedFields: update.changedFields,
+              noOp: update.noOp,
+              operationKey,
+            },
           });
         },
       });

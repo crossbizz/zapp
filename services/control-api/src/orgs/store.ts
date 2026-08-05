@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { newId } from '@zapp/contracts';
 import { auditEvents, memberships, organizations, type Database, type Executor } from '@zapp/db';
 import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
@@ -58,10 +60,7 @@ export interface OrganizationMembership {
   readonly status: MembershipStatus;
 }
 
-export type JsonValue =
-  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
-function isJsonValue(value: unknown): value is JsonValue {
+function isJsonValue(value: unknown): boolean {
   if (value === null || ['string', 'boolean'].includes(typeof value)) return true;
   if (typeof value === 'number') return Number.isFinite(value);
   if (Array.isArray(value)) return value.every(isJsonValue);
@@ -70,14 +69,12 @@ function isJsonValue(value: unknown): value is JsonValue {
   );
 }
 
-const JsonArraySchema = z
-  .array(z.unknown())
-  .refine((value): value is JsonValue[] => value.every(isJsonValue));
+const JsonArraySchema = z.array(z.unknown()).refine((value) => value.every(isJsonValue));
 const JsonObjectSchema = z
   .record(z.unknown())
-  .refine((value): value is Record<string, JsonValue> => Object.values(value).every(isJsonValue));
+  .refine((value) => Object.values(value).every(isJsonValue));
 
-export const JsonValueSchema: z.ZodType<JsonValue, z.ZodTypeDef, unknown> = z.union([
+export const JsonValueSchema = z.union([
   z.string(),
   z.number().finite(),
   z.boolean(),
@@ -85,6 +82,7 @@ export const JsonValueSchema: z.ZodType<JsonValue, z.ZodTypeDef, unknown> = z.un
   JsonArraySchema,
   JsonObjectSchema,
 ]);
+export type JsonValue = z.infer<typeof JsonValueSchema>;
 
 /** ADR-0004's complete settings document, normalized at every store boundary. */
 export const OrganizationSettingsSchema = z
@@ -94,26 +92,44 @@ export const OrganizationSettingsSchema = z
   })
   .strict();
 
-/** PATCH may name only ADR-0004's two owned keys and must name at least one. */
-export const OrganizationSettingsPatchSchema = z
+const BuilderDeployPatchSchema = z
   .object({
-    builderCanDeploy: z.boolean().optional(),
+    builderCanDeploy: z.boolean(),
     defaultModelPolicy: JsonValueSchema.optional(),
   })
-  .strict()
-  .refine(
-    (patch) => patch.builderCanDeploy !== undefined || patch.defaultModelPolicy !== undefined,
-    { message: 'at least one organization setting is required' },
-  );
+  .strict();
+
+const DefaultModelPolicyPatchSchema = z
+  .object({
+    builderCanDeploy: z.boolean().optional(),
+    defaultModelPolicy: JsonValueSchema,
+  })
+  .strict();
+
+/** PATCH names only ADR-0004's owned keys, with one key required by the type itself. */
+export const OrganizationSettingsPatchSchema = z.union([
+  BuilderDeployPatchSchema,
+  DefaultModelPolicyPatchSchema,
+]);
 
 export type OrganizationSettings = z.infer<typeof OrganizationSettingsSchema>;
 export type OrganizationSettingsPatch = z.infer<typeof OrganizationSettingsPatchSchema>;
+
+export const OrganizationSettingsUpdateSchema = z
+  .object({
+    settings: OrganizationSettingsSchema,
+    changedFields: z.array(z.enum(['builderCanDeploy', 'defaultModelPolicy'])).max(2),
+    noOp: z.boolean(),
+  })
+  .strict()
+  .refine((update) => update.noOp === (update.changedFields.length === 0));
+export type OrganizationSettingsUpdate = z.infer<typeof OrganizationSettingsUpdateSchema>;
 
 export interface UpdateOrganizationSettingsInput {
   readonly organizationId: string;
   readonly patch: OrganizationSettingsPatch;
   readonly operationKey: string;
-  readonly audit: AuditHook<OrganizationSettings>;
+  readonly audit: AuditHook<OrganizationSettingsUpdate>;
 }
 
 /**
@@ -259,6 +275,21 @@ const ORGANIZATION_COLUMNS = {
 
 function normalizeSettings(value: unknown): OrganizationSettings {
   return OrganizationSettingsSchema.parse(value);
+}
+
+function settingsUpdate(
+  current: OrganizationSettings,
+  patch: OrganizationSettingsPatch,
+): OrganizationSettingsUpdate {
+  const settings = OrganizationSettingsSchema.parse({ ...current, ...patch });
+  const changedFields = (Object.keys(patch) as (keyof OrganizationSettingsPatch)[])
+    .filter((field) => !isDeepStrictEqual(current[field], settings[field]))
+    .sort();
+  return OrganizationSettingsUpdateSchema.parse({
+    settings,
+    changedFields,
+    noOp: changedFields.length === 0,
+  });
 }
 
 export function createDbOrganizationStore(db: Database): OrganizationStore {
@@ -419,16 +450,15 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
           .limit(1);
         if (completed !== undefined) return normalizeSettings(row.settings);
 
-        const settings = OrganizationSettingsSchema.parse({
-          ...normalizeSettings(row.settings),
-          ...patch,
-        });
-        await tx
-          .update(organizations)
-          .set({ settingsJson: settings })
-          .where(eq(organizations.id, input.organizationId));
-        await input.audit(tx, settings);
-        return settings;
+        const update = settingsUpdate(normalizeSettings(row.settings), patch);
+        if (!update.noOp) {
+          await tx
+            .update(organizations)
+            .set({ settingsJson: update.settings })
+            .where(eq(organizations.id, input.organizationId));
+        }
+        await input.audit(tx, update);
+        return update.settings;
       });
     },
 

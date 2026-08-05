@@ -368,8 +368,29 @@ describe('organization settings', () => {
       actorId: wired.owner.userId,
       targetType: 'organization',
       targetId: wired.organizationId,
-      metadata: { fields: ['defaultModelPolicy'] },
+      metadata: { changedFields: ['defaultModelPolicy'], noOp: false },
     });
+  });
+
+  it('records a fresh-key same-value PATCH as a completed no-op', async () => {
+    const wired = await wire();
+    const response = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${wired.organizationId}/settings`,
+      headers: { ...wired.headers(wired.owner), 'idempotency-key': 'settings-no-op-01' },
+      payload: { builderCanDeploy: false },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers['x-idempotent-replay']).toBeUndefined();
+    expect(response.json()).toEqual({ settings: { builderCanDeploy: false } });
+    const settingsEvents = wired.built.audit.events.filter(
+      (event) => event.action === 'organization.settings_updated',
+    );
+    expect(settingsEvents).toHaveLength(1);
+    expect(settingsEvents[0]?.metadata.changedFields).toEqual([]);
+    expect(settingsEvents[0]?.metadata.noOp).toBe(true);
+    expect(settingsEvents[0]?.metadata.operationKey).toMatch(/^op_[0-9a-f]{64}$/);
   });
 
   it('rejects unknown keys, empty patches, and missing idempotency before writing', async () => {

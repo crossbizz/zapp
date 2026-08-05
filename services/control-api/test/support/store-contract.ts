@@ -192,6 +192,39 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
       expect(await store.getSettings(organizationId)).toEqual(merged);
     });
 
+    it('completes a fresh-key same-value patch as a no-op and retries after audit rollback', async () => {
+      const organizationId = await found();
+      const outcomes: unknown[] = [];
+      const operationKey = 'op_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+
+      await expect(
+        store.updateSettings({
+          organizationId,
+          patch: { builderCanDeploy: false },
+          operationKey,
+          audit: failingAudit,
+        }),
+      ).rejects.toBe(AUDIT_FAILED);
+      const settings = await store.updateSettings({
+        organizationId,
+        patch: { builderCanDeploy: false },
+        operationKey,
+        audit: (_tx, outcome) => {
+          outcomes.push(outcome);
+          return Promise.resolve();
+        },
+      });
+
+      expect(settings).toEqual({ builderCanDeploy: false });
+      expect(outcomes).toEqual([
+        {
+          settings: { builderCanDeploy: false },
+          changedFields: [],
+          noOp: true,
+        },
+      ]);
+    });
+
     it('rolls back a settings patch whose audit row could not be written', async () => {
       const organizationId = await found();
 

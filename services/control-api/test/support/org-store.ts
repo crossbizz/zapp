@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { newId } from '@zapp/contracts';
 
 import {
@@ -11,6 +13,7 @@ import {
   type OrganizationRecord,
   OrganizationSettingsPatchSchema,
   OrganizationSettingsSchema,
+  OrganizationSettingsUpdateSchema,
   type OrganizationSettings,
   type OrganizationStore,
   type PageRequest,
@@ -113,8 +116,16 @@ export class InMemoryOrganizationStore implements OrganizationStore {
 
     const patch = OrganizationSettingsPatchSchema.parse(input.patch);
     const settings = OrganizationSettingsSchema.parse({ ...current, ...patch });
-    await input.audit(NO_TRANSACTION, settings);
-    this.settings.set(input.organizationId, settings);
+    const changedFields = (Object.keys(patch) as (keyof typeof patch)[])
+      .filter((field) => !isDeepStrictEqual(current[field], settings[field]))
+      .sort();
+    const update = OrganizationSettingsUpdateSchema.parse({
+      settings,
+      changedFields,
+      noOp: changedFields.length === 0,
+    });
+    await input.audit(NO_TRANSACTION, update);
+    if (!update.noOp) this.settings.set(input.organizationId, settings);
     this.settingsOperations.add(operation);
     return settings;
   }

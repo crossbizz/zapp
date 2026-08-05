@@ -137,7 +137,13 @@ describe('security and integrations (PRD §23.6)', () => {
     expect(foreignKeys(auditEvents)).toEqual(['organization_id -> organizations.id']);
     expect(requiredColumns(auditEvents)).toContain('actor_type');
     expect(requiredColumns(auditEvents)).toContain('actor_id');
-    expect(indexNames(auditEvents)).toEqual(['audit_events_org_occurred_at_idx']);
+    expect(indexNames(auditEvents)).toEqual([
+      'audit_events_org_occurred_at_idx',
+      'audit_events_org_id_idx',
+      'audit_events_org_actor_id_id_idx',
+      'audit_events_org_action_id_idx',
+      'audit_events_org_target_id_idx',
+    ]);
     // No default on occurred_at: a backfilled or retried row must not claim the
     // time it was inserted (same rule as usage_ledger).
     expect(sqlType(auditEvents, 'occurred_at')).toBe('timestamp with time zone');

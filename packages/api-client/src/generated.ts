@@ -1520,7 +1520,7 @@ export interface paths {
                                 actorType: "user" | "service" | "agent" | "support";
                                 id: string;
                                 metadata: {
-                                    [key: string]: string | number | boolean | ("null" | null) | (string | number | boolean | ("null" | null))[];
+                                    [key: string]: (string | number | boolean | ("null" | null)) | (string | number | boolean | ("null" | null))[];
                                 };
                                 /** Format: date-time */
                                 occurredAt: string;
@@ -1861,7 +1861,9 @@ export interface paths {
         patch: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "idempotency-key": string;
+                };
                 path: {
                     orgId: string;
                 };
@@ -1870,8 +1872,13 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        builderCanDeploy?: boolean;
+                        builderCanDeploy: boolean;
                         defaultModelPolicy?: string | number | boolean | ("null" | null) | unknown[] | {
+                            [key: string]: unknown;
+                        };
+                    } | {
+                        builderCanDeploy?: boolean;
+                        defaultModelPolicy: string | number | boolean | ("null" | null) | unknown[] | {
                             [key: string]: unknown;
                         };
                     };

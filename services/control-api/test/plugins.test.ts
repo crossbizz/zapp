@@ -13,7 +13,7 @@ import {
   RATE_LIMITS_PATH,
   trustProxyOption,
 } from '../src/config/rate-limits.js';
-import { NO_TRANSACTION } from '../src/plugins/audit.js';
+import { createInMemoryAuditSink, NO_TRANSACTION, type AuditRecord } from '../src/plugins/audit.js';
 import {
   createInMemoryIdempotencyStore,
   IDEMPOTENT_REPLAY_HEADER,
@@ -786,6 +786,35 @@ describe('idempotency', () => {
 });
 
 describe('the audit seam', () => {
+  it('refuses rows that the audit read boundary cannot serialize', async () => {
+    // Break caught: a direct sink caller bypasses request-level metadata checks
+    // and writes a row that GET /audit-events later cannot parse.
+    const base: AuditRecord = {
+      organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+      actorType: 'user',
+      actorId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
+      action: 'organization.updated',
+      targetType: 'organization',
+      targetId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+      metadata: {},
+      occurredAt: new Date('2026-08-05T12:00:00.000Z'),
+    };
+    const malformed = [
+      { ...base, actorType: 'robot' },
+      { ...base, actorId: '' },
+      { ...base, action: 'organization.typo' },
+      { ...base, targetType: 'credential' },
+      { ...base, metadata: { cost: Number.POSITIVE_INFINITY } },
+      { ...base, metadata: { nested: { token: 'must-not-persist' } } },
+    ];
+
+    for (const row of malformed) {
+      const sink = createInMemoryAuditSink();
+      await expect(sink.record(NO_TRANSACTION, row as never)).rejects.toThrow();
+      expect(sink.events).toEqual([]);
+    }
+  });
+
   it('refuses metadata that is not scalar', async () => {
     // The type says scalars; this is the runtime half of the same rule. A
     // nested object is how a token or a whole request body ends up in a table
