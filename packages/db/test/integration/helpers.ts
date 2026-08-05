@@ -208,17 +208,69 @@ export async function truncateAll(sql: postgres.Sql): Promise<void> {
          relation.relname || '_append_only_truncate'
        )
   `;
+  const guardedTables = [...new Set(guards.map((guard) => guard.table))];
+  const truncatePrivileges = new Map<string, boolean>();
+  for (const table of guardedTables) {
+    const [row] = await sql<{ allowed: boolean }[]>`
+      select has_table_privilege(current_user, ${`public.${table}`}, 'TRUNCATE') as allowed
+    `;
+    truncatePrivileges.set(table, row?.allowed ?? false);
+  }
 
   const targets = tables.map((table) => `"${table.name}"`).join(', ');
   await sql.begin(async (tx) => {
     for (const guard of guards) {
       await tx.unsafe(`alter table "${guard.table}" disable trigger "${guard.trigger}"`);
     }
+    // Migration 0004 revokes TRUNCATE from the configured app role. The local
+    // test role also owns these tables, so it can restore only the privileges
+    // this reset needs, inside the same transaction, then put their exact prior
+    // state back before commit.
+    for (const table of guardedTables) {
+      if (truncatePrivileges.get(table) === false) {
+        await tx.unsafe(`grant truncate on public."${table}" to current_user`);
+      }
+    }
     await tx.unsafe(`truncate table ${targets} restart identity cascade`);
+    for (const table of guardedTables) {
+      if (truncatePrivileges.get(table) === false) {
+        await tx.unsafe(`revoke truncate on public."${table}" from current_user`);
+      }
+    }
     for (const guard of guards) {
       await tx.unsafe(`alter table "${guard.table}" enable trigger "${guard.trigger}"`);
     }
   });
+
+  const states = await sql<{ trigger: string; enabled: string }[]>`
+    select trigger.tgname as trigger, trigger.tgenabled as enabled
+      from pg_trigger trigger
+      join pg_class relation on relation.oid = trigger.tgrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+     where namespace.nspname = 'public'
+       and not trigger.tgisinternal
+       and trigger.tgname in (
+         relation.relname || '_append_only',
+         relation.relname || '_append_only_truncate'
+       )
+  `;
+  const disarmed = states.filter((state) => state.enabled !== 'O');
+  if (disarmed.length > 0) {
+    throw new Error(
+      `append-only guards left disabled after a reset: ${disarmed
+        .map((state) => state.trigger)
+        .join(', ')}`,
+    );
+  }
+
+  for (const table of guardedTables) {
+    const [row] = await sql<{ allowed: boolean }[]>`
+      select has_table_privilege(current_user, ${`public.${table}`}, 'TRUNCATE') as allowed
+    `;
+    if ((row?.allowed ?? false) !== truncatePrivileges.get(table)) {
+      throw new Error(`TRUNCATE privilege changed after reset for ${table}`);
+    }
+  }
 }
 
 /** `noUncheckedIndexedAccess` types `rows[0]` as optional; fail loudly rather than assert non-null. */
