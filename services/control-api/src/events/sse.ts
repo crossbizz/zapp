@@ -27,10 +27,12 @@ const EVENT_STREAM_MEDIA_PARAMETERS = new Map([['charset', 'utf-8']]);
 export interface EventWakeupSubscription {
   next(): Promise<unknown>;
   close(): Promise<void>;
+  /** Synchronously releases provider resources when graceful close cannot. */
+  abort(): void;
 }
 
 export interface EventWakeupSource {
-  subscribe(channel: string): Promise<EventWakeupSubscription>;
+  subscribe(channel: string, signal: AbortSignal): Promise<EventWakeupSubscription>;
 }
 
 export interface EventStreamAccessContext {
@@ -201,22 +203,29 @@ async function closeQuietly(
       await subscription.close();
     })
     .then(
-      () => true,
+      () => 'closed' as const,
       (error: unknown) => {
         report(error);
-        return true;
+        return 'failed' as const;
       },
     );
-  const timedOut = new Promise<false>((resolve) => {
+  const timedOut = new Promise<'timed-out'>((resolve) => {
     timer = setTimeout(() => {
-      resolve(false);
+      resolve('timed-out');
     }, timeoutMs);
     timer.unref();
   });
-  const closed = await Promise.race([close, timedOut]);
+  const outcome = await Promise.race([close, timedOut]);
   if (timer !== undefined) clearTimeout(timer);
-  if (!closed) {
+  if (outcome === 'timed-out') {
     report(new Error(`event wakeup subscription close exceeded ${String(timeoutMs)} ms`));
+  }
+  if (outcome !== 'closed') {
+    try {
+      subscription.abort();
+    } catch (error) {
+      report(error);
+    }
   }
 }
 
@@ -236,7 +245,7 @@ async function subscribeUntilClosed(input: {
     if (signal.aborted) resolve(undefined);
     else signal.addEventListener('abort', onAbort, { once: true });
   });
-  const pending = Promise.resolve().then(async () => await source.subscribe(channel));
+  const pending = Promise.resolve().then(async () => await source.subscribe(channel, signal));
   try {
     const subscription = await Promise.race([pending, aborted]);
     if (subscription !== undefined && !signal.aborted) return subscription;

@@ -141,7 +141,7 @@ export function createRedisConnection(
     async publish(channel, body) {
       return await client.publish(channel, body);
     },
-    async subscribe(channel): Promise<EventWakeupSubscription> {
+    async subscribe(channel, signal): Promise<EventWakeupSubscription> {
       const subscriber = new Redis(url, {
         commandTimeout: options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
         connectTimeout: CONNECT_TIMEOUT_MS,
@@ -153,7 +153,19 @@ export function createRedisConnection(
         | { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void }
         | undefined;
       let closed = false;
+      let released = false;
+      const detach = (): void => {
+        signal.removeEventListener('abort', abortSubscription);
+        subscriber.removeListener('error', fail);
+        subscriber.removeListener('message', receive);
+      };
+      const rejectWaiter = (message: string): void => {
+        const pending = waiter;
+        waiter = undefined;
+        pending?.reject(new Error(message));
+      };
       const fail = (error: Error): void => {
+        if (released) return;
         try {
           options.onError?.(error);
         } catch {
@@ -170,16 +182,25 @@ export function createRedisConnection(
         if (pending === undefined) queued = message;
         else pending.resolve(message);
       };
+      const abortSubscription = (): void => {
+        if (released) return;
+        closed = true;
+        released = true;
+        rejectWaiter('Redis subscription aborted');
+        detach();
+        subscriber.disconnect();
+      };
+      const subscriptionWasAborted = (): boolean => signal.aborted;
       subscriber.on('error', fail);
       subscriber.on('message', receive);
+      signal.addEventListener('abort', abortSubscription, { once: true });
       try {
+        if (subscriptionWasAborted()) throw new Error('Redis subscription aborted');
         await subscriber.connect();
         await subscriber.subscribe(channel);
+        if (subscriptionWasAborted()) throw new Error('Redis subscription aborted');
       } catch (error) {
-        closed = true;
-        subscriber.removeListener('error', fail);
-        subscriber.removeListener('message', receive);
-        subscriber.disconnect();
+        abortSubscription();
         throw error;
       }
       return {
@@ -198,19 +219,19 @@ export function createRedisConnection(
         async close() {
           if (closed) return;
           closed = true;
-          const pending = waiter;
-          waiter = undefined;
-          pending?.reject(new Error('Redis subscription closed'));
+          signal.removeEventListener('abort', abortSubscription);
+          rejectWaiter('Redis subscription closed');
           try {
             await subscriber.unsubscribe(channel);
             await subscriber.quit();
           } catch {
             subscriber.disconnect();
           } finally {
-            subscriber.removeListener('error', fail);
-            subscriber.removeListener('message', receive);
+            released = true;
+            detach();
           }
         },
+        abort: abortSubscription,
       };
     },
     async close() {

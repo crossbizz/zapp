@@ -47,6 +47,11 @@ class TestWakeupSource implements EventWakeupSource {
 
   subscribe(channel: string): Promise<EventWakeupSubscription> {
     this.channels.push(channel);
+    const abort = (): void => {
+      for (const waiter of this.pending.splice(0)) {
+        waiter.reject(new Error('subscription aborted'));
+      }
+    };
     return Promise.resolve({
       next: () => {
         const queued = this.queued.shift();
@@ -62,6 +67,7 @@ class TestWakeupSource implements EventWakeupSource {
         }
         return Promise.resolve();
       },
+      abort,
     });
   }
 
@@ -856,8 +862,20 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     // Break caught: aborting only the live-tail loop cannot release a handler
     // still awaiting a provider whose subscribe promise never settles.
     const never = new Promise<EventWakeupSubscription>(() => undefined);
+    let subscriptionSetupAborted = false;
     await startApp({
-      wakeups: { subscribe: () => never },
+      wakeups: {
+        subscribe: (_channel, signal) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              subscriptionSetupAborted = true;
+            },
+            { once: true },
+          );
+          return never;
+        },
+      },
       cleanupTimeoutMs: 25,
     });
     const controller = new AbortController();
@@ -866,6 +884,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     const closePromise = app?.close();
     if (closePromise === undefined) throw new Error('SSE app was not started');
     await expectSettlesWithin(closePromise);
+    expect(subscriptionSetupAborted).toBe(true);
     await cancelResponseBody(response);
     controller.abort();
   });
@@ -874,12 +893,14 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     // Break caught: preClose waits for stream completion, so an unbounded
     // provider close turns graceful shutdown into an infinite wait.
     const errors: Error[] = [];
+    const forceAbort = vi.fn();
     await startApp({
       wakeups: {
         subscribe: () =>
           Promise.resolve({
             next: () => new Promise<unknown>(() => undefined),
             close: () => new Promise<void>(() => undefined),
+            abort: forceAbort,
           }),
       },
       cleanupTimeoutMs: 25,
@@ -896,6 +917,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     expect(errors.map((error) => error.message)).toContain(
       'event wakeup subscription close exceeded 25 ms',
     );
+    expect(forceAbort).toHaveBeenCalledOnce();
     await cancelResponseBody(response);
     controller.abort();
   });
