@@ -45,7 +45,7 @@ describe('control-api event stream composition', () => {
       redis: unusedRedis,
       eventWakeups,
       auth: {
-        databaseUrl: 'postgres://unused:unused@127.0.0.1:1/unused',
+        databaseUrl: 'postgres://127.0.0.1:1/unused',
         config: TEST_AUTH_CONFIG,
         stytch: {
           projectId: 'project-test-00000000-0000-0000-0000-000000000000',
