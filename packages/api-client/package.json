@@ -16,6 +16,9 @@
     "lint": "eslint .",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@zapp/contracts": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "vitest": "^3.2.7"
