@@ -1590,7 +1590,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           nextState,
         );
       }
-      if (inspectBodyCalls && ts.isCallExpression(node)) {
+      if ((inspectBodyCalls || record.thisValue) && ts.isCallExpression(node)) {
         callableValue(node, environment, nextState);
       }
       ts.forEachChild(node, visit);

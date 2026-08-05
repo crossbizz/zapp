@@ -586,6 +586,19 @@ test('round-6 keeps static and instance class fields isolated in harmless alias 
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 inspects called instance methods through chained aliases of this', () => {
+  const result = runFixture('loader-called-this-aliases');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*called-this-aliases\.ts/);
+});
+
+test('AR-1 leaves 250 uncalled this-alias methods bounded and allowed', () => {
+  const result = runFixture('loader-called-this-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 normalizes nested Function.prototype call and apply invocations', () => {
   const result = runFixture('loader-nested-invocations');
 
