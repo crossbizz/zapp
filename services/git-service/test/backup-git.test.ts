@@ -415,6 +415,9 @@ describe('createGitBundleCommands', () => {
 
   it('rejects credentials in a URL before invoking Git', async () => {
     let calls = 0;
+    const forbiddenUrl = new URL('https://git.test/org/repository.git');
+    forbiddenUrl.username = 'forbidden';
+    forbiddenUrl.password = 'credential';
     const git = createGitBundleCommands({
       username: USERNAME,
       password: PASSWORD,
@@ -426,10 +429,7 @@ describe('createGitBundleCommands', () => {
     });
 
     await expect(
-      git.createBundle(
-        'https://forbidden:credential@git.test/org/repository.git',
-        '/tmp/controller.bundle',
-      ),
+      git.createBundle(forbiddenUrl.toString(), '/tmp/controller.bundle'),
     ).rejects.toThrow('Invalid Git URL');
     expect(calls).toBe(0);
   });

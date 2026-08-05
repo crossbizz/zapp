@@ -490,7 +490,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: zapp
         ports:
           - 5432:5432
@@ -502,7 +502,7 @@ jobs:
 
     env:
       GIT_BACKUP_LIVE: '1'
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
+      DATABASE_URL: postgres://postgres@localhost:5432/zapp
       FORGEJO_URL: http://localhost:3000
       ARTIFACT_ENDPOINT: http://localhost:9000
       ARTIFACT_KEY: minioadmin

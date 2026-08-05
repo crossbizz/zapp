@@ -25,7 +25,9 @@ type Workflow = {
         readonly needs?: string;
         readonly environment?: string;
         readonly env?: Readonly<Record<string, string>>;
-        readonly services?: Readonly<Record<string, unknown>>;
+        readonly services?: Readonly<
+          Record<string, { readonly env?: Readonly<Record<string, string>> }>
+        >;
         readonly steps?: readonly WorkflowStep[];
       }
     >
@@ -155,12 +157,15 @@ describe('the Git backup workflow', () => {
     expect(Object.keys(job?.services ?? {}).sort()).toEqual(['forgejo', 'postgres']);
     expect(job?.env).toMatchObject({
       GIT_BACKUP_LIVE: '1',
-      DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/zapp',
+      DATABASE_URL: 'postgres://postgres@localhost:5432/zapp',
       FORGEJO_URL: 'http://localhost:3000',
       ARTIFACT_ENDPOINT: 'http://localhost:9000',
       ARTIFACT_KEY: 'minioadmin',
       ARTIFACT_SECRET: 'minioadmin',
       ARTIFACT_BUCKET: 'zapp-git-backups',
+    });
+    expect(job?.services?.['postgres']?.env).toMatchObject({
+      POSTGRES_HOST_AUTH_METHOD: 'trust',
     });
     expect(steps.find((step) => step.name === 'Start MinIO service')?.run).toContain(
       'minio/minio:RELEASE.2025-04-22T22-12-26Z server /data',
