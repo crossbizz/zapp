@@ -9,6 +9,9 @@ import {
   type MembershipRecord,
   type OrganizationMembership,
   type OrganizationRecord,
+  OrganizationSettingsPatchSchema,
+  OrganizationSettingsSchema,
+  type OrganizationSettings,
   type OrganizationStore,
   type PageRequest,
   type RoleUpdate,
@@ -36,6 +39,8 @@ export class InMemoryOrganizationStore implements OrganizationStore {
   readonly organizations = new Map<string, OrganizationRecord>();
   /** Keyed `organizationId\0userId`, removed rows included. */
   readonly memberships = new Map<string, MembershipRecord>();
+  readonly settings = new Map<string, OrganizationSettings>();
+  private readonly settingsOperations = new Set<string>();
 
   private key(organizationId: string, userId: string): string {
     // The separator is spelled as an escape rather than typed as a byte: a
@@ -89,6 +94,29 @@ export class InMemoryOrganizationStore implements OrganizationStore {
 
   findById(organizationId: string): Promise<OrganizationRecord | undefined> {
     return Promise.resolve(this.organizations.get(organizationId));
+  }
+
+  getSettings(organizationId: string): Promise<OrganizationSettings | undefined> {
+    if (!this.organizations.has(organizationId)) return Promise.resolve(undefined);
+    return Promise.resolve(
+      OrganizationSettingsSchema.parse(this.settings.get(organizationId) ?? {}),
+    );
+  }
+
+  async updateSettings(
+    input: Parameters<OrganizationStore['updateSettings']>[0],
+  ): Promise<OrganizationSettings | undefined> {
+    if (!this.organizations.has(input.organizationId)) return undefined;
+    const current = OrganizationSettingsSchema.parse(this.settings.get(input.organizationId) ?? {});
+    const operation = `${input.organizationId}\u0000${input.operationKey}`;
+    if (this.settingsOperations.has(operation)) return current;
+
+    const patch = OrganizationSettingsPatchSchema.parse(input.patch);
+    const settings = OrganizationSettingsSchema.parse({ ...current, ...patch });
+    await input.audit(NO_TRANSACTION, settings);
+    this.settings.set(input.organizationId, settings);
+    this.settingsOperations.add(operation);
+    return settings;
   }
 
   listForUser(userId: string, page?: PageRequest): Promise<StorePage<OrganizationMembership>> {

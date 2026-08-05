@@ -25,6 +25,7 @@ import {
   workspaces,
   nextEventSequence,
   type AgentEventRow,
+  type AuditEvent,
   type Branch,
   type AgentRun,
   type Database,
@@ -39,7 +40,7 @@ import {
   type TenantDb,
   type Workspace,
 } from '@zapp/db';
-import { and, asc, desc, eq, isNull, lt, sql, type Column, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 
 import { isUniqueViolation } from '../db/errors.js';
 import type { PageRequest, StorePage } from '../pagination.js';
@@ -470,6 +471,19 @@ export interface TenantEventRepository extends EventRepository {
   ingest(input: IngestEventBatchInput): Promise<IngestEventBatchResult>;
 }
 
+export interface AuditEventListRequest extends PageRequest {
+  readonly actorId?: string;
+  readonly action?: string;
+  readonly targetType?: string;
+  readonly targetId?: string;
+  readonly from?: Date;
+  readonly to?: Date;
+}
+
+export interface TenantAuditEventRepository {
+  list(request: AuditEventListRequest): Promise<StorePage<AuditEvent>>;
+}
+
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
 export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
@@ -482,6 +496,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
+  readonly auditEvents: TenantAuditEventRepository;
 }
 
 /**
@@ -623,6 +638,33 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await input.audit(tx, inserted);
             return { kind: 'stored', events: inserted };
           });
+        },
+      },
+
+      auditEvents: {
+        async list(request: AuditEventListRequest): Promise<StorePage<AuditEvent>> {
+          const rows = await db
+            .select()
+            .from(auditEvents)
+            .where(
+              scoped(
+                auditEvents.organizationId,
+                ...(request.cursor === undefined ? [] : [lt(auditEvents.id, request.cursor)]),
+                ...(request.actorId === undefined ? [] : [eq(auditEvents.actorId, request.actorId)]),
+                ...(request.action === undefined ? [] : [eq(auditEvents.action, request.action)]),
+                ...(request.targetType === undefined ? [] : [eq(auditEvents.targetType, request.targetType)]),
+                ...(request.targetId === undefined ? [] : [eq(auditEvents.targetId, request.targetId)]),
+                ...(request.from === undefined ? [] : [gte(auditEvents.occurredAt, request.from)]),
+                ...(request.to === undefined ? [] : [lte(auditEvents.occurredAt, request.to)]),
+              ),
+            )
+            .orderBy(desc(auditEvents.id))
+            .limit(request.limit + 1);
+          const items = rows.slice(0, request.limit);
+          return {
+            items,
+            nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
+          };
         },
       },
 

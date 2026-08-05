@@ -335,6 +335,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/organizations/{orgId}/audit-events": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/organizations/{orgId}/invites": {
     "post": {
       "security": [
@@ -372,6 +393,47 @@ export const PUBLIC_API_OPERATIONS = {
         "204": {
           "body": "forbidden",
           "mediaTypes": [],
+          "requiredHeaders": []
+        }
+      }
+    },
+    "patch": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/organizations/{orgId}/settings": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
           "requiredHeaders": []
         }
       }

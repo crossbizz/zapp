@@ -162,6 +162,121 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     expect(written[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
   });
 
+  it('reads the real audit table with combined filters', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: tenant,
+      payload: { name: 'Filtered Project' },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const projectId = created.json<{ project: { id: string } }>().project.id;
+    const query = new URLSearchParams({
+      actorId: acme.userId,
+      action: 'project.created',
+      targetType: 'project',
+      targetId: projectId,
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2027-01-01T00:00:00.000Z',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/organizations/${acme.id}/audit-events?${query.toString()}`,
+      headers: tenant,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(
+      response.json<{ items: { action: string; targetId: string }[]; nextCursor: null }>(),
+    ).toMatchObject({
+      items: [{ action: 'project.created', targetId: projectId }],
+      nextCursor: null,
+    });
+  });
+
+  it('persists normalized settings and rolls state back when its audit write fails', async () => {
+    const acme = await found();
+    const tenant = { ...acme.headers, [ORGANIZATION_HEADER]: acme.id };
+    const defaults = await app.inject({
+      method: 'GET',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: tenant,
+    });
+    expect(defaults.statusCode, defaults.body).toBe(200);
+    expect(defaults.json()).toEqual({ settings: { builderCanDeploy: false } });
+
+    const policy = { route: ['quality', { fallback: null }] };
+    const policyPatch = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-policy-01' },
+      payload: { defaultModelPolicy: policy },
+    });
+    expect(policyPatch.statusCode, policyPatch.body).toBe(200);
+    const deployPatch = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-deploy-01' },
+      payload: { builderCanDeploy: true },
+    });
+    expect(deployPatch.statusCode, deployPatch.body).toBe(200);
+    expect(deployPatch.json()).toEqual({
+      settings: { builderCanDeploy: true, defaultModelPolicy: policy },
+    });
+
+    const [persisted] = await database.sql<{ settings_json: unknown }[]>`
+      select settings_json from organizations where id = ${acme.id}
+    `;
+    expect(persisted?.settings_json).toEqual({
+      builderCanDeploy: true,
+      defaultModelPolicy: policy,
+    });
+    const before = (await rows()).filter(
+      (row) => row.action === 'organization.settings_updated',
+    ).length;
+    auditFails = true;
+
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: `/v1/organizations/${acme.id}/settings`,
+      headers: { ...tenant, 'idempotency-key': 'db-settings-audit-refused-01' },
+      payload: { builderCanDeploy: false },
+    });
+
+    expect(refused.statusCode, refused.body).toBe(500);
+    const [after] = await database.sql<{ settings_json: unknown }[]>`
+      select settings_json from organizations where id = ${acme.id}
+    `;
+    expect(after?.settings_json).toEqual(persisted?.settings_json);
+    expect(
+      (await rows()).filter((row) => row.action === 'organization.settings_updated'),
+    ).toHaveLength(before);
+  });
+
+  it('does not reapply an old completed settings operation over a newer one', async () => {
+    const acme = await found();
+    const operationA = 'op_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const operationB = 'op_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const update = (operationKey: string, builderCanDeploy: boolean) =>
+      store.updateSettings({
+        organizationId: acme.id,
+        patch: { builderCanDeploy },
+        operationKey,
+        audit: (tx) => sink.record(tx, settingsAuditRecord(acme.id, acme.userId, operationKey)),
+      });
+
+    expect(await update(operationA, true)).toMatchObject({ builderCanDeploy: true });
+    expect(await update(operationB, false)).toMatchObject({ builderCanDeploy: false });
+    expect(await update(operationA, true)).toMatchObject({ builderCanDeploy: false });
+
+    expect(
+      (await rows()).filter((row) => row.action === 'organization.settings_updated'),
+    ).toHaveLength(2);
+  });
+
   it('loses the row when the mutation rolls back', async () => {
     // The claim, proved from the table: an audit row that is written and then
     // orphaned by a failed transaction would be a trail describing something
@@ -388,6 +503,23 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       targetType: 'organization',
       targetId: organizationId,
       metadata: { slug: 'acme' },
+      occurredAt: new Date(),
+    };
+  }
+
+  function settingsAuditRecord(
+    organizationId: string,
+    actorId: string,
+    operationKey: string,
+  ): AuditRecord {
+    return {
+      organizationId,
+      actorType: 'user',
+      actorId,
+      action: 'organization.settings_updated',
+      targetType: 'organization',
+      targetId: organizationId,
+      metadata: { fields: ['builderCanDeploy'], operationKey },
       occurredAt: new Date(),
     };
   }

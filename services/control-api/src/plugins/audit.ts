@@ -54,6 +54,7 @@ import fp from 'fastify-plugin';
 export const AUDIT_ACTIONS = [
   'organization.created',
   'organization.updated',
+  'organization.settings_updated',
   'member.invited',
   'member.joined',
   'member.role_changed',

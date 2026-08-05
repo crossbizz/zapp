@@ -1244,6 +1244,809 @@
         }
       }
     },
+    "/v1/organizations/{orgId}/audit-events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "in": "query",
+            "name": "actorId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "organization.created",
+                "organization.updated",
+                "organization.settings_updated",
+                "member.invited",
+                "member.joined",
+                "member.role_changed",
+                "member.removed",
+                "project.created",
+                "project.updated",
+                "project.scan_requested",
+                "specification.created",
+                "specification.updated",
+                "specification.approved",
+                "run.created",
+                "run.events_ingested",
+                "run.pause_requested",
+                "run.paused",
+                "run.pause_rejected",
+                "run.resume_requested",
+                "run.resumed",
+                "run.resume_rejected",
+                "run.cancel_requested",
+                "run.cancelled",
+                "run.cancel_rejected",
+                "run.redirect_requested",
+                "run.redirected",
+                "run.redirect_rejected",
+                "workspace.create_requested",
+                "workspace.created",
+                "workspace.start_requested",
+                "workspace.started",
+                "workspace.start_rejected",
+                "workspace.checkpoint_requested",
+                "workspace.checkpointed",
+                "workspace.checkpoint_rejected",
+                "workspace.terminate_requested",
+                "workspace.terminated",
+                "workspace.terminate_rejected",
+                "workspace.preview_requested",
+                "workspace.previewed",
+                "workspace.preview_rejected",
+                "secret.created",
+                "secret.rotated",
+                "secret.deleted",
+                "release.created",
+                "release.approved",
+                "release.deploy_requested",
+                "release.rollback_requested",
+                "integration.connected",
+                "secret.decrypted"
+              ]
+            },
+            "in": "query",
+            "name": "action",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "organization",
+                "membership",
+                "invite",
+                "project",
+                "specification",
+                "run",
+                "workspace",
+                "secret",
+                "release",
+                "integration_connection"
+              ]
+            },
+            "in": "query",
+            "name": "targetType",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "in": "query",
+            "name": "targetId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "from",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "to",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "orgId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "organizationId": {
+                            "type": "string",
+                            "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "actorType": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "service",
+                              "agent",
+                              "support"
+                            ]
+                          },
+                          "actorId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "organization.created",
+                              "organization.updated",
+                              "organization.settings_updated",
+                              "member.invited",
+                              "member.joined",
+                              "member.role_changed",
+                              "member.removed",
+                              "project.created",
+                              "project.updated",
+                              "project.scan_requested",
+                              "specification.created",
+                              "specification.updated",
+                              "specification.approved",
+                              "run.created",
+                              "run.events_ingested",
+                              "run.pause_requested",
+                              "run.paused",
+                              "run.pause_rejected",
+                              "run.resume_requested",
+                              "run.resumed",
+                              "run.resume_rejected",
+                              "run.cancel_requested",
+                              "run.cancelled",
+                              "run.cancel_rejected",
+                              "run.redirect_requested",
+                              "run.redirected",
+                              "run.redirect_rejected",
+                              "workspace.create_requested",
+                              "workspace.created",
+                              "workspace.start_requested",
+                              "workspace.started",
+                              "workspace.start_rejected",
+                              "workspace.checkpoint_requested",
+                              "workspace.checkpointed",
+                              "workspace.checkpoint_rejected",
+                              "workspace.terminate_requested",
+                              "workspace.terminated",
+                              "workspace.terminate_rejected",
+                              "workspace.preview_requested",
+                              "workspace.previewed",
+                              "workspace.preview_rejected",
+                              "secret.created",
+                              "secret.rotated",
+                              "secret.deleted",
+                              "release.created",
+                              "release.approved",
+                              "release.deploy_requested",
+                              "release.rollback_requested",
+                              "integration.connected",
+                              "secret.decrypted"
+                            ]
+                          },
+                          "targetType": {
+                            "type": "string",
+                            "enum": [
+                              "organization",
+                              "membership",
+                              "invite",
+                              "project",
+                              "specification",
+                              "run",
+                              "workspace",
+                              "secret",
+                              "release",
+                              "integration_connection"
+                            ]
+                          },
+                          "targetId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "metadata": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "enum": [
+                                    "null"
+                                  ],
+                                  "nullable": true
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "enum": [
+                                          "null"
+                                        ],
+                                        "nullable": true
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "occurredAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "organizationId",
+                          "actorType",
+                          "actorId",
+                          "action",
+                          "targetType",
+                          "targetId",
+                          "metadata",
+                          "occurredAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{orgId}/settings": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "orgId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "type": "object",
+                      "properties": {
+                        "builderCanDeploy": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "defaultModelPolicy": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "enum": [
+                                "null"
+                              ],
+                              "nullable": true
+                            },
+                            {
+                              "type": "array",
+                              "items": {}
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "settings"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "builderCanDeploy": {
+                    "type": "boolean"
+                  },
+                  "defaultModelPolicy": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "enum": [
+                          "null"
+                        ],
+                        "nullable": true
+                      },
+                      {
+                        "type": "array",
+                        "items": {}
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "orgId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "type": "object",
+                      "properties": {
+                        "builderCanDeploy": {
+                          "type": "boolean",
+                          "default": false
+                        },
+                        "defaultModelPolicy": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "enum": [
+                                "null"
+                              ],
+                              "nullable": true
+                            },
+                            {
+                              "type": "array",
+                              "items": {}
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "settings"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects": {
       "post": {
         "requestBody": {

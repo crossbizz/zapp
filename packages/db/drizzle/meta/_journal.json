@@ -64,6 +64,13 @@
       "when": 1785930000000,
       "tag": "0008_agent_event_replay_context",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786020000000,
+      "tag": "0009_organization_settings",
+      "breakpoints": true
     }
   ]
 }

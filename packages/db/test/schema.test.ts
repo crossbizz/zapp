@@ -67,7 +67,7 @@ describe('identity tables', () => {
     ]);
   });
 
-  it('gives organizations exactly the PRD §23.1 columns, in order', () => {
+  it('gives organizations the PRD §23.1 columns plus ADR-0004 settings storage', () => {
     expect(columnNames(organizations)).toEqual([
       'id',
       'name',
@@ -75,7 +75,10 @@ describe('identity tables', () => {
       'plan',
       'billing_customer_id',
       'created_at',
+      'settings_json',
     ]);
+    expect(requiredColumns(organizations)).toContain('settings_json');
+    expect(sqlType(organizations, 'settings_json')).toBe('jsonb');
   });
 
   it('gives memberships exactly the PRD §23.1 columns, in order', () => {

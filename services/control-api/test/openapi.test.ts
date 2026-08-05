@@ -66,8 +66,12 @@ describe('GET /v1/openapi.json', () => {
     expect(document.paths['/v1/runs/{runId}/events']?.get?.parameters).toEqual(
       expect.arrayContaining([expect.objectContaining({ in: 'query', name: 'after' })]),
     );
-    expect(Object.keys(document.paths)).toEqual(expect.arrayContaining(['/v1/projects']));
-    expect(Object.keys(document.paths)).toHaveLength(47);
+    expect(Object.keys(document.paths)).toEqual(expect.arrayContaining([
+      '/v1/projects',
+      '/v1/organizations/{orgId}/audit-events',
+      '/v1/organizations/{orgId}/settings',
+    ]));
+    expect(Object.keys(document.paths)).toHaveLength(49);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

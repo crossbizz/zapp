@@ -57,6 +57,12 @@ describe('migration journal', () => {
       expect(allSql).toContain(`CREATE TABLE "${table}"`);
     }
   });
+
+  it('adds durable organization settings without a backfill migration', () => {
+    expect(allSql).toContain(
+      `ALTER TABLE "organizations" ADD COLUMN "settings_json" jsonb DEFAULT '{}'::jsonb NOT NULL`,
+    );
+  });
 });
 
 describe('agent_events partitioning', () => {

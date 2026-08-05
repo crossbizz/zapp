@@ -1,7 +1,8 @@
 import { newId } from '@zapp/contracts';
-import { memberships, organizations, type Database, type Executor } from '@zapp/db';
+import { auditEvents, memberships, organizations, type Database, type Executor } from '@zapp/db';
 import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
+import { z } from 'zod';
 
 import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
@@ -55,6 +56,64 @@ export interface OrganizationMembership {
   readonly organization: OrganizationRecord;
   readonly role: Role;
   readonly status: MembershipStatus;
+}
+
+export type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || ['string', 'boolean'].includes(typeof value)) return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return (
+    typeof value === 'object' && Object.values(value as Record<string, unknown>).every(isJsonValue)
+  );
+}
+
+const JsonArraySchema = z
+  .array(z.unknown())
+  .refine((value): value is JsonValue[] => value.every(isJsonValue));
+const JsonObjectSchema = z
+  .record(z.unknown())
+  .refine((value): value is Record<string, JsonValue> => Object.values(value).every(isJsonValue));
+
+export const JsonValueSchema: z.ZodType<JsonValue, z.ZodTypeDef, unknown> = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+  JsonArraySchema,
+  JsonObjectSchema,
+]);
+
+/** ADR-0004's complete settings document, normalized at every store boundary. */
+export const OrganizationSettingsSchema = z
+  .object({
+    builderCanDeploy: z.boolean().default(false),
+    defaultModelPolicy: JsonValueSchema.optional(),
+  })
+  .strict();
+
+/** PATCH may name only ADR-0004's two owned keys and must name at least one. */
+export const OrganizationSettingsPatchSchema = z
+  .object({
+    builderCanDeploy: z.boolean().optional(),
+    defaultModelPolicy: JsonValueSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (patch) => patch.builderCanDeploy !== undefined || patch.defaultModelPolicy !== undefined,
+    { message: 'at least one organization setting is required' },
+  );
+
+export type OrganizationSettings = z.infer<typeof OrganizationSettingsSchema>;
+export type OrganizationSettingsPatch = z.infer<typeof OrganizationSettingsPatchSchema>;
+
+export interface UpdateOrganizationSettingsInput {
+  readonly organizationId: string;
+  readonly patch: OrganizationSettingsPatch;
+  readonly operationKey: string;
+  readonly audit: AuditHook<OrganizationSettings>;
 }
 
 /**
@@ -124,6 +183,10 @@ export interface OrganizationStore {
   /** @throws {SlugTakenError} when `slug` is taken; rolls back if `link` or `audit` rejects. */
   create(input: CreateOrganizationInput): Promise<CreatedOrganization>;
   findById(organizationId: string): Promise<OrganizationRecord | undefined>;
+  /** Undefined when the organization does not exist; otherwise ADR-0004-normalized settings. */
+  getSettings(organizationId: string): Promise<OrganizationSettings | undefined>;
+  /** Partial merge and audit commit together; a completed operation key is never applied twice. */
+  updateSettings(input: UpdateOrganizationSettingsInput): Promise<OrganizationSettings | undefined>;
   /**
    * The caller's own **active** memberships, newest first, one keyset page at a
    * time.
@@ -193,6 +256,10 @@ const ORGANIZATION_COLUMNS = {
   slug: organizations.slug,
   plan: organizations.plan,
 } as const;
+
+function normalizeSettings(value: unknown): OrganizationSettings {
+  return OrganizationSettingsSchema.parse(value);
+}
 
 export function createDbOrganizationStore(db: Database): OrganizationStore {
   /**
@@ -315,6 +382,54 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
         .where(eq(organizations.id, organizationId))
         .limit(1);
       return row;
+    },
+
+    async getSettings(organizationId) {
+      const [row] = await db
+        .select({ settings: organizations.settingsJson })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      return row === undefined ? undefined : normalizeSettings(row.settings);
+    },
+
+    async updateSettings(input) {
+      const patch = OrganizationSettingsPatchSchema.parse(input.patch);
+      return await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ settings: organizations.settingsJson })
+          .from(organizations)
+          .where(eq(organizations.id, input.organizationId))
+          .for('update')
+          .limit(1);
+        if (row === undefined) return undefined;
+
+        const [completed] = await tx
+          .select({ id: auditEvents.id })
+          .from(auditEvents)
+          .where(
+            and(
+              eq(auditEvents.organizationId, input.organizationId),
+              eq(auditEvents.action, 'organization.settings_updated'),
+              eq(auditEvents.targetType, 'organization'),
+              eq(auditEvents.targetId, input.organizationId),
+              sql`${auditEvents.metadataJson} ->> 'operationKey' = ${input.operationKey}`,
+            ),
+          )
+          .limit(1);
+        if (completed !== undefined) return normalizeSettings(row.settings);
+
+        const settings = OrganizationSettingsSchema.parse({
+          ...normalizeSettings(row.settings),
+          ...patch,
+        });
+        await tx
+          .update(organizations)
+          .set({ settingsJson: settings })
+          .where(eq(organizations.id, input.organizationId));
+        await input.audit(tx, settings);
+        return settings;
+      });
     },
 
     async listForUser(userId, page) {

@@ -59,6 +59,10 @@ const NON_PRD_COLUMNS = new Map([
     'platform identity link (Stytch member id); PRD §23.1 predates the identity-provider decision (ADR-0001)',
   ],
   [
+    'organizations.settings_json',
+    'durable organization settings for CP-12 and its configurable deploy policy; accepted physical-schema extension in ADR-0004',
+  ],
+  [
     'secret_metadata.key_version',
     'which master-key generation wrapped this secret’s data key (PRD §18.12, plan 02 CP-7); metadata rather than key material, and what a re-encrypt sweep is planned from',
   ],
