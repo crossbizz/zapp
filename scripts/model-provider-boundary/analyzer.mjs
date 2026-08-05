@@ -1797,8 +1797,23 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       accumulator = elements[0] ?? emptyCallableValue();
       remaining = elements.slice(1);
     }
-    remaining.forEach((element) => {
-      accumulator = invokeFunctions(callback, [accumulator, element, owner], state);
+    const firstIndex = initialValue ? 0 : 1;
+    remaining.forEach((element, index) => {
+      accumulator = invokeFunctions(
+        callback,
+        [
+          accumulator,
+          element,
+          {
+            functions: [],
+            kinds: 0,
+            members: new Map(),
+            strings: new Set([String(firstIndex + index)]),
+          },
+          owner,
+        ],
+        state,
+      );
     });
     return accumulator;
   }

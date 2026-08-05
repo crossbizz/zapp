@@ -528,6 +528,19 @@ test('round-6 allows harmless callback array methods and reduce initial values',
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('round-6 tracks loader invocation through the Array.reduce callback owner argument', () => {
+  const result = runFixture('loader-array-reduce-arguments');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*reduce-arguments\.ts/);
+});
+
+test('round-6 allows a harmless Array.reduce callback owner argument', () => {
+  const result = runFixture('loader-array-reduce-arguments-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks loaders through array mutations, spreads, and Object.assign', () => {
   const result = runFixture('loader-container-mutations');
 
