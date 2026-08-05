@@ -21,6 +21,8 @@ const QUALITY_VALUE = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/;
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 export const SSE_MAX_CONNECTION_MS = 4 * 60 * 60 * 1_000;
 const SSE_REPLAY_PAGE_SIZE = 100;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
+const EVENT_STREAM_MEDIA_PARAMETERS = new Map([['charset', 'utf-8']]);
 
 export interface EventWakeupSubscription {
   next(): Promise<unknown>;
@@ -57,6 +59,8 @@ export interface EventStreamDependencies {
   readonly onError?: (error: Error) => unknown;
   readonly timers?: EventStreamTimers;
   readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  /** Bounds provider cleanup so one broken subscriber cannot block app.close(). */
+  readonly cleanupTimeoutMs?: number;
 }
 
 export interface RunEventStreamRouteDependencies {
@@ -72,7 +76,13 @@ function asError(error: unknown): Error {
 
 function acceptsEventStream(value: string | undefined): boolean {
   if (value === undefined) return false;
-  let selected: { readonly specificity: number; readonly quality: number } | undefined;
+  let selected:
+    | {
+        readonly typeSpecificity: number;
+        readonly parameterSpecificity: number;
+        readonly quality: number;
+      }
+    | undefined;
   for (const rawEntry of value.split(',')) {
     const [rawMediaRange, ...parameters] = rawEntry.split(';');
     const mediaRange = rawMediaRange?.trim().toLowerCase();
@@ -91,6 +101,7 @@ function acceptsEventStream(value: string | undefined): boolean {
 
     let quality = 1;
     let qualitySeen = false;
+    const mediaParameters = new Map<string, string>();
     for (const rawParameter of parameters) {
       const parameter = rawParameter.trim();
       const equals = parameter.indexOf('=');
@@ -104,10 +115,14 @@ function acceptsEventStream(value: string | undefined): boolean {
         quality = Number(parameterValue);
       } else if (!HTTP_TOKEN.test(parameterValue)) {
         return false;
+      } else if (!qualitySeen) {
+        const normalizedName = name.toLowerCase();
+        if (mediaParameters.has(normalizedName)) return false;
+        mediaParameters.set(normalizedName, parameterValue.toLowerCase());
       }
     }
 
-    const specificity =
+    const typeSpecificity =
       type === 'text' && subtype === 'event-stream'
         ? 2
         : type === 'text' && subtype === '*'
@@ -115,11 +130,25 @@ function acceptsEventStream(value: string | undefined): boolean {
           : type === '*' && subtype === '*'
             ? 0
             : undefined;
-    if (specificity === undefined) continue;
-    if (selected === undefined || specificity > selected.specificity) {
-      selected = { specificity, quality };
-    } else if (specificity === selected.specificity && quality > selected.quality) {
-      selected = { specificity, quality };
+    if (typeSpecificity === undefined) continue;
+    const parametersMatch = [...mediaParameters].every(([name, parameterValue]) => {
+      return EVENT_STREAM_MEDIA_PARAMETERS.get(name) === parameterValue;
+    });
+    if (!parametersMatch) continue;
+    const parameterSpecificity = mediaParameters.size;
+    if (
+      selected === undefined ||
+      typeSpecificity > selected.typeSpecificity ||
+      (typeSpecificity === selected.typeSpecificity &&
+        parameterSpecificity > selected.parameterSpecificity)
+    ) {
+      selected = { typeSpecificity, parameterSpecificity, quality };
+    } else if (
+      typeSpecificity === selected.typeSpecificity &&
+      parameterSpecificity === selected.parameterSpecificity &&
+      quality > selected.quality
+    ) {
+      selected = { typeSpecificity, parameterSpecificity, quality };
     }
   }
   return selected !== undefined && selected.quality > 0;
@@ -128,15 +157,11 @@ function acceptsEventStream(value: string | undefined): boolean {
 function parseCursor(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
   const parsed = CursorSchema.safeParse(value);
-  if (
-    !parsed.success ||
-    String(parsed.data) !== value ||
-    parsed.data === Number.MAX_SAFE_INTEGER
-  ) {
+  if (!parsed.success || String(parsed.data) !== value) {
     throw new ApiError(
       'invalid_event_cursor',
       400,
-      `${name} must be a nonnegative integer less than ${String(Number.MAX_SAFE_INTEGER)}.`,
+      `${name} must be a nonnegative safe integer.`,
     );
   }
   return parsed.data;
@@ -167,12 +192,67 @@ function parseEventPing(value: unknown): z.infer<typeof EventPingSchema> {
 async function closeQuietly(
   subscription: EventWakeupSubscription | undefined,
   report: (error: unknown) => void,
+  timeoutMs: number,
 ): Promise<void> {
   if (subscription === undefined) return;
+  let timer: NodeJS.Timeout | undefined;
+  const close = Promise.resolve()
+    .then(async () => {
+      await subscription.close();
+    })
+    .then(
+      () => true,
+      (error: unknown) => {
+        report(error);
+        return true;
+      },
+    );
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(false);
+    }, timeoutMs);
+    timer.unref();
+  });
+  const closed = await Promise.race([close, timedOut]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (!closed) {
+    report(new Error(`event wakeup subscription close exceeded ${String(timeoutMs)} ms`));
+  }
+}
+
+async function subscribeUntilClosed(input: {
+  readonly source: EventWakeupSource;
+  readonly channel: string;
+  readonly signal: AbortSignal;
+  readonly report: (error: unknown) => void;
+  readonly cleanupTimeoutMs: number;
+}): Promise<EventWakeupSubscription | undefined> {
+  const { source, channel, signal, report, cleanupTimeoutMs } = input;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => {
+      resolve(undefined);
+    };
+    if (signal.aborted) resolve(undefined);
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  const pending = Promise.resolve().then(async () => await source.subscribe(channel));
   try {
-    await subscription.close();
-  } catch (error) {
-    report(error);
+    const subscription = await Promise.race([pending, aborted]);
+    if (subscription !== undefined && !signal.aborted) return subscription;
+    if (subscription !== undefined) {
+      await closeQuietly(subscription, report, cleanupTimeoutMs);
+    } else {
+      void pending.then(
+        async (lateSubscription) => {
+          await closeQuietly(lateSubscription, report, cleanupTimeoutMs);
+        },
+        () => undefined,
+      );
+    }
+    return undefined;
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -223,6 +303,10 @@ async function streamEvents(input: {
       clearTimeout(handle as NodeJS.Timeout);
     },
   };
+  const cleanupTimeoutMs = Math.max(
+    1,
+    dependencies.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS,
+  );
   const report = (error: unknown): void => {
     try {
       void Promise.resolve(dependencies.onError?.(asError(error))).catch(() => undefined);
@@ -332,7 +416,13 @@ async function streamEvents(input: {
 
   try {
     try {
-      subscription = await dependencies.wakeups.subscribe(`run:${runId}`);
+      subscription = await subscribeUntilClosed({
+        source: dependencies.wakeups,
+        channel: `run:${runId}`,
+        signal: closeController.signal,
+        report,
+        cleanupTimeoutMs,
+      });
     } catch (error) {
       report(error);
     }
@@ -392,7 +482,7 @@ async function streamEvents(input: {
     reply.raw.removeListener('close', stop);
     reply.raw.removeListener('error', stop);
     shutdownSignal.removeEventListener('abort', stopForShutdown);
-    await closeQuietly(subscription, report);
+    await closeQuietly(subscription, report, cleanupTimeoutMs);
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
   }
 }

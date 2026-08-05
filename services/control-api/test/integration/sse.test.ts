@@ -485,12 +485,10 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     ['after', '-1'],
     ['after', '1.5'],
     ['after', '01'],
-    ['after', '9007199254740991'],
     ['after', '9007199254740992'],
     ['Last-Event-ID', '-1'],
     ['Last-Event-ID', '1.5'],
     ['Last-Event-ID', '01'],
-    ['Last-Event-ID', '9007199254740991'],
     ['Last-Event-ID', '9007199254740992'],
   ])('rejects invalid supplied %s cursor %s before streaming', async (kind, value) => {
     // Break caught: coercive cursor parsing accepts negatives, fractions,
@@ -533,6 +531,22 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     await eventually(() => {
       expect(eventReadRanges).toEqual([{ fromSequence: 1, limit: 100 }]);
     });
+    controller.abort();
+  });
+
+  it.each(['after', 'Last-Event-ID'])('accepts a maximum-safe %s resume cursor', async (kind) => {
+    // Break caught: the server can emit MAX_SAFE_INTEGER, so rejecting it on
+    // reconnect makes the last successfully delivered event non-resumable.
+    const controller = new AbortController();
+    const response = await connect({
+      ...(kind === 'after'
+        ? { after: String(Number.MAX_SAFE_INTEGER) }
+        : { lastEventId: String(Number.MAX_SAFE_INTEGER) }),
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(eventReadRanges).toEqual([]);
     controller.abort();
   });
 
@@ -585,6 +599,35 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       'text/event-stream;q=0.2, text/*;q=0, */*;q=0',
       'text/*;q=0.2, */*;q=0',
       '*/*;q=0.2',
+    ];
+    for (const accept of permitted) {
+      const controller = new AbortController();
+      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: { ...requestHeaders(), accept },
+        signal: controller.signal,
+      });
+      expect(response.status, accept).toBe(200);
+      controller.abort();
+    }
+  });
+
+  it('uses matching media parameters before q as Accept specificity', async () => {
+    // Break caught: the emitted representation is text/event-stream;charset=utf-8.
+    // A matching parameterized refusal outranks the unparameterized fallback.
+    const refused = [
+      'text/event-stream;charset=utf-8;q=0, text/event-stream;q=1',
+      'text/event-stream;foo=bar;q=1, text/event-stream;q=0',
+    ];
+    for (const accept of refused) {
+      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: { ...requestHeaders(), accept },
+      });
+      expect(response.status, accept).toBe(406);
+    }
+
+    const permitted = [
+      'text/event-stream;charset=utf-8;q=1, text/event-stream;q=0',
+      'text/event-stream;q=1;extension=accepted',
     ];
     for (const accept of permitted) {
       const controller = new AbortController();
@@ -807,6 +850,54 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     expect(timers.cleared).toHaveLength(2);
     expect(new Set(timers.cleared).size).toBe(2);
     expect(blockedResponse?.listenerCount('drain')).toBe(0);
+  });
+
+  it('closes the app when wakeup subscription setup never settles', async () => {
+    // Break caught: aborting only the live-tail loop cannot release a handler
+    // still awaiting a provider whose subscribe promise never settles.
+    const never = new Promise<EventWakeupSubscription>(() => undefined);
+    await startApp({
+      wakeups: { subscribe: () => never },
+      cleanupTimeoutMs: 25,
+    });
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+
+    const closePromise = app?.close();
+    if (closePromise === undefined) throw new Error('SSE app was not started');
+    await expectSettlesWithin(closePromise);
+    await cancelResponseBody(response);
+    controller.abort();
+  });
+
+  it('bounds a provider close that never settles during app shutdown', async () => {
+    // Break caught: preClose waits for stream completion, so an unbounded
+    // provider close turns graceful shutdown into an infinite wait.
+    const errors: Error[] = [];
+    await startApp({
+      wakeups: {
+        subscribe: () =>
+          Promise.resolve({
+            next: () => new Promise<unknown>(() => undefined),
+            close: () => new Promise<void>(() => undefined),
+          }),
+      },
+      cleanupTimeoutMs: 25,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+
+    const closePromise = app?.close();
+    if (closePromise === undefined) throw new Error('SSE app was not started');
+    await expectSettlesWithin(closePromise);
+    expect(errors.map((error) => error.message)).toContain(
+      'event wakeup subscription close exceeded 25 ms',
+    );
+    await cancelResponseBody(response);
+    controller.abort();
   });
 
   it('replays bounded pages in database order without gaps or duplicates', async () => {
