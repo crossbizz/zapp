@@ -173,7 +173,11 @@ function acceptsEventStream(value: string | undefined): boolean {
     for (const rawParameter of parameters) {
       const parameter = rawParameter.trim();
       const equals = parameter.indexOf('=');
-      if (equals <= 0) return false;
+      if (equals < 0) {
+        if (!qualitySeen || !HTTP_TOKEN.test(parameter)) return false;
+        continue;
+      }
+      if (equals === 0) return false;
       const name = parameter.slice(0, equals).trim();
       const rawParameterValue = parameter.slice(equals + 1).trim();
       if (!HTTP_TOKEN.test(name) || rawParameterValue === '') return false;
@@ -350,6 +354,26 @@ async function waitForDrain(reply: FastifyReply, signal: AbortSignal): Promise<v
   });
 }
 
+async function settleUntilAborted<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T | undefined> {
+  if (signal.aborted) return undefined;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => {
+      resolve(undefined);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+}
+
 async function streamEvents(input: {
   readonly reply: FastifyReply;
   readonly tenantDb: RequestTenantDb;
@@ -508,10 +532,14 @@ async function streamEvents(input: {
         await waitForWriter();
         if (isClosed()) return;
         if (cursor === Number.MAX_SAFE_INTEGER) return;
-        const rows = await tenantDb.events.byRun(runId, {
-          fromSequence: cursor + 1,
-          limit: SSE_REPLAY_PAGE_SIZE,
-        });
+        const rows = await settleUntilAborted(
+          tenantDb.events.byRun(runId, {
+            fromSequence: cursor + 1,
+            limit: SSE_REPLAY_PAGE_SIZE,
+          }),
+          closeController.signal,
+        );
+        if (rows === undefined) return;
         await waitForWriter();
         for (const row of rows) {
           await waitForWriter();

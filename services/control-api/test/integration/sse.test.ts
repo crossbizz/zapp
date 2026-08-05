@@ -635,6 +635,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     const permitted = [
       'text/event-stream;charset=utf-8;q=1, text/event-stream;q=0',
       'text/event-stream;charset="UTF-8";q=1, text/event-stream;q=0',
+      'text/event-stream;q=1;trace',
       'text/event-stream;q=1;extension=accepted',
       'text/event-stream;q=1;extension="quoted value"',
       'text/event-stream;q=1;extension="quoted, value; one range"',
@@ -1133,6 +1134,49 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       expect(wakeups.closed).toBe(1);
     });
     expect(timers.cleared).toHaveLength(2);
+  });
+
+  it('closes promptly while an event database read is stalled', async () => {
+    // Break caught: preClose aborts the stream but still waits forever for an
+    // already-started tenantDb.events.byRun() call that ignores cancellation.
+    let markReadStarted!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    const stalledRead = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    await startApp({}, {
+      beforeEventRead: () => {
+        markReadStarted();
+        return stalledRead;
+      },
+    });
+
+    await connect();
+    await readStarted;
+    const activeApp = app;
+    if (activeApp === undefined) throw new Error('SSE app did not start');
+    const close = activeApp.close();
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const outcome = await Promise.race([
+        close.then(() => {
+          return 'closed' as const;
+        }),
+        new Promise<'timed-out'>((resolve) => {
+          timeout = setTimeout(() => {
+            resolve('timed-out');
+          }, 250);
+        }),
+      ]);
+      expect(outcome).toBe('closed');
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      releaseRead();
+      await close;
+    }
   });
 
   it('ends the stream and cleans resources at the four-hour cap', async () => {
