@@ -1,0 +1,30 @@
+{
+  "name": "@zapp/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm --filter @zapp/contracts build && pnpm --filter @zapp/config build && pnpm --filter @zapp/db build && pnpm --filter @zapp/api-client build && playwright test",
+    "test:e2e": "pnpm --filter @zapp/contracts build && pnpm --filter @zapp/config build && pnpm --filter @zapp/db build && pnpm --filter @zapp/api-client build && playwright test"
+  },
+  "dependencies": {
+    "@zapp/api-client": "workspace:*",
+    "next": "^15.5.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@next/eslint-plugin-next": "^15.5.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "^4.23.5",
+    "typescript": "^5.6.3"
+  }
+}

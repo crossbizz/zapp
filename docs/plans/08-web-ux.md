@@ -50,8 +50,8 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/web/*` scaffold, `src/lib/api.ts` (api-client init), `src/lib/session.ts`, middleware
 **Effort:** M
 
-- [ ] Binding behavior: cookie-session auth against CP-2 (login redirects to the Stytch B2B Discovery flow); org context = `x-organization-id` header from selected org (persisted per user, localStorage + URL override); unauthenticated → /login; e2e: login fake-port flow in CI (Stytch mocked at api layer via test-only auth port).
-- [ ] Commit: `feat(web): next scaffold with session + org context`
+- [x] Binding behavior: cookie-session auth against CP-2 (login redirects to the Stytch B2B Discovery flow); org context = `x-organization-id` header from selected org (persisted per user, localStorage + URL override); unauthenticated → /login; e2e: login fake-port flow in CI (Stytch mocked at api layer via test-only auth port).
+- [x] Commit: `feat(web): next scaffold with session + org context`
 
 ### Task WEB-2: `packages/ui` design system
 
@@ -216,4 +216,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
-- (empty)
+- 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
