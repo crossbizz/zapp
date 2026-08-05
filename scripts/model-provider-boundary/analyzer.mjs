@@ -577,6 +577,70 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function isDefinitelyDefinedValue(expression, seenSymbols = new Set()) {
+    const current = unwrapExpression(expression);
+    if (
+      current.kind === ts.SyntaxKind.NullKeyword ||
+      current.kind === ts.SyntaxKind.TrueKeyword ||
+      current.kind === ts.SyntaxKind.FalseKeyword ||
+      ts.isStringLiteralLike(current) ||
+      ts.isNoSubstitutionTemplateLiteral(current) ||
+      ts.isTemplateExpression(current) ||
+      ts.isNumericLiteral(current) ||
+      ts.isObjectLiteralExpression(current) ||
+      ts.isArrayLiteralExpression(current) ||
+      ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isClassExpression(current) ||
+      ts.isNewExpression(current) ||
+      isModuleRequire(current)
+    ) {
+      return true;
+    }
+    if (ts.isIdentifier(current)) {
+      if (current.text === 'undefined' && isUnshadowedIdentifier(current, 'undefined')) {
+        return false;
+      }
+      if (isUnshadowedIdentifier(current, 'require')) return true;
+      const symbol = symbolAt(checker, current);
+      if (!symbol || seenSymbols.has(symbol)) return false;
+      for (const declaration of symbol.declarations ?? []) {
+        if (ts.isFunctionLike(declaration) || ts.isClassDeclaration(declaration)) return true;
+        if (
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer &&
+          (ts.getCombinedNodeFlags(declaration.parent) & ts.NodeFlags.Const) !== 0 &&
+          isDefinitelyDefinedValue(declaration.initializer, new Set([...seenSymbols, symbol]))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const owner = unwrapExpression(current.expression);
+      const memberNames = accessMemberNames(current);
+      return (
+        ts.isIdentifier(owner) &&
+        isUnshadowedIdentifier(owner, 'console') &&
+        !!memberNames &&
+        [...memberNames].every((memberName) =>
+          new Set(['debug', 'error', 'info', 'log', 'warn']).has(memberName),
+        )
+      );
+    }
+    if (ts.isConditionalExpression(current)) {
+      return (
+        isDefinitelyDefinedValue(current.whenTrue, seenSymbols) &&
+        isDefinitelyDefinedValue(current.whenFalse, seenSymbols)
+      );
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return isDefinitelyDefinedValue(current.right, seenSymbols);
+    }
+    return false;
+  }
+
   function isModuleRequire(expression) {
     const current = unwrapExpression(expression);
     if (ts.isPropertyAccessExpression(current)) {
@@ -867,6 +931,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       arrayLike: false,
       constructors: [],
       functions: [],
+      knownDefinedMembers: new Set(),
       kinds: 0,
       members: new Map(),
       nullish: MAY_BE_NULLISH | MAY_BE_NON_NULLISH,
@@ -882,6 +947,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       value.kinds !== 0 ||
       value.functions.length > 0 ||
       (value.constructors?.length ?? 0) > 0 ||
+      (value.knownDefinedMembers?.size ?? 0) > 0 ||
       value.members.size > 0 ||
       (value.references?.size ?? 0) > 0 ||
       value.strings !== undefined
@@ -894,6 +960,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const merged = emptyCallableValue();
     merged.kinds = values.reduce((kinds, value) => kinds | value.kinds, 0);
     merged.arrayLike = values.some((value) => value.arrayLike);
+    merged.knownDefinedMembers = union(
+      ...values.map((value) => value.knownDefinedMembers ?? new Set()),
+    );
     merged.truthiness = values.reduce(
       (facts, value) => facts | (value.truthiness ?? MAY_BE_TRUTHY | MAY_BE_FALSY),
       0,
@@ -942,6 +1011,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function mergeCallableAlternatives(...values) {
     const merged = mergeCallableValues(...values);
+    const candidates = values.filter(Boolean);
+    merged.knownDefinedMembers = new Set(
+      [...(candidates[0]?.knownDefinedMembers ?? [])].filter((memberName) =>
+        candidates.every((value) => value.knownDefinedMembers?.has(memberName)),
+      ),
+    );
     if (values.length === 0 || values.some((value) => value.strings === undefined)) {
       merged.strings = undefined;
     }
@@ -1038,6 +1113,27 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function selectedMemberIsDefinitelyDefined(value, memberNames) {
+    return (
+      !!memberNames &&
+      memberNames.size > 0 &&
+      [...memberNames].every((memberName) => value.knownDefinedMembers?.has(memberName))
+    );
+  }
+
+  function callableValueWithDefault(
+    selected,
+    ownerValue,
+    memberNames,
+    initializer,
+    environment,
+    state,
+  ) {
+    return selectedMemberIsDefinitelyDefined(ownerValue, memberNames)
+      ? selected
+      : mergeCallableAlternatives(selected, callableValue(initializer, environment, state));
+  }
+
   function materializedMembers(value) {
     const members = new Map(value.members);
     for (const reference of value.references ?? []) {
@@ -1069,6 +1165,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function restCallableValue(value, pattern, restIndex) {
     const members = new Map();
+    const knownDefinedMembers = new Set();
     const sourceMembers = materializedMembers(value);
     if (ts.isObjectBindingPattern(pattern) || ts.isObjectLiteralExpression(pattern)) {
       const consumed = new Set();
@@ -1089,13 +1186,22 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
       }
       for (const [memberName, memberValue] of sourceMembers) {
-        if (memberName === '*' || !consumed.has(memberName)) members.set(memberName, memberValue);
+        if (memberName === '*' || !consumed.has(memberName)) {
+          members.set(memberName, memberValue);
+          if (value.knownDefinedMembers?.has(memberName)) {
+            knownDefinedMembers.add(memberName);
+          }
+        }
       }
     } else {
       for (const [memberName, memberValue] of sourceMembers) {
         const index = Number(memberName);
         if (Number.isInteger(index) && index >= restIndex) {
-          members.set(String(index - restIndex), memberValue);
+          const shiftedIndex = String(index - restIndex);
+          members.set(shiftedIndex, memberValue);
+          if (value.knownDefinedMembers?.has(memberName)) {
+            knownDefinedMembers.add(shiftedIndex);
+          }
         } else if (memberName === '*') {
           members.set(memberName, memberValue);
         }
@@ -1104,6 +1210,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return {
       arrayLike: !ts.isObjectBindingPattern(pattern) && !ts.isObjectLiteralExpression(pattern),
       functions: [],
+      knownDefinedMembers,
       kinds: 0,
       members,
       strings: undefined,
@@ -1124,24 +1231,30 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     } else if (ts.isBindingElement(owner)) {
       ownerValue = bindingElementValue(owner, environment, state);
     }
+    let memberNames;
     let selected;
     if (element.dotDotDotToken) {
       selected = restCallableValue(ownerValue, pattern, pattern.elements.indexOf(element));
     } else if (ts.isObjectBindingPattern(pattern)) {
-      const memberNames = element.propertyName
+      memberNames = element.propertyName
         ? declarationMemberNames(element.propertyName)
         : ts.isIdentifier(element.name)
           ? new Set([element.name.text])
           : undefined;
       selected = selectCallableMembers(ownerValue, memberNames);
     } else {
-      selected = selectCallableMembers(
-        ownerValue,
-        new Set([String(pattern.elements.indexOf(element))]),
-      );
+      memberNames = new Set([String(pattern.elements.indexOf(element))]);
+      selected = selectCallableMembers(ownerValue, memberNames);
     }
     return element.initializer
-      ? mergeCallableValues(selected, callableValue(element.initializer, environment, state))
+      ? callableValueWithDefault(
+          selected,
+          ownerValue,
+          memberNames,
+          element.initializer,
+          environment,
+          state,
+        )
       : selected;
   }
 
@@ -1251,7 +1364,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         bindCallablePattern(
           element.name,
           element.initializer
-            ? mergeCallableValues(selected, callableValue(element.initializer, environment))
+            ? callableValueWithDefault(
+                selected,
+                value,
+                memberNames,
+                element.initializer,
+                environment,
+              )
             : selected,
           environment,
         );
@@ -1266,7 +1385,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         bindCallablePattern(
           element.name,
           element.initializer
-            ? mergeCallableValues(selected, callableValue(element.initializer, environment))
+            ? callableValueWithDefault(
+                selected,
+                value,
+                new Set([String(index)]),
+                element.initializer,
+                environment,
+              )
             : selected,
           environment,
         );
@@ -1274,7 +1399,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     });
   }
 
-  function assignmentValueForSymbol(pattern, targetSymbol, value, environment, state) {
+  function assignmentValueForSymbol(
+    pattern,
+    targetSymbol,
+    value,
+    environment,
+    state,
+    valueIsDefinitelyDefined = false,
+  ) {
     const current = unwrapExpression(pattern);
     if (ts.isIdentifier(current)) {
       return symbolAt(checker, current) === targetSymbol ? value : emptyCallableValue();
@@ -1286,9 +1418,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return assignmentValueForSymbol(
         current.left,
         targetSymbol,
-        mergeCallableValues(value, callableValue(current.right, environment, state)),
+        valueIsDefinitelyDefined
+          ? value
+          : mergeCallableAlternatives(value, callableValue(current.right, environment, state)),
         environment,
         state,
+        valueIsDefinitelyDefined || isDefinitelyDefinedValue(current.right),
       );
     }
     const results = [];
@@ -1305,23 +1440,27 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             ),
           );
         } else if (ts.isShorthandPropertyAssignment(property)) {
+          const memberNames = new Set([property.name.text]);
           results.push(
             assignmentValueForSymbol(
               property.name,
               targetSymbol,
-              selectCallableMembers(value, new Set([property.name.text])),
+              selectCallableMembers(value, memberNames),
               environment,
               state,
+              selectedMemberIsDefinitelyDefined(value, memberNames),
             ),
           );
         } else if (ts.isPropertyAssignment(property)) {
+          const memberNames = declarationMemberNames(property.name);
           results.push(
             assignmentValueForSymbol(
               property.initializer,
               targetSymbol,
-              selectCallableMembers(value, declarationMemberNames(property.name)),
+              selectCallableMembers(value, memberNames),
               environment,
               state,
+              selectedMemberIsDefinitelyDefined(value, memberNames),
             ),
           );
         }
@@ -1332,6 +1471,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         const selected = ts.isSpreadElement(element)
           ? restCallableValue(value, current, index)
           : selectCallableMembers(value, new Set([String(index)]));
+        const memberNames = ts.isSpreadElement(element) ? undefined : new Set([String(index)]);
         results.push(
           assignmentValueForSymbol(
             ts.isSpreadElement(element) ? element.expression : element,
@@ -1339,6 +1479,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             selected,
             environment,
             state,
+            selectedMemberIsDefinitelyDefined(value, memberNames),
           ),
         );
       });
@@ -1378,6 +1519,33 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
       }
     }
+  }
+
+  function isDestructuringAssignmentDefault(expression) {
+    let current = expression;
+    while (current.parent) {
+      const parent = current.parent;
+      if (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        return (
+          parent.left === current || unwrapExpression(parent.left) === unwrapExpression(current)
+        );
+      }
+      if (
+        !ts.isParenthesizedExpression(parent) &&
+        !ts.isObjectLiteralExpression(parent) &&
+        !ts.isArrayLiteralExpression(parent) &&
+        !ts.isPropertyAssignment(parent) &&
+        !ts.isSpreadAssignment(parent) &&
+        !ts.isSpreadElement(parent)
+      ) {
+        return false;
+      }
+      current = parent;
+    }
+    return false;
   }
 
   function isLogicalOperator(kind) {
@@ -2326,6 +2494,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (ts.isAwaitExpression(current)) return callableValue(current.expression, environment, state);
     if (ts.isArrayLiteralExpression(current)) {
       const members = new Map();
+      const knownDefinedMembers = new Set();
       let nextIndex = 0;
       for (const element of current.elements) {
         if (ts.isOmittedExpression(element)) {
@@ -2336,33 +2505,53 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             if (memberName === '*') {
               members.set('*', mergeCallableValues(members.get('*'), memberValue));
             } else if (Number.isInteger(Number(memberName))) {
-              members.set(String(nextIndex), memberValue);
+              const targetIndex = String(nextIndex);
+              members.set(targetIndex, memberValue);
+              if (spread.knownDefinedMembers?.has(memberName)) {
+                knownDefinedMembers.add(targetIndex);
+              }
               nextIndex += 1;
             }
           }
         } else {
-          members.set(String(nextIndex), callableValue(element, environment, state));
+          const memberName = String(nextIndex);
+          members.set(memberName, callableValue(element, environment, state));
+          if (isDefinitelyDefinedValue(element)) knownDefinedMembers.add(memberName);
           nextIndex += 1;
         }
       }
-      return { arrayLike: true, functions: [], kinds: 0, members, strings: undefined };
+      return {
+        arrayLike: true,
+        functions: [],
+        knownDefinedMembers,
+        kinds: 0,
+        members,
+        strings: undefined,
+      };
     }
     if (ts.isObjectLiteralExpression(current)) {
       const members = new Map();
+      const knownDefinedMembers = new Set();
       for (const property of current.properties) {
         if (ts.isSpreadAssignment(property)) {
           const spread = callableValue(property.expression, environment, state);
           for (const [memberName, memberValue] of spread.members) {
             members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+            if (spread.knownDefinedMembers?.has(memberName)) {
+              knownDefinedMembers.add(memberName);
+            }
           }
           continue;
         }
         const memberNames = declarationMemberNames(property.name);
         let memberValue = emptyCallableValue();
+        let memberIsDefinitelyDefined = false;
         if (ts.isPropertyAssignment(property)) {
           memberValue = callableValue(property.initializer, environment, state);
+          memberIsDefinitelyDefined = isDefinitelyDefinedValue(property.initializer);
         } else if (ts.isShorthandPropertyAssignment(property)) {
           memberValue = callableValue(property.name, environment, state);
+          memberIsDefinitelyDefined = isDefinitelyDefinedValue(property.name);
         } else if (ts.isMethodDeclaration(property)) {
           memberValue = {
             functions: [{ environment: capturedEnvironment(environment), functionLike: property }],
@@ -2370,12 +2559,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             members: new Map(),
             strings: undefined,
           };
+          memberIsDefinitelyDefined = true;
         }
         for (const memberName of memberNames ?? ['*']) {
           members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+          if (memberName !== '*' && memberIsDefinitelyDefined) {
+            knownDefinedMembers.add(memberName);
+          }
         }
       }
-      return { functions: [], kinds: 0, members, strings: undefined };
+      return { functions: [], knownDefinedMembers, kinds: 0, members, strings: undefined };
     }
     if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
       return {
@@ -3012,7 +3205,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         callableChanged = addContainerProvenance(symbol, node.initializer) || callableChanged;
       } else if (
         ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        !isDestructuringAssignmentDefault(node)
       ) {
         const functionTargets = functionTargetsForExpression(node.right);
         callableChanged =

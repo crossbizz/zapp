@@ -694,6 +694,29 @@ test('round-6 allows harmless cyclic nested rest and default destructuring', () 
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 selects loader defaults for absent object properties and array elements', () => {
+  const result = runFixture('loader-reachable-destructuring-defaults');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'object-binding-declaration',
+    'array-binding-declaration',
+    'object-destructuring-assignment',
+    'array-destructuring-assignment',
+    'object-present-undefined',
+    'array-present-undefined',
+    'object-unknown-presence',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 ignores loader defaults behind known-present object properties and array elements', () => {
+  const result = runFixture('loader-unreachable-destructuring-defaults-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-5 keeps mixed callsites isolated in reverse order', () => {
   const result = runFixture('loader-mixed-callsite-reverse-control');
 
