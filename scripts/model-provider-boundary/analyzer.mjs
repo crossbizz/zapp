@@ -1946,37 +1946,46 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           : ts.isShorthandPropertyAssignment(property)
             ? property.name
             : property;
-        for (const memberName of memberNames) state.members.set(memberName, valueExpression);
+        for (const memberName of memberNames) {
+          if (state.kind === 'array') {
+            const index = exactArrayIndex(memberName);
+            if (index === undefined) return false;
+            state.elements[index] = valueExpression;
+          } else {
+            state.members.set(memberName, valueExpression);
+          }
+        }
       }
     }
     return true;
   }
 
-  function sameValueSymbol(expression, expectedSymbol) {
+  function valueSymbolIdentity(expression) {
     const current = unwrapExpression(expression);
-    if (!ts.isIdentifier(current)) return false;
+    if (!ts.isIdentifier(current)) return undefined;
     const symbol = symbolAt(checker, current);
-    return (aliasedSymbol(checker, symbol) ?? symbol) === expectedSymbol;
+    return aliasedSymbol(checker, symbol) ?? symbol;
   }
 
-  function sameArrayValue(expression, expectedSymbol) {
-    if (sameValueSymbol(expression, expectedSymbol)) return true;
-    const current = unwrapExpression(expression);
-    if (!ts.isIdentifier(current)) return false;
-    const currentIdentities = arrayIdentitiesForSymbol(symbolAt(checker, current));
-    const expectedIdentities = arrayIdentitiesForSymbol(expectedSymbol);
-    return (
-      currentIdentities.size > 0 &&
-      currentIdentities.size === expectedIdentities.size &&
-      [...currentIdentities].every((arrayIdentity) => expectedIdentities.has(arrayIdentity))
-    );
+  function sameValueSymbol(expression, expectedSymbol) {
+    return valueSymbolIdentity(expression) === expectedSymbol;
   }
 
-  function assignmentIncludesSymbol(pattern, expectedSymbol) {
+  function exactArrayIndex(memberName) {
+    const index = Number(memberName);
+    return Number.isInteger(index) &&
+      index >= 0 &&
+      index < 2 ** 32 - 1 &&
+      String(index) === memberName
+      ? index
+      : undefined;
+  }
+
+  function assignmentIncludesTrackedSymbol(pattern, trackedSymbols) {
     const symbols = new Set();
     collectAssignmentSymbols(pattern, symbols);
-    return [...symbols].some(
-      (symbol) => (aliasedSymbol(checker, symbol) ?? symbol) === expectedSymbol,
+    return [...symbols].some((symbol) =>
+      trackedSymbols.has(aliasedSymbol(checker, symbol) ?? symbol),
     );
   }
 
@@ -1989,17 +1998,32 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (!identity) return undefined;
     const accessStatement = containingTopLevelStatement(access);
     if (!accessStatement) return undefined;
+    const trackedSymbols = new Set([identity]);
+    const isTrackedValue = (expression) => {
+      const valueIdentity = valueSymbolIdentity(expression);
+      return !!valueIdentity && trackedSymbols.has(valueIdentity);
+    };
     let state;
     let refined = false;
     for (const statement of access.getSourceFile().statements) {
       if (statement === accessStatement) break;
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name) && sameValueSymbol(declaration.name, identity)) {
+          if (!ts.isIdentifier(declaration.name)) continue;
+          const declarationIdentity = valueSymbolIdentity(declaration.name);
+          if (declarationIdentity === identity) {
             state = declaration.initializer
               ? exactLiteralContainerState(declaration.initializer)
               : undefined;
             refined = false;
+            trackedSymbols.clear();
+            trackedSymbols.add(identity);
+          } else if (declarationIdentity && declaration.initializer) {
+            if (isTrackedValue(declaration.initializer)) {
+              trackedSymbols.add(declarationIdentity);
+            } else {
+              trackedSymbols.delete(declarationIdentity);
+            }
           }
         }
         continue;
@@ -2010,15 +2034,27 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         ts.isBinaryExpression(expression) &&
         expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        if (sameValueSymbol(expression.left, identity)) {
-          state = exactLiteralContainerState(expression.right);
-          refined = false;
-        } else if (assignmentIncludesSymbol(expression.left, identity)) {
+        const assignmentIdentity = valueSymbolIdentity(expression.left);
+        if (assignmentIdentity) {
+          const assignsTrackedValue = isTrackedValue(expression.right);
+          if (assignmentIdentity === identity) {
+            if (!assignsTrackedValue) {
+              state = exactLiteralContainerState(expression.right);
+              refined = false;
+              trackedSymbols.clear();
+              trackedSymbols.add(identity);
+            }
+          } else if (assignsTrackedValue) {
+            trackedSymbols.add(assignmentIdentity);
+          } else {
+            trackedSymbols.delete(assignmentIdentity);
+          }
+        } else if (assignmentIncludesTrackedSymbol(expression.left, trackedSymbols)) {
           return undefined;
         } else if (
           (ts.isPropertyAccessExpression(unwrapExpression(expression.left)) ||
             ts.isElementAccessExpression(unwrapExpression(expression.left))) &&
-          sameValueSymbol(unwrapExpression(expression.left).expression, identity)
+          isTrackedValue(unwrapExpression(expression.left).expression)
         ) {
           return undefined;
         }
@@ -2026,7 +2062,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       if (!ts.isCallExpression(expression)) continue;
       const arrayMutation = arrayMutationForCall(expression);
-      if (arrayMutation && sameArrayValue(arrayMutation.owner, identity)) {
+      if (arrayMutation && isTrackedValue(arrayMutation.owner)) {
         if (state?.kind !== 'array') return undefined;
         if (arrayMutation.methodName === 'push') state.elements.push(...expression.arguments);
         else state.elements.unshift(...expression.arguments);
@@ -2036,12 +2072,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (
         isObjectAssignCall(expression) &&
         expression.arguments[0] &&
-        sameValueSymbol(expression.arguments[0], identity)
+        isTrackedValue(expression.arguments[0])
       ) {
-        if (
-          state?.kind !== 'object' ||
-          !applyExactObjectSources(state, expression.arguments.slice(1))
-        ) {
+        if (!state || !applyExactObjectSources(state, expression.arguments.slice(1))) {
           return undefined;
         }
         refined = true;
@@ -2051,8 +2084,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const memberName = [...memberNames][0];
     let valueExpression;
     if (state.kind === 'array') {
-      if (!/^\d+$/.test(memberName)) return undefined;
-      valueExpression = state.elements[Number(memberName)];
+      const index = exactArrayIndex(memberName);
+      if (index === undefined) return undefined;
+      valueExpression = state.elements[index];
     } else {
       if (!state.members.has(memberName)) return undefined;
       valueExpression = state.members.get(memberName);

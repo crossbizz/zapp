@@ -646,6 +646,25 @@ test('AR-1 allows Object.assign properties overwritten by harmless values', () =
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 tracks final loaders through Object.assign target identity', () => {
+  const result = runFixture('loader-object-assign-target-identity');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'aliased-object-final-loader',
+    'direct-array-final-loader',
+    'aliased-array-final-loader',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 keeps Object.assign target identity clean after final harmless writes', () => {
+  const result = runFixture('loader-object-assign-target-identity-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks static class fields and assignments through aliases of this', () => {
   const result = runFixture('loader-class-aliases');
 
