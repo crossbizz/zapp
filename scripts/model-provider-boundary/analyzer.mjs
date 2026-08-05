@@ -1951,6 +1951,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function stateForInvocation(state, expression) {
+    return {
+      ...state,
+      runtimeInvocationPath: [...(state.runtimeInvocationPath ?? []), expression],
+    };
+  }
+
   function arrayMutationForCall(callExpression) {
     const callee = unwrapExpression(callExpression.expression);
     if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
@@ -2623,23 +2630,33 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         });
       }
       for (const record of callee.functions) {
-        results.push(functionResult(record, invocation.argumentValues, state));
+        results.push(
+          functionResult(record, invocation.argumentValues, stateForInvocation(state, current)),
+        );
       }
       return mergeCallableValues(...results);
     }
     if (ts.isNewExpression(current)) {
-      const existingInstance = runtimeClassInstances.get(current);
-      if (existingInstance) return existingInstance;
+      const invocationPath = state.runtimeInvocationPath ?? [];
+      const instanceRecords = runtimeClassInstances.get(current) ?? [];
+      const existingInstance = instanceRecords.find(
+        (record) =>
+          record.invocationPath.length === invocationPath.length &&
+          record.invocationPath.every((expression, index) => expression === invocationPath[index]),
+      );
+      if (existingInstance) return existingInstance.value;
       const constructorValue = callableValue(current.expression, environment, state);
       const argumentValues = (current.arguments ?? []).map((argument) =>
         callableValue(argument, environment, state),
       );
-      const instances = (constructorValue.constructors ?? []).map((record) =>
-        classInstance(record, argumentValues, state),
+      const constructedInstances = (constructorValue.constructors ?? []).map((record) =>
+        classInstance(record, argumentValues, stateForInvocation(state, current)),
       );
       const instance =
-        instances.length === 1 ? instances[0] : mergeCallableAlternatives(...instances);
-      runtimeClassInstances.set(current, instance);
+        constructedInstances.length === 1
+          ? constructedInstances[0]
+          : mergeCallableAlternatives(...constructedInstances);
+      runtimeClassInstances.set(current, [...instanceRecords, { invocationPath, value: instance }]);
       return instance;
     }
     if (ts.isBinaryExpression(current)) {

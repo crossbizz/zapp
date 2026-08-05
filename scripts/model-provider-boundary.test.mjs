@@ -715,6 +715,25 @@ test('AR-1 isolates called instance state and honors later harmless overwrites',
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 preserves mutations on the matching factory-created class instance', () => {
+  const result = runFixture('loader-factory-created-instance-state');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'factory-instance-positive',
+    'nested-factory-instance-positive',
+    'recursive-factory-instance-positive',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*/${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 isolates factory-created instances across direct and nested calls', () => {
+  const result = runFixture('loader-factory-created-instance-state-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('AR-1 leaves 250 uncalled this-alias methods bounded and allowed', () => {
   const result = runFixture('loader-called-this-aliases-control');
 
