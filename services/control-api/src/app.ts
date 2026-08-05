@@ -26,6 +26,7 @@ import {
   type RateLimitConfig,
 } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
+import type { EventStreamDependencies } from './events/sse.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
 import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
@@ -134,6 +135,8 @@ export interface TenantDeps {
   readonly integrationPort?: IntegrationPort;
   /** CP-12 persists this setting; absent remains fail-closed for Builder deploys. */
   readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
+  /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
+  readonly eventStream?: EventStreamDependencies;
 }
 
 /**
@@ -425,6 +428,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerRunRoutes(app, {
             now,
             orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+            eventStream:
+              tenant.eventStream ??
+              inDevelopmentOnly('event stream wakeups', SINGLE_INSTANCE, () => ({
+                wakeups: {
+                  subscribe: () => Promise.reject(new Error('Redis subscription unavailable')),
+                },
+              })),
           });
           registerWorkspaceRoutes(app, {
             now,

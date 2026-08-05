@@ -52,6 +52,7 @@ const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   database: database.db,
   redis,
+  eventWakeups: redis,
   auth,
   masterKey,
   serviceTokens,

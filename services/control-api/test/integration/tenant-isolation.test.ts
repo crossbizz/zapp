@@ -183,6 +183,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
   let database: TestDatabase;
   let store: OrganizationStore;
   let app: AppInstance;
+  let baseUrl: string;
   let port: FakeAuthPort;
   let audit: InMemoryAuditSink;
   let a: Tenant;
@@ -227,6 +228,43 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     return organizationId === undefined
       ? member.headers
       : { ...member.headers, [ORGANIZATION_HEADER]: organizationId };
+  }
+
+  async function streamRows(member: Member, organizationId: string, runId: string): Promise<Row[]> {
+    const controller = new AbortController();
+    const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+      headers: { ...as(member, organizationId), accept: 'text/event-stream' },
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    const decoder = new TextDecoder();
+    const rows: Row[] = [];
+    let pending = '';
+    try {
+      while (rows.length < 2) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const value: unknown = chunk.value;
+        if (!(value instanceof Uint8Array)) throw new Error('SSE chunk is not bytes');
+        pending += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+        let boundary = pending.indexOf('\n\n');
+        while (boundary >= 0) {
+          const block = pending.slice(0, boundary);
+          pending = pending.slice(boundary + 2);
+          const data = block
+            .split('\n')
+            .find((line) => line.startsWith('data: '))
+            ?.slice('data: '.length);
+          if (data !== undefined) rows.push(JSON.parse(data) as Row);
+          boundary = pending.indexOf('\n\n');
+        }
+      }
+      return rows;
+    } finally {
+      controller.abort();
+    }
   }
 
   /** An organization with three active members, two projects, two runs, four events. */
@@ -382,7 +420,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       // themselves are `test/plugins.test.ts`'s subject.
       limits: { config: TEST_RATE_LIMITS },
     });
-    await app.ready();
+    baseUrl = await app.listen({ host: '127.0.0.1', port: 0 });
 
     a = await seedTenant('acme');
     b = await seedTenant('beta');
@@ -647,14 +685,11 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       expect(ids.filter((id) => b.runIds.includes(id))).toEqual([]);
     });
 
-    it('never carry an event of the other tenant', async () => {
-      const response = await app.inject({
-        method: 'GET',
-        url: `/v1/runs/${a.runIds[0] ?? ''}/events`,
-        headers: as(a.viewer, a.organizationId),
-      });
-      expectOnlyTenantRows(response, a, a.eventIds.slice(0, 2));
-      const ids = rowsOf(response).map((row) => row.id);
+    it('never carries an event of the other tenant', async () => {
+      const rows = await streamRows(a.viewer, a.organizationId, a.runIds[0] ?? '');
+      const ids = rows.map((row) => row.id);
+      expect(ids).toEqual(expect.arrayContaining(a.eventIds.slice(0, 2)));
+      for (const row of rows) expect(row.organizationId).toBe(a.organizationId);
       expect(ids.filter((id) => b.eventIds.includes(id))).toEqual([]);
     });
 
@@ -1001,12 +1036,11 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         organizationId: a.organizationId,
       });
 
-      const events = await app.inject({
-        method: 'GET',
-        url: `/v1/runs/${runId}/events`,
-        headers: as(a.viewer, a.organizationId),
-      });
-      expectOnlyTenantRows(events, a, a.eventIds.slice(0, 2));
+      const events = await streamRows(a.viewer, a.organizationId, runId);
+      expect(events.map((event) => event.id)).toEqual(
+        expect.arrayContaining(a.eventIds.slice(0, 2)),
+      );
+      for (const event of events) expect(event.organizationId).toBe(a.organizationId);
       negativeControlsRun += 1;
     });
 

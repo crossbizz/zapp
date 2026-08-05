@@ -185,9 +185,9 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 **Interfaces produced:** `GET /v1/runs/:runId/events` with `Accept: text/event-stream`: replays rows `sequence > Last-Event-ID` (or `?after=`), then live-tails via Redis ping → DB read; each SSE message: `id: {sequence}`, `event: {type}`, `data: {AgentEvent JSON}`; heartbeat comment every 15 s; visibility filter: user sessions get `visibility=user`; support role param gets `user+support`; `internal` never leaves the service boundary.
 **Effort:** M
 
-- [ ] **Step 1:** Failing integration test: create 5 events → connect with `Last-Event-ID: 2` → receive 3,4,5 then a live 6 within 2 s; internal-visibility event never appears; disconnect/reconnect resumes without duplicates (client dedupe by sequence asserted server sends none twice for a stable cursor).
-- [ ] **Step 2:** Implement with backpressure (pause DB tail if socket buffer full), 4 h max connection (client reconnects).
-- [ ] **Step 3:** Commit: `feat(control-api): resumable SSE run event stream`
+- [x] **Step 1:** Failing integration test: create 5 events → connect with `Last-Event-ID: 2` → receive 3,4,5 then a live 6 within 2 s; internal-visibility event never appears; disconnect/reconnect resumes without duplicates (client dedupe by sequence asserted server sends none twice for a stable cursor).
+- [x] **Step 2:** Implement with backpressure (pause DB tail if socket buffer full), 4 h max connection (client reconnects).
+- [x] **Step 3:** Commit: `feat(control-api): resumable SSE run event stream`
 
 ### Task CP-16: OpenAPI + generated SDK
 
@@ -266,3 +266,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-13 execution assumption: choose the FND-6 note's additive migration path and retain all PRD §14.4 top-level replay context absent from the conceptual `agent_events` row (`project_id`, `phase_id`, `task_id`, `agent_id`), documented in the schema-conformance allowlist. The internal route uses a route-specific orchestrator token, required idempotency key, tenant/run/project validation before sequence allocation, and one transactional batch audit + NOTIFY.
 - 2026-08-04 CP-13 done — sequenced service-only event ingest persists full replay context, audits each committed batch, and sends transactional PostgreSQL NOTIFY.
 - 2026-08-04 CP-14 done — committed event notifications now publish Zod-validated high-water pings through Redis, with bounded LISTEN retry and a 2-second database polling fallback.
+- 2026-08-04 CP-15 done — resumable tenant-scoped SSE replays and live tails PostgreSQL through Redis wakeups; ordinary sessions fail closed to user visibility, and any future support decision requires an injected audit callback.

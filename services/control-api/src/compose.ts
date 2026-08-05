@@ -17,6 +17,7 @@ import { createRedisIdempotencyStore } from './plugins/idempotency.js';
 import { createRedisRateLimiter } from './plugins/rate-limit.js';
 import type { RedisCommands } from './redis/client.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
+import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
 
@@ -39,6 +40,8 @@ import { createTenantDbFactory } from './tenant/db.js';
 export interface ServiceRuntime {
   readonly database: Database;
   readonly redis: RedisCommands;
+  /** CP-15 pub/sub port. Omission is refused outside development by buildApp. */
+  readonly eventWakeups?: EventWakeupSource;
   readonly auth: AuthEnv;
   /**
    * The vault's master key, from `loadMasterKey` (`src/env.ts`). Required rather
@@ -100,6 +103,9 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // absent.
     tenant: {
       tenantDb: createTenantDbFactory(database),
+      ...(runtime.eventWakeups === undefined
+        ? {}
+        : { eventStream: { wakeups: runtime.eventWakeups } }),
       /**
        * The git service (plan 06 GIT-2), which is what CP-6 said would land on
        * this line — and it did, without anything else moving.

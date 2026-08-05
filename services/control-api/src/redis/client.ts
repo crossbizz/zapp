@@ -1,5 +1,7 @@
 import { Redis } from 'ioredis';
 
+import type { EventWakeupSource, EventWakeupSubscription } from '../events/sse.js';
+
 /**
  * The shared state this service keeps outside its own process.
  *
@@ -51,7 +53,7 @@ export interface RedisPublisher {
   publish(channel: string, body: string): Promise<number>;
 }
 
-export interface RedisConnection extends RedisCommands, RedisPublisher {
+export interface RedisConnection extends RedisCommands, RedisPublisher, EventWakeupSource {
   close(): Promise<void>;
 }
 
@@ -138,6 +140,78 @@ export function createRedisConnection(
     },
     async publish(channel, body) {
       return await client.publish(channel, body);
+    },
+    async subscribe(channel): Promise<EventWakeupSubscription> {
+      const subscriber = new Redis(url, {
+        commandTimeout: options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
+        connectTimeout: CONNECT_TIMEOUT_MS,
+        maxRetriesPerRequest: 1,
+        lazyConnect: true,
+      });
+      let queued: string | undefined;
+      let waiter:
+        | { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void }
+        | undefined;
+      let closed = false;
+      const fail = (error: Error): void => {
+        try {
+          options.onError?.(error);
+        } catch {
+          // Diagnostics cannot become a pub/sub failure of their own.
+        }
+        const pending = waiter;
+        waiter = undefined;
+        pending?.reject(error);
+      };
+      const receive = (receivedChannel: string, message: string): void => {
+        if (closed || receivedChannel !== channel) return;
+        const pending = waiter;
+        waiter = undefined;
+        if (pending === undefined) queued = message;
+        else pending.resolve(message);
+      };
+      subscriber.on('error', fail);
+      subscriber.on('message', receive);
+      try {
+        await subscriber.connect();
+        await subscriber.subscribe(channel);
+      } catch (error) {
+        closed = true;
+        subscriber.removeListener('error', fail);
+        subscriber.removeListener('message', receive);
+        subscriber.disconnect();
+        throw error;
+      }
+      return {
+        next() {
+          if (closed) return Promise.reject(new Error('Redis subscription is closed'));
+          const message = queued;
+          queued = undefined;
+          if (message !== undefined) return Promise.resolve(message);
+          if (waiter !== undefined) {
+            return Promise.reject(new Error('Redis subscription already has a pending waiter'));
+          }
+          return new Promise<unknown>((resolve, reject) => {
+            waiter = { resolve, reject };
+          });
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          const pending = waiter;
+          waiter = undefined;
+          pending?.reject(new Error('Redis subscription closed'));
+          try {
+            await subscriber.unsubscribe(channel);
+            await subscriber.quit();
+          } catch {
+            subscriber.disconnect();
+          } finally {
+            subscriber.removeListener('error', fail);
+            subscriber.removeListener('message', receive);
+          }
+        },
+      };
     },
     async close() {
       // `quit` drains; `disconnect` is the fallback for a client that never
