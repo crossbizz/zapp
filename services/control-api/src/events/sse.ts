@@ -15,14 +15,27 @@ const EventPingSchema = z.object({ sequence: z.number().int().positive().safe() 
 const EventAccessDecisionSchema = z
   .object({ access: z.enum(['user', 'support']) })
   .strict();
+const EventStreamConcurrencyLimitsSchema = z
+  .object({
+    perUser: z.number().int().positive(),
+    perOrganization: z.number().int().positive(),
+    perProcess: z.number().int().positive(),
+  })
+  .strict();
 const HTTP_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const QUALITY_VALUE = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/;
 
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+export const SSE_AUTHORIZATION_INTERVAL_MS = 60_000;
 export const SSE_MAX_CONNECTION_MS = 4 * 60 * 60 * 1_000;
 const SSE_REPLAY_PAGE_SIZE = 100;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
 const EVENT_STREAM_MEDIA_PARAMETERS = new Map([['charset', 'utf-8']]);
+const DEFAULT_CONCURRENCY_LIMITS: EventStreamConcurrencyLimits = {
+  perUser: 8,
+  perOrganization: 64,
+  perProcess: 256,
+};
 
 export interface EventWakeupSubscription {
   next(): Promise<unknown>;
@@ -63,10 +76,21 @@ export interface EventStreamDependencies {
   readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** Bounds provider cleanup so one broken subscriber cannot block app.close(). */
   readonly cleanupTimeoutMs?: number;
+  /** Test seams may lower these; every tier remains positive and enforced. */
+  readonly concurrencyLimits?: EventStreamConcurrencyLimits;
+}
+
+export type EventStreamConcurrencyLimits = z.infer<typeof EventStreamConcurrencyLimitsSchema>;
+
+export interface EventStreamAuthorizationContext extends EventStreamAccessContext {
+  readonly sessionId: string;
+  readonly jti: string;
+  readonly expiresAt: Date;
 }
 
 export interface RunEventStreamRouteDependencies {
   readonly eventStream: EventStreamDependencies;
+  readonly revalidate: (context: EventStreamAuthorizationContext) => Promise<boolean>;
 }
 
 type RequestTenantDb = ReturnType<typeof tenantOf>['db'];
@@ -354,36 +378,27 @@ async function waitForDrain(reply: FastifyReply, signal: AbortSignal): Promise<v
   });
 }
 
-async function settleUntilAborted<T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T | undefined> {
-  if (signal.aborted) return undefined;
-  let onAbort: (() => void) | undefined;
-  const aborted = new Promise<undefined>((resolve) => {
-    onAbort = () => {
-      resolve(undefined);
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    if (signal.aborted) onAbort();
-  });
-  try {
-    return await Promise.race([operation, aborted]);
-  } finally {
-    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
-  }
-}
-
 async function streamEvents(input: {
   readonly reply: FastifyReply;
   readonly tenantDb: RequestTenantDb;
   readonly runId: string;
   readonly after: number;
   readonly access: 'user' | 'support';
+  readonly authorization: EventStreamAuthorizationContext;
   readonly dependencies: EventStreamDependencies;
+  readonly revalidate: (context: EventStreamAuthorizationContext) => Promise<boolean>;
   readonly shutdownSignal: AbortSignal;
 }): Promise<void> {
-  const { reply, tenantDb, runId, access, dependencies, shutdownSignal } = input;
+  const {
+    reply,
+    tenantDb,
+    runId,
+    access,
+    authorization,
+    dependencies,
+    revalidate,
+    shutdownSignal,
+  } = input;
   let cursor = input.after;
   let closed = false;
   let backpressured = false;
@@ -392,6 +407,7 @@ async function streamEvents(input: {
   let pendingWakeup: Promise<unknown> | undefined;
   let writeQueue = Promise.resolve();
   let heartbeatPending = false;
+  let authorizationPending = false;
   const closeController = new AbortController();
   const timers: EventStreamTimers = dependencies.timers ?? {
     setInterval: (callback, delayMs) => setInterval(callback, delayMs),
@@ -423,6 +439,10 @@ async function streamEvents(input: {
     stop();
     if (!reply.raw.writableEnded) reply.raw.end();
     if (!reply.raw.destroyed) reply.raw.destroy();
+  };
+  const stopAndEnd = (): void => {
+    stop();
+    if (!reply.raw.writableEnded) reply.raw.end();
   };
   const isClosed = (): boolean => closed;
   const beginBackpressure = (): Promise<void> => {
@@ -476,9 +496,35 @@ async function streamEvents(input: {
       });
   }, SSE_HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
+  const authorizationTimer = timers.setInterval(() => {
+    if (closed || authorizationPending) return;
+    authorizationPending = true;
+    void revalidate(authorization)
+      .then(async (allowed) => {
+        if (!allowed) {
+          stopAndEnd();
+          return;
+        }
+        if (access === 'support') {
+          const decision = EventAccessDecisionSchema.parse(
+            dependencies.supportAccess === undefined
+              ? { access: 'user' }
+              : await dependencies.supportAccess.decide(authorization),
+          );
+          if (decision.access !== 'support') stopAndEnd();
+        }
+      })
+      .catch((error: unknown) => {
+        report(error);
+        stopAndEnd();
+      })
+      .finally(() => {
+        authorizationPending = false;
+      });
+  }, SSE_AUTHORIZATION_INTERVAL_MS);
+  authorizationTimer.unref?.();
   const lifetime = timers.setTimeout(() => {
-    stop();
-    reply.raw.end();
+    stopAndEnd();
   }, SSE_MAX_CONNECTION_MS);
   lifetime.unref?.();
 
@@ -532,14 +578,11 @@ async function streamEvents(input: {
         await waitForWriter();
         if (isClosed()) return;
         if (cursor === Number.MAX_SAFE_INTEGER) return;
-        const rows = await settleUntilAborted(
-          tenantDb.events.byRun(runId, {
-            fromSequence: cursor + 1,
-            limit: SSE_REPLAY_PAGE_SIZE,
-          }),
-          closeController.signal,
-        );
-        if (rows === undefined) return;
+        const rows = await tenantDb.events.byRun(runId, {
+          fromSequence: cursor + 1,
+          limit: SSE_REPLAY_PAGE_SIZE,
+          signal: closeController.signal,
+        });
         await waitForWriter();
         for (const row of rows) {
           await waitForWriter();
@@ -582,6 +625,7 @@ async function streamEvents(input: {
     closed = true;
     closeController.abort();
     timers.clearInterval(heartbeat);
+    timers.clearInterval(authorizationTimer);
     timers.clearTimeout(lifetime);
     reply.raw.removeListener('close', stop);
     reply.raw.removeListener('error', stop);
@@ -598,7 +642,12 @@ export function registerRunEventStreamRoute(
   const activeStreams = new Set<{
     readonly controller: AbortController;
     readonly completed: Promise<void>;
+    readonly organizationId: string;
+    readonly userId: string;
   }>();
+  const concurrencyLimits = EventStreamConcurrencyLimitsSchema.parse(
+    dependencies.eventStream.concurrencyLimits ?? DEFAULT_CONCURRENCY_LIMITS,
+  );
   app.addHook('preClose', async () => {
     const streams = [...activeStreams];
     for (const stream of streams) stream.controller.abort();
@@ -649,6 +698,34 @@ export function registerRunEventStreamRoute(
         await dependencies.eventStream.supportAccess?.audit({ ...accessContext, access: 'support' });
       }
 
+      const processStreams = activeStreams.size;
+      const organizationStreams = [...activeStreams].filter(
+        (stream) => stream.organizationId === ctx.organizationId,
+      ).length;
+      const userStreams = [...activeStreams].filter(
+        (stream) => stream.userId === accessContext.userId,
+      ).length;
+      if (
+        processStreams >= concurrencyLimits.perProcess ||
+        organizationStreams >= concurrencyLimits.perOrganization ||
+        userStreams >= concurrencyLimits.perUser
+      ) {
+        throw new ApiError(
+          'event_stream_limit',
+          429,
+          'Too many event streams are already open. Close one and retry.',
+        );
+      }
+
+      const session = request.auth;
+      if (session === undefined) throw new Error('event streams require app.requireSession');
+      const authorization: EventStreamAuthorizationContext = {
+        ...accessContext,
+        sessionId: session.sessionId,
+        jti: session.jti,
+        expiresAt: session.expiresAt,
+      };
+
       const shutdownController = new AbortController();
       let markCompleted!: () => void;
       const activeStream = {
@@ -656,6 +733,8 @@ export function registerRunEventStreamRoute(
         completed: new Promise<void>((resolve) => {
           markCompleted = resolve;
         }),
+        organizationId: ctx.organizationId,
+        userId: accessContext.userId,
       };
       activeStreams.add(activeStream);
       try {
@@ -665,7 +744,9 @@ export function registerRunEventStreamRoute(
           runId: run.id,
           after: queryAfter ?? lastEventId ?? 0,
           access: decision.access,
+          authorization,
           dependencies: dependencies.eventStream,
+          revalidate: dependencies.revalidate,
           shutdownSignal: shutdownController.signal,
         });
       } finally {

@@ -1,8 +1,8 @@
 import { idSchema } from '@zapp/contracts';
-import { and, asc, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 
 import type { Database } from './client.js';
-import { agentEvents, type AgentEventRow } from './schema/execution.js';
+import type { AgentEventRow } from './schema/execution.js';
 import { agentRuns, type AgentRun } from './schema/planning.js';
 import { projects, type Project } from './schema/projects.js';
 
@@ -31,6 +31,8 @@ export interface EventRange {
   readonly toSequence?: number;
   /** Caps the page. Left to the caller: `@zapp/contracts` owns pagination defaults (FND-10). */
   readonly limit?: number;
+  /** Cancels an in-flight driver query when a stream disconnects or the service shuts down. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ProjectRepository {
@@ -56,6 +58,27 @@ export interface TenantDb {
   readonly projects: ProjectRepository;
   readonly runs: RunRepository;
   readonly events: EventRepository;
+}
+
+interface RawAgentEventRow {
+  readonly id: string;
+  readonly organizationId: string;
+  readonly runId: string;
+  readonly sequence: string | number;
+  readonly type: string;
+  readonly payloadJson: unknown;
+  readonly visibility: string;
+  readonly occurredAt: Date | string;
+  readonly projectId: string;
+  readonly phaseId: string | null;
+  readonly taskId: string | null;
+  readonly agentId: string | null;
+}
+
+function aborted(): Error {
+  const error = new Error('The event replay was aborted.');
+  error.name = 'AbortError';
+  return error;
 }
 
 /**
@@ -114,26 +137,70 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
 
     events: {
       async byRun(runId: string, range: EventRange = {}): Promise<AgentEventRow[]> {
-        const filters: SQL[] = [
-          eq(agentEvents.organizationId, orgId),
-          eq(agentEvents.runId, runId),
-        ];
+        const parameters: (number | string)[] = [orgId, runId];
+        const filters = ['organization_id = $1', 'run_id = $2'];
         if (range.fromSequence !== undefined) {
-          filters.push(gte(agentEvents.sequence, range.fromSequence));
+          parameters.push(range.fromSequence);
+          filters.push(`sequence >= $${String(parameters.length)}`);
         }
         if (range.toSequence !== undefined) {
-          filters.push(lte(agentEvents.sequence, range.toSequence));
+          parameters.push(range.toSequence);
+          filters.push(`sequence <= $${String(parameters.length)}`);
         }
-
-        const query = db
-          .select()
-          .from(agentEvents)
-          .where(and(...filters))
-          // Sequence, not `occurred_at`: the sequence is what clients resume
-          // from, and two events can share a timestamp (PRD §14.4).
-          .orderBy(asc(agentEvents.sequence));
-
-        return range.limit === undefined ? await query : await query.limit(range.limit);
+        const limit =
+          range.limit === undefined
+            ? ''
+            : (() => {
+                parameters.push(range.limit);
+                return ` limit $${String(parameters.length)}`;
+              })();
+        const pending = db.$client.unsafe<RawAgentEventRow[]>(
+          `select id,
+                  organization_id as "organizationId",
+                  run_id as "runId",
+                  sequence,
+                  type,
+                  payload_json as "payloadJson",
+                  visibility,
+                  occurred_at as "occurredAt",
+                  project_id as "projectId",
+                  phase_id as "phaseId",
+                  task_id as "taskId",
+                  agent_id as "agentId"
+             from agent_events
+            where ${filters.join(' and ')}
+            order by sequence asc${limit}`,
+          parameters,
+        );
+        void pending.execute();
+        const cancel = (): void => {
+          pending.cancel();
+        };
+        range.signal?.addEventListener('abort', cancel, { once: true });
+        if (range.signal?.aborted === true) cancel();
+        try {
+          const rows = await pending;
+          return rows.map((row) => ({
+            id: row.id,
+            organizationId: row.organizationId,
+            runId: row.runId,
+            sequence: Number(row.sequence),
+            type: row.type as AgentEventRow['type'],
+            payloadJson: row.payloadJson,
+            visibility: row.visibility as AgentEventRow['visibility'],
+            occurredAt:
+              row.occurredAt instanceof Date ? row.occurredAt : new Date(row.occurredAt),
+            projectId: row.projectId,
+            phaseId: row.phaseId,
+            taskId: row.taskId,
+            agentId: row.agentId,
+          }));
+        } catch (error) {
+          if (range.signal?.aborted === true) throw aborted();
+          throw error;
+        } finally {
+          range.signal?.removeEventListener('abort', cancel);
+        }
       },
     },
   };

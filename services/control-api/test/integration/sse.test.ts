@@ -4,6 +4,10 @@ import { OutgoingMessage, ServerResponse } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
+import {
+  createInMemoryTokenDenylist,
+  type TokenDenylist,
+} from '../../src/auth/denylist.js';
 import { createSessionSigner } from '../../src/auth/session.js';
 import type {
   EventWakeupSource,
@@ -188,11 +192,14 @@ async function readBlock(response: Response, timeoutMs = 2_000): Promise<string>
   }
 }
 
-async function eventually(assertion: () => void, timeoutMs = 2_000): Promise<void> {
+async function eventually(
+  assertion: () => void | Promise<void>,
+  timeoutMs = 2_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      assertion();
+      await assertion();
       return;
     } catch (error) {
       if (Date.now() >= deadline) throw error;
@@ -235,6 +242,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   let runId: string;
   let userId: string;
   let authorization: string;
+  let accessJti: string;
+  let accessExpiresAt: Date;
+  let denylist: TokenDenylist;
   let usersStore: InMemoryUserStore;
   let organizationStore: InMemoryOrganizationStore;
   let eventReadCount: number;
@@ -324,6 +334,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       now: new Date(),
     });
     authorization = `Bearer ${tokens.access.token}`;
+    accessJti = tokens.access.jti;
+    accessExpiresAt = tokens.access.expiresAt;
+    denylist = createInMemoryTokenDenylist();
 
     eventReadCount = 0;
     eventReadRanges = [];
@@ -341,7 +354,12 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     const tenantDb = createTenantDbFactory(database.db);
     const nextApp = buildApp({
       logger: false,
-      auth: { port: new FakeAuthPort(), users: usersStore, config: TEST_AUTH_CONFIG },
+      auth: {
+        port: new FakeAuthPort(),
+        users: usersStore,
+        config: TEST_AUTH_CONFIG,
+        denylist,
+      },
       orgs: { organizations: organizationStore },
       tenant: {
         tenantDb: (tenantOrganizationId) => {
@@ -759,7 +777,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       });
       await new Promise((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
-      expect(timers.cleared).toHaveLength(2);
+      expect(timers.cleared).toHaveLength(3);
     } finally {
       process.removeListener('unhandledRejection', onUnhandled);
     }
@@ -815,8 +833,8 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     }
 
     expect(wakeups.closed).toBe(1);
-    expect(timers.cleared).toHaveLength(2);
-    expect(new Set(timers.cleared).size).toBe(2);
+    expect(timers.cleared).toHaveLength(3);
+    expect(new Set(timers.cleared).size).toBe(3);
   });
 
   it('closes a backpressured active stream before Fastify waits for its handler', async () => {
@@ -860,8 +878,8 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     }
 
     expect(wakeups.closed).toBe(1);
-    expect(timers.cleared).toHaveLength(2);
-    expect(new Set(timers.cleared).size).toBe(2);
+    expect(timers.cleared).toHaveLength(3);
+    expect(new Set(timers.cleared).size).toBe(3);
     expect(blockedResponse?.listenerCount('drain')).toBe(0);
   });
 
@@ -1133,49 +1151,128 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
-    expect(timers.cleared).toHaveLength(2);
+    expect(timers.cleared).toHaveLength(3);
+  });
+
+  it.each([
+    ['user', { perUser: 1, perOrganization: 8, perProcess: 8 }],
+    ['organization', { perUser: 8, perOrganization: 1, perProcess: 8 }],
+    ['process', { perUser: 8, perOrganization: 8, perProcess: 1 }],
+  ] as const)('rejects a second stream at the %s concurrent limit', async (_scope, limits) => {
+    // Break caught: request-rate limits permit a burst of long-lived streams,
+    // each of which otherwise owns a Redis subscriber for four hours.
+    await startApp({ concurrencyLimits: limits });
+    const controller = new AbortController();
+    const rejectedController = new AbortController();
+    try {
+      await connect({ signal: controller.signal });
+      await eventually(() => {
+        expect(wakeups.pendingCount).toBe(1);
+      });
+
+      const rejected = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: requestHeaders(),
+        signal: rejectedController.signal,
+      });
+      expect(rejected.status).toBe(429);
+      await expect(rejected.json()).resolves.toMatchObject({
+        error: { code: 'event_stream_limit' },
+      });
+    } finally {
+      rejectedController.abort();
+      controller.abort();
+    }
+  });
+
+  it('ends an active stream when its session is revoked', async () => {
+    // Break caught: the opening preHandler was the only denylist check, so a
+    // logout kept receiving future tenant events for four hours.
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    await denylist.deny(accessJti, accessExpiresAt);
+    timers.fire(60_000, 'interval');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('ends an active stream when its organization membership is removed', async () => {
+    // Break caught: retaining the tenant-scoped handle after removal bypassed
+    // the membership lookup that every new request performs.
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    organizationStore.memberships.set(`${organizationId}\u0000${userId}`, {
+      organizationId,
+      userId,
+      role: 'owner',
+      status: 'removed',
+    });
+    timers.fire(60_000, 'interval');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
   });
 
   it('closes promptly while an event database read is stalled', async () => {
-    // Break caught: preClose aborts the stream but still waits forever for an
-    // already-started tenantDb.events.byRun() call that ignores cancellation.
-    let markReadStarted!: () => void;
-    let releaseRead!: () => void;
-    const readStarted = new Promise<void>((resolve) => {
-      markReadStarted = resolve;
+    // Break caught: abandoning the route's Drizzle promise let app.close()
+    // return while the real PostgreSQL query and its pool connection survived.
+    let markLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      markLocked = resolve;
     });
-    const stalledRead = new Promise<void>((resolve) => {
-      releaseRead = resolve;
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
     });
-    await startApp({}, {
-      beforeEventRead: () => {
-        markReadStarted();
-        return stalledRead;
-      },
+    const lock = database.sql.begin(async (sql) => {
+      await sql.unsafe('lock table agent_events in access exclusive mode');
+      markLocked();
+      await release;
     });
+    await locked;
 
-    await connect();
-    await readStarted;
-    const activeApp = app;
-    if (activeApp === undefined) throw new Error('SSE app did not start');
-    const close = activeApp.close();
-    let timeout: NodeJS.Timeout | undefined;
+    const blockedReplayCount = async (): Promise<number> => {
+      const [row] = await database.sql<{ count: number }[]>`
+        select count(*)::int as count
+        from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and wait_event_type = 'Lock'
+          and query ilike '%agent_events%'
+      `;
+      return row?.count ?? 0;
+    };
+
     try {
-      const outcome = await Promise.race([
-        close.then(() => {
-          return 'closed' as const;
-        }),
-        new Promise<'timed-out'>((resolve) => {
-          timeout = setTimeout(() => {
-            resolve('timed-out');
-          }, 250);
-        }),
-      ]);
-      expect(outcome).toBe('closed');
+      await connect();
+      await eventually(async () => {
+        expect(await blockedReplayCount()).toBe(1);
+      });
+      const activeApp = app;
+      if (activeApp === undefined) throw new Error('SSE app did not start');
+      await activeApp.close();
+      await eventually(async () => {
+        expect(await blockedReplayCount()).toBe(0);
+      });
     } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
-      releaseRead();
-      await close;
+      releaseLock();
+      await lock;
     }
   });
 
@@ -1191,7 +1288,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
-    expect(timers.cleared).toHaveLength(2);
+    expect(timers.cleared).toHaveLength(3);
   });
 
   it('contains malformed ping rejections and falls back without accumulating waiters', async () => {

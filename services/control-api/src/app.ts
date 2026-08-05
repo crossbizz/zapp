@@ -14,7 +14,11 @@ import {
 import { z } from 'zod';
 
 import type { AuthConfig } from './auth/config.js';
-import { createInMemoryTokenDenylist, type TokenDenylist } from './auth/denylist.js';
+import {
+  createInMemoryTokenDenylist,
+  sessionFamilyKey,
+  type TokenDenylist,
+} from './auth/denylist.js';
 import { createInMemoryDeviceStore, type DeviceStore } from './auth/device.js';
 import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
@@ -435,6 +439,17 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                   subscribe: () => Promise.reject(new Error('Redis subscription unavailable')),
                 },
               })),
+            revalidateEventStream: async (context) => {
+              if (context.expiresAt.getTime() <= now().getTime()) return false;
+              if (await denylist.isDenied(context.jti, sessionFamilyKey(context.sessionId))) {
+                return false;
+              }
+              const membership = await orgs.organizations.membership(
+                context.organizationId,
+                context.userId,
+              );
+              return membership?.status === 'active';
+            },
           });
           registerWorkspaceRoutes(app, {
             now,

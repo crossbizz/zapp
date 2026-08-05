@@ -181,7 +181,7 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 
 ### Task CP-15: SSE stream endpoint
 
-**Files:** Create: `src/events/sse.ts`, `test/integration/sse.test.ts`
+**Files:** Create: `src/events/sse.ts`, `test/integration/sse.test.ts`. Expanded by accepted ADR-0008: `packages/db/src/{client,tenant}.ts`, `services/control-api/src/{app.ts,routes/runs.ts}`, and directly related composition tests.
 **Interfaces produced:** `GET /v1/runs/:runId/events` with `Accept: text/event-stream`: replays rows `sequence > Last-Event-ID` (or `?after=`), then live-tails via Redis ping → DB read; each SSE message: `id: {sequence}`, `event: {type}`, `data: {AgentEvent JSON}`; heartbeat comment every 15 s; visibility filter: user sessions get `visibility=user`; support role param gets `user+support`; `internal` never leaves the service boundary.
 **Effort:** M
 

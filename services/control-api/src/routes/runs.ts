@@ -7,6 +7,7 @@ import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import {
   registerRunEventStreamRoute,
+  type EventStreamAuthorizationContext,
   type EventStreamDependencies,
 } from '../events/sse.js';
 import {
@@ -71,6 +72,9 @@ export interface RunRoutesDeps {
   readonly now: () => Date;
   readonly orchestrator: OrchestratorPort;
   readonly eventStream: EventStreamDependencies;
+  readonly revalidateEventStream: (
+    context: EventStreamAuthorizationContext,
+  ) => Promise<boolean>;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -242,7 +246,10 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       return { run: toRun(run) };
     },
   );
-  registerRunEventStreamRoute(app, { eventStream: deps.eventStream });
+  registerRunEventStreamRoute(app, {
+    eventStream: deps.eventStream,
+    revalidate: deps.revalidateEventStream,
+  });
 }
 
 function operationOf(request: {

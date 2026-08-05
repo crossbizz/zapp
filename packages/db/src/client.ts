@@ -4,7 +4,10 @@ import postgres from 'postgres';
 import * as schema from './schema/index.js';
 
 /** The Drizzle query interface, typed with every table in the schema barrel. */
-export type Database = PostgresJsDatabase<typeof schema>;
+export type Database = PostgresJsDatabase<typeof schema> & {
+  /** The cancel-capable driver underneath Drizzle's promise-only query facade. */
+  readonly $client: postgres.Sql;
+};
 
 /** An open transaction, as `db.transaction(...)` hands it to its callback. */
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
