@@ -1973,8 +1973,233 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       : undefined;
   }
 
+  function straightLineObjectAssignExpressionKinds(expression, kindsBySymbol) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const identity = valueSymbolIdentity(current);
+      if (identity && kindsBySymbol.has(identity)) return kindsBySymbol.get(identity);
+      return (symbolAt(checker, current)?.declarations ?? []).some((declaration) =>
+        ts.isFunctionLike(declaration),
+      )
+        ? 0
+        : undefined;
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const memberNames = accessMemberNames(current);
+      const owner = unwrapExpression(current.expression);
+      return memberNames?.size === 1 &&
+        memberNames.has('assign') &&
+        ts.isIdentifier(owner) &&
+        isUnshadowedIdentifier(owner, 'Object')
+        ? CALLABLE_OBJECT_ASSIGN
+        : ts.isIdentifier(owner) && isUnshadowedIdentifier(owner, 'console')
+          ? 0
+          : undefined;
+    }
+    if (
+      ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isClassExpression(current) ||
+      ts.isObjectLiteralExpression(current) ||
+      ts.isArrayLiteralExpression(current) ||
+      ts.isStringLiteralLike(current) ||
+      ts.isNumericLiteral(current) ||
+      current.kind === ts.SyntaxKind.NullKeyword ||
+      current.kind === ts.SyntaxKind.TrueKeyword ||
+      current.kind === ts.SyntaxKind.FalseKeyword
+    ) {
+      return 0;
+    }
+    if (ts.isConditionalExpression(current)) {
+      const whenTrue = straightLineObjectAssignExpressionKinds(current.whenTrue, kindsBySymbol);
+      const whenFalse = straightLineObjectAssignExpressionKinds(current.whenFalse, kindsBySymbol);
+      return whenTrue === undefined || whenFalse === undefined ? undefined : whenTrue | whenFalse;
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return straightLineObjectAssignExpressionKinds(current.right, kindsBySymbol);
+    }
+    return undefined;
+  }
+
+  function straightLineObjectAssignMemberKinds(expression, memberNames, kindsBySymbol) {
+    if (!memberNames || memberNames.size === 0) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current) && isUnshadowedIdentifier(current, 'Object')) {
+      return {
+        definitelyDefined: memberNames.size === 1 && memberNames.has('assign'),
+        kinds: memberNames.has('assign') ? CALLABLE_OBJECT_ASSIGN : 0,
+      };
+    }
+    if (!ts.isObjectLiteralExpression(current)) return undefined;
+
+    let kinds = 0;
+    let definitelyDefined = true;
+    for (const memberName of memberNames) {
+      let memberKinds = 0;
+      let memberIsDefinitelyDefined = false;
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) return undefined;
+        const propertyNames = declarationMemberNames(property.name);
+        if (!propertyNames?.has(memberName)) continue;
+        if (ts.isPropertyAssignment(property)) {
+          const valueKinds = straightLineObjectAssignExpressionKinds(
+            property.initializer,
+            kindsBySymbol,
+          );
+          if (valueKinds === undefined) return undefined;
+          memberKinds = valueKinds;
+          memberIsDefinitelyDefined = isDefinitelyDefinedValue(property.initializer);
+        } else if (ts.isShorthandPropertyAssignment(property)) {
+          const valueKinds = straightLineObjectAssignExpressionKinds(property.name, kindsBySymbol);
+          if (valueKinds === undefined) return undefined;
+          memberKinds = valueKinds;
+          memberIsDefinitelyDefined = isDefinitelyDefinedValue(property.name);
+        } else {
+          memberKinds = 0;
+          memberIsDefinitelyDefined = true;
+        }
+      }
+      kinds |= memberKinds;
+      definitelyDefined &&= memberIsDefinitelyDefined;
+    }
+    return { definitelyDefined, kinds };
+  }
+
+  function assignStraightLineObjectPattern(pattern, expression, kindsBySymbol) {
+    const current = unwrapExpression(pattern);
+    const properties = ts.isObjectBindingPattern(current)
+      ? current.elements
+      : ts.isObjectLiteralExpression(current)
+        ? current.properties
+        : undefined;
+    if (!properties) return false;
+
+    for (const property of properties) {
+      let memberNames;
+      let target;
+      let defaultValue;
+      if (ts.isBindingElement(property) && !property.dotDotDotToken) {
+        memberNames = property.propertyName
+          ? declarationMemberNames(property.propertyName)
+          : ts.isIdentifier(property.name)
+            ? new Set([property.name.text])
+            : undefined;
+        target = property.name;
+        defaultValue = property.initializer;
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        memberNames = new Set([property.name.text]);
+        target = property.name;
+        defaultValue = property.objectAssignmentInitializer;
+      } else if (ts.isPropertyAssignment(property)) {
+        memberNames = declarationMemberNames(property.name);
+        target = unwrapExpression(property.initializer);
+        if (
+          ts.isBinaryExpression(target) &&
+          target.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+          defaultValue = target.right;
+          target = unwrapExpression(target.left);
+        }
+      } else {
+        return false;
+      }
+      if (!ts.isIdentifier(target)) return false;
+      const selected = straightLineObjectAssignMemberKinds(expression, memberNames, kindsBySymbol);
+      if (!selected) return false;
+      let kinds = selected.kinds;
+      if (defaultValue && !selected.definitelyDefined) {
+        const defaultKinds = straightLineObjectAssignExpressionKinds(defaultValue, kindsBySymbol);
+        if (defaultKinds === undefined) return false;
+        kinds |= defaultKinds;
+      }
+      const identity = ts.isShorthandPropertyAssignment(property)
+        ? checker.getShorthandAssignmentValueSymbol(property)
+        : valueSymbolIdentity(target);
+      if (!identity) return false;
+      kindsBySymbol.set(identity, kinds);
+    }
+    return true;
+  }
+
+  function straightLineObjectAssignCallKinds(callExpression) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (!ts.isIdentifier(callee)) return undefined;
+    const callStatement = containingSourceFileStatement(callExpression);
+    if (!callStatement) return undefined;
+
+    const kindsBySymbol = new Map();
+    for (const statement of callExpression.getSourceFile().statements) {
+      if (statement === callStatement) break;
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) {
+            const identity = valueSymbolIdentity(declaration.name);
+            const kinds = declaration.initializer
+              ? straightLineObjectAssignExpressionKinds(declaration.initializer, kindsBySymbol)
+              : 0;
+            if (!identity || kinds === undefined) return undefined;
+            kindsBySymbol.set(identity, kinds);
+          } else if (
+            !declaration.initializer ||
+            !assignStraightLineObjectPattern(
+              declaration.name,
+              declaration.initializer,
+              kindsBySymbol,
+            )
+          ) {
+            return undefined;
+          }
+        }
+        continue;
+      }
+      if (ts.isExpressionStatement(statement)) {
+        const expression = unwrapExpression(statement.expression);
+        if (
+          ts.isBinaryExpression(expression) &&
+          expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+          const target = unwrapExpression(expression.left);
+          if (ts.isIdentifier(target)) {
+            const identity = valueSymbolIdentity(target);
+            const kinds = straightLineObjectAssignExpressionKinds(expression.right, kindsBySymbol);
+            if (!identity || kinds === undefined) return undefined;
+            kindsBySymbol.set(identity, kinds);
+            continue;
+          }
+          if (
+            ts.isObjectLiteralExpression(target) &&
+            assignStraightLineObjectPattern(target, expression.right, kindsBySymbol)
+          ) {
+            continue;
+          }
+        }
+        if (ts.isStringLiteralLike(expression)) continue;
+        return undefined;
+      }
+      if (
+        !ts.isExportDeclaration(statement) &&
+        !ts.isImportDeclaration(statement) &&
+        !ts.isImportEqualsDeclaration(statement) &&
+        !ts.isFunctionDeclaration(statement) &&
+        !ts.isClassDeclaration(statement) &&
+        !ts.isInterfaceDeclaration(statement) &&
+        !ts.isTypeAliasDeclaration(statement) &&
+        !ts.isEmptyStatement(statement)
+      ) {
+        return undefined;
+      }
+    }
+
+    const identity = valueSymbolIdentity(callee);
+    return identity && kindsBySymbol.has(identity) ? kindsBySymbol.get(identity) : undefined;
+  }
+
   function isObjectAssignCall(callExpression) {
-    return (callableKinds(callExpression.expression) & CALLABLE_OBJECT_ASSIGN) !== 0;
+    const straightLineKinds = straightLineObjectAssignCallKinds(callExpression);
+    return (
+      ((straightLineKinds ?? callableKinds(callExpression.expression)) & CALLABLE_OBJECT_ASSIGN) !==
+      0
+    );
   }
 
   function containingTopLevelStatement(node) {
