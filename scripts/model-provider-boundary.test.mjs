@@ -183,6 +183,27 @@ test('tracks createRequire from a node:module import-equals namespace', () => {
   assert.match(result.stderr, /new-provider path: .*create-require-import-equals-namespace\.ts/);
 });
 
+test('tracks a concatenated computed createRequire member', () => {
+  const result = runFixture('computed-create-require-concat');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*computed-create-require-concat\.ts/);
+});
+
+test('tracks a template-computed createRequire member', () => {
+  const result = runFixture('computed-create-require-template');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*computed-create-require-template\.ts/);
+});
+
+test('fails closed on an unresolved node:module member', () => {
+  const result = runFixture('computed-create-require-unresolved');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unresolved-loader/);
+});
+
 test('rejects provider loads through assignment destructuring from module', () => {
   const result = runFixture('assignment-destructured-require');
 
@@ -234,6 +255,73 @@ test('tracks a loader selected by a comma expression', () => {
 
 test('allows a harmless non-loader higher-order function', () => {
   const result = runFixture('non-loader-higher-order');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('tracks a loader through a local function alias', () => {
+  const result = runFixture('recursive-loader-function-alias');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*recursive-loader-function-alias\.ts/);
+});
+
+test('tracks a loader through an object property', () => {
+  const result = runFixture('loader-object-property');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-object-property\.ts/);
+});
+
+test('tracks a loader through an array element', () => {
+  const result = runFixture('loader-array-element');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-element\.ts/);
+});
+
+test('tracks a createRequire factory through argument and return provenance', () => {
+  const result = runFixture('create-require-identity');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-identity\.ts/);
+});
+
+test('tracks a createRequire factory transformed through bind', () => {
+  const result = runFixture('create-require-bind');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-bind\.ts/);
+});
+
+test('tracks a createRequire factory selected by a comma expression', () => {
+  const result = runFixture('create-require-comma');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-comma\.ts/);
+});
+
+test('tracks factory and loader assignments through a property', () => {
+  const result = runFixture('callable-assignment-property');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*callable-assignment-property\.ts/);
+});
+
+test('allows harmless callback aliases, properties, and array elements', () => {
+  const result = runFixture('non-loader-callable-controls');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('allows recursive provenance rooted in a shadowed require', () => {
+  const result = runFixture('shadowed-require-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('allows computed createRequire access on an unrelated module', () => {
+  const result = runFixture('unrelated-module-create-require-control');
 
   assert.equal(result.status, 0, result.stderr);
 });

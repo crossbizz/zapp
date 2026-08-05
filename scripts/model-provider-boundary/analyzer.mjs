@@ -12,6 +12,8 @@ const TRUSTED_TYPESCRIPT_LOADER_PATHS = new Set([
   'apps/desktop/workers/code_explorer/code_explorer_worker.ts',
   'apps/desktop/workers/supabase_dependency_analysis/supabase_dependency_analysis_worker.ts',
 ]);
+const CALLABLE_LOADER = 1;
+const CALLABLE_CREATE_REQUIRE = 2;
 
 function increment(counts, key) {
   counts[key] = (counts[key] ?? 0) + 1;
@@ -337,10 +339,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const importEqualsRecords = [];
   const localLoaderRecords = [];
   const exportedOrigins = new Map(sourceFiles.map((sourceFile) => [sourceFile, new Map()]));
-  const loaderAliases = new Set();
-  const createRequireSymbols = new Set();
+  const callableKindsBySymbol = new Map();
+  const callableMembersBySymbol = new Map();
+  const callableReturnsByFunction = new Map();
+  const functionTargetsBySymbol = new Map();
+  const functionMembersBySymbol = new Map();
   const nodeModuleNamespaceSymbols = new Set();
-  const loaderReturningFunctions = new Set();
+  const unresolvedNodeModuleMembers = new Map();
   const loaderOrigins = new Map();
   const trustedLoaderCounts = new Map();
 
@@ -407,7 +412,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             (specifier.propertyName?.text ?? specifier.name.text) === 'createRequire'
           ) {
             const symbol = symbolAt(checker, specifier.name);
-            if (symbol) createRequireSymbols.add(symbol);
+            addCallableKinds(symbol, CALLABLE_CREATE_REQUIRE);
           }
         }
       }
@@ -545,10 +550,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
   }
 
-  function symbolIsLoader(symbol) {
-    return !!symbol && loaderAliases.has(symbol);
-  }
-
   function isUnshadowedIdentifier(identifier, expectedName) {
     if (identifier.text !== expectedName) return false;
     const symbol = symbolAt(checker, identifier);
@@ -571,69 +572,283 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     return (
       ts.isElementAccessExpression(current) &&
-      current.argumentExpression &&
-      ts.isStringLiteralLike(current.argumentExpression) &&
-      current.argumentExpression.text === 'require' &&
+      staticPropertyNames(current.argumentExpression)?.has('require') &&
       ts.isIdentifier(unwrapExpression(current.expression)) &&
       isUnshadowedIdentifier(unwrapExpression(current.expression), 'module')
     );
   }
 
-  function isLoaderCallee(expression) {
-    const current = unwrapExpression(expression);
-    if (ts.isIdentifier(current)) {
-      return (
-        isUnshadowedIdentifier(current, 'require') || symbolIsLoader(symbolAt(checker, current))
-      );
-    }
-    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
-      return isLoaderValue(current.right);
-    }
-    if (ts.isConditionalExpression(current)) {
-      return isLoaderValue(current.whenTrue) || isLoaderValue(current.whenFalse);
-    }
-    if (ts.isCallExpression(current)) {
-      return (
-        isLoaderBindCall(current) ||
-        calledFunctionLikes(current).some((functionLike) =>
-          loaderReturningFunctions.has(functionLike),
-        )
-      );
-    }
-    return isModuleRequire(current);
+  function callableKindsForSymbol(symbol) {
+    if (!symbol) return 0;
+    const target = aliasedSymbol(checker, symbol);
+    return (callableKindsBySymbol.get(symbol) ?? 0) | (callableKindsBySymbol.get(target) ?? 0);
   }
 
-  function isLoaderBindCall(callExpression) {
-    const callee = unwrapExpression(callExpression.expression);
-    if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'bind') {
-      return isLoaderValue(callee.expression);
+  function addCallableKinds(symbol, kinds) {
+    if (!symbol || kinds === 0) return false;
+    const existing = callableKindsBySymbol.get(symbol) ?? 0;
+    const combined = existing | kinds;
+    if (combined === existing) return false;
+    callableKindsBySymbol.set(symbol, combined);
+    return true;
+  }
+
+  function memberMapForSymbol(map, symbol) {
+    const target = aliasedSymbol(checker, symbol);
+    const maps = [map.get(symbol), map.get(target)].filter(Boolean);
+    const combined = new Map();
+    for (const members of maps) {
+      for (const [name, value] of members) combined.set(name, (combined.get(name) ?? 0) | value);
     }
-    return (
-      ts.isElementAccessExpression(callee) &&
-      callee.argumentExpression &&
-      ts.isStringLiteralLike(callee.argumentExpression) &&
-      callee.argumentExpression.text === 'bind' &&
-      isLoaderValue(callee.expression)
+    return combined;
+  }
+
+  function memberSetMapForSymbol(map, symbol) {
+    const target = aliasedSymbol(checker, symbol);
+    const maps = [map.get(symbol), map.get(target)].filter(Boolean);
+    const combined = new Map();
+    for (const members of maps) {
+      for (const [name, values] of members) {
+        const existing = combined.get(name) ?? new Set();
+        for (const value of values) existing.add(value);
+        combined.set(name, existing);
+      }
+    }
+    return combined;
+  }
+
+  function addMemberKinds(symbol, memberNames, kinds) {
+    if (!symbol || kinds === 0 || !memberNames || memberNames.size === 0) return false;
+    const members = callableMembersBySymbol.get(symbol) ?? new Map();
+    let changed = false;
+    for (const memberName of memberNames) {
+      const existing = members.get(memberName) ?? 0;
+      const combined = existing | kinds;
+      if (combined !== existing) {
+        members.set(memberName, combined);
+        changed = true;
+      }
+    }
+    callableMembersBySymbol.set(symbol, members);
+    return changed;
+  }
+
+  function addMemberFunctionTargets(symbol, memberNames, targets) {
+    if (!symbol || targets.size === 0 || !memberNames || memberNames.size === 0) return false;
+    const members = functionMembersBySymbol.get(symbol) ?? new Map();
+    let changed = false;
+    for (const memberName of memberNames) {
+      const existing = members.get(memberName) ?? new Set();
+      const size = existing.size;
+      for (const target of targets) existing.add(target);
+      members.set(memberName, existing);
+      changed = existing.size !== size || changed;
+    }
+    functionMembersBySymbol.set(symbol, members);
+    return changed;
+  }
+
+  function symbolForValue(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) return symbolAt(checker, current);
+    if (ts.isPropertyAccessExpression(current)) return symbolAt(checker, current.name);
+    if (ts.isElementAccessExpression(current)) {
+      return symbolAt(checker, current) ?? symbolAt(checker, current.argumentExpression);
+    }
+    return undefined;
+  }
+
+  function staticPropertyNames(expression) {
+    if (!expression) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isNumericLiteral(current)) return new Set([current.text]);
+    return staticTargets(current, new Set(), false);
+  }
+
+  function accessMemberNames(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isPropertyAccessExpression(current)) return new Set([current.name.text]);
+    if (ts.isElementAccessExpression(current))
+      return staticPropertyNames(current.argumentExpression);
+    return undefined;
+  }
+
+  function memberKindsForOwner(owner, memberNames) {
+    const current = unwrapExpression(owner);
+    if (ts.isConditionalExpression(current)) {
+      return (
+        memberKindsForOwner(current.whenTrue, memberNames) |
+        memberKindsForOwner(current.whenFalse, memberNames)
+      );
+    }
+    const members = memberMapForSymbol(callableMembersBySymbol, symbolForValue(current));
+    let kinds = members.get('*') ?? 0;
+    if (memberNames) {
+      for (const memberName of memberNames) kinds |= members.get(memberName) ?? 0;
+    } else {
+      for (const value of members.values()) kinds |= value;
+    }
+    return kinds;
+  }
+
+  function functionTargetsForSymbol(symbol) {
+    if (!symbol) return new Set();
+    const target = aliasedSymbol(checker, symbol);
+    return union(
+      functionTargetsBySymbol.get(symbol) ?? new Set(),
+      functionTargetsBySymbol.get(target) ?? new Set(),
     );
   }
 
-  function isCreateRequireCallee(expression) {
-    const current = unwrapExpression(expression);
-    if (ts.isIdentifier(current)) {
-      return createRequireSymbols.has(symbolAt(checker, current));
-    }
-    if (ts.isPropertyAccessExpression(current) && current.name.text === 'createRequire') {
-      return isNodeModuleNamespaceValue(current.expression);
+  function addFunctionTargets(symbol, targets) {
+    if (!symbol || targets.size === 0) return false;
+    const existing = functionTargetsBySymbol.get(symbol) ?? new Set();
+    const size = existing.size;
+    for (const target of targets) existing.add(target);
+    functionTargetsBySymbol.set(symbol, existing);
+    return existing.size !== size;
+  }
+
+  function functionLikesFromDeclaration(declaration) {
+    if (ts.isFunctionLike(declaration) && declaration.body) return [declaration];
+    if (
+      (ts.isVariableDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) &&
+      declaration.initializer &&
+      (ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer))
+    ) {
+      return [declaration.initializer];
     }
     if (
-      ts.isElementAccessExpression(current) &&
-      current.argumentExpression &&
-      ts.isStringLiteralLike(current.argumentExpression) &&
-      current.argumentExpression.text === 'createRequire'
+      ts.isPropertyAssignment(declaration) &&
+      (ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer))
     ) {
-      return isNodeModuleNamespaceValue(current.expression);
+      return [declaration.initializer];
     }
-    return false;
+    return [];
+  }
+
+  function functionTargetsForExpression(expression, seenSymbols = new Set()) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const symbol = symbolAt(checker, current);
+      if (!symbol || seenSymbols.has(symbol)) return new Set();
+      const targets = functionTargetsForSymbol(symbol);
+      for (const declaration of symbol.declarations ?? []) {
+        for (const functionLike of functionLikesFromDeclaration(declaration))
+          targets.add(functionLike);
+        if (
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer &&
+          !ts.isArrowFunction(declaration.initializer) &&
+          !ts.isFunctionExpression(declaration.initializer)
+        ) {
+          for (const functionLike of functionTargetsForExpression(
+            declaration.initializer,
+            new Set([...seenSymbols, symbol]),
+          )) {
+            targets.add(functionLike);
+          }
+        }
+      }
+      return targets;
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const targets = functionTargetsForSymbol(symbolForValue(current));
+      const memberNames = accessMemberNames(current);
+      const memberTargets = memberSetMapForSymbol(
+        functionMembersBySymbol,
+        symbolForValue(current.expression),
+      );
+      const selected = memberNames ?? new Set(memberTargets.keys());
+      for (const memberName of selected) {
+        for (const target of memberTargets.get(memberName) ?? []) targets.add(target);
+      }
+      for (const target of memberTargets.get('*') ?? []) targets.add(target);
+      return targets;
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return functionTargetsForExpression(current.right, seenSymbols);
+    }
+    if (ts.isConditionalExpression(current)) {
+      return union(
+        functionTargetsForExpression(current.whenTrue, seenSymbols),
+        functionTargetsForExpression(current.whenFalse, seenSymbols),
+      );
+    }
+    if (ts.isCallExpression(current) && isBindCall(current)) {
+      return functionTargetsForExpression(bindOwner(current), seenSymbols);
+    }
+    return new Set();
+  }
+
+  function calledFunctionLikes(callExpression) {
+    return [...functionTargetsForExpression(callExpression.expression)];
+  }
+
+  function bindOwner(callExpression) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'bind') {
+      return callee.expression;
+    }
+    if (
+      ts.isElementAccessExpression(callee) &&
+      staticPropertyNames(callee.argumentExpression)?.has('bind')
+    ) {
+      return callee.expression;
+    }
+    return undefined;
+  }
+
+  function isBindCall(callExpression) {
+    return !!bindOwner(callExpression);
+  }
+
+  function callableKinds(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return (
+        (isUnshadowedIdentifier(current, 'require') ? CALLABLE_LOADER : 0) |
+        callableKindsForSymbol(symbolAt(checker, current))
+      );
+    }
+    if (isModuleRequire(current)) return CALLABLE_LOADER;
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const memberNames = accessMemberNames(current);
+      let kinds =
+        callableKindsForSymbol(symbolForValue(current)) |
+        memberKindsForOwner(current.expression, memberNames);
+      if (isNodeModuleNamespaceValue(current.expression)) {
+        if (!memberNames) {
+          unresolvedNodeModuleMembers.set(current, current.getSourceFile());
+        } else if (memberNames.has('createRequire')) {
+          kinds |= CALLABLE_CREATE_REQUIRE;
+        }
+      }
+      return kinds;
+    }
+    if (ts.isCallExpression(current)) {
+      if (isBindCall(current)) return callableKinds(bindOwner(current));
+      const calleeKinds = callableKinds(current.expression);
+      let kinds = calleeKinds & CALLABLE_CREATE_REQUIRE ? CALLABLE_LOADER : 0;
+      for (const functionLike of calledFunctionLikes(current)) {
+        kinds |= callableReturnsByFunction.get(functionLike) ?? 0;
+      }
+      return kinds;
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return callableKinds(current.right);
+    }
+    if (ts.isConditionalExpression(current)) {
+      return callableKinds(current.whenTrue) | callableKinds(current.whenFalse);
+    }
+    if (ts.isAwaitExpression(current)) return callableKinds(current.expression);
+    return 0;
+  }
+
+  function isLoaderCallee(expression) {
+    return (callableKinds(expression) & CALLABLE_LOADER) !== 0;
   }
 
   function isNodeModuleLoaderCall(expression) {
@@ -663,106 +878,50 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return isNodeModuleLoaderCall(current);
   }
 
-  function isLoaderValue(expression) {
-    const current = unwrapExpression(expression);
-    if (isLoaderCallee(current)) return true;
-    if (ts.isCallExpression(current)) return isCreateRequireCallee(current.expression);
-    return false;
-  }
-
-  function functionLikesFromDeclaration(declaration) {
-    if (ts.isFunctionLike(declaration) && declaration.body) return [declaration];
-    if (
-      (ts.isVariableDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) &&
-      declaration.initializer &&
-      (ts.isArrowFunction(declaration.initializer) ||
-        ts.isFunctionExpression(declaration.initializer))
-    ) {
-      return [declaration.initializer];
-    }
-    if (
-      ts.isPropertyAssignment(declaration) &&
-      (ts.isArrowFunction(declaration.initializer) ||
-        ts.isFunctionExpression(declaration.initializer))
-    ) {
-      return [declaration.initializer];
-    }
-    return [];
-  }
-
-  function calledFunctionLikes(callExpression) {
-    const callee = unwrapExpression(callExpression.expression);
-    let location;
-    if (ts.isIdentifier(callee)) {
-      location = callee;
-    } else if (ts.isPropertyAccessExpression(callee)) {
-      location = callee.name;
-    } else if (
-      ts.isElementAccessExpression(callee) &&
-      callee.argumentExpression &&
-      ts.isStringLiteralLike(callee.argumentExpression)
-    ) {
-      location = callee.argumentExpression;
-    }
-    const symbol = location ? symbolAt(checker, location) : undefined;
-    const target = aliasedSymbol(checker, symbol) ?? symbol;
-    return [
-      ...new Set(
-        (target?.declarations ?? [])
-          .filter((declaration) => entryBySourceFile.has(declaration.getSourceFile()))
-          .flatMap(functionLikesFromDeclaration),
-      ),
-    ];
-  }
-
-  function functionReturnsLoader(functionLike) {
+  function functionReturnKinds(functionLike) {
     if (ts.isArrowFunction(functionLike) && !ts.isBlock(functionLike.body)) {
-      return isLoaderValue(functionLike.body);
+      return callableKinds(functionLike.body);
     }
-    if (!functionLike.body || !ts.isBlock(functionLike.body)) return false;
-    let returnsLoader = false;
+    if (!functionLike.body || !ts.isBlock(functionLike.body)) return 0;
+    let kinds = 0;
     function visit(node) {
-      if (returnsLoader || (node !== functionLike && ts.isFunctionLike(node))) return;
-      if (ts.isReturnStatement(node) && node.expression && isLoaderValue(node.expression)) {
-        returnsLoader = true;
+      if (node !== functionLike && ts.isFunctionLike(node)) return;
+      if (ts.isReturnStatement(node) && node.expression) {
+        kinds |= callableKinds(node.expression);
         return;
       }
       ts.forEachChild(node, visit);
     }
     visit(functionLike.body);
-    return returnsLoader;
+    return kinds;
   }
 
-  function propagateLoaderArguments(callExpression) {
+  function addFunctionReturnKinds(functionLike, kinds) {
+    if (kinds === 0) return false;
+    const existing = callableReturnsByFunction.get(functionLike) ?? 0;
+    const combined = existing | kinds;
+    if (combined === existing) return false;
+    callableReturnsByFunction.set(functionLike, combined);
+    return true;
+  }
+
+  function propagateCallableArguments(callExpression) {
     let changed = false;
     for (const functionLike of calledFunctionLikes(callExpression)) {
       callExpression.arguments.forEach((argument, index) => {
-        if (!isLoaderValue(argument)) return;
+        const kinds = callableKinds(argument);
+        if (kinds === 0) return;
         const parameter =
           functionLike.parameters[index] ??
           (functionLike.parameters.at(-1)?.dotDotDotToken
             ? functionLike.parameters.at(-1)
             : undefined);
         if (parameter && ts.isIdentifier(parameter.name)) {
-          changed = addLoaderIdentifier(parameter.name) || changed;
+          changed = addCallableKinds(symbolAt(checker, parameter.name), kinds) || changed;
         }
       });
     }
     return changed;
-  }
-
-  function addLoaderIdentifier(identifier) {
-    const symbol = symbolAt(checker, identifier);
-    if (!symbol || loaderAliases.has(symbol)) return false;
-    loaderAliases.add(symbol);
-    return true;
-  }
-
-  function addCreateRequireIdentifier(identifier) {
-    const symbol = symbolAt(checker, identifier);
-    if (!symbol || createRequireSymbols.has(symbol)) return false;
-    createRequireSymbols.add(symbol);
-    return true;
   }
 
   function addNodeModuleNamespaceIdentifier(identifier) {
@@ -784,19 +943,25 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (ts.isBindingElement(property)) {
         const propertyName = property.propertyName?.getText() ?? property.name.getText();
         if (propertyName === 'createRequire' && ts.isIdentifier(property.name)) {
-          changed = addCreateRequireIdentifier(property.name) || changed;
+          changed =
+            addCallableKinds(symbolAt(checker, property.name), CALLABLE_CREATE_REQUIRE) || changed;
         }
       } else if (
         ts.isShorthandPropertyAssignment(property) &&
         property.name.text === 'createRequire'
       ) {
-        changed = addCreateRequireIdentifier(property.name) || changed;
+        changed =
+          addCallableKinds(symbolAt(checker, property.name), CALLABLE_CREATE_REQUIRE) || changed;
       } else if (
         ts.isPropertyAssignment(property) &&
         propertyNameText(property.name) === 'createRequire' &&
         ts.isIdentifier(unwrapExpression(property.initializer))
       ) {
-        changed = addCreateRequireIdentifier(unwrapExpression(property.initializer)) || changed;
+        changed =
+          addCallableKinds(
+            symbolAt(checker, unwrapExpression(property.initializer)),
+            CALLABLE_CREATE_REQUIRE,
+          ) || changed;
       }
     }
     return changed;
@@ -809,7 +974,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       for (const element of current.elements) {
         const propertyName = element.propertyName?.getText() ?? element.name.getText();
         if (propertyName === 'require' && ts.isIdentifier(element.name)) {
-          changed = addLoaderIdentifier(element.name) || changed;
+          changed = addCallableKinds(symbolAt(checker, element.name), CALLABLE_LOADER) || changed;
         }
       }
       return changed;
@@ -818,21 +983,110 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     let changed = false;
     for (const property of current.properties) {
       if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'require') {
-        changed = addLoaderIdentifier(property.name) || changed;
+        changed = addCallableKinds(symbolAt(checker, property.name), CALLABLE_LOADER) || changed;
       } else if (
         ts.isPropertyAssignment(property) &&
         propertyNameText(property.name) === 'require' &&
         ts.isIdentifier(unwrapExpression(property.initializer))
       ) {
-        changed = addLoaderIdentifier(unwrapExpression(property.initializer)) || changed;
+        changed =
+          addCallableKinds(
+            symbolAt(checker, unwrapExpression(property.initializer)),
+            CALLABLE_LOADER,
+          ) || changed;
       }
     }
     return changed;
   }
 
-  let loaderChanged = true;
-  while (loaderChanged) {
-    loaderChanged = false;
+  function declarationMemberNames(name) {
+    if (ts.isComputedPropertyName(name)) return staticPropertyNames(name.expression);
+    return new Set([propertyNameText(name)]);
+  }
+
+  function copyContainerProvenance(targetSymbol, sourceSymbol) {
+    if (!targetSymbol || !sourceSymbol) return false;
+    let changed = false;
+    for (const [memberName, kinds] of memberMapForSymbol(callableMembersBySymbol, sourceSymbol)) {
+      changed = addMemberKinds(targetSymbol, new Set([memberName]), kinds) || changed;
+    }
+    for (const [memberName, targets] of memberSetMapForSymbol(
+      functionMembersBySymbol,
+      sourceSymbol,
+    )) {
+      changed = addMemberFunctionTargets(targetSymbol, new Set([memberName]), targets) || changed;
+    }
+    return changed;
+  }
+
+  function addContainerProvenance(targetSymbol, expression) {
+    if (!targetSymbol) return false;
+    const current = unwrapExpression(expression);
+    let changed = false;
+    if (ts.isObjectLiteralExpression(current)) {
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          changed =
+            copyContainerProvenance(targetSymbol, symbolForValue(property.expression)) || changed;
+          continue;
+        }
+        const memberNames = declarationMemberNames(property.name);
+        const valueExpression = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : ts.isShorthandPropertyAssignment(property)
+            ? property.name
+            : property;
+        changed =
+          addMemberKinds(targetSymbol, memberNames, callableKinds(valueExpression)) || changed;
+        changed =
+          addMemberFunctionTargets(
+            targetSymbol,
+            memberNames,
+            functionTargetsForExpression(valueExpression),
+          ) || changed;
+      }
+    } else if (ts.isArrayLiteralExpression(current)) {
+      current.elements.forEach((element, index) => {
+        if (ts.isOmittedExpression(element)) return;
+        const memberNames = new Set([String(index)]);
+        changed = addMemberKinds(targetSymbol, memberNames, callableKinds(element)) || changed;
+        changed =
+          addMemberFunctionTargets(
+            targetSymbol,
+            memberNames,
+            functionTargetsForExpression(element),
+          ) || changed;
+      });
+    } else {
+      changed = copyContainerProvenance(targetSymbol, symbolForValue(current)) || changed;
+    }
+    return changed;
+  }
+
+  function addAssignmentCallableProvenance(target, kinds, functionTargets) {
+    const current = unwrapExpression(target);
+    if (ts.isIdentifier(current)) {
+      return (
+        addCallableKinds(symbolAt(checker, current), kinds) |
+        addFunctionTargets(symbolAt(checker, current), functionTargets)
+      );
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const memberNames = accessMemberNames(current) ?? new Set(['*']);
+      const ownerSymbol = symbolForValue(current.expression);
+      return (
+        addCallableKinds(symbolForValue(current), kinds) |
+        addFunctionTargets(symbolForValue(current), functionTargets) |
+        addMemberKinds(ownerSymbol, memberNames, kinds) |
+        addMemberFunctionTargets(ownerSymbol, memberNames, functionTargets)
+      );
+    }
+    return false;
+  }
+
+  let callableChanged = true;
+  while (callableChanged) {
+    callableChanged = false;
     visitSourceFiles(sourceFiles, (node) => {
       if (
         ts.isVariableDeclaration(node) &&
@@ -840,56 +1094,28 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         node.initializer &&
         isNodeModuleNamespaceValue(node.initializer)
       ) {
-        loaderChanged = addNodeModuleNamespaceIdentifier(node.name) || loaderChanged;
+        callableChanged = addNodeModuleNamespaceIdentifier(node.name) || callableChanged;
       } else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         ts.isIdentifier(unwrapExpression(node.left)) &&
         isNodeModuleNamespaceValue(node.right)
       ) {
-        loaderChanged =
-          addNodeModuleNamespaceIdentifier(unwrapExpression(node.left)) || loaderChanged;
-      } else if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer &&
-        isCreateRequireCallee(node.initializer)
-      ) {
-        loaderChanged = addCreateRequireIdentifier(node.name) || loaderChanged;
-      } else if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isIdentifier(unwrapExpression(node.left)) &&
-        isCreateRequireCallee(node.right)
-      ) {
-        loaderChanged = addCreateRequireIdentifier(unwrapExpression(node.left)) || loaderChanged;
+        callableChanged =
+          addNodeModuleNamespaceIdentifier(unwrapExpression(node.left)) || callableChanged;
       } else if (
         ts.isVariableDeclaration(node) &&
         ts.isObjectBindingPattern(node.name) &&
         node.initializer &&
         isNodeModuleNamespaceValue(node.initializer)
       ) {
-        loaderChanged = addCreateRequireDestructuredFactories(node.name) || loaderChanged;
+        callableChanged = addCreateRequireDestructuredFactories(node.name) || callableChanged;
       } else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         isNodeModuleNamespaceValue(node.right)
       ) {
-        loaderChanged = addCreateRequireDestructuredFactories(node.left) || loaderChanged;
-      } else if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer &&
-        isLoaderValue(node.initializer)
-      ) {
-        loaderChanged = addLoaderIdentifier(node.name) || loaderChanged;
-      } else if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isIdentifier(unwrapExpression(node.left)) &&
-        isLoaderValue(node.right)
-      ) {
-        loaderChanged = addLoaderIdentifier(unwrapExpression(node.left)) || loaderChanged;
+        callableChanged = addCreateRequireDestructuredFactories(node.left) || callableChanged;
       } else if (
         ts.isVariableDeclaration(node) &&
         ts.isObjectBindingPattern(node.name) &&
@@ -897,28 +1123,65 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         ts.isIdentifier(unwrapExpression(node.initializer)) &&
         isUnshadowedIdentifier(unwrapExpression(node.initializer), 'module')
       ) {
-        loaderChanged = addModuleDestructuredLoaders(node.name) || loaderChanged;
+        callableChanged = addModuleDestructuredLoaders(node.name) || callableChanged;
       } else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         ts.isIdentifier(unwrapExpression(node.right)) &&
         isUnshadowedIdentifier(unwrapExpression(node.right), 'module')
       ) {
-        loaderChanged = addModuleDestructuredLoaders(node.left) || loaderChanged;
+        callableChanged = addModuleDestructuredLoaders(node.left) || callableChanged;
+      }
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        callableChanged =
+          addFunctionTargets(symbolAt(checker, node.name), new Set([node])) || callableChanged;
+      } else if (ts.isMethodDeclaration(node) && node.name) {
+        callableChanged =
+          addFunctionTargets(symbolAt(checker, node.name), new Set([node])) || callableChanged;
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const symbol = symbolAt(checker, node.name);
+        callableChanged =
+          addCallableKinds(symbol, callableKinds(node.initializer)) || callableChanged;
+        callableChanged =
+          addFunctionTargets(symbol, functionTargetsForExpression(node.initializer)) ||
+          callableChanged;
+        callableChanged = addContainerProvenance(symbol, node.initializer) || callableChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const functionTargets = functionTargetsForExpression(node.right);
+        callableChanged =
+          addAssignmentCallableProvenance(node.left, callableKinds(node.right), functionTargets) ||
+          callableChanged;
+        if (ts.isIdentifier(unwrapExpression(node.left))) {
+          callableChanged =
+            addContainerProvenance(symbolAt(checker, unwrapExpression(node.left)), node.right) ||
+            callableChanged;
+        }
+      } else if (ts.isPropertyAssignment(node)) {
+        callableChanged =
+          addCallableKinds(symbolAt(checker, node.name), callableKinds(node.initializer)) ||
+          callableChanged;
+        callableChanged =
+          addFunctionTargets(
+            symbolAt(checker, node.name),
+            functionTargetsForExpression(node.initializer),
+          ) || callableChanged;
       }
       if (ts.isCallExpression(node)) {
-        loaderChanged = propagateLoaderArguments(node) || loaderChanged;
+        callableChanged = propagateCallableArguments(node) || callableChanged;
       }
-      if (
-        ts.isFunctionLike(node) &&
-        node.body &&
-        !loaderReturningFunctions.has(node) &&
-        functionReturnsLoader(node)
-      ) {
-        loaderReturningFunctions.add(node);
-        loaderChanged = true;
+      if (ts.isFunctionLike(node) && node.body) {
+        callableChanged =
+          addFunctionReturnKinds(node, functionReturnKinds(node)) || callableChanged;
       }
     });
+  }
+
+  for (const [node, sourceFile] of unresolvedNodeModuleMembers) {
+    addImport(sourceFile, `unresolved-loader:${lineAndColumn(sourceFile, node)}`);
   }
 
   function staticTargets(expression, seenSymbols = new Set(), allowTrustedLoaders = true) {
