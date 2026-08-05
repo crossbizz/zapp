@@ -556,6 +556,21 @@ test('round-6 allows harmless cyclic array mutations, spreads, and Object.assign
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('round-6 tracks push and unshift container identity through aliases and late assignment', () => {
+  const result = runFixture('loader-mutated-container-identity');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['alias-push', 'late-push', 'late-unshift']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('round-6 allows harmless aliases and late array assignment mutations', () => {
+  const result = runFixture('loader-mutated-container-identity-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks static class fields and assignments through aliases of this', () => {
   const result = runFixture('loader-class-aliases');
 

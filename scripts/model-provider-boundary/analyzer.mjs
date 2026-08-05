@@ -349,6 +349,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const functionTargetsBySymbol = new Map();
   const functionMembersBySymbol = new Map();
   const containerSymbols = new Set();
+  const arrayIdentitiesBySymbol = new Map();
   const memberReferencesBySymbol = new Map();
   const destructuringAssignmentsBySymbol = new Map();
   const nodeModuleNamespaceSymbols = new Set();
@@ -626,6 +627,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
     }
     return combined;
+  }
+
+  function arrayIdentitiesForSymbol(symbol) {
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    return arrayIdentitiesBySymbol.get(identity) ?? new Set();
+  }
+
+  function addArrayIdentities(symbol, identities) {
+    if (!symbol || identities.size === 0) return false;
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    const existing = arrayIdentitiesBySymbol.get(identity) ?? new Set();
+    const size = existing.size;
+    for (const container of identities) existing.add(container);
+    arrayIdentitiesBySymbol.set(identity, existing);
+    return existing.size !== size;
   }
 
   function addMemberKinds(symbol, memberNames, kinds) {
@@ -931,6 +947,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function storedCallableValue(symbol) {
     if (!symbol) return emptyCallableValue();
     const target = aliasedSymbol(checker, symbol);
+    const identity = target ?? symbol;
     const targets = functionTargetsForSymbol(symbol);
     const value = {
       functions: [...targets].map((functionLike) => ({
@@ -939,7 +956,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       })),
       kinds: callableKindsForSymbol(symbol),
       members: new Map(),
-      references: containerSymbols.has(target ?? symbol) ? new Set([target ?? symbol]) : new Set(),
+      references: containerSymbols.has(identity)
+        ? union(new Set([identity]), arrayIdentitiesForSymbol(identity))
+        : new Set(),
       strings: undefined,
     };
     const memberKinds = memberMapForSymbol(callableMembersBySymbol, symbol);
@@ -2444,7 +2463,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       const symbol = symbolAt(checker, current);
       if (!symbol) return new Set();
       const identity = aliasedSymbol(checker, symbol) ?? symbol;
-      return containerSymbols.has(identity) ? new Set([identity]) : new Set();
+      return containerSymbols.has(identity)
+        ? union(new Set([identity]), arrayIdentitiesForSymbol(identity))
+        : new Set();
     }
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       const references = new Set();
@@ -2490,6 +2511,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         containerSymbols.add(identity);
         changed = true;
       }
+      if (ts.isArrayLiteralExpression(current)) {
+        changed = addArrayIdentities(identity, new Set([current])) || changed;
+      }
     }
     const sourceSymbol = symbolForValue(current);
     if (
@@ -2501,6 +2525,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         containerSymbols.add(identity);
         changed = true;
       }
+      changed = addArrayIdentities(identity, arrayIdentitiesForSymbol(sourceSymbol)) || changed;
     }
     if (ts.isObjectLiteralExpression(current)) {
       for (const property of current.properties) {
@@ -2596,7 +2621,15 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function addArrayMutationProvenance(callExpression) {
     const mutation = arrayMutationForCall(callExpression);
-    if (!mutation || !callableValue(mutation.owner).arrayLike) return false;
+    if (
+      !mutation ||
+      (!callableValue(mutation.owner).arrayLike &&
+        ![...referenceSymbolsForExpression(mutation.owner)].some((reference) =>
+          ts.isArrayLiteralExpression(reference),
+        ))
+    ) {
+      return false;
+    }
     let changed = false;
     for (const target of mutationTargetSymbols(mutation.owner)) {
       for (const argument of callExpression.arguments) {
