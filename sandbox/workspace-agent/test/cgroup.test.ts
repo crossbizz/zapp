@@ -109,6 +109,80 @@ class BadJoinContainment implements Containment {
   }
 }
 
+class CleanupRecoveryExecutionContainment implements ExecutionContainment {
+  private resolveInitialWaited: () => void = () => undefined;
+  private resolveEmpty: () => void = () => undefined;
+  private resolveRemoved: () => void = () => undefined;
+  readonly initialWaited = new Promise<void>((resolve) => {
+    this.resolveInitialWaited = resolve;
+  });
+  readonly removed = new Promise<void>((resolve) => {
+    this.resolveRemoved = resolve;
+  });
+  killCalls = 0;
+  waitCalls = 0;
+  removeCalls = 0;
+
+  constructor(
+    readonly id: string,
+    readonly procsPath: string,
+    private readonly remainUnavailable: boolean,
+  ) {}
+
+  kill(): Promise<void> {
+    this.killCalls += 1;
+    return Promise.resolve();
+  }
+
+  async waitForEmpty(): Promise<void> {
+    this.waitCalls += 1;
+    if (this.waitCalls === 1) {
+      this.resolveInitialWaited();
+      throw new Error('initial authoritative empty wait failed');
+    }
+    if (this.remainUnavailable) {
+      throw new Error('authoritative empty wait remains unavailable');
+    }
+    await new Promise<void>((resolve) => {
+      this.resolveEmpty = resolve;
+    });
+  }
+
+  remove(): Promise<void> {
+    this.removeCalls += 1;
+    this.resolveRemoved();
+    return Promise.resolve();
+  }
+
+  markEmpty(): void {
+    this.resolveEmpty();
+  }
+}
+
+class CleanupRecoveryContainment implements Containment {
+  readonly executions: CleanupRecoveryExecutionContainment[] = [];
+
+  constructor(
+    private readonly root: string,
+    private readonly remainUnavailable: boolean,
+  ) {}
+
+  async create(): Promise<ExecutionContainment> {
+    const id = `cleanup-recovery-${String(this.executions.length + 1)}`;
+    const directory = join(this.root, id);
+    const procsPath = join(directory, 'cgroup.procs');
+    await mkdir(directory);
+    await writeFile(procsPath, '');
+    const execution = new CleanupRecoveryExecutionContainment(
+      id,
+      procsPath,
+      this.remainUnavailable,
+    );
+    this.executions.push(execution);
+    return execution;
+  }
+}
+
 describe('cgroup-v2 containment', () => {
   test('fails closed when the delegated cgroup v2 root is unavailable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-cgroup-unavailable-'));
@@ -288,6 +362,68 @@ describe('cgroup-v2 containment', () => {
       releaseOutput?.();
       containment.executions[0]?.markEmpty();
       await run?.catch(() => undefined);
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('kills and re-observes the authoritative empty signal before cleanup ownership ends', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-cleanup-recovery-'));
+    const containment = new CleanupRecoveryContainment(workspaceRoot, false);
+    const manager = new ExecManager(workspaceRoot, containment);
+
+    try {
+      await manager.run({
+        cmd: process.execPath,
+        args: ['-e', 'process.exit(0)'],
+        timeoutMs: 2_000,
+      });
+      const execution = containment.executions[0];
+      if (execution === undefined) {
+        throw new Error('Expected an execution containment');
+      }
+
+      await execution.initialWaited;
+      await waitFor(() => execution.killCalls === 1, 'containment kill after empty wait failure');
+      await waitFor(() => execution.waitCalls === 2, 'second authoritative empty wait');
+      expect(manager.activeContainmentCount()).toBe(1);
+      expect(execution.removeCalls).toBe(0);
+
+      execution.markEmpty();
+      await execution.removed;
+      await waitFor(() => manager.activeContainmentCount() === 0, 'cleanup ownership release');
+      expect(execution.removeCalls).toBe(1);
+    } finally {
+      containment.executions[0]?.markEmpty();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('retains cleanup ownership for shutdown recovery when the post-kill empty wait fails', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-cleanup-unavailable-'));
+    const containment = new CleanupRecoveryContainment(workspaceRoot, true);
+    const manager = new ExecManager(workspaceRoot, containment);
+
+    try {
+      await manager.run({
+        cmd: process.execPath,
+        args: ['-e', 'process.exit(0)'],
+        timeoutMs: 2_000,
+      });
+      const execution = containment.executions[0];
+      if (execution === undefined) {
+        throw new Error('Expected an execution containment');
+      }
+
+      await execution.initialWaited;
+      await waitFor(() => execution.killCalls === 1, 'containment kill after empty wait failure');
+      await waitFor(() => execution.waitCalls === 2, 'post-kill empty wait');
+      expect(execution.removeCalls).toBe(0);
+      expect(manager.activeContainmentCount()).toBe(1);
+
+      await manager.killAll();
+      expect(execution.killCalls).toBe(2);
+      expect(manager.activeContainmentCount()).toBe(1);
+    } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

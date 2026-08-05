@@ -1,5 +1,6 @@
 import { createConnection } from 'node:net';
 import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import process from 'node:process';
 import { z } from 'zod';
 
@@ -48,9 +49,10 @@ async function readCgroupUsage(): Promise<MetricsUsage | undefined> {
     return undefined;
   }
   try {
+    const cgroupRoot = resolve(process.env.ZAPP_CGROUP_ROOT ?? '/sys/fs/cgroup');
     const [cpuStat, memoryCurrent] = await Promise.all([
-      readFile('/sys/fs/cgroup/cpu.stat', 'utf8'),
-      readFile('/sys/fs/cgroup/memory.current', 'utf8'),
+      readFile(join(cgroupRoot, 'cpu.stat'), 'utf8'),
+      readFile(join(cgroupRoot, 'memory.current'), 'utf8'),
     ]);
     const cpuValues = new Map(
       cpuStat

@@ -407,13 +407,17 @@ export class ExecManager {
       void (async () => {
         try {
           await killPromise;
-          await containment.waitForEmpty();
+          try {
+            await containment.waitForEmpty();
+          } catch {
+            await containment.kill();
+            await containment.waitForEmpty();
+          }
           await containment.remove();
+          this.owned.delete(active);
           resolveDone();
         } catch (error) {
           rejectDone(error instanceof Error ? error : new Error('Containment cleanup failed'));
-        } finally {
-          this.owned.delete(active);
         }
       })();
     };
