@@ -12,15 +12,22 @@ const GitOperationSchema = z.enum([
   'branch',
   'restore',
 ]);
+const NoNulStringSchema = z
+  .string()
+  .refine((value) => !value.includes('\0'), 'NUL is not allowed');
+const NonEmptyNoNulStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.includes('\0'), 'NUL is not allowed');
 
 const StandardGitRequestSchema = z
-  .object({ operation: GitOperationSchema, args: z.array(z.string()).optional() })
+  .object({ operation: GitOperationSchema, args: z.array(NoNulStringSchema).optional() })
   .strict();
 const AddCommitGitRequestSchema = z
   .object({
     operation: z.literal('add_commit'),
-    paths: z.array(z.string()).min(1),
-    message: z.string().min(1),
+    paths: z.array(NoNulStringSchema).min(1),
+    message: NonEmptyNoNulStringSchema,
   })
   .strict();
 

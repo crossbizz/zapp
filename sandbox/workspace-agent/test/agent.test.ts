@@ -521,6 +521,147 @@ describe('workspace-agent RPC daemon', () => {
     expect(await readFile(streamedMarker, 'utf8')).toBe('x');
   });
 
+  test('coalesces thousands of tiny output chunks into bounded replay framing', async () => {
+    const marker = join(workspaceRoot, 'tiny-stream-replay-count');
+    const payload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(marker)},'x');let count=0;const write=()=>{if(count===10000)return;count+=1;process.stdout.write('x');setImmediate(write)};write();`,
+      ],
+      timeoutMs: 10_000,
+    };
+    const headers = authorization(token, 'tiny-stream-replay');
+
+    const first = await requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers,
+      payload,
+    });
+    const replayed = await requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers,
+      payload,
+    });
+    const stdoutRecords = parseNdjson(first.body).filter((record) => record.type === 'stdout');
+
+    expect(first.statusCode).toBe(200);
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.body).toBe(first.body);
+    expect(stdoutRecords.map((record) => record.data ?? '').join('')).toBe('x'.repeat(10_000));
+    expect(stdoutRecords.length).toBeLessThanOrEqual(4);
+    expect(Buffer.byteLength(first.body)).toBeLessThan(64 * 1_024);
+    expect(await readFile(marker, 'utf8')).toBe('x');
+  });
+
+  test('tombstones an oversized response without rerunning its side effect', async () => {
+    const marker = join(workspaceRoot, 'oversized-replay-count');
+    const payload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').appendFileSync(${JSON.stringify(marker)},'x');process.stdout.write('x'.repeat(80*1024));`,
+      ],
+      timeoutMs: 5_000,
+    };
+    const headers = authorization(token, 'oversized-replay');
+
+    const first = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers,
+      payload,
+    });
+    const replayed = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers,
+      payload,
+    });
+    const conflict = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers,
+      payload: { ...payload, args: ['-e', 'process.stdout.write("different")'] },
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json<{ stdout: string }>().stdout).toBe('x'.repeat(80 * 1_024));
+    expect(replayed.statusCode).toBe(409);
+    expect(replayed.json()).toEqual({ error: 'idempotency_response_not_retained' });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({ error: 'idempotency_conflict' });
+    expect(await readFile(marker, 'utf8')).toBe('x');
+  });
+
+  test('bounds total replay bytes across 256 entries without rerunning evicted responses', async () => {
+    const firstMarker = join(workspaceRoot, 'total-replay-first');
+    const lastMarker = join(workspaceRoot, 'total-replay-last');
+    const body = 'x'.repeat(1_024);
+    const command = '[ -z "$MARKER" ] || printf x >> "$MARKER"; printf %s "$BODY"';
+    let firstPayload: Record<string, unknown> | undefined;
+    let firstHeaders: ReturnType<typeof authorization> | undefined;
+    let lastPayload: Record<string, unknown> | undefined;
+    let lastHeaders: ReturnType<typeof authorization> | undefined;
+    let lastResponseBody = '';
+
+    for (let index = 0; index < 256; index += 1) {
+      const marker = index === 0 ? firstMarker : index === 255 ? lastMarker : '';
+      const payload = {
+        cmd: '/bin/sh',
+        args: ['-c', command],
+        env: { BODY: body, MARKER: marker },
+        timeoutMs: 2_000,
+      };
+      const headers = authorization(token, `total-replay-${String(index)}`);
+      const response = await requireApp().inject({
+        method: 'POST',
+        url: '/exec',
+        headers,
+        payload,
+      });
+      expect(response.statusCode, String(index)).toBe(200);
+      if (index === 0) {
+        firstPayload = payload;
+        firstHeaders = headers;
+      } else if (index === 255) {
+        lastPayload = payload;
+        lastHeaders = headers;
+        lastResponseBody = response.body;
+      }
+    }
+    if (
+      firstPayload === undefined ||
+      firstHeaders === undefined ||
+      lastPayload === undefined ||
+      lastHeaders === undefined
+    ) {
+      throw new Error('Replay pressure fixtures were not initialized');
+    }
+
+    const replayedLast = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: lastHeaders,
+      payload: lastPayload,
+    });
+    const tombstonedFirst = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: firstHeaders,
+      payload: firstPayload,
+    });
+
+    expect(replayedLast.statusCode).toBe(200);
+    expect(replayedLast.body).toBe(lastResponseBody);
+    expect(await readFile(lastMarker, 'utf8')).toBe('x');
+    expect(tombstonedFirst.statusCode).toBe(409);
+    expect(tombstonedFirst.json()).toEqual({ error: 'idempotency_response_not_retained' });
+    expect(await readFile(firstMarker, 'utf8')).toBe('x');
+  });
+
   test('coalesces concurrent duplicate exec requests into one execution', async () => {
     const marker = join(workspaceRoot, 'concurrent-idempotency-count');
     const request = {
@@ -1247,6 +1388,114 @@ describe('workspace-agent RPC daemon', () => {
     expect(unsafeFlag.statusCode).toBe(400);
     expect(unsafePath.statusCode).toBe(400);
     expect(unknownKillBody.statusCode).toBe(400);
+  });
+
+  test('rejects NUL in every OS and path boundary with 400', async () => {
+    const requests = [
+      {
+        method: 'GET' as const,
+        url: '/files?path=%00',
+        headers: authorization(),
+      },
+      {
+        method: 'PUT' as const,
+        url: '/files?path=%00',
+        headers: { ...authorization(), 'content-type': 'application/octet-stream' },
+        payload: Buffer.from('blocked'),
+      },
+      {
+        method: 'GET' as const,
+        url: '/files/list?path=%00',
+        headers: authorization(),
+      },
+      {
+        method: 'GET' as const,
+        url: '/files/list?path=.&glob=%00',
+        headers: authorization(),
+      },
+      ...[
+        { cmd: 'bad\0command', args: [], timeoutMs: 1_000 },
+        { cmd: process.execPath, args: ['bad\0argument'], timeoutMs: 1_000 },
+        { cmd: process.execPath, args: [], cwd: 'bad\0cwd', timeoutMs: 1_000 },
+      ].map((payload) => ({
+        method: 'POST' as const,
+        url: '/exec',
+        headers: authorization(),
+        payload,
+      })),
+      {
+        method: 'POST' as const,
+        url: '/git',
+        headers: authorization(),
+        payload: { operation: 'status', args: ['bad\0argument'] },
+      },
+      {
+        method: 'POST' as const,
+        url: '/git',
+        headers: authorization(),
+        payload: { operation: 'add_commit', paths: ['bad\0path'], message: 'message' },
+      },
+      {
+        method: 'POST' as const,
+        url: '/git',
+        headers: authorization(),
+        payload: { operation: 'add_commit', paths: ['path'], message: 'bad\0message' },
+      },
+    ];
+
+    for (const request of requests) {
+      const response = await requireApp().inject(request);
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(400);
+      expect(response.json(), `${request.method} ${request.url}`).toEqual({
+        error: 'bad_request',
+      });
+    }
+  });
+
+  test('preserves legitimate Unicode across exec, file, and git boundaries', async () => {
+    const path = '雪-😀.txt';
+    const message = '提交 雪 😀';
+    const written = await requireApp().inject({
+      method: 'PUT',
+      url: `/files?path=${encodeURIComponent(path)}`,
+      headers: { ...authorization(), 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('unicode'),
+    });
+    const executed = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: authorization(),
+      payload: {
+        cmd: process.execPath,
+        args: ['-e', 'process.stdout.write(process.argv[1])', message],
+        cwd: '.',
+        timeoutMs: 2_000,
+      },
+    });
+    await execFileAsync('git', ['init'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    const committed = await requireApp().inject({
+      method: 'POST',
+      url: '/git',
+      headers: authorization(),
+      payload: { operation: 'add_commit', paths: [path], message },
+    });
+    const { stdout: committedMessage } = await execFileAsync(
+      'git',
+      ['log', '-1', '--pretty=%s'],
+      { cwd: workspaceRoot },
+    );
+
+    expect(written.statusCode).toBe(204);
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json<{ stdout: string }>().stdout).toBe(message);
+    expect(committed.json()).toMatchObject({ exitCode: 0 });
+    expect(committedMessage.trim()).toBe(message);
   });
 
   test.each(['/files?path=missing', '/files/list?path=.', '/healthz', '/metrics'])(

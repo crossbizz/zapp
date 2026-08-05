@@ -3,11 +3,16 @@ import { basename, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { resolveInRoot } from '@zapp/workspace-runtime';
 
-export const FileQuerySchema = z.object({ path: z.string().min(1) }).strict();
+const NonEmptyNoNulStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.includes('\0'), 'NUL is not allowed');
+
+export const FileQuerySchema = z.object({ path: NonEmptyNoNulStringSchema }).strict();
 export const ListQuerySchema = z
   .object({
-    path: z.string().min(1).default('.'),
-    glob: z.string().min(1).optional(),
+    path: NonEmptyNoNulStringSchema.default('.'),
+    glob: NonEmptyNoNulStringSchema.optional(),
     maxDepth: z.coerce.number().int().min(0).max(100).optional(),
   })
   .strict();

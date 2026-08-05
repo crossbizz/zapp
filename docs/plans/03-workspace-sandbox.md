@@ -212,7 +212,8 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
-- 2026-08-04 WS-3 done — authenticated workspace-agent RPC daemon added with strict schemas, path and git guards, real PTY execution, bounded streaming, and child reaping.
+- 2026-08-04 WS-3 implementation committed / review pending — authenticated workspace-agent RPC daemon added with strict schemas, path and git guards, real PTY execution, bounded streaming, and child reaping.
 - 2026-08-04 WS-3 BLOCKED — round-1 TOCTOU containment requires descriptor-relative native filesystem/exec support; ADR-0006 is proposed but not accepted, so the safe review fixes are committed separately while WS-3 remains unchecked.
 - 2026-08-04 WS-3 BLOCKED — round-2 safe review fixes are verified; WS-3 remains unchecked and blocked only on the unapproved ADR-0006 descriptor-relative TOCTOU helper.
 - 2026-08-04 WS-3 BLOCKED — round-3 safe fixes are implemented and verified with review pending; WS-3 remains unchecked and blocked only on the unapproved ADR-0006 descriptor-relative TOCTOU helper.
+- 2026-08-04 WS-3 BLOCKED — round-4 replay-memory and NUL-boundary safe fixes are implemented with review pending; in addition to unapproved ADR-0006, full detached-descendant containment and safe ownership lifetime require a delegated writable cgroup not guaranteed by the locked WS-2/Modal interface, so no PID/PGID polling heuristic was shipped and WS-3 remains unchecked.

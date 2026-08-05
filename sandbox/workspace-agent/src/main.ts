@@ -72,6 +72,8 @@ const IDEMPOTENCY_REQUIRED_ROUTES = new Set([
   'POST /git',
 ]);
 const MAX_IDEMPOTENCY_ENTRIES = 256;
+const MAX_IDEMPOTENCY_ENTRY_BYTES = 64 * 1_024;
+const MAX_IDEMPOTENCY_TOTAL_BYTES = 256 * 1_024;
 
 interface CachedResponse {
   readonly statusCode: number;
@@ -81,11 +83,34 @@ interface CachedResponse {
 
 interface IdempotencyEntry {
   readonly fingerprint: string;
-  readonly completion: Promise<CachedResponse>;
-  readonly resolve: (response: CachedResponse) => void;
-  readonly reject: (error: Error) => void;
+  completion?: Promise<CachedResponse>;
+  resolve?: (response: CachedResponse) => void;
+  reject?: (error: Error) => void;
+  cachedResponse?: CachedResponse;
   complete: boolean;
   retained: boolean;
+  responseBytes: number;
+}
+
+const RESPONSE_NOT_RETAINED: CachedResponse = {
+  statusCode: 409,
+  contentType: 'application/json; charset=utf-8',
+  body: JSON.stringify({ error: 'idempotency_response_not_retained' }),
+};
+
+function cachedResponseBytes(response: CachedResponse): number {
+  const bodyBytes =
+    typeof response.body === 'string'
+      ? Buffer.byteLength(response.body)
+      : (response.body?.byteLength ?? 0);
+  return 8 + Buffer.byteLength(response.contentType ?? '') + bodyBytes;
+}
+
+function copyCachedResponse(response: CachedResponse): CachedResponse {
+  return {
+    ...response,
+    ...(Buffer.isBuffer(response.body) ? { body: Buffer.from(response.body) } : {}),
+  };
 }
 
 type IdempotencyStart =
@@ -101,6 +126,43 @@ type IdempotencyStart =
  */
 class IdempotencyStore {
   private readonly entries = new Map<string, IdempotencyEntry>();
+  private totalResponseBytes = 0;
+
+  private deleteEntry(key: string): void {
+    const entry = this.entries.get(key);
+    if (entry === undefined) {
+      return;
+    }
+    this.totalResponseBytes -= entry.responseBytes;
+    this.entries.delete(key);
+  }
+
+  private evictCompleted(excluded?: IdempotencyEntry): boolean {
+    const completed = [...this.entries].find(
+      ([, entry]) => entry !== excluded && entry.complete && !entry.retained,
+    );
+    if (completed === undefined) {
+      return false;
+    }
+    this.deleteEntry(completed[0]);
+    return true;
+  }
+
+  private tombstoneCompleted(excluded: IdempotencyEntry): boolean {
+    const completed = [...this.entries.values()].find(
+      (entry) => entry !== excluded && entry.complete && !entry.retained,
+    );
+    if (completed === undefined) {
+      return false;
+    }
+    const tombstone = copyCachedResponse(RESPONSE_NOT_RETAINED);
+    const responseBytes = cachedResponseBytes(tombstone);
+    this.totalResponseBytes += responseBytes - completed.responseBytes;
+    completed.cachedResponse = tombstone;
+    completed.responseBytes = responseBytes;
+    completed.retained = true;
+    return true;
+  }
 
   start(key: string, fingerprint: string): IdempotencyStart {
     const existing = this.entries.get(key);
@@ -111,18 +173,24 @@ class IdempotencyStore {
       if (existing.complete) {
         this.entries.delete(key);
         this.entries.set(key, existing);
+        if (existing.cachedResponse === undefined) {
+          throw new Error('Completed idempotency entry has no response');
+        }
+        return {
+          kind: 'replay',
+          completion: Promise.resolve(copyCachedResponse(existing.cachedResponse)),
+        };
+      }
+      if (existing.completion === undefined) {
+        throw new Error('Pending idempotency entry has no completion');
       }
       return { kind: 'replay', completion: existing.completion };
     }
 
     if (this.entries.size >= MAX_IDEMPOTENCY_ENTRIES) {
-      const completed = [...this.entries].find(
-        ([, entry]) => entry.complete && !entry.retained,
-      );
-      if (completed === undefined) {
+      if (!this.evictCompleted()) {
         return { kind: 'full' };
       }
-      this.entries.delete(completed[0]);
     }
 
     let resolveCompletion: (response: CachedResponse) => void = () => undefined;
@@ -139,6 +207,7 @@ class IdempotencyStore {
       reject: rejectCompletion,
       complete: false,
       retained: false,
+      responseBytes: 0,
     };
     this.entries.set(key, entry);
     return { kind: 'owner', entry };
@@ -148,20 +217,36 @@ class IdempotencyStore {
     if (entry.complete) {
       return;
     }
+    const responseFits = cachedResponseBytes(response) <= MAX_IDEMPOTENCY_ENTRY_BYTES;
+    let cached = responseFits ? response : RESPONSE_NOT_RETAINED;
+    let mustRetain = retained || !responseFits;
+    let responseBytes = cachedResponseBytes(cached);
+    while (this.totalResponseBytes + responseBytes > MAX_IDEMPOTENCY_TOTAL_BYTES) {
+      if (this.tombstoneCompleted(entry)) {
+        continue;
+      }
+      cached = RESPONSE_NOT_RETAINED;
+      mustRetain = true;
+      responseBytes = cachedResponseBytes(cached);
+      break;
+    }
     entry.complete = true;
-    entry.retained = retained;
-    entry.resolve({
-      ...response,
-      ...(Buffer.isBuffer(response.body) ? { body: Buffer.from(response.body) } : {}),
-    });
+    entry.retained = mustRetain;
+    entry.responseBytes = responseBytes;
+    entry.cachedResponse = copyCachedResponse(cached);
+    this.totalResponseBytes += responseBytes;
+    entry.resolve?.(copyCachedResponse(cached));
+    delete entry.completion;
+    delete entry.resolve;
+    delete entry.reject;
   }
 
   fail(key: string, entry: IdempotencyEntry, error: unknown): void {
     if (this.entries.get(key) !== entry) {
       return;
     }
-    this.entries.delete(key);
-    entry.reject(error instanceof Error ? error : new Error('Idempotent operation failed'));
+    this.deleteEntry(key);
+    entry.reject?.(error instanceof Error ? error : new Error('Idempotent operation failed'));
   }
 }
 

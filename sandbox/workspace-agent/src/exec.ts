@@ -23,6 +23,11 @@ const RESERVED_AGENT_ENV_NAMES = new Set([
   'ZAPP_WORKSPACE_ROOT',
   'ZAPP_DEV_SERVER_PORT',
 ]);
+const MAX_STREAM_RECORD_BYTES = 8 * 1_024;
+const STREAM_RECORD_FLUSH_DELAY_MS = 5;
+const NoNulStringSchema = z
+  .string()
+  .refine((value) => !value.includes('\0'), 'NUL is not allowed');
 
 const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
   for (const [name, value] of Object.entries(env)) {
@@ -40,9 +45,9 @@ const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
 
 export const ExecRequestSchema = z
   .object({
-    cmd: z.string().min(1),
-    args: z.array(z.string()),
-    cwd: z.string().optional(),
+    cmd: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    args: z.array(NoNulStringSchema),
+    cwd: NoNulStringSchema.optional(),
     env: RequestEnvSchema.optional(),
     timeoutMs: z.number().int().positive(),
     pty: z.boolean().optional(),
@@ -140,6 +145,59 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
   let prefixClosed = false;
   let finalized = false;
   let appendChain = Promise.resolve();
+  let pendingStream: 'stdout' | 'stderr' | undefined;
+  let pendingText = '';
+  let pendingBytes = 0;
+  let flushTimer: NodeJS.Timeout | undefined;
+
+  const flushPending = async (): Promise<void> => {
+    if (flushTimer !== undefined) {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+    }
+    if (pendingStream === undefined || pendingText.length === 0) {
+      return;
+    }
+    const stream = pendingStream;
+    const data = pendingText;
+    pendingStream = undefined;
+    pendingText = '';
+    pendingBytes = 0;
+    await emit?.(
+      ExecStreamRecordSchema.parse({
+        type: stream,
+        data,
+        at: new Date().toISOString(),
+      }),
+    );
+  };
+
+  const scheduleFlush = (): void => {
+    if (flushTimer !== undefined) {
+      clearTimeout(flushTimer);
+    }
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      appendChain = appendChain.then(flushPending);
+    }, STREAM_RECORD_FLUSH_DELAY_MS);
+  };
+
+  const emitText = async (stream: 'stdout' | 'stderr', text: string): Promise<void> => {
+    if (emit === undefined || text.length === 0) {
+      return;
+    }
+    if (pendingStream !== undefined && pendingStream !== stream) {
+      await flushPending();
+    }
+    pendingStream = stream;
+    pendingText += text;
+    pendingBytes += Buffer.byteLength(text);
+    if (pendingBytes >= MAX_STREAM_RECORD_BYTES) {
+      await flushPending();
+    } else {
+      scheduleFlush();
+    }
+  };
 
   const validUtf8Prefix = (text: string, maxBytes: number): string => {
     const encoded = Buffer.from(text, 'utf8');
@@ -178,13 +236,7 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
       return;
     }
     (stream === 'stdout' ? stdout : stderr).push(accepted);
-    await emit?.(
-      ExecStreamRecordSchema.parse({
-        type: stream,
-        data: accepted,
-        at: new Date().toISOString(),
-      }),
-    );
+    await emitText(stream, accepted);
   };
 
   const finalize = async (): Promise<void> => {
@@ -194,6 +246,7 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
     finalized = true;
     await appendText('stdout', decoders.stdout.end());
     await appendText('stderr', decoders.stderr.end());
+    await flushPending();
   };
 
   return {
