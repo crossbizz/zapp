@@ -586,6 +586,36 @@ test('round-6 allows harmless aliases and late array assignment mutations', () =
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 keeps loader positions exact across push and unshift mutations', () => {
+  const result = runFixture('loader-mutation-overwrite-semantics');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['push-appended-loader', 'unshift-shifted-loader']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 allows harmless positions after push and unshift mutations', () => {
+  const result = runFixture('loader-mutation-overwrite-semantics-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 respects Object.assign source order for final loader values', () => {
+  const result = runFixture('loader-object-assign-overwrite-semantics');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['final-loader', 'alias-final-loader']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 allows Object.assign properties overwritten by harmless values', () => {
+  const result = runFixture('loader-object-assign-overwrite-semantics-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks static class fields and assignments through aliases of this', () => {
   const result = runFixture('loader-class-aliases');
 

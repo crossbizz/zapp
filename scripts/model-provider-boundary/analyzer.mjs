@@ -1706,6 +1706,150 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return (callableKinds(callExpression.expression) & CALLABLE_OBJECT_ASSIGN) !== 0;
   }
 
+  function containingTopLevelStatement(node) {
+    let current = node;
+    while (current && !ts.isSourceFile(current.parent)) {
+      if (ts.isFunctionLike(current) || ts.isBlock(current)) return undefined;
+      current = current.parent;
+    }
+    return current && ts.isStatement(current) ? current : undefined;
+  }
+
+  function exactLiteralContainerState(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isArrayLiteralExpression(current)) {
+      if (current.elements.some((element) => ts.isSpreadElement(element))) return undefined;
+      return {
+        elements: current.elements.map((element) =>
+          ts.isOmittedExpression(element) ? undefined : element,
+        ),
+        kind: 'array',
+      };
+    }
+    if (!ts.isObjectLiteralExpression(current)) return undefined;
+    const state = { kind: 'object', members: new Map() };
+    if (!applyExactObjectSources(state, [current])) return undefined;
+    return state;
+  }
+
+  function applyExactObjectSources(state, sources) {
+    for (const source of sources) {
+      const current = unwrapExpression(source);
+      if (!ts.isObjectLiteralExpression(current)) return false;
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          return false;
+        }
+        const memberNames = declarationMemberNames(property.name);
+        if (!memberNames || memberNames.size !== 1) return false;
+        const valueExpression = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : ts.isShorthandPropertyAssignment(property)
+            ? property.name
+            : property;
+        for (const memberName of memberNames) state.members.set(memberName, valueExpression);
+      }
+    }
+    return true;
+  }
+
+  function sameValueSymbol(expression, expectedSymbol) {
+    const current = unwrapExpression(expression);
+    if (!ts.isIdentifier(current)) return false;
+    const symbol = symbolAt(checker, current);
+    return (aliasedSymbol(checker, symbol) ?? symbol) === expectedSymbol;
+  }
+
+  function assignmentIncludesSymbol(pattern, expectedSymbol) {
+    const symbols = new Set();
+    collectAssignmentSymbols(pattern, symbols);
+    return [...symbols].some(
+      (symbol) => (aliasedSymbol(checker, symbol) ?? symbol) === expectedSymbol,
+    );
+  }
+
+  function exactTopLevelContainerMemberValue(access, memberNames, environment, runtimeState) {
+    if (!collectLoaderContexts || !memberNames || memberNames.size !== 1) return undefined;
+    const owner = unwrapExpression(access.expression);
+    if (!ts.isIdentifier(owner)) return undefined;
+    const symbol = symbolAt(checker, owner);
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    if (!identity) return undefined;
+    const accessStatement = containingTopLevelStatement(access);
+    if (!accessStatement) return undefined;
+    let state;
+    let refined = false;
+    for (const statement of access.getSourceFile().statements) {
+      if (statement === accessStatement) break;
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name) && sameValueSymbol(declaration.name, identity)) {
+            state = declaration.initializer
+              ? exactLiteralContainerState(declaration.initializer)
+              : undefined;
+            refined = false;
+          }
+        }
+        continue;
+      }
+      if (!ts.isExpressionStatement(statement)) continue;
+      const expression = unwrapExpression(statement.expression);
+      if (
+        ts.isBinaryExpression(expression) &&
+        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        if (sameValueSymbol(expression.left, identity)) {
+          state = exactLiteralContainerState(expression.right);
+          refined = false;
+        } else if (assignmentIncludesSymbol(expression.left, identity)) {
+          return undefined;
+        } else if (
+          (ts.isPropertyAccessExpression(unwrapExpression(expression.left)) ||
+            ts.isElementAccessExpression(unwrapExpression(expression.left))) &&
+          sameValueSymbol(unwrapExpression(expression.left).expression, identity)
+        ) {
+          return undefined;
+        }
+        continue;
+      }
+      if (!ts.isCallExpression(expression)) continue;
+      const arrayMutation = arrayMutationForCall(expression);
+      if (arrayMutation && sameValueSymbol(arrayMutation.owner, identity)) {
+        if (state?.kind !== 'array') return undefined;
+        if (arrayMutation.methodName === 'push') state.elements.push(...expression.arguments);
+        else state.elements.unshift(...expression.arguments);
+        refined = true;
+        continue;
+      }
+      if (
+        isObjectAssignCall(expression) &&
+        expression.arguments[0] &&
+        sameValueSymbol(expression.arguments[0], identity)
+      ) {
+        if (
+          state?.kind !== 'object' ||
+          !applyExactObjectSources(state, expression.arguments.slice(1))
+        ) {
+          return undefined;
+        }
+        refined = true;
+      }
+    }
+    if (!refined || !state) return undefined;
+    const memberName = [...memberNames][0];
+    let valueExpression;
+    if (state.kind === 'array') {
+      if (!/^\d+$/.test(memberName)) return undefined;
+      valueExpression = state.elements[Number(memberName)];
+    } else {
+      if (!state.members.has(memberName)) return undefined;
+      valueExpression = state.members.get(memberName);
+    }
+    return valueExpression
+      ? callableValue(valueExpression, environment, runtimeState)
+      : emptyCallableValue();
+  }
+
   function assignObjectMembers(target, sources) {
     for (const source of sources) {
       for (const [memberName, memberValue] of materializedMembers(source)) {
@@ -2061,6 +2205,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       const memberNames = accessMemberNames(current);
+      const exactMemberValue = exactTopLevelContainerMemberValue(
+        current,
+        memberNames,
+        environment,
+        state,
+      );
+      if (exactMemberValue) return exactMemberValue;
       let value = mergeCallableValues(
         storedCallableValue(symbolForValue(current)),
         selectCallableMembers(callableValue(current.expression, environment, state), memberNames),
