@@ -669,7 +669,9 @@ export interface BackupGit {
   verifyBundle(bundlePath: string): Promise<void>;
 }
 
-export type PreparedRestore = { readonly kind: 'bundle'; readonly mirrorPath: string };
+export type PreparedRestore =
+  | { readonly kind: 'bundle'; readonly mirrorPath: string }
+  | { readonly kind: 'empty'; readonly mirrorPath: string };
 export type BackupRepresentation = 'bundle' | 'empty';
 
 export interface RestorePreparationGit {
@@ -931,7 +933,7 @@ export function createGitBundleCommands(options: {
         } catch {
           throw new Error('Git empty mirror preparation failed');
         }
-        return { kind: 'bundle', mirrorPath };
+        return { kind: 'empty', mirrorPath };
       }
       try {
         await execute(['clone', '--mirror', bundlePath, mirrorPath], {
@@ -1477,6 +1479,13 @@ export async function restoreRepositoryBackup(
   const bundlePath = join(directory, 'repository.bundle');
   const mirrorPath = join(directory, 'repository.git');
   let resolvedTarget: ResolvedRestoreTarget | undefined;
+  let credentialReleased = false;
+  const releaseCredential = async (): Promise<void> => {
+    if (resolvedTarget !== undefined && !credentialReleased) {
+      await resolvedTarget.release();
+      credentialReleased = true;
+    }
+  };
   try {
     try {
       await pipeline(await deps.store.get(parsed.data.key), createWriteStream(bundlePath));
@@ -1528,6 +1537,9 @@ export async function restoreRepositoryBackup(
     } catch {
       throw new Error('Restored branch listing failed');
     }
+    if (prepared.kind === 'empty' && actual.size > 0) {
+      throw new Error('Restored empty repository contains refs');
+    }
     const expected = parsed.data.expectedBranches.filter((branch) => branch.headCommitSha !== null);
     const branchEvidence = expected
       .map((branch) => ({
@@ -1546,11 +1558,12 @@ export async function restoreRepositoryBackup(
         .map(([name, sha]) => ({ name, sha }))
         .sort((left, right) => left.name.localeCompare(right.name)),
     });
+    await releaseCredential();
     await deps.recordPhase?.('verified', result);
     return result;
   } finally {
     try {
-      await resolvedTarget?.release();
+      await releaseCredential();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

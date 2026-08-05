@@ -581,6 +581,47 @@ describe('restoreRepositoryBackup', () => {
     expect(remoteMutations).toBe(0);
   });
 
+  it('refuses to verify an explicitly empty restore while any stale remote ref remains', async () => {
+    const store = new MemoryStore();
+    const key = keyFor(PROJECT_ID, '2026-08-04');
+    store.values.set(key, { body: Buffer.from('empty backup marker'), lastModified: NOW });
+    const phases: string[] = [];
+    const localGit = {
+      verifyBundle: () => Promise.resolve(),
+      prepareRestore: (_bundlePath: string, mirrorPath: string) =>
+        Promise.resolve({ kind: 'empty' as const, mirrorPath }),
+    };
+    const remoteGit = {
+      pushMirror: () => Promise.resolve(),
+      remoteRefs: () =>
+        Promise.resolve(new Map([['refs/heads/stale', 'a'.repeat(40)]])),
+    };
+    const issuedAt = Date.now();
+
+    await expect(
+      restoreRepositoryBackup(
+        {
+          store,
+          git: localGit,
+          resolveTarget: () =>
+            Promise.resolve({
+              cloneUrl: 'https://git.test/drill/empty.git',
+              git: remoteGit,
+              expiresAt: new Date(issuedAt + 300_000),
+              deadlineAt: new Date(issuedAt + 240_000),
+              release: () => Promise.resolve(),
+            }),
+          recordPhase: (phase) => {
+            phases.push(phase);
+            return Promise.resolve();
+          },
+        },
+        { key, expectedBranches: [] },
+      ),
+    ).rejects.toThrow('Restored empty repository contains refs');
+    expect(phases).toEqual(['push-started', 'push-complete']);
+  });
+
   it('streams the bundle to scratch, verifies before mirror-push, and checks every non-null branch', async () => {
     const store = new MemoryStore();
     const git = new FakeGit();

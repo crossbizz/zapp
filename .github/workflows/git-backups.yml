@@ -25,9 +25,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  guard:
+    name: validate protected default branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate protected default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTUAL_REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$ACTUAL_REF" != "$expected_ref" ]]; then
+            printf 'backup workflow must run from protected default branch %s, got %s\n' "$expected_ref" "$ACTUAL_REF" >&2
+            exit 1
+          fi
+          if [[ "$REF_PROTECTED" != 'true' ]]; then
+            printf 'backup workflow default branch is not protected\n' >&2
+            exit 1
+          fi
+
   run:
     name: ${{ github.event.schedule == '29 4 1 */3 *' && 'quarterly restore drill' || inputs.mode || 'nightly backup' }}
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.ref_protected
+    needs: guard
     # Repository settings restrict this environment to the protected default
     # branch and require operator approval. Backup credentials exist only here.
     environment: git-backups-default-branch

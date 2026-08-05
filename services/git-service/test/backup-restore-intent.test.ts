@@ -509,6 +509,61 @@ describe('intent-first restore recovery', () => {
     expect(issuedCredentials).toBe(1);
   });
 
+  it('does not complete until restricted credential revocation succeeds on replay', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const restoreGit = new RestoreGit();
+    const boundGit = new RestoreGit();
+    const forgejo = new StatefulForgejo();
+    let issuedCredentials = 0;
+    const releaseAttempts: number[] = [];
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
+      },
+      store,
+      git: restoreGit,
+      restoreGit,
+      client: forgejo,
+      restoreCredentials: {
+        issue: (input) => {
+          issuedCredentials += 1;
+          const issueNumber = issuedCredentials;
+          return Promise.resolve({
+            cloneUrl: input.cloneUrl,
+            git: boundGit,
+            ...credentialWindow(),
+            release: () => {
+              releaseAttempts.push(issueNumber);
+              return issueNumber === 1
+                ? Promise.reject(new Error('synthetic revocation failure'))
+                : Promise.resolve();
+            },
+          });
+        },
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+    const selector = {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      key: BACKUP_KEY,
+      idempotencyKey: 'incident-2026-08-04-revocation-replay',
+    };
+
+    await expect(operations.restore(selector)).rejects.toThrow('synthetic revocation failure');
+    const completedAfterFailure = [...store.values.keys()].some((key) =>
+      key.endsWith('.verified.json'),
+    );
+    await expect(operations.restore(selector)).resolves.toMatchObject({ status: 'restored' });
+
+    expect(issuedCredentials).toBe(2);
+    expect(releaseAttempts).toContain(2);
+    expect(completedAfterFailure).toBe(false);
+  });
+
   it('computes the restore deadline after issuance latency and caps it before credential expiry', async () => {
     const start = new Date('2026-08-04T10:00:00.000Z').getTime();
     let nowMs = start;

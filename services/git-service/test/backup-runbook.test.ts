@@ -170,6 +170,21 @@ describe('the executable Git restore runbook', () => {
     );
   });
 
+  it('rejects a control character embedded inside one full-ref JSON value', async () => {
+    const execution = await runScript('valid', {
+      evidence: JSON.stringify({
+        ...JSON.parse(matchingEvidence),
+        refs: [{ name: 'refs/heads/main\nrefs/heads/second', sha: 'a'.repeat(40) }],
+      }),
+    });
+
+    await expect(execution.result).rejects.toMatchObject({ code: 1 });
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
+  });
+
   it('refuses to overwrite pre-existing incident evidence', async () => {
     const original = '{"incident":"preserve"}\n';
     const execution = await runScript('valid', { preexistingEvidence: original });

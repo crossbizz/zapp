@@ -38,6 +38,8 @@ jq -s -e \
     type == "object" and ((keys | sort) == ($expected | sort));
   def full_sha:
     type == "string" and test("^[0-9A-Fa-f]{40}$");
+  def no_control_chars:
+    type == "string" and all(explode[]; . >= 32 and . != 127);
 
   length == 1 and
   (.[0] as $result |
@@ -60,14 +62,14 @@ jq -s -e \
     $result.checkedBranches == ($result.branches | length) and
     all($result.branches[];
       exact_keys(["name", "expectedSha", "actualSha"]) and
-      (.name | type) == "string" and
+      (.name | no_control_chars) and
       (.expectedSha | full_sha) and
       (.actualSha | full_sha) and
       .expectedSha == .actualSha
     ) and
     all($result.refs[];
       exact_keys(["name", "sha"]) and
-      (.name | type) == "string" and
+      (.name | no_control_chars) and
       (.sha | full_sha)
     ) and
     ([$result.branches[].name] | unique | length) == ($result.branches | length) and
@@ -75,13 +77,13 @@ jq -s -e \
   )
 ' "$temporary_path" >/dev/null
 
-while IFS= read -r branch_name; do
+while IFS= read -r -d '' branch_name; do
   git check-ref-format "refs/heads/$branch_name" >/dev/null
-done < <(jq -r '.branches[].name' "$temporary_path")
+done < <(jq -j '.branches[] | (.name, "\u0000")' "$temporary_path")
 
-while IFS= read -r ref_name; do
+while IFS= read -r -d '' ref_name; do
   git check-ref-format "$ref_name" >/dev/null
-done < <(jq -r '.refs[].name' "$temporary_path")
+done < <(jq -j '.refs[] | (.name, "\u0000")' "$temporary_path")
 
 node - "$temporary_path" <<'NODE'
 const fs = require('node:fs');

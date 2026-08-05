@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import { parse } from 'yaml';
@@ -20,6 +22,7 @@ type Workflow = {
       string,
       {
         readonly if?: string;
+        readonly needs?: string;
         readonly environment?: string;
         readonly env?: Readonly<Record<string, string>>;
         readonly services?: Readonly<Record<string, unknown>>;
@@ -33,6 +36,7 @@ const workflowPath = fileURLToPath(
   new URL('../../../.github/workflows/git-backups.yml', import.meta.url),
 );
 const ciWorkflowPath = fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url));
+const execute = promisify(execFile);
 
 const secretEnvironment = {
   DATABASE_URL: '${{ secrets.GIT_BACKUP_DATABASE_URL }}',
@@ -58,13 +62,50 @@ function containsSecretReference(value: unknown): boolean {
 }
 
 describe('the Git backup workflow', () => {
+  it('fails an always-running non-secret guard unless the protected default branch is executing', async () => {
+    const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
+    const guard = workflow.jobs?.guard;
+    const guardedRun = workflow.jobs?.run;
+    const script = guard?.steps?.find((step) => step.name === 'Validate protected default branch')
+      ?.run;
+
+    expect(guard, 'missing always-running workflow guard').toBeDefined();
+    expect(guard?.if).toBeUndefined();
+    expect(guard?.environment).toBeUndefined();
+    expect(containsSecretReference(guard)).toBe(false);
+    expect(script, 'missing executable guard script').toBeDefined();
+    expect(guardedRun?.needs).toBe('guard');
+    expect(guardedRun?.if).toBeUndefined();
+    if (script === undefined) {
+      return;
+    }
+
+    const guardEnvironment = {
+      ...process.env,
+      DEFAULT_BRANCH: 'main',
+      ACTUAL_REF: 'refs/heads/main',
+      REF_PROTECTED: 'true',
+    };
+    await expect(execute('bash', ['-c', script], { env: guardEnvironment })).resolves.toMatchObject({
+      stderr: '',
+    });
+    await expect(
+      execute('bash', ['-c', script], {
+        env: { ...guardEnvironment, ACTUAL_REF: 'refs/heads/review-controlled' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execute('bash', ['-c', script], {
+        env: { ...guardEnvironment, REF_PROTECTED: 'false' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
+  });
+
   it('allows secrets only on the protected default branch and checks out that branch explicitly', async () => {
     const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
     const job = workflow.jobs?.run;
 
-    expect(job?.if).toBe(
-      "github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.ref_protected",
-    );
+    expect(job?.needs).toBe('guard');
     expect(job?.environment).toBe('git-backups-default-branch');
     expect(job?.steps?.find((step) => step.name === 'Checkout')).toMatchObject({
       uses: 'actions/checkout@v5',
