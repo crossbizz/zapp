@@ -14,8 +14,16 @@ export {
   GIT_AUDIT_ACTIONS,
   GitAuditActionSchema,
   GitAuditEventSchema,
+  GitTokenMintedAuditEventSchema,
+  GitTokenMintedAuditMetadataSchema,
+  GitTokenRevokedAuditEventSchema,
+  GitTokenRevokedAuditMetadataSchema,
   type GitAuditAction,
   type GitAuditEvent,
+  type GitTokenMintedAuditEvent,
+  type GitTokenMintedAuditMetadata,
+  type GitTokenRevokedAuditEvent,
+  type GitTokenRevokedAuditMetadata,
 } from './audit.js';
 export {
   BackupDateSchema,

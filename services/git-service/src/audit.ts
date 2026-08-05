@@ -1,13 +1,13 @@
 import { SERVICE_NAMES } from '@zapp/config';
-import {
-  AuditMetadataSchema,
-  AuditRecordSchema,
-  GitAuditActionSchema,
-  idSchema,
-  newId,
-} from '@zapp/contracts';
+import { AuditRecordSchema, InternalRepoRefSchema, idSchema, newId } from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
 import { z } from 'zod';
+
+import {
+  EPHEMERAL_USERNAME_PATTERN,
+  MAX_TOKEN_TTL_SECONDS,
+  TOKEN_ACCESS_LEVELS,
+} from './tokens.js';
 
 /**
  * The audit trail for repository credentials (plan 06 GIT-3).
@@ -36,19 +36,61 @@ import { z } from 'zod';
 
 export { GIT_AUDIT_ACTIONS, GitAuditActionSchema, type GitAuditAction } from '@zapp/contracts';
 
-/** The service-specific input before it becomes one shared platform audit row. */
-export const GitAuditEventSchema = z
+const GitAuditReasonSchema = z.string().trim().min(8).max(500);
+
+/** The reviewed non-secret context for one issued repository credential. */
+export const GitTokenMintedAuditMetadataSchema = z
+  .object({
+    internalRepoRef: InternalRepoRefSchema,
+    access: z.enum(TOKEN_ACCESS_LEVELS),
+    ttlSec: z.number().int().positive().max(MAX_TOKEN_TTL_SECONDS),
+    expiresAt: z.string().datetime({ offset: true }),
+    tokenUser: z.string().regex(EPHEMERAL_USERNAME_PATTERN, 'Invalid ephemeral Git username'),
+    reason: GitAuditReasonSchema,
+    runId: idSchema('run').nullable(),
+    taskId: idSchema('task').nullable(),
+  })
+  .strict();
+export type GitTokenMintedAuditMetadata = z.infer<typeof GitTokenMintedAuditMetadataSchema>;
+
+/** The reviewed non-secret context for repository credential revocation. */
+export const GitTokenRevokedAuditMetadataSchema = z
+  .object({
+    internalRepoRef: InternalRepoRefSchema,
+    revoked: z.number().int().positive(),
+    reason: GitAuditReasonSchema,
+  })
+  .strict();
+export type GitTokenRevokedAuditMetadata = z.infer<typeof GitTokenRevokedAuditMetadataSchema>;
+
+const GitAuditEventBaseSchema = z
   .object({
     organizationId: idSchema('org'),
-    action: GitAuditActionSchema,
     /** The project the credential was for. `audit_events.target_id`. */
     projectId: idSchema('proj'),
     /** Which service asked. From the verified token, never from a request body. */
     requestingService: z.enum(SERVICE_NAMES),
     occurredAt: z.date(),
-    metadata: AuditMetadataSchema,
   })
   .strict();
+
+export const GitTokenMintedAuditEventSchema = GitAuditEventBaseSchema.extend({
+  action: z.literal('git_token.minted'),
+  metadata: GitTokenMintedAuditMetadataSchema,
+}).strict();
+export type GitTokenMintedAuditEvent = z.infer<typeof GitTokenMintedAuditEventSchema>;
+
+export const GitTokenRevokedAuditEventSchema = GitAuditEventBaseSchema.extend({
+  action: z.literal('git_token.revoked'),
+  metadata: GitTokenRevokedAuditMetadataSchema,
+}).strict();
+export type GitTokenRevokedAuditEvent = z.infer<typeof GitTokenRevokedAuditEventSchema>;
+
+/** The service-specific input before it becomes one shared platform audit row. */
+export const GitAuditEventSchema = z.discriminatedUnion('action', [
+  GitTokenMintedAuditEventSchema,
+  GitTokenRevokedAuditEventSchema,
+]);
 export type GitAuditEvent = z.infer<typeof GitAuditEventSchema>;
 
 export interface GitAuditSink {
@@ -118,8 +160,9 @@ export function createRecordingGitAuditSink(): RecordingGitAuditSink {
         failure = undefined;
         return Promise.reject(thrown);
       }
-      events.push(GitAuditEventSchema.parse(event));
-      return Promise.resolve();
+      return Promise.resolve().then(() => {
+        events.push(GitAuditEventSchema.parse(event));
+      });
     },
   };
 }

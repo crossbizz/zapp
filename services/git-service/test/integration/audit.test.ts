@@ -57,6 +57,7 @@ describe.skipIf(!hasDatabase)('the git audit sink, on PostgreSQL', () => {
         internalRepoRef: `${organizationId.toLowerCase()}/${projectId.toLowerCase()}`,
         access: 'write',
         ttlSec: 300,
+        expiresAt: '2026-03-01T10:16:12.000Z',
         tokenUser: 'zt-1900000000-0123456789ab',
         reason: 'push the run branch',
         runId: null,
