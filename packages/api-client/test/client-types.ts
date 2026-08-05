@@ -43,12 +43,23 @@ void client.request('/v1/auth/logout', {
   body: [],
 });
 
-function noContentResponseContract(): void {
-  const login: Promise<undefined> = client.request('/v1/auth/login', { method: 'GET' });
-  const callback: Promise<undefined> = client.request('/v1/auth/callback', {
+async function redirectResponseContract(): Promise<void> {
+  const login = await client.request('/v1/auth/login', { method: 'GET' });
+  const callback = await client.request('/v1/auth/callback', {
     method: 'GET',
     query: { state: 'state' },
   });
+  const loginStatus: 302 = login.status;
+  const callbackStatus: 302 = callback.status;
+  const loginLocation: string = login.headers.Location;
+  const callbackLocation: string = callback.headers.Location;
+  // @ts-expect-error redirects do not invent a JSON response body
+  void login.project;
+  void [loginStatus, callbackStatus, loginLocation, callbackLocation];
+}
+void redirectResponseContract;
+
+function noContentResponseContract(): void {
   const logout: Promise<undefined> = client.request('/v1/auth/logout', { method: 'POST' });
   const approve: Promise<undefined> = client.request('/v1/auth/device/approve', {
     method: 'POST',
@@ -58,18 +69,24 @@ function noContentResponseContract(): void {
     method: 'POST',
     body: { userCode: 'ABCD-EFGH' },
   });
-  const memberDelete: Promise<undefined> = client.request('/v1/organizations/{orgId}/members/{userId}', {
-    method: 'DELETE',
-    path: { orgId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA', userId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NB' },
-  });
-  const secretDelete: Promise<undefined> = client.request('/v1/projects/{projectId}/secrets/{secretId}', {
-    method: 'DELETE',
-    path: {
-      projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
-      secretId: 'secret_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
+  const memberDelete: Promise<undefined> = client.request(
+    '/v1/organizations/{orgId}/members/{userId}',
+    {
+      method: 'DELETE',
+      path: { orgId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA', userId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NB' },
     },
-  });
-  void [login, callback, logout, approve, deny, memberDelete, secretDelete];
+  );
+  const secretDelete: Promise<undefined> = client.request(
+    '/v1/projects/{projectId}/secrets/{secretId}',
+    {
+      method: 'DELETE',
+      path: {
+        projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+        secretId: 'secret_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
+      },
+    },
+  );
+  void [logout, approve, deny, memberDelete, secretDelete];
 }
 void noContentResponseContract;
 

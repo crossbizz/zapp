@@ -6,14 +6,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AppInstance } from '../src/app.js';
 import type { AuthIdentity } from '../src/auth/port.js';
-import {
-  buildHarness,
-  cookieJar,
-  cookiesOf,
-  type Harness,
-} from './support/harness.js';
+import { PUBLIC_API_OPERATIONS } from '../../../packages/api-client/src/generated-operations.js';
+import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
 
-const GENERATED_TYPES = resolve(import.meta.dirname, '../../../packages/api-client/src/generated.ts');
+const GENERATED_TYPES = resolve(
+  import.meta.dirname,
+  '../../../packages/api-client/src/generated.ts',
+);
 const GENERATED_OPERATIONS = resolve(
   import.meta.dirname,
   '../../../packages/api-client/src/generated-operations.ts',
@@ -27,18 +26,21 @@ interface OpenApiOperation {
     required?: boolean;
     content?: Record<string, { schema?: Record<string, unknown> }>;
   };
-  responses?: Record<string, {
-    content?: Record<string, unknown>;
-    headers?: Record<string, unknown>;
-  }>;
+  responses?: Record<
+    string,
+    {
+      content?: Record<string, unknown>;
+      headers?: Record<string, { required?: boolean }>;
+    }
+  >;
   security?: readonly Record<string, readonly string[]>[];
 }
 
 function documentedHarness(): Harness {
   const built = buildHarness({
-    tenantDb: (() => {
+    tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
-    }),
+    },
   });
   apps.push(built.app);
   return built;
@@ -150,6 +152,44 @@ describe('generated API types', () => {
       expect(responses?.['200']).toBeUndefined();
     }
   });
+
+  it('preserves security alternatives and response obligations in runtime metadata', () => {
+    // Break caught: reducing security to public/optional/required blocks valid
+    // cookie authentication and sends bearer tokens to operations that forbid it.
+    const operations = PUBLIC_API_OPERATIONS as unknown as Record<string, Record<string, unknown>>;
+
+    expect(operations['/v1/me']?.['get']).toEqual({
+      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      successResponses: {
+        '200': {
+          body: 'required',
+          mediaTypes: ['application/json'],
+          requiredHeaders: [],
+        },
+      },
+    });
+    expect(operations['/v1/auth/refresh']?.['post']).toMatchObject({
+      security: [{}, { refreshCookie: [], csrfToken: [] }],
+    });
+    expect(operations['/v1/auth/logout']?.['post']).toMatchObject({
+      security: [
+        {},
+        { bearerAuth: [] },
+        { sessionCookie: [], csrfToken: [] },
+        { refreshCookie: [], csrfToken: [] },
+      ],
+    });
+    expect(operations['/v1/auth/login']?.['get']).toEqual({
+      security: [],
+      successResponses: {
+        '302': {
+          body: 'forbidden',
+          mediaTypes: [],
+          requiredHeaders: ['Location'],
+        },
+      },
+    });
+  });
 });
 
 function generatedOperations(paths: Record<string, Record<string, unknown>>): string {
@@ -166,15 +206,31 @@ function generatedOperations(paths: Record<string, Record<string, unknown>>): st
               Object.entries(operation.responses ?? {})
                 .filter(([status]) => /^[23]\d\d$/.test(status))
                 .sort(([left], [right]) => left.localeCompare(right))
-                .map(([status, response]) => [status, Object.keys(response.content ?? {}).sort()]),
+                .map(([status, response]) => {
+                  const mediaTypes = Object.keys(response.content ?? {}).sort();
+                  const requiredHeaders = Object.entries(response.headers ?? {})
+                    .filter(([, header]) => header.required === true)
+                    .map(([name]) => name)
+                    .sort();
+                  return [
+                    status,
+                    {
+                      body: mediaTypes.length === 0 ? 'forbidden' : 'required',
+                      mediaTypes,
+                      requiredHeaders,
+                    },
+                  ];
+                }),
             );
-            const security = operation.security;
-            const authMode = security === undefined || security.length === 0
-              ? 'public'
-              : security.some((requirement) => Object.keys(requirement).length === 0)
-                ? 'optional'
-                : 'required';
-            return [[method, { authMode, successResponses }]];
+            return [
+              [
+                method,
+                {
+                  security: operation.security ?? [],
+                  successResponses,
+                },
+              ],
+            ];
           }),
         ),
       ]),

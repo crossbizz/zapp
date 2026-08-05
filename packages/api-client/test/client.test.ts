@@ -33,7 +33,10 @@ function stream(chunks: readonly string[]): ReadableStream<Uint8Array> {
   });
 }
 
-function failingStream(chunk: string, error = new Error('socket failed')): ReadableStream<Uint8Array> {
+function failingStream(
+  chunk: string,
+  error = new Error('socket failed'),
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let delivered = false;
   return new ReadableStream({
@@ -62,7 +65,11 @@ function neverEndingStream(signal: AbortSignal): ReadableStream<Uint8Array> {
   });
 }
 
-function agentEvent(sequence: number, type = 'task.updated', payload: Record<string, unknown> = {}) {
+function agentEvent(
+  sequence: number,
+  type = 'task.updated',
+  payload: Record<string, unknown> = {},
+) {
   return {
     id: 'evt_01J8ME7YQZJ2V9Q0X3T5B6K7N8',
     runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7N9',
@@ -114,9 +121,9 @@ describe('createZappClient', () => {
       fetch,
     });
 
-    await expect(
-      client.request(path as never, { method: 'GET' } as never),
-    ).rejects.toThrow(/public API path|supported operation/i);
+    await expect(client.request(path as never, { method: 'GET' } as never)).rejects.toThrow(
+      /public API path|supported operation/i,
+    );
     expect(getToken).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -129,16 +136,22 @@ describe('createZappClient', () => {
     if (sdk === undefined) return;
     const fetch = vi
       .fn<FetchImplementation>()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ project: { id: 'proj_1' } }), {
-        status: 201,
-        headers: { 'content-type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], nextCursor: null }), {
-        headers: { 'content-type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ project: { id: 'proj_1' } }), {
-        headers: { 'content-type': 'application/json' },
-      }));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ project: { id: 'proj_1' } }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], nextCursor: null }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ project: { id: 'proj_1' } }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
     const client = sdk.createZappClient({
       baseUrl: 'https://api.zapp.test/root/',
       getToken: () => Promise.resolve('device-token'),
@@ -203,18 +216,22 @@ describe('createZappClient', () => {
       '%2fchild',
       '%5cchild',
     ]) {
-      await expect(client.request('/v1/projects/{projectId}', {
-        method: 'GET',
-        path: { projectId },
-      })).rejects.toThrow(/path parameter/i);
+      await expect(
+        client.request('/v1/projects/{projectId}', {
+          method: 'GET',
+          path: { projectId },
+        }),
+      ).rejects.toThrow(/path parameter/i);
     }
 
     expect(getToken).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
-    await expect(client.request('/v1/projects/{projectId}', {
-      method: 'GET',
-      path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
-    })).resolves.toEqual({ project: { id: 'proj_1' } });
+    await expect(
+      client.request('/v1/projects/{projectId}', {
+        method: 'GET',
+        path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+      }),
+    ).resolves.toEqual({ project: { id: 'proj_1' } });
     expect(getToken).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledOnce();
   });
@@ -228,26 +245,40 @@ describe('createZappClient', () => {
     const getToken = vi.fn(() => 'secret-token');
     const fetch = vi
       .fn<FetchImplementation>()
-      .mockResolvedValueOnce(new Response(null, {
-        status: 302,
-        headers: { location: 'https://idp.zapp.test/authorize' },
-      }))
-      .mockResolvedValueOnce(new Response(null, {
-        status: 302,
-        headers: { location: 'https://app.zapp.test' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        deviceCode: 'device-code',
-        expiresIn: 600,
-        interval: 5,
-        userCode: 'ABCD-EFGH',
-        verificationUri: 'https://api.zapp.test/v1/auth/login',
-        verificationUriComplete: 'https://api.zapp.test/v1/auth/login?userCode=ABCD-EFGH',
-      }), { headers: { 'content-type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        expiresIn: 900,
-        tokenType: 'Bearer',
-      }), { headers: { 'content-type': 'application/json' } }));
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://idp.zapp.test/authorize' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://app.zapp.test' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: 'device-code',
+            expiresIn: 600,
+            interval: 5,
+            userCode: 'ABCD-EFGH',
+            verificationUri: 'https://api.zapp.test/v1/auth/login',
+            verificationUriComplete: 'https://api.zapp.test/v1/auth/login?userCode=ABCD-EFGH',
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            expiresIn: 900,
+            tokenType: 'Bearer',
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      );
     const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
 
     await client.request('/v1/auth/login', { method: 'GET' });
@@ -260,6 +291,64 @@ describe('createZappClient', () => {
 
     expect(fetch).toHaveBeenCalledTimes(4);
     expect(getToken).not.toHaveBeenCalled();
+  });
+
+  it('reaches a cookie-capable required operation when no bearer token is available', async () => {
+    // Break caught: /v1/me allows a sessionCookie alternative, but a collapsed
+    // required auth mode rejects before fetch when getToken has no bearer.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const getToken = vi.fn(() => Promise.reject(new Error('no bearer token')));
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: 'user_1',
+            email: 'cookie-user@zapp.test',
+            displayName: 'Cookie User',
+            avatarUrl: null,
+          },
+          memberships: [],
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
+
+    await expect(client.request('/v1/me', { method: 'GET' })).resolves.toMatchObject({
+      user: { id: 'user_1' },
+    });
+
+    expect(getToken).toHaveBeenCalledOnce();
+    const init = fetch.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get('authorization')).toBeNull();
+    expect(init?.credentials).toBe('include');
+  });
+
+  it('never retrieves or sends bearer auth for anonymous or refresh-cookie refresh', async () => {
+    // Break caught: optional auth is mistaken for optional bearer auth, leaking
+    // an access token to a route whose alternatives are anonymous and cookie-only.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const getToken = vi.fn(() => 'must-not-be-sent');
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(JSON.stringify({ tokenType: 'Bearer', expiresIn: 900 }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
+
+    await client.request('/v1/auth/refresh', {
+      method: 'POST',
+      headers: { authorization: 'Bearer caller-token' },
+    });
+
+    expect(getToken).not.toHaveBeenCalled();
+    const init = fetch.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get('authorization')).toBeNull();
+    expect(init?.credentials).toBe('include');
   });
 
   it('uses optional bearer authentication when available and continues without it on failure', async () => {
@@ -281,7 +370,9 @@ describe('createZappClient', () => {
       fetch: authenticatedFetch,
     });
 
-    await expect(authenticated.request('/v1/auth/logout', { method: 'POST' })).resolves.toBeUndefined();
+    await expect(
+      authenticated.request('/v1/auth/logout', { method: 'POST' }),
+    ).resolves.toBeUndefined();
     expect(bearerActive).toBe(false);
 
     let authorization: string | null = 'not-requested';
@@ -293,16 +384,18 @@ describe('createZappClient', () => {
         return Promise.resolve(new Response(null, { status: 204 }));
       },
     });
-    await expect(tokenless.request('/v1/auth/logout', {
-      method: 'POST',
-      body: { refreshToken: 'refresh-token' },
-    })).resolves.toBeUndefined();
+    await expect(
+      tokenless.request('/v1/auth/logout', {
+        method: 'POST',
+        body: { refreshToken: 'refresh-token' },
+      }),
+    ).resolves.toBeUndefined();
     expect(authorization).toBeNull();
   });
 
-  it('accepts documented redirects as empty successful responses', async () => {
-    // Break caught: Response.ok is false for a documented 302, so the decoder
-    // reports a successful login redirect as an API error.
+  it('observes a documented redirect and returns its required location and status', async () => {
+    // Break caught: automatic redirect following hides the documented 302, or
+    // decoding it as undefined erases the required Location header.
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
@@ -315,42 +408,98 @@ describe('createZappClient', () => {
     );
     const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
 
-    await expect(client.request('/v1/auth/login', { method: 'GET' })).resolves.toBeUndefined();
+    await expect(client.request('/v1/auth/login', { method: 'GET' })).resolves.toEqual({
+      status: 302,
+      headers: { Location: 'https://idp.zapp.test/authorize' },
+    });
     expect(getToken).not.toHaveBeenCalled();
+    expect(fetch.mock.calls[0]?.[1].redirect).toBe('manual');
   });
+
+  it.each([
+    ['missing Location', () => new Response(null, { status: 302 })],
+    [
+      'undocumented media',
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            location: 'https://idp.zapp.test/authorize',
+            'content-type': 'text/plain',
+          },
+        }),
+    ],
+    [
+      'undocumented body',
+      () =>
+        new Response('private redirect marker', {
+          status: 302,
+          headers: { location: 'https://idp.zapp.test/authorize' },
+        }),
+    ],
+  ])(
+    'rejects a bodyless redirect with %s without exposing its response',
+    async (_case, response) => {
+      // Break caught: a 302 can violate its exact required-header/body/media
+      // contract while the SDK still reports it as a valid redirect.
+      const sdk = await loadSdk();
+      expect(sdk?.createZappClient).toBeTypeOf('function');
+      if (sdk === undefined) return;
+      const client = sdk.createZappClient({
+        baseUrl: 'https://api.zapp.test',
+        getToken: () => 'unused',
+        fetch: () => Promise.resolve(response()),
+      });
+
+      let error: unknown;
+      try {
+        await client.request('/v1/auth/login', { method: 'GET' });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ name: 'ZappProtocolError' });
+      expect(String(error)).not.toContain('private redirect marker');
+    },
+  );
 
   it.each([
     [206, 'application/json'],
     [206, 'text/plain'],
     [200, 'text/plain'],
-  ])('rejects undocumented success status/media %i %s without exposing its body', async (status, mediaType) => {
-    // Break caught: any response with ok=true and valid JSON is accepted even
-    // when its exact status or media type is absent from the operation contract.
-    const sdk = await loadSdk();
-    expect(sdk?.createZappClient).toBeTypeOf('function');
-    if (sdk === undefined) return;
-    const marker = 'upstream-private-marker';
-    const client = sdk.createZappClient({
-      baseUrl: 'https://api.zapp.test',
-      getToken: () => 'token',
-      fetch: () => Promise.resolve(new Response(JSON.stringify({ marker }), {
-        status,
-        headers: { 'content-type': mediaType },
-      })),
-    });
-
-    let error: unknown;
-    try {
-      await client.request('/v1/runs/{runId}', {
-        method: 'GET',
-        path: { runId: 'run_1' },
+  ])(
+    'rejects undocumented success status/media %i %s without exposing its body',
+    async (status, mediaType) => {
+      // Break caught: any response with ok=true and valid JSON is accepted even
+      // when its exact status or media type is absent from the operation contract.
+      const sdk = await loadSdk();
+      expect(sdk?.createZappClient).toBeTypeOf('function');
+      if (sdk === undefined) return;
+      const marker = 'upstream-private-marker';
+      const client = sdk.createZappClient({
+        baseUrl: 'https://api.zapp.test',
+        getToken: () => 'token',
+        fetch: () =>
+          Promise.resolve(
+            new Response(JSON.stringify({ marker }), {
+              status,
+              headers: { 'content-type': mediaType },
+            }),
+          ),
       });
-    } catch (caught) {
-      error = caught;
-    }
-    expect(error).toMatchObject({ name: 'ZappProtocolError' });
-    expect(String(error)).not.toContain(marker);
-  });
+
+      let error: unknown;
+      try {
+        await client.request('/v1/runs/{runId}', {
+          method: 'GET',
+          path: { runId: 'run_1' },
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ name: 'ZappProtocolError' });
+      expect(String(error)).not.toContain(marker);
+    },
+  );
 
   it('decodes all documented no-content operations as undefined', async () => {
     // Break caught: actual route handlers send 204 while generated clients claim
@@ -358,9 +507,9 @@ describe('createZappClient', () => {
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
-    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(new Response(null, { status: 204 }));
     const client = sdk.createZappClient({
       baseUrl: 'https://api.zapp.test',
       getToken: () => 'token',
@@ -368,22 +517,66 @@ describe('createZappClient', () => {
     });
 
     await expect(client.request('/v1/auth/logout', { method: 'POST' })).resolves.toBeUndefined();
-    await expect(client.request('/v1/auth/device/approve', {
-      method: 'POST',
-      body: { userCode: 'ABCD-EFGH' },
-    })).resolves.toBeUndefined();
-    await expect(client.request('/v1/auth/device/deny', {
-      method: 'POST',
-      body: { userCode: 'ABCD-EFGH' },
-    })).resolves.toBeUndefined();
-    await expect(client.request('/v1/organizations/{orgId}/members/{userId}', {
-      method: 'DELETE',
-      path: { orgId: 'org_1', userId: 'user_1' },
-    })).resolves.toBeUndefined();
-    await expect(client.request('/v1/projects/{projectId}/secrets/{secretId}', {
-      method: 'DELETE',
-      path: { projectId: 'proj_1', secretId: 'secret_1' },
-    })).resolves.toBeUndefined();
+    await expect(
+      client.request('/v1/auth/device/approve', {
+        method: 'POST',
+        body: { userCode: 'ABCD-EFGH' },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      client.request('/v1/auth/device/deny', {
+        method: 'POST',
+        body: { userCode: 'ABCD-EFGH' },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      client.request('/v1/organizations/{orgId}/members/{userId}', {
+        method: 'DELETE',
+        path: { orgId: 'org_1', userId: 'user_1' },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      client.request('/v1/projects/{projectId}/secrets/{secretId}', {
+        method: 'DELETE',
+        path: { projectId: 'proj_1', secretId: 'secret_1' },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects undocumented media or a body on an exact no-content response', async () => {
+    // Break caught: returning early for body === null accepts a media-bearing
+    // 204, while an undocumented body can be silently discarded as undefined.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const responses = [
+      new Response(null, { status: 204, headers: { 'content-type': 'application/json' } }),
+      {
+        ok: true,
+        status: 204,
+        headers: new Headers(),
+        body: stream(['private no-content marker']),
+        text: () => Promise.resolve('private no-content marker'),
+      },
+    ];
+    const fetch = vi.fn<FetchImplementation>();
+    for (const response of responses) fetch.mockResolvedValueOnce(response);
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'token',
+      fetch,
+    });
+
+    for (const body of [{ userCode: 'ABCD-EFGH' }, { userCode: 'ABCD-EFGH' }]) {
+      let error: unknown;
+      try {
+        await client.request('/v1/auth/device/approve', { method: 'POST', body });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ name: 'ZappProtocolError' });
+      expect(String(error)).not.toContain('private no-content marker');
+    }
   });
 
   it('rejects SSE via generic request and redacts invalid JSON response contents', async () => {
@@ -393,21 +586,30 @@ describe('createZappClient', () => {
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
     const getToken = vi.fn(() => 'token');
-    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
-      new Response(eventFrame(1), { headers: { 'content-type': 'text/event-stream' } }),
-    );
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(
+        new Response(eventFrame(1), { headers: { 'content-type': 'text/event-stream' } }),
+      );
     const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
 
-    await expect(client.request('/v1/runs/{runId}/events' as never, {
-      method: 'GET',
-      path: { runId: 'run_1' },
-    } as never)).rejects.toThrow(/event stream|subscribeRunEvents/i);
+    await expect(
+      client.request(
+        '/v1/runs/{runId}/events' as never,
+        {
+          method: 'GET',
+          path: { runId: 'run_1' },
+        } as never,
+      ),
+    ).rejects.toThrow(/event stream|subscribeRunEvents/i);
     expect(getToken).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
 
-    fetch.mockResolvedValueOnce(new Response('<html>secret upstream marker</html>', {
-      headers: { 'content-type': 'text/html' },
-    }));
+    fetch.mockResolvedValueOnce(
+      new Response('<html>secret upstream marker</html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
     let error: unknown;
     try {
       await client.request('/v1/runs/{runId}', {
@@ -422,9 +624,9 @@ describe('createZappClient', () => {
     expect(String(error)).not.toContain('<html>');
   });
 
-  it('decodes an empty successful response and preserves caller aborts', async () => {
-    // Break caught: DELETE-like endpoints throw while a caller's cancellation
-    // is converted into an API failure that UI code cannot recognize.
+  it('preserves caller aborts after decoding an exact no-content response', async () => {
+    // Break caught: a caller's cancellation is converted into an API failure
+    // that UI code cannot recognize after an earlier no-content request.
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
@@ -433,7 +635,6 @@ describe('createZappClient', () => {
     const fetch = vi
       .fn<FetchImplementation>()
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
       .mockImplementationOnce((_input, init) => {
         return new Promise<Response>((_resolve, reject) => {
           init.signal?.addEventListener(
@@ -453,41 +654,77 @@ describe('createZappClient', () => {
       eventStreamRetry: { random: () => 0 },
     });
 
-    await expect(client.request('/v1/auth/device/approve', {
-      method: 'POST',
-      body: { userCode: 'ABCD-EFGH' },
-    })).resolves.toBeUndefined();
-    await expect(client.request('/v1/runs/{runId}', {
-      method: 'GET',
-      path: { runId: 'run_1' },
-    })).resolves.toBeUndefined();
+    await expect(
+      client.request('/v1/auth/device/approve', {
+        method: 'POST',
+        body: { userCode: 'ABCD-EFGH' },
+      }),
+    ).resolves.toBeUndefined();
     const pending = client.request('/v1/runs/{runId}', {
       method: 'GET',
       path: { runId: 'run_1' },
       signal: abort.signal,
     });
     await vi.waitFor(() => {
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch).toHaveBeenCalledTimes(2);
     });
     abort.abort(new DOMException('Stopped by caller', 'AbortError'));
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
-  it('accepts a streamed empty 200 response without a content-length header', async () => {
-    // Break caught: a portable fetch response has a non-null empty stream, so
-    // calling json() reports a syntax error for a successful no-content call.
+  it.each([
+    [
+      'null body',
+      () =>
+        new Response(null, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ],
+    [
+      'empty body',
+      () =>
+        new Response('', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ],
+    [
+      'missing content type',
+      () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: stream(['{"run":{"id":"run_1"}}']),
+        text: () => Promise.resolve('{"run":{"id":"run_1"}}'),
+      }),
+    ],
+    [
+      'wrong content type',
+      () =>
+        new Response('{"run":{"id":"run_1"}}', {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        }),
+    ],
+  ])('rejects a documented JSON 200 with %s', async (_case, response) => {
+    // Break caught: required JSON response content is collapsed into an
+    // optional body, allowing a protocol violation to become undefined.
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
     const client = sdk.createZappClient({
       baseUrl: 'https://api.zapp.test',
       getToken: () => 'token',
-      fetch: () => Promise.resolve(new Response(stream([]), { status: 200 })),
+      fetch: () => Promise.resolve(response()),
     });
 
     await expect(
-      client.request('/v1/runs/{runId}', { method: 'GET', path: { runId: 'run_1' } }),
-    ).resolves.toBeUndefined();
+      client.request('/v1/runs/{runId}', {
+        method: 'GET',
+        path: { runId: 'run_1' },
+      }),
+    ).rejects.toMatchObject({ name: 'ZappProtocolError' });
   });
 
   it('reports API status and code without including token-bearing response text', async () => {
@@ -500,12 +737,18 @@ describe('createZappClient', () => {
       baseUrl: 'https://api.zapp.test',
       getToken: () => 'secret-device-token',
       fetch: () =>
-        Promise.resolve(new Response(
-          JSON.stringify({
-            error: { code: 'run_not_found', message: 'secret-device-token must never escape' },
-          }),
-          { status: 404, statusText: 'Not Found', headers: { 'content-type': 'application/json' } },
-        )),
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: { code: 'run_not_found', message: 'secret-device-token must never escape' },
+            }),
+            {
+              status: 404,
+              statusText: 'Not Found',
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        ),
     });
 
     let error: unknown;
@@ -649,9 +892,11 @@ describe('subscribeRunEvents', () => {
     if (sdk === undefined) return;
     const errors: Error[] = [];
     const delivered = vi.fn();
-    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
-      new Response(eventFrame(8), { headers: { 'content-type': 'application/json' } }),
-    );
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(
+        new Response(eventFrame(8), { headers: { 'content-type': 'application/json' } }),
+      );
     const client = sdk.createZappClient({
       baseUrl: 'https://api.zapp.test',
       getToken: () => 't',
@@ -721,11 +966,13 @@ describe('subscribeRunEvents', () => {
           headers: { 'content-type': 'text/event-stream' },
         }),
       )
-      .mockImplementation((_url, init) => Promise.resolve(
-        new Response(neverEndingStream(init.signal ?? new AbortController().signal), {
-          headers: { 'content-type': 'text/event-stream' },
-        }),
-      ));
+      .mockImplementation((_url, init) =>
+        Promise.resolve(
+          new Response(neverEndingStream(init.signal ?? new AbortController().signal), {
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        ),
+      );
     const client = sdk.createZappClient({
       baseUrl: 'https://api.zapp.test',
       getToken: () => 'token',
@@ -847,7 +1094,11 @@ describe('subscribeRunEvents', () => {
     const caller = new AbortController();
     controllers.push(caller);
     const remove = vi.spyOn(caller.signal, 'removeEventListener');
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       signal: caller.signal,
       onEvent() {},
@@ -862,6 +1113,82 @@ describe('subscribeRunEvents', () => {
     expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 
+  it('contains a rejecting reader cancellation and completes all close cleanup', async () => {
+    // Break caught: a rejected best-effort cancel becomes an unhandled rejection,
+    // or prevents lock/listener cleanup and starts another authenticated fetch.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    vi.useFakeTimers();
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    let rejectCancellation!: (reason?: unknown) => void;
+    const cancellation = new Promise<void>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const handleCancellation = vi.spyOn(cancellation, 'catch');
+    const cancel = vi.fn(() => cancellation);
+    const releaseLock = vi.fn();
+    const body = {
+      getReader() {
+        return {
+          read() {
+            readStarted();
+            return new Promise<ReadableStreamReadResult<Uint8Array>>(() => {});
+          },
+          cancel,
+          releaseLock,
+        };
+      },
+    } as unknown as ReadableStream<Uint8Array>;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body,
+      text: () => Promise.resolve(''),
+    });
+    const caller = new AbortController();
+    controllers.push(caller);
+    const remove = vi.spyOn(caller.signal, 'removeEventListener');
+    const unhandled: unknown[] = [];
+    const captureUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', captureUnhandled);
+
+    try {
+      const client = sdk.createZappClient({
+        baseUrl: 'https://api.zapp.test',
+        getToken: () => 'token',
+        fetch,
+      });
+      const subscription = client.subscribeRunEvents('run_1', {
+        signal: caller.signal,
+        onEvent() {},
+      });
+      await started;
+
+      subscription.close();
+      const closed = closesWithin(subscription.closed);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(closed).resolves.toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(handleCancellation).toHaveBeenCalledOnce();
+      expect(releaseLock).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+      expect(fetch).toHaveBeenCalledOnce();
+      rejectCancellation(new Error('cancel failed'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', captureUnhandled);
+    }
+  });
+
   it.each(['getToken', 'fetch'] as const)(
     'closes promptly while a non-cooperative %s promise is pending',
     async (blockedAt) => {
@@ -872,9 +1199,9 @@ describe('subscribeRunEvents', () => {
       if (sdk === undefined) return;
       const add = vi.spyOn(AbortSignal.prototype, 'addEventListener');
       const remove = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
-      const getToken = vi.fn(() => blockedAt === 'getToken'
-        ? new Promise<string>(() => {})
-        : 'token');
+      const getToken = vi.fn(() =>
+        blockedAt === 'getToken' ? new Promise<string>(() => {}) : 'token',
+      );
       const fetch = vi.fn<FetchImplementation>(() => new Promise<Response>(() => {}));
       const client = sdk.createZappClient({
         baseUrl: 'https://api.zapp.test',
@@ -903,10 +1230,16 @@ describe('subscribeRunEvents', () => {
     expect(sdk?.createZappClient).toBeTypeOf('function');
     if (sdk === undefined) return;
     const errors: Error[] = [];
-    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
-      new Response(stream([eventFrame(8)]), { headers: { 'content-type': 'text/event-stream' } }),
-    );
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(
+        new Response(stream([eventFrame(8)]), { headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       onEvent() {
         throw new Error('consumer failed');
@@ -994,7 +1327,11 @@ describe('subscribeRunEvents', () => {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       onEvent() {
         delivered();
@@ -1022,7 +1359,11 @@ describe('subscribeRunEvents', () => {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       onEvent(event) {
         delivered.push(event.id);
@@ -1060,7 +1401,9 @@ describe('subscribeRunEvents', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     const addedToStreamSignal = add.mock.instances.filter((instance) => instance === streamSignal);
-    const removedFromStreamSignal = remove.mock.instances.filter((instance) => instance === streamSignal);
+    const removedFromStreamSignal = remove.mock.instances.filter(
+      (instance) => instance === streamSignal,
+    );
     expect(removedFromStreamSignal.length).toBeGreaterThanOrEqual(addedToStreamSignal.length - 1);
     subscription.close();
     await subscription.closed;
@@ -1090,7 +1433,11 @@ describe('subscribeRunEvents', () => {
       );
       return Promise.resolve(response);
     });
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 'token-8', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'token-8',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       after: 7,
       onEvent(event) {
@@ -1175,7 +1522,11 @@ describe('subscribeRunEvents', () => {
         headers: { 'content-type': 'text/event-stream' },
       }),
     );
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       onEvent() {
         throw new Error('malformed events must not be delivered');
@@ -1210,7 +1561,11 @@ describe('subscribeRunEvents', () => {
         }),
       );
     });
-    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
     const subscription = client.subscribeRunEvents('run_1', {
       signal: abort.signal,
       onEvent() {},

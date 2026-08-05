@@ -13,9 +13,7 @@ type PathOperation<Path extends PublicApiPath, Method extends HttpMethod> = Excl
   paths[Path][Method],
   undefined
 >;
-type ResponseMediaTypes<Value> = Value extends { content: infer Content }
-  ? keyof Content
-  : never;
+type ResponseMediaTypes<Value> = Value extends { content: infer Content } ? keyof Content : never;
 type SuccessfulMediaTypes<Value> = Value extends { responses: infer Responses }
   ? {
       [Status in keyof Responses]: `${Status & (string | number)}` extends `2${string}`
@@ -37,7 +35,10 @@ type Operation<Path extends PublicApiPath, Method extends PublicApiMethod<Path>>
 type OperationParameters<Value> = Value extends { parameters: infer Parameters }
   ? Parameters
   : never;
-type OperationParameter<Value, Name extends PropertyKey> = Name extends keyof OperationParameters<Value>
+type OperationParameter<
+  Value,
+  Name extends PropertyKey,
+> = Name extends keyof OperationParameters<Value>
   ? Exclude<OperationParameters<Value>[Name], undefined>
   : never;
 type PathOption<Value> = [OperationParameter<Value, 'path'>] extends [never]
@@ -64,26 +65,31 @@ type BodyOption<Value> = [RequestBody<Value>] extends [never]
   : Value extends { requestBody: unknown }
     ? { readonly body: RequestBody<Value> }
     : { readonly body?: RequestBody<Value> };
-type ResponseContent<Value> = Value extends { content: infer Content }
+type NumericStatus<Status> = Status extends number
+  ? Status
+  : Status extends `${infer Value extends number}`
+    ? Value
+    : never;
+type ResponseContent<Status, Value> = Value extends { content: infer Content }
   ? Content extends object
     ? Content[keyof Content]
     : undefined
-  : undefined;
+  : Value extends { headers: { Location: infer Location } }
+    ? {
+        readonly status: NumericStatus<Status>;
+        readonly headers: { readonly Location: Location };
+      }
+    : undefined;
 type SuccessfulResponse<Value> = Value extends { responses: infer Responses }
   ? {
       [Status in keyof Responses]: `${Status & (string | number)}` extends `${2 | 3}${string}`
-        ? ResponseContent<Responses[Status]>
+        ? ResponseContent<Status, Responses[Status]>
         : never;
     }[keyof Responses]
   : never;
 
 export type QueryValue =
-  | string
-  | number
-  | boolean
-  | readonly (string | number | boolean)[]
-  | null
-  | undefined;
+  string | number | boolean | readonly (string | number | boolean)[] | null | undefined;
 
 /** The portable subset of a Fetch response the SDK consumes. */
 export interface FetchResponse {
@@ -102,6 +108,8 @@ export type FetchImplementation = (
     readonly headers?: Headers;
     readonly body?: string;
     readonly signal?: AbortSignal;
+    readonly credentials?: RequestCredentials;
+    readonly redirect?: RequestRedirect;
   },
 ) => Promise<FetchResponse>;
 
@@ -121,18 +129,16 @@ export interface ZappClientOptions {
   readonly eventStreamRetry?: EventStreamRetryOptions;
 }
 
-export type RequestOptions<
-  Path extends PublicApiPath,
-  Method extends PublicApiMethod<Path>,
-> = {
+export type RequestOptions<Path extends PublicApiPath, Method extends PublicApiMethod<Path>> = {
   readonly method: Method;
   readonly headers?: ClientHeaders;
   readonly signal?: AbortSignal;
-} & PathOption<Operation<Path, Method>>
-  & QueryOption<Operation<Path, Method>>
-  & BodyOption<Operation<Path, Method>>;
+} & PathOption<Operation<Path, Method>> &
+  QueryOption<Operation<Path, Method>> &
+  BodyOption<Operation<Path, Method>>;
 
-export type RunEventData = paths['/v1/runs/{runId}/events']['get']['responses'][200]['content']['text/event-stream'];
+export type RunEventData =
+  paths['/v1/runs/{runId}/events']['get']['responses'][200]['content']['text/event-stream'];
 
 export interface RunEvent {
   readonly id: string;
@@ -166,7 +172,9 @@ export class ZappApiError extends Error {
   readonly code: string | undefined;
 
   constructor(status: number, code: string | undefined) {
-    super(`API request failed with status ${String(status)}${code === undefined ? '' : ` (${code})`}.`);
+    super(
+      `API request failed with status ${String(status)}${code === undefined ? '' : ` (${code})`}.`,
+    );
     this.name = 'ZappApiError';
     this.status = status;
     this.code = code;
@@ -211,15 +219,22 @@ interface RuntimeRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+interface ResponseMetadata {
+  readonly body: 'required' | 'forbidden';
+  readonly mediaTypes: readonly string[];
+  readonly requiredHeaders: readonly string[];
+}
+
 interface OperationMetadata {
-  readonly authMode: 'public' | 'optional' | 'required';
-  readonly successResponses: Readonly<Record<string, readonly string[] | undefined>>;
+  readonly security: readonly Readonly<Record<string, readonly string[]>>[];
+  readonly successResponses: Readonly<Record<string, ResponseMetadata | undefined>>;
 }
 
 /** Creates an authenticated client for zapp.build's generated public `/v1` API. */
 export function createZappClient(options: ZappClientOptions): ZappClient {
   const baseUrl = new URL(options.baseUrl);
-  const fetch: FetchImplementation = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const fetch: FetchImplementation =
+    options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
   return {
     async request<Path extends PublicApiPath, Method extends PublicApiMethod<Path>>(
@@ -236,7 +251,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         options.getToken,
         runtimeOptions.headers,
         runtimeOptions.body,
-        operation.authMode,
+        operation,
         runtimeOptions.signal,
       );
       const responsePromise = fetch(url, {
@@ -244,27 +259,38 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         headers,
         ...(runtimeOptions.body === undefined ? {} : { body: JSON.stringify(runtimeOptions.body) }),
         ...(runtimeOptions.signal === undefined ? {} : { signal: runtimeOptions.signal }),
+        ...(operationUsesCookies(operation) || operationHasRedirect(operation)
+          ? { credentials: 'include' }
+          : {}),
+        ...(operationHasRedirect(operation) ? { redirect: 'manual' } : {}),
       });
-      const response = runtimeOptions.signal === undefined
-        ? await responsePromise
-        : await raceAbort(responsePromise, runtimeOptions.signal);
+      const response =
+        runtimeOptions.signal === undefined
+          ? await responsePromise
+          : await raceAbort(responsePromise, runtimeOptions.signal);
 
-      const documentedMediaTypes = operation.successResponses[String(response.status)];
-      if (documentedMediaTypes === undefined) {
+      const responseMetadata = operation.successResponses[String(response.status)];
+      if (responseMetadata === undefined) {
         if (response.status >= 400) throw await apiError(response);
         throw new ZappProtocolError();
       }
-      if (response.body === null) {
-        return undefined as SuccessfulResponse<Operation<Path, Method>>;
+      const contentTypeHeader = response.headers.get('content-type');
+      if (responseMetadata.body === 'forbidden') {
+        if (response.body !== null || contentTypeHeader !== null) throw new ZappProtocolError();
+        const requiredHeaders = responseHeaders(response, responseMetadata.requiredHeaders);
+        return (
+          responseMetadata.requiredHeaders.length === 0
+            ? undefined
+            : { status: response.status, headers: requiredHeaders }
+        ) as SuccessfulResponse<Operation<Path, Method>>;
       }
-      const payload = await response.text();
-      if (payload.trim().length === 0) {
-        return undefined as SuccessfulResponse<Operation<Path, Method>>;
-      }
-      const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
-      if (mediaType === undefined || !documentedMediaTypes.includes(mediaType)) {
+      if (response.body === null) throw new ZappProtocolError();
+      const mediaType = contentTypeHeader?.split(';', 1)[0]?.trim().toLowerCase();
+      if (mediaType === undefined || !responseMetadata.mediaTypes.includes(mediaType)) {
         throw new ZappProtocolError();
       }
+      const payload = await response.text();
+      if (payload.trim().length === 0) throw new ZappProtocolError();
       try {
         return JSON.parse(payload) as SuccessfulResponse<Operation<Path, Method>>;
       } catch {
@@ -272,7 +298,10 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       }
     },
 
-    subscribeRunEvents(runId: string, subscribeOptions: SubscribeRunEventsOptions): EventSubscription {
+    subscribeRunEvents(
+      runId: string,
+      subscribeOptions: SubscribeRunEventsOptions,
+    ): EventSubscription {
       const controller = new AbortController();
       const close = (): void => {
         controller.abort();
@@ -291,6 +320,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         options: subscribeOptions,
         retry: options.eventStreamRetry,
         signal: controller.signal,
+        operation: publicOperation('/v1/runs/{runId}/events', 'GET'),
       }).finally(() => {
         subscribeOptions.signal?.removeEventListener('abort', abortFromCaller);
       });
@@ -308,9 +338,9 @@ function publicOperation(path: string, method: unknown): OperationMetadata {
     throw new RangeError('Request method is not a supported operation for this public API path.');
   }
   const operations = PUBLIC_API_OPERATIONS[path as keyof typeof PUBLIC_API_OPERATIONS];
-  const operation = (operations as unknown as Readonly<Record<string, OperationMetadata | undefined>>)[
-    method.toLowerCase()
-  ];
+  const operation = (
+    operations as unknown as Readonly<Record<string, OperationMetadata | undefined>>
+  )[method.toLowerCase()];
   if (operation === undefined) {
     throw new RangeError('Request method is not a supported operation for this public API path.');
   }
@@ -364,7 +394,7 @@ async function requestHeaders(
   getToken: ZappClientOptions['getToken'],
   headers: ClientHeaders | undefined,
   body: unknown,
-  authMode: OperationMetadata['authMode'],
+  operation: OperationMetadata,
   signal?: AbortSignal,
 ): Promise<Headers> {
   const result =
@@ -373,23 +403,24 @@ async function requestHeaders(
       : headers instanceof Headers
         ? new Headers(headers)
         : new Headers(Object.entries(headers));
-  if (authMode !== 'public') {
+  const bearerAllowed = operationAllowsScheme(operation, 'bearerAuth');
+  result.delete('authorization');
+  if (bearerAllowed) {
     const tokenPromise = Promise.resolve().then(getToken);
     let token: string | undefined;
     try {
-      token = signal === undefined
-        ? await tokenPromise
-        : await raceAbort(tokenPromise, signal);
+      token = signal === undefined ? await tokenPromise : await raceAbort(tokenPromise, signal);
     } catch (error) {
-      if (authMode === 'required' || signal?.aborted === true) throw error;
+      if (operationRequiresScheme(operation, 'bearerAuth') || signal?.aborted === true) throw error;
     }
     if (token !== undefined && token.length > 0) {
       result.set('authorization', `Bearer ${token}`);
-    } else if (authMode === 'required') {
+    } else if (operationRequiresScheme(operation, 'bearerAuth')) {
       throw new Error('A non-empty zapp API token is required.');
     }
   }
-  if (body !== undefined && !result.has('content-type')) result.set('content-type', 'application/json');
+  if (body !== undefined && !result.has('content-type'))
+    result.set('content-type', 'application/json');
   return result;
 }
 
@@ -412,6 +443,7 @@ interface RunEventSubscriptionInput {
   readonly options: SubscribeRunEventsOptions;
   readonly retry: EventStreamRetryOptions | undefined;
   readonly signal: AbortSignal;
+  readonly operation: OperationMetadata;
 }
 
 interface EventStreamState {
@@ -447,14 +479,18 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
         input.getToken,
         { accept: 'text/event-stream' },
         undefined,
-        'required',
+        input.operation,
         input.signal,
       );
       if (!initial && state.latestId !== undefined) headers.set('last-event-id', state.latestId);
       initial = false;
 
       const response = await raceAbort(
-        input.fetch(url, { headers, signal: input.signal }),
+        input.fetch(url, {
+          headers,
+          signal: input.signal,
+          ...(operationUsesCookies(input.operation) ? { credentials: 'include' } : {}),
+        }),
         input.signal,
       );
       if (!response.ok) throw await apiError(response);
@@ -521,9 +557,8 @@ async function consumeEventStream(
       onError(new SseParseError('data is required.'));
       return;
     }
-    const latestSequence = state.latestId === undefined
-      ? undefined
-      : parseEventSequence(state.latestId);
+    const latestSequence =
+      state.latestId === undefined ? undefined : parseEventSequence(state.latestId);
     if (latestSequence !== undefined && eventSequence <= latestSequence) return;
 
     let parsed: unknown;
@@ -543,10 +578,10 @@ async function consumeEventStream(
     // absent optionals at runtime, so this bridges that representational gap.
     const data = validated.data as unknown as RunEventData;
     if (
-      !Number.isSafeInteger(data.sequence)
-      || data.sequence < 0
-      || data.type !== event.type
-      || data.sequence !== eventSequence
+      !Number.isSafeInteger(data.sequence) ||
+      data.sequence < 0 ||
+      data.type !== event.type ||
+      data.sequence !== eventSequence
     ) {
       onError(new SseParseError('id and event fields must match the AgentEvent data.'));
       return;
@@ -617,7 +652,44 @@ async function consumeEventStream(
 }
 
 function operationHasMediaType(operation: OperationMetadata, expected: string): boolean {
-  return Object.values(operation.successResponses).some((mediaTypes) => mediaTypes?.includes(expected));
+  return Object.values(operation.successResponses).some((response) =>
+    response?.mediaTypes.includes(expected),
+  );
+}
+
+function operationHasRedirect(operation: OperationMetadata): boolean {
+  return Object.keys(operation.successResponses).some((status) => /^3\d\d$/.test(status));
+}
+
+function operationAllowsScheme(operation: OperationMetadata, scheme: string): boolean {
+  return operation.security.some((requirement) => Object.hasOwn(requirement, scheme));
+}
+
+function operationRequiresScheme(operation: OperationMetadata, scheme: string): boolean {
+  return (
+    operation.security.length > 0 &&
+    operation.security.every((requirement) => Object.hasOwn(requirement, scheme))
+  );
+}
+
+function operationUsesCookies(operation: OperationMetadata): boolean {
+  return (
+    operationAllowsScheme(operation, 'sessionCookie') ||
+    operationAllowsScheme(operation, 'refreshCookie')
+  );
+}
+
+function responseHeaders(
+  response: FetchResponse,
+  requiredHeaders: readonly string[],
+): Readonly<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const name of requiredHeaders) {
+    const value = response.headers.get(name);
+    if (value === null) throw new ZappProtocolError();
+    result[name] = value;
+  }
+  return result;
 }
 
 function parseEventSequence(value: string): number | undefined {
@@ -667,10 +739,10 @@ function reportSseError(options: SubscribeRunEventsOptions, error: Error): void 
 }
 
 function safeError(error: unknown): Error {
-  return error instanceof ZappApiError
-    || error instanceof SseParseError
-    || error instanceof SseProtocolError
-    || error instanceof SseCallbackError
+  return error instanceof ZappApiError ||
+    error instanceof SseParseError ||
+    error instanceof SseProtocolError ||
+    error instanceof SseCallbackError
     ? error
     : new Error('Run event stream disconnected.');
 }
@@ -688,12 +760,18 @@ function reconnectDelay(
 
 function boundedDelay(milliseconds: number): number {
   if (!Number.isFinite(milliseconds)) return INITIAL_RECONNECT_DELAY_MS;
-  return Math.min(MAX_RECONNECT_DELAY_MS, Math.max(MIN_RECONNECT_DELAY_MS, Math.round(milliseconds)));
+  return Math.min(
+    MAX_RECONNECT_DELAY_MS,
+    Math.max(MIN_RECONNECT_DELAY_MS, Math.round(milliseconds)),
+  );
 }
 
 function boundedMaximum(milliseconds: number): number {
   if (!Number.isFinite(milliseconds)) return MAX_RECONNECT_DELAY_MS;
-  return Math.min(MAX_RECONNECT_DELAY_MS, Math.max(MIN_RECONNECT_DELAY_MS, Math.round(milliseconds)));
+  return Math.min(
+    MAX_RECONNECT_DELAY_MS,
+    Math.max(MIN_RECONNECT_DELAY_MS, Math.round(milliseconds)),
+  );
 }
 
 async function delay(milliseconds: number, signal: AbortSignal): Promise<void> {

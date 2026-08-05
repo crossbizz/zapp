@@ -2,513 +2,1123 @@
 export const PUBLIC_API_OPERATIONS = {
   "/v1/auth/callback": {
     "get": {
-      "authMode": "public",
+      "security": [],
       "successResponses": {
-        "302": []
+        "302": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": [
+            "Location"
+          ]
+        }
       }
     }
   },
   "/v1/auth/device": {
     "get": {
-      "authMode": "public",
+      "security": [],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/auth/device/approve": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "204": []
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/auth/device/deny": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "204": []
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/auth/device/token": {
     "post": {
-      "authMode": "public",
+      "security": [],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/auth/login": {
     "get": {
-      "authMode": "public",
+      "security": [],
       "successResponses": {
-        "302": []
+        "302": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": [
+            "Location"
+          ]
+        }
       }
     }
   },
   "/v1/auth/logout": {
     "post": {
-      "authMode": "optional",
+      "security": [
+        {},
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        },
+        {
+          "refreshCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "204": []
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/auth/refresh": {
     "post": {
-      "authMode": "optional",
+      "security": [
+        {},
+        {
+          "refreshCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/integrations/github/install": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/integrations/neon/connect": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/integrations/stripe/connect": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/integrations/supabase/connect": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/invites/{token}/accept": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/me": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/organizations": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/organizations/{orgId}": {
     "patch": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/organizations/{orgId}/invites": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/organizations/{orgId}/members/{userId}": {
     "delete": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "204": []
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": []
+        }
       }
     },
     "patch": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "patch": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/contract": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/releases": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/runs": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/scan": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "202": [
-          "application/json"
-        ]
+        "202": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/secrets": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/secrets/{secretId}": {
     "delete": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "204": []
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/secrets/{secretId}/rotate": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/specifications": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/specifications/{version}": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     },
     "patch": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/specifications/{version}/approve": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/projects/{projectId}/workspaces": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "201": [
-          "application/json"
-        ]
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/releases/{releaseId}": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/releases/{releaseId}/approve": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/releases/{releaseId}/deploy": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/releases/{releaseId}/evidence": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/releases/{releaseId}/rollback": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}/cancel": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}/events": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "text/event-stream"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "text/event-stream"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}/pause": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}/redirect": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/runs/{runId}/resume": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/workspaces/{workspaceId}": {
     "get": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/workspaces/{workspaceId}/checkpoint": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/workspaces/{workspaceId}/preview": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/workspaces/{workspaceId}/start": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   },
   "/v1/workspaces/{workspaceId}/terminate": {
     "post": {
-      "authMode": "required",
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
       "successResponses": {
-        "200": [
-          "application/json"
-        ]
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
       }
     }
   }
