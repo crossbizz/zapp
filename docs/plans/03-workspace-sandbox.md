@@ -215,3 +215,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-04 WS-3 done — authenticated workspace-agent RPC daemon added with strict schemas, path and git guards, real PTY execution, bounded streaming, and child reaping.
 - 2026-08-04 WS-3 BLOCKED — round-1 TOCTOU containment requires descriptor-relative native filesystem/exec support; ADR-0006 is proposed but not accepted, so the safe review fixes are committed separately while WS-3 remains unchecked.
 - 2026-08-04 WS-3 BLOCKED — round-2 safe review fixes are verified; WS-3 remains unchecked and blocked only on the unapproved ADR-0006 descriptor-relative TOCTOU helper.
+- 2026-08-04 WS-3 BLOCKED — round-3 safe fixes are implemented and verified with review pending; WS-3 remains unchecked and blocked only on the unapproved ADR-0006 descriptor-relative TOCTOU helper.

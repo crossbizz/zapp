@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once as onceEvent } from 'node:events';
 import { createRequire } from 'node:module';
 import {
   access,
@@ -12,7 +12,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -443,6 +443,27 @@ describe('workspace-agent RPC daemon', () => {
     });
   });
 
+  test('GET /files authenticates without validating Idempotency-Key', async () => {
+    await writeFile(join(workspaceRoot, 'bearer-only.txt'), 'bearer-only');
+    const bearerOnly = { authorization: `Bearer ${token}` };
+
+    const withoutKey = await requireApp().inject({
+      method: 'GET',
+      url: '/files?path=bearer-only.txt',
+      headers: bearerOnly,
+    });
+    const withInvalidKey = await requireApp().inject({
+      method: 'GET',
+      url: '/files?path=bearer-only.txt',
+      headers: { ...bearerOnly, 'idempotency-key': 'invalid key' },
+    });
+
+    expect(withoutKey.statusCode).toBe(200);
+    expect(withoutKey.body).toBe('bearer-only');
+    expect(withInvalidKey.statusCode).toBe(200);
+    expect(withInvalidKey.body).toBe('bearer-only');
+  });
+
   test('replays buffered and streamed exec responses without repeating side effects', async () => {
     const bufferedMarker = join(workspaceRoot, 'buffered-replay-count');
     const bufferedPayload = {
@@ -647,6 +668,108 @@ describe('workspace-agent RPC daemon', () => {
     expect(await readFile(join(workspaceRoot, 'conflict.txt'), 'utf8')).toBe('first');
   });
 
+  test('does not rerun a started streamed side effect after a backpressured disconnect', async () => {
+    const activeApp = requireApp();
+    const address = await activeApp.listen({ host: '127.0.0.1', port: 0 });
+    const marker = join(workspaceRoot, 'ambiguous-stream-count');
+    const pidFile = join(workspaceRoot, 'ambiguous-stream.pid');
+    const headers = authorization(token, 'ambiguous-stream-retry');
+    const payload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(marker)},'x');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.stdout.write(Buffer.alloc(${String(OUTPUT_LIMIT)},120));`,
+      ],
+      timeoutMs: 10_000,
+    };
+    const serverSocketPromise = new Promise<Socket>((resolveSocket) => {
+      activeApp.server.once('connection', (socket) => {
+        socket.cork();
+        resolveSocket(socket);
+      });
+    });
+    const body = JSON.stringify(payload);
+    const url = new URL(address);
+    const client = createConnection({ host: url.hostname, port: Number(url.port) });
+    client.on('error', () => undefined);
+    await onceEvent(client, 'connect');
+    client.write(
+      [
+        'POST /exec?stream=1 HTTP/1.1',
+        `Host: ${url.host}`,
+        `Authorization: ${headers.authorization}`,
+        `Idempotency-Key: ${headers['idempotency-key']}`,
+        'Content-Type: application/json',
+        `Content-Length: ${String(Buffer.byteLength(body))}`,
+        'Connection: close',
+        '',
+        body,
+      ].join('\r\n'),
+    );
+    const serverSocket = await serverSocketPromise;
+    const pid = Number(await waitForFile(pidFile));
+    expect(await readFile(marker, 'utf8')).toBe('x');
+    const backpressureDeadline = Date.now() + 3_000;
+    while (!serverSocket.writableNeedDrain) {
+      if (Date.now() >= backpressureDeadline) throw new Error('Stream never backpressured');
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    }
+
+    const serverClosed = onceEvent(serverSocket, 'close');
+    client.destroy();
+    await settleWithin(serverClosed.then(() => undefined), 1_000);
+    await waitForProcessExit(pid);
+    const inactiveDeadline = Date.now() + 3_000;
+    for (;;) {
+      const metrics = await activeApp.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (metrics.json<{ activeChildren: number }>().activeChildren === 0) break;
+      if (Date.now() >= inactiveDeadline) throw new Error('Streamed command stayed active');
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    }
+
+    const retry = await activeApp.inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers,
+      payload,
+    });
+    const conflict = await activeApp.inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers,
+      payload: { ...payload, args: ['-e', 'process.stdout.write("different")'] },
+    });
+
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json()).toEqual({ error: 'idempotency_ambiguous' });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({ error: 'idempotency_conflict' });
+    expect(await readFile(marker, 'utf8')).toBe('x');
+
+    for (let index = 0; index < 256; index += 1) {
+      const pressure = await activeApp.inject({
+        method: 'POST',
+        url: '/exec/999999/kill',
+        headers: authorization(token, `ambiguity-pressure-${String(index)}`),
+      });
+      expect(pressure.statusCode).toBe(200);
+    }
+    const retryAfterPressure = await activeApp.inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers,
+      payload,
+    });
+
+    expect(retryAfterPressure.statusCode).toBe(409);
+    expect(retryAfterPressure.json()).toEqual({ error: 'idempotency_ambiguous' });
+    expect(await readFile(marker, 'utf8')).toBe('x');
+  });
+
   test('times out the whole process group without leaving a descendant', async () => {
     const orphanMarker = join(workspaceRoot, 'orphan-marker');
     const script = [
@@ -735,6 +858,68 @@ describe('workspace-agent RPC daemon', () => {
       expect(await serverConnectionCount(activeApp.server)).toBe(0);
     } finally {
       activeApp.server.closeAllConnections();
+      await closePromise;
+    }
+  });
+
+  test('closes a backpressured raw stream before waiting for child shutdown', async () => {
+    const activeApp = requireApp();
+    const address = await activeApp.listen({ host: '127.0.0.1', port: 0 });
+    const pidFile = join(workspaceRoot, 'shutdown-backpressure.pid');
+    const headers = authorization(token, 'shutdown-backpressure');
+    const payload = {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.stdout.write(Buffer.alloc(${String(OUTPUT_LIMIT)},120));setInterval(()=>{},1000);`,
+      ],
+      timeoutMs: 10_000,
+    };
+    const serverSocketPromise = new Promise<Socket>((resolveSocket) => {
+      activeApp.server.once('connection', (socket) => {
+        socket.cork();
+        resolveSocket(socket);
+      });
+    });
+    const body = JSON.stringify(payload);
+    const url = new URL(address);
+    const client = createConnection({ host: url.hostname, port: Number(url.port) });
+    client.on('error', () => undefined);
+    await onceEvent(client, 'connect');
+    client.write(
+      [
+        'POST /exec?stream=1 HTTP/1.1',
+        `Host: ${url.host}`,
+        `Authorization: ${headers.authorization}`,
+        `Idempotency-Key: ${headers['idempotency-key']}`,
+        'Content-Type: application/json',
+        `Content-Length: ${String(Buffer.byteLength(body))}`,
+        'Connection: close',
+        '',
+        body,
+      ].join('\r\n'),
+    );
+    const serverSocket = await serverSocketPromise;
+    const pid = Number(await waitForFile(pidFile));
+    const backpressureDeadline = Date.now() + 3_000;
+    while (!serverSocket.writableNeedDrain) {
+      if (Date.now() >= backpressureDeadline) throw new Error('Stream never backpressured');
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    }
+
+    const clientClosed = onceEvent(client, 'close');
+    const closePromise = activeApp.close();
+    app = undefined;
+    try {
+      await settleWithin(closePromise, 1_000);
+      await settleWithin(clientClosed.then(() => undefined), 1_000);
+      await waitForProcessExit(pid);
+      await waitForNoServerConnections(activeApp.server);
+      expect(serverSocket.destroyed).toBe(true);
+      expect(activeApp.server.listening).toBe(false);
+    } finally {
+      serverSocket.destroy();
+      client.destroy();
       await closePromise;
     }
   });
@@ -1177,20 +1362,12 @@ describe('workspace-agent RPC daemon', () => {
   test('portable metrics include process-group descendants with separate user and system CPU', async () => {
     await requireApp().close();
     app = await buildWorkspaceAgent({ workspaceRoot, token, metricsSource: portableMetricsSource });
-    const baselineResponse = await requireApp().inject({
-      method: 'GET',
-      url: '/metrics',
-      headers: authorization(),
-    });
-    const baseline = baselineResponse.json<{
-      cpu: { userMicros: number; systemMicros: number };
-      memory: { rssBytes: number };
-    }>();
     const rootPidFile = join(workspaceRoot, 'metrics-root.pid');
     const childPidFile = join(workspaceRoot, 'metrics-child.pid');
     const childScript = [
       "const fs = require('node:fs');",
-      "const memory = Buffer.alloc(96 * 1024 * 1024, 1);",
+      "const memory = Buffer.allocUnsafe(96 * 1024 * 1024);",
+      "require('node:crypto').randomFillSync(memory);",
       "const fd = fs.openSync('/dev/null', 'w');",
       "const block = Buffer.alloc(4096, 1);",
       'const deadline = Date.now() + 750;',
@@ -1218,7 +1395,7 @@ describe('workspace-agent RPC daemon', () => {
       },
     });
     const rootPid = Number(await waitForFile(rootPidFile));
-    await waitForFile(childPidFile);
+    const childPid = Number(await waitForFile(childPidFile));
 
     const activeResponse = await requireApp().inject({
       method: 'GET',
@@ -1229,6 +1406,10 @@ describe('workspace-agent RPC daemon', () => {
       cpu: { userMicros: number; systemMicros: number };
       memory: { rssBytes: number };
     }>();
+    const daemonCpu = process.cpuUsage();
+    const daemonMemory = process.memoryUsage();
+    const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
+    const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
     await requireApp().inject({
       method: 'POST',
       url: `/exec/${String(rootPid)}/kill`,
@@ -1236,9 +1417,84 @@ describe('workspace-agent RPC daemon', () => {
     });
     await activeRequest;
 
-    expect(active.memory.rssBytes - baseline.memory.rssBytes).toBeGreaterThan(64 * 1024 * 1024);
-    expect(active.cpu.userMicros - baseline.cpu.userMicros).toBeGreaterThan(50_000);
-    expect(active.cpu.systemMicros - baseline.cpu.systemMicros).toBeGreaterThan(50_000);
+    expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
+      childRssBytes - 8 * 1024 * 1024,
+    );
+    expect(active.cpu.userMicros - daemonCpu.user).toBeGreaterThan(50_000);
+    expect(active.cpu.systemMicros - daemonCpu.system).toBeGreaterThan(50_000);
+  });
+
+  test('portable metrics retain an owned process group after its leader exits', async () => {
+    await requireApp().close();
+    app = await buildWorkspaceAgent({ workspaceRoot, token, metricsSource: portableMetricsSource });
+    const leaderPidFile = join(workspaceRoot, 'exited-metrics-leader.pid');
+    const childPidFile = join(workspaceRoot, 'exited-metrics-child.pid');
+    const childScript = [
+      "const fs = require('node:fs');",
+      'const memory = Buffer.allocUnsafe(96 * 1024 * 1024);',
+      "require('node:crypto').randomFillSync(memory);",
+      "const fd = fs.openSync('/dev/null', 'w');",
+      'const block = Buffer.alloc(4096, 1);',
+      'const deadline = Date.now() + 750;',
+      'let value = 1;',
+      'while (Date.now() < deadline) { fs.writeSync(fd, block); value += Math.sqrt(value); }',
+      `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+      'setInterval(() => { value += memory[0]; }, 1000);',
+    ].join('');
+    const activeRequest = requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: authorization(),
+      payload: {
+        cmd: '/bin/sh',
+        args: ['-c', 'echo $$ > "$LEADER_PID_FILE"; "$NODE_BIN" -e "$CHILD_SCRIPT" & exit 0'],
+        env: {
+          LEADER_PID_FILE: leaderPidFile,
+          NODE_BIN: process.execPath,
+          CHILD_SCRIPT: childScript,
+        },
+        timeoutMs: 10_000,
+      },
+    });
+    const leaderPid = Number(await waitForFile(leaderPidFile));
+    const childPid = Number(await waitForFile(childPidFile));
+    await waitForProcessExit(leaderPid);
+
+    const activeResponse = await requireApp().inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const active = activeResponse.json<{
+      activeChildren: number;
+      cpu: { userMicros: number; systemMicros: number };
+      memory: { rssBytes: number };
+    }>();
+    const daemonCpu = process.cpuUsage();
+    const daemonMemory = process.memoryUsage();
+    const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
+    const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
+    await requireApp().inject({
+      method: 'POST',
+      url: `/exec/${String(leaderPid)}/kill`,
+      headers: authorization(),
+    });
+    await activeRequest;
+    const afterResponse = await requireApp().inject({
+      method: 'GET',
+      url: '/metrics',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(active.activeChildren).toBe(1);
+    expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
+      childRssBytes - 8 * 1024 * 1024,
+    );
+    expect(active.cpu.userMicros - daemonCpu.user).toBeGreaterThan(50_000);
+    expect(active.cpu.systemMicros - daemonCpu.system).toBeGreaterThan(50_000);
+    expect(afterResponse.json<{ activeChildren: number }>().activeChildren).toBe(0);
   });
 
   test('closing the agent reaps every active child', async () => {
@@ -1256,11 +1512,18 @@ describe('workspace-agent RPC daemon', () => {
         timeoutMs: 10_000,
       },
     });
+    const requestOutcome = request.then(
+      () => 'fulfilled' as const,
+      (error: unknown) => {
+        expect(error).toMatchObject({ code: 'LIGHT_ECONNRESET' });
+        return 'rejected' as const;
+      },
+    );
     const pid = Number(await waitForFile(pidFile));
 
     await requireApp().close();
     app = undefined;
-    await request;
+    expect(await requestOutcome).toBe('rejected');
 
     await waitForProcessExit(pid);
   });

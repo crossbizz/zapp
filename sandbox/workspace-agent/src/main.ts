@@ -65,7 +65,12 @@ const IdempotencyKeySchema = z
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
-const MUTATING_ROUTES = new Set(['/exec', '/exec/:pid/kill', '/files', '/git']);
+const IDEMPOTENCY_REQUIRED_ROUTES = new Set([
+  'POST /exec',
+  'POST /exec/:pid/kill',
+  'PUT /files',
+  'POST /git',
+]);
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 
 interface CachedResponse {
@@ -80,6 +85,7 @@ interface IdempotencyEntry {
   readonly resolve: (response: CachedResponse) => void;
   readonly reject: (error: Error) => void;
   complete: boolean;
+  retained: boolean;
 }
 
 type IdempotencyStart =
@@ -110,7 +116,9 @@ class IdempotencyStore {
     }
 
     if (this.entries.size >= MAX_IDEMPOTENCY_ENTRIES) {
-      const completed = [...this.entries].find(([, entry]) => entry.complete);
+      const completed = [...this.entries].find(
+        ([, entry]) => entry.complete && !entry.retained,
+      );
       if (completed === undefined) {
         return { kind: 'full' };
       }
@@ -130,16 +138,18 @@ class IdempotencyStore {
       resolve: resolveCompletion,
       reject: rejectCompletion,
       complete: false,
+      retained: false,
     };
     this.entries.set(key, entry);
     return { kind: 'owner', entry };
   }
 
-  complete(entry: IdempotencyEntry, response: CachedResponse): void {
+  complete(entry: IdempotencyEntry, response: CachedResponse, retained = false): void {
     if (entry.complete) {
       return;
     }
     entry.complete = true;
+    entry.retained = retained;
     entry.resolve({
       ...response,
       ...(Buffer.isBuffer(response.body) ? { body: Buffer.from(response.body) } : {}),
@@ -227,6 +237,11 @@ function hasHttpBody(headers: Record<string, string | string[] | undefined>): bo
   );
 }
 
+function requiresIdempotencyKey(request: FastifyRequest): boolean {
+  const routeUrl = request.routeOptions.url;
+  return routeUrl !== undefined && IDEMPOTENCY_REQUIRED_ROUTES.has(`${request.method} ${routeUrl}`);
+}
+
 export interface NdjsonWriter {
   readonly destroyed?: boolean;
   readonly writableEnded?: boolean;
@@ -234,6 +249,8 @@ export interface NdjsonWriter {
   once(event: 'close' | 'drain' | 'error', listener: (...args: unknown[]) => void): unknown;
   off(event: 'close' | 'drain' | 'error', listener: (...args: unknown[]) => void): unknown;
 }
+
+type ActiveStreamWriter = NdjsonWriter & { destroy: () => unknown };
 
 function serializeNdjsonRecord(record: unknown): string {
   return `${JSON.stringify(ExecStreamRecordSchema.parse(record))}\n`;
@@ -287,16 +304,21 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   const expectedDigest = tokenDigest(parsed.token);
   const execManager = new ExecManager(workspaceRoot);
   const idempotency = new IdempotencyStore();
+  const activeStreamWriters = new Set<ActiveStreamWriter>();
   const idempotencyKeys = new WeakMap<FastifyRequest, string>();
   const idempotencyOwners = new WeakMap<
     FastifyRequest,
     { key: string; entry: IdempotencyEntry }
   >();
 
-  const completeIdempotency = (request: FastifyRequest, response: CachedResponse): void => {
+  const completeIdempotency = (
+    request: FastifyRequest,
+    response: CachedResponse,
+    retained = false,
+  ): void => {
     const owner = idempotencyOwners.get(request);
     if (owner !== undefined) {
-      idempotency.complete(owner.entry, response);
+      idempotency.complete(owner.entry, response, retained);
     }
   };
 
@@ -323,16 +345,14 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       await reply.code(400).send(ErrorResponseSchema.parse({ error: 'bad_request' }));
       return;
     }
-    const routeUrl = request.routeOptions.url;
-    if (routeUrl !== undefined && MUTATING_ROUTES.has(routeUrl)) {
+    if (requiresIdempotencyKey(request)) {
       const header = request.headers['idempotency-key'];
       const key = IdempotencyKeySchema.parse(typeof header === 'string' ? header : undefined);
       idempotencyKeys.set(request, key);
     }
   });
   app.addHook('preHandler', async (request, reply) => {
-    const routeUrl = request.routeOptions.url;
-    if (routeUrl === undefined || !MUTATING_ROUTES.has(routeUrl)) {
+    if (!requiresIdempotencyKey(request)) {
       return;
     }
     const key = idempotencyKeys.get(request);
@@ -369,6 +389,11 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     return payload;
   });
   app.addHook('preClose', async () => {
+    for (const writer of activeStreamWriters) {
+      if (writer.destroyed !== true) {
+        writer.destroy();
+      }
+    }
     await execManager.killAll();
   });
   app.setErrorHandler(async (error, _request, reply) => {
@@ -423,6 +448,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     await started;
 
     reply.hijack();
+    activeStreamWriters.add(reply.raw);
     reply.raw.statusCode = 200;
     reply.raw.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
     const onClose = (): void => {
@@ -453,7 +479,21 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       });
       reply.raw.end();
     } catch (error) {
-      failIdempotency(request, error);
+      if (activePid === undefined) {
+        failIdempotency(request, error);
+      } else {
+        completeIdempotency(
+          request,
+          {
+            statusCode: 409,
+            contentType: 'application/json; charset=utf-8',
+            body: JSON.stringify(
+              ErrorResponseSchema.parse({ error: 'idempotency_ambiguous' }),
+            ),
+          },
+          true,
+        );
+      }
       for (const pending of pendingRecords.splice(0)) {
         pending.reject(error);
       }
@@ -466,6 +506,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       }
     } finally {
       reply.raw.off('close', onClose);
+      activeStreamWriters.delete(reply.raw);
     }
   });
 
@@ -512,7 +553,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     EmptyQuerySchema.parse(request.query);
     EmptyBodySchema.parse(request.body);
     return MetricsResponseSchema.parse(
-      await getMetrics(execManager.activePids(), parsed.metricsSource),
+      await getMetrics(execManager.activeProcessGroups(), parsed.metricsSource),
     );
   });
 

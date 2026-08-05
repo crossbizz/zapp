@@ -110,6 +110,7 @@ export class ExecPreflightError extends Error {
 }
 
 interface ActiveProcess {
+  readonly processGroupId: number;
   readonly kill: (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout') => void;
   readonly done: Promise<void>;
 }
@@ -232,8 +233,8 @@ export class ExecManager {
 
   constructor(private readonly workspaceRoot: string) {}
 
-  activePids(): readonly number[] {
-    return [...this.active.keys()];
+  activeProcessGroups(): readonly number[] {
+    return [...new Set([...this.active.values()].map((child) => child.processGroupId))];
   }
 
   async run(input: ExecRequest, emit?: ExecStreamEmitter): Promise<ExecResult> {
@@ -300,7 +301,7 @@ export class ExecManager {
       state.termination ??= reason;
       killProcessGroup(pid, () => subprocess.kill('SIGKILL'));
     };
-    this.active.set(pid, { kill, done });
+    this.active.set(pid, { processGroupId: pid, kill, done });
     const timeout = setTimeout(() => {
       kill('timeout');
     }, input.timeoutMs);
@@ -379,7 +380,7 @@ export class ExecManager {
         terminal.kill('SIGKILL');
       });
     };
-    this.active.set(pid, { kill, done });
+    this.active.set(pid, { processGroupId: pid, kill, done });
     const timeout = setTimeout(() => {
       kill('timeout');
     }, input.timeoutMs);

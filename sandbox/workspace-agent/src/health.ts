@@ -41,7 +41,7 @@ const MetricsUsageSchema = MetricsResponseSchema.omit({ at: true, activeChildren
 type MetricsUsage = z.infer<typeof MetricsUsageSchema>;
 
 export interface MetricsSource {
-  sample(activePids: readonly number[]): Promise<MetricsUsage>;
+  sample(activeProcessGroups: readonly number[]): Promise<MetricsUsage>;
 }
 
 function parseCpuTime(value: string): number {
@@ -133,15 +133,12 @@ function parseProcessUsage(output: string): ProcessUsageRow[] {
 
 function selectWorkspaceProcesses(
   rows: readonly ProcessUsageRow[],
-  activePids: readonly number[],
+  activeProcessGroups: readonly number[],
 ): ProcessUsageRow[] {
-  const active = new Set(activePids);
-  const processGroups = new Set(
-    rows.filter((row) => active.has(row.pid)).map((row) => row.processGroupId),
-  );
+  const processGroups = new Set(activeProcessGroups);
   const selected = new Set<number>();
   for (const row of rows) {
-    if (active.has(row.pid) || processGroups.has(row.processGroupId)) {
+    if (processGroups.has(row.processGroupId)) {
       selected.add(row.pid);
     }
   }
@@ -158,20 +155,23 @@ function selectWorkspaceProcesses(
   return rows.filter((row) => selected.has(row.pid));
 }
 
-async function readPortableUsage(activePids: readonly number[]): Promise<MetricsUsage> {
+async function readPortableUsage(activeProcessGroups: readonly number[]): Promise<MetricsUsage> {
   const cpu = process.cpuUsage();
   const memory = process.memoryUsage();
   let childUserMicros = 0;
   let childSystemMicros = 0;
   let childRssBytes = 0;
-  if (activePids.length > 0) {
+  if (activeProcessGroups.length > 0) {
     try {
       const result = await execa('ps', ['-A', '-o', 'pid=,ppid=,pgid=,rss=,utime=,stime='], {
         reject: false,
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
         extendEnv: false,
       });
-      for (const row of selectWorkspaceProcesses(parseProcessUsage(result.stdout), activePids)) {
+      for (const row of selectWorkspaceProcesses(
+        parseProcessUsage(result.stdout),
+        activeProcessGroups,
+      )) {
         childUserMicros += row.userMicros;
         childSystemMicros += row.systemMicros;
         childRssBytes += row.rssBytes;
@@ -200,8 +200,8 @@ export const portableMetricsSource: MetricsSource = {
 };
 
 const defaultMetricsSource: MetricsSource = {
-  async sample(activePids) {
-    return (await readCgroupUsage()) ?? portableMetricsSource.sample(activePids);
+  async sample(activeProcessGroups) {
+    return (await readCgroupUsage()) ?? portableMetricsSource.sample(activeProcessGroups);
   },
 };
 
@@ -238,13 +238,13 @@ export async function getHealth(devServerPort?: number): Promise<HealthResponse>
 }
 
 export async function getMetrics(
-  activePids: readonly number[],
+  activeProcessGroups: readonly number[],
   source: MetricsSource = defaultMetricsSource,
 ): Promise<MetricsResponse> {
-  const usage = await source.sample(activePids);
+  const usage = await source.sample(activeProcessGroups);
   return MetricsResponseSchema.parse({
     at: new Date().toISOString(),
-    activeChildren: activePids.length,
+    activeChildren: activeProcessGroups.length,
     ...usage,
   });
 }
