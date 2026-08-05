@@ -794,6 +794,25 @@ test('AR-1 ignores loader defaults behind known-present object properties and ar
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 selects loader defaults after unknown object spreads', () => {
+  const result = runFixture('loader-unknown-object-spread-default');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'unknown-spread-after-defined',
+    'mutated-known-spread',
+    'known-undefined-spread',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 preserves source order and exact object spreads around loader defaults', () => {
+  const result = runFixture('loader-unknown-object-spread-default-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-5 keeps mixed callsites isolated in reverse order', () => {
   const result = runFixture('loader-mixed-callsite-reverse-control');
 

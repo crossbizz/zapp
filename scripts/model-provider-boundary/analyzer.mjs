@@ -643,6 +643,64 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return false;
   }
 
+  function objectSpreadMembersAreKnown(expression, seenSymbols = new Set()) {
+    const current = unwrapExpression(expression);
+    if (ts.isObjectLiteralExpression(current)) {
+      return current.properties.every((property) => {
+        if (ts.isSpreadAssignment(property)) {
+          return objectSpreadMembersAreKnown(property.expression, seenSymbols);
+        }
+        const memberNames = declarationMemberNames(property.name);
+        return !!memberNames && memberNames.size === 1;
+      });
+    }
+    if (ts.isIdentifier(current)) {
+      const symbol = symbolAt(checker, current);
+      const identity = aliasedSymbol(checker, symbol) ?? symbol;
+      if (!identity || seenSymbols.has(identity)) return false;
+      let hasAnotherRuntimeReference = false;
+      function visitReference(node) {
+        if (hasAnotherRuntimeReference) return;
+        if (
+          ts.isIdentifier(node) &&
+          node !== current &&
+          isRuntimeIdentifier(node) &&
+          (aliasedSymbol(checker, symbolAt(checker, node)) ?? symbolAt(checker, node)) === identity
+        ) {
+          hasAnotherRuntimeReference = true;
+          return;
+        }
+        ts.forEachChild(node, visitReference);
+      }
+      visitReference(current.getSourceFile());
+      if (hasAnotherRuntimeReference) return false;
+      const declarations = identity.declarations ?? [];
+      return (
+        declarations.length > 0 &&
+        declarations.every(
+          (declaration) =>
+            ts.isVariableDeclaration(declaration) &&
+            !!declaration.initializer &&
+            (ts.getCombinedNodeFlags(declaration.parent) & ts.NodeFlags.Const) !== 0 &&
+            objectSpreadMembersAreKnown(
+              declaration.initializer,
+              new Set([...seenSymbols, identity]),
+            ),
+        )
+      );
+    }
+    if (ts.isConditionalExpression(current)) {
+      return (
+        objectSpreadMembersAreKnown(current.whenTrue, seenSymbols) &&
+        objectSpreadMembersAreKnown(current.whenFalse, seenSymbols)
+      );
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return objectSpreadMembersAreKnown(current.right, seenSymbols);
+    }
+    return false;
+  }
+
   function isModuleRequire(expression) {
     const current = unwrapExpression(expression);
     if (ts.isPropertyAccessExpression(current)) {
@@ -2655,9 +2713,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       for (const property of current.properties) {
         if (ts.isSpreadAssignment(property)) {
           const spread = callableValue(property.expression, environment, state);
+          const spreadMembersAreKnown = objectSpreadMembersAreKnown(property.expression);
+          if (!spreadMembersAreKnown) {
+            knownDefinedMembers.clear();
+          }
           for (const [memberName, memberValue] of spread.members) {
             members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
-            if (spread.knownDefinedMembers?.has(memberName)) {
+            if (spreadMembersAreKnown) knownDefinedMembers.delete(memberName);
+            if (spreadMembersAreKnown && spread.knownDefinedMembers?.has(memberName)) {
               knownDefinedMembers.add(memberName);
             }
           }
