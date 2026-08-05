@@ -3099,6 +3099,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (ts.isStringLiteralLike(current)) {
       return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
     }
+    if (ts.isNumericLiteral(current)) {
+      return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
+    }
     if (ts.isNoSubstitutionTemplateLiteral(current)) {
       return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
     }
@@ -3246,6 +3249,26 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           ),
         );
       }
+      if (current.operatorToken.kind === ts.SyntaxKind.MinusToken) {
+        const left =
+          callableValue(current.left, environment, state).strings ??
+          staticPropertyNames(current.left);
+        const right =
+          callableValue(current.right, environment, state).strings ??
+          staticPropertyNames(current.right);
+        return left && right
+          ? {
+              functions: [],
+              kinds: 0,
+              members: new Map(),
+              strings: new Set(
+                [...left].flatMap((leftValue) =>
+                  [...right].map((rightValue) => String(Number(leftValue) - Number(rightValue))),
+                ),
+              ),
+            }
+          : emptyCallableValue();
+      }
     }
     if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = callableValue(current.left, environment, state).strings;
@@ -3256,7 +3279,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             kinds: 0,
             members: new Map(),
             strings: new Set(
-              [...left].flatMap((prefix) => [...right].map((value) => prefix + value)),
+              [...left].flatMap((prefix) =>
+                [...right].flatMap((value) => {
+                  const results = [prefix + value];
+                  const numeric = Number(prefix) + Number(value);
+                  if (!Number.isNaN(numeric)) results.push(String(numeric));
+                  return results;
+                }),
+              ),
             ),
           }
         : emptyCallableValue();

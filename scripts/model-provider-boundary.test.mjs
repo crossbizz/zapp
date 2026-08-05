@@ -556,7 +556,11 @@ test('AR-1 detects require selected by Array.reduce computed callback indexes', 
   const result = runFixture('loader-array-reduce-computed-index');
 
   assert.equal(result.status, 1);
-  for (const fileName of ['no-initial-require', 'explicit-initial-require']) {
+  for (const fileName of [
+    'no-initial-require',
+    'explicit-initial-require',
+    'derived-index-require',
+  ]) {
     assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
   }
 });
