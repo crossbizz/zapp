@@ -185,9 +185,9 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 **Interfaces produced:** `GET /v1/runs/:runId/events` with `Accept: text/event-stream`: replays rows `sequence > Last-Event-ID` (or `?after=`), then live-tails via Redis ping → DB read; each SSE message: `id: {sequence}`, `event: {type}`, `data: {AgentEvent JSON}`; heartbeat comment every 15 s; visibility filter: user sessions get `visibility=user`; support role param gets `user+support`; `internal` never leaves the service boundary.
 **Effort:** M
 
-- [ ] **Step 1:** Failing integration test: create 5 events → connect with `Last-Event-ID: 2` → receive 3,4,5 then a live 6 within 2 s; internal-visibility event never appears; disconnect/reconnect resumes without duplicates (client dedupe by sequence asserted server sends none twice for a stable cursor).
-- [ ] **Step 2:** Implement with backpressure (pause DB tail if socket buffer full), 4 h max connection (client reconnects).
-- [ ] **Step 3:** Commit: `feat(control-api): resumable SSE run event stream`
+- [x] **Step 1:** Failing integration test: create 5 events → connect with `Last-Event-ID: 2` → receive 3,4,5 then a live 6 within 2 s; internal-visibility event never appears; disconnect/reconnect resumes without duplicates (client dedupe by sequence asserted server sends none twice for a stable cursor).
+- [x] **Step 2:** Implement with backpressure (pause DB tail if socket buffer full), 4 h max connection (client reconnects).
+- [x] **Step 3:** Commit: `feat(control-api): resumable SSE run event stream`
 
 ### Task CP-16: OpenAPI + generated SDK
 
@@ -268,3 +268,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-14 done — committed event notifications now publish Zod-validated high-water pings through Redis, with bounded LISTEN retry and a 2-second database polling fallback.
 - 2026-08-04 CP-15 implementation committed — resumable tenant-scoped SSE now has bounded replay, bounded shutdown, and serialized backpressure; review pending.
 - 2026-08-04 CP-15 BLOCKED: final review 5/5 found shutdown still waits indefinitely for an already-stalled database `byRun()` read and valid bare post-`q` Accept extensions are rejected; task/tracker remain unchecked pending explicit approval for another remediation round.
+- 2026-08-04 CP-15 done — accepted ADR-0008; resumable tenant-scoped SSE now bounds replay and backpressure, revalidates active authorization, enforces stream ceilings, and safely cancels active or pool-queued PostgreSQL replay; final review CLEAN with clean-checkout DB 48/48, tenant isolation 46/46, SSE 57/57, and root gates green.
