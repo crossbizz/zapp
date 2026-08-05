@@ -82,7 +82,7 @@ const FullRefNameSchema = z
   .startsWith('refs/')
   .refine((value) => RefNameSchema.safeParse(value.slice('refs/'.length)).success);
 
-const BackupRepositorySchema = z
+export const BackupRepositorySchema = z
   .object({
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
@@ -353,9 +353,13 @@ export function createS3BackupObjectStore(options: {
     }
   }
 
-  async function finalObjectExists(key: string, signal: AbortSignal): Promise<boolean> {
+  async function finalObjectExists(key: string): Promise<boolean> {
+    const reconciliationSignal = AbortSignal.timeout(config.timeoutMs);
     try {
-      await sendWithRetry(() => new HeadObjectCommand({ Bucket: config.bucket, Key: key }), signal);
+      await sendWithRetry(
+        () => new HeadObjectCommand({ Bucket: config.bucket, Key: key }),
+        reconciliationSignal,
+      );
       return true;
     } catch (error) {
       if (httpStatus(error) === 404) {
@@ -390,13 +394,17 @@ export function createS3BackupObjectStore(options: {
         if (httpStatus(error) === 412) {
           return 'existing';
         }
-        if (httpStatus(error) === 409 || !retryable(error) || signal.aborted) {
-          throw error;
+        if (signal.aborted || retryable(error)) {
+          if (await finalObjectExists(key)) {
+            return 'existing';
+          }
         }
-        if (await finalObjectExists(key, signal)) {
-          return 'existing';
-        }
-        if (attempt === config.maxAttempts) {
+        if (
+          httpStatus(error) === 409 ||
+          !retryable(error) ||
+          signal.aborted ||
+          attempt === config.maxAttempts
+        ) {
           throw error;
         }
         await delay(config.retryBaseDelayMs * 2 ** (attempt - 1), undefined, { signal });
@@ -529,8 +537,10 @@ export function createS3BackupObjectStore(options: {
           if (httpStatus(error) === 412) {
             return 'existing';
           }
-          if (retryable(error) && !deadline.aborted && (await finalObjectExists(key, deadline))) {
-            return 'existing';
+          if (deadline.aborted || retryable(error)) {
+            if (await finalObjectExists(key)) {
+              return 'existing';
+            }
           }
           throw error;
         }
@@ -1226,16 +1236,18 @@ const RestoreInputSchema = z
   })
   .strict();
 
-export interface CreatedRestoreTarget {
+export interface ResolvedRestoreTarget {
   readonly cloneUrl: string;
-  readonly compensate: () => Promise<void>;
 }
+
+export type RestorePhase = 'push-started' | 'push-complete' | 'verified';
 
 export async function restoreRepositoryBackup(
   deps: {
     readonly store: BackupObjectStore;
     readonly git: BackupGit;
-    readonly createTarget: () => Promise<CreatedRestoreTarget>;
+    readonly resolveTarget: () => Promise<ResolvedRestoreTarget>;
+    readonly recordPhase?: (phase: RestorePhase, result?: RestoreRepositoryResult) => Promise<void>;
   },
   input: z.input<typeof RestoreInputSchema>,
 ): Promise<RestoreRepositoryResult> {
@@ -1260,62 +1272,46 @@ export async function restoreRepositoryBackup(
     } catch {
       throw new Error('Git bundle verification failed');
     }
-    let createdTarget: CreatedRestoreTarget;
-    let compensate: (() => Promise<void>) | undefined;
+    let resolvedTarget: ResolvedRestoreTarget;
     try {
-      createdTarget = await deps.createTarget();
-      compensate = createdTarget.compensate;
-      createdTarget = { ...createdTarget, cloneUrl: safeGitUrl(createdTarget.cloneUrl) };
+      resolvedTarget = await deps.resolveTarget();
+      resolvedTarget = { ...resolvedTarget, cloneUrl: safeGitUrl(resolvedTarget.cloneUrl) };
     } catch {
-      if (compensate !== undefined) {
-        try {
-          await compensate();
-        } catch {
-          throw new Error('Fresh restore target creation and compensation failed');
-        }
-      }
-      throw new Error('Fresh restore target creation failed');
+      throw new Error('Restore target resolution failed');
     }
+    await deps.recordPhase?.('push-started');
     try {
-      try {
-        await deps.git.mirrorPush(bundlePath, createdTarget.cloneUrl);
-      } catch {
-        throw new Error('Bundle mirror push failed');
-      }
-      let actual: ReadonlyMap<string, string>;
-      try {
-        actual = await deps.git.remoteRefs(createdTarget.cloneUrl);
-      } catch {
-        throw new Error('Restored branch listing failed');
-      }
-      const expected = parsed.data.expectedBranches.filter(
-        (branch) => branch.headCommitSha !== null,
-      );
-      const branchEvidence = expected
-        .map((branch) => ({
-          name: branch.name,
-          expectedSha: branch.headCommitSha ?? '',
-          actualSha: actual.get(`refs/heads/${branch.name}`) ?? '',
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name));
-      if (branchEvidence.some((branch) => branch.actualSha !== branch.expectedSha)) {
-        throw new Error('Restored branch heads do not match the database');
-      }
-      return RestoreRepositoryResultSchema.parse({
-        checkedBranches: branchEvidence.length,
-        branches: branchEvidence,
-        refs: [...actual]
-          .map(([name, sha]) => ({ name, sha }))
-          .sort((left, right) => left.name.localeCompare(right.name)),
-      });
-    } catch (error) {
-      try {
-        await createdTarget.compensate();
-      } catch {
-        throw new Error('Restore failed and exact target compensation failed');
-      }
-      throw error;
+      await deps.git.mirrorPush(bundlePath, resolvedTarget.cloneUrl);
+    } catch {
+      throw new Error('Bundle mirror push failed');
     }
+    await deps.recordPhase?.('push-complete');
+    let actual: ReadonlyMap<string, string>;
+    try {
+      actual = await deps.git.remoteRefs(resolvedTarget.cloneUrl);
+    } catch {
+      throw new Error('Restored branch listing failed');
+    }
+    const expected = parsed.data.expectedBranches.filter((branch) => branch.headCommitSha !== null);
+    const branchEvidence = expected
+      .map((branch) => ({
+        name: branch.name,
+        expectedSha: branch.headCommitSha ?? '',
+        actualSha: actual.get(`refs/heads/${branch.name}`) ?? '',
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    if (branchEvidence.some((branch) => branch.actualSha !== branch.expectedSha)) {
+      throw new Error('Restored branch heads do not match the database');
+    }
+    const result = RestoreRepositoryResultSchema.parse({
+      checkedBranches: branchEvidence.length,
+      branches: branchEvidence,
+      refs: [...actual]
+        .map(([name, sha]) => ({ name, sha }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    });
+    await deps.recordPhase?.('verified', result);
+    return result;
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

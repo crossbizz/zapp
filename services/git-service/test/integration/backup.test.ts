@@ -9,6 +9,7 @@ import { branches, organizations, projects, repositories, users } from '@zapp/db
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { beginRestoreOperation } from '../../scripts/backup.js';
 import {
   createDbBackupInventory,
   createGitBundleCommands,
@@ -128,6 +129,7 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
   let inventory: BackupInventory | undefined;
   let store: BackupObjectStore | undefined;
   let backupObjectKey: string | undefined;
+  const restoreReceiptKeys = new Set<string>();
   let cloneUrl: string | undefined;
 
   beforeAll(async () => {
@@ -229,6 +231,14 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     if (store !== undefined && backupObjectKey !== undefined) {
       await store.delete(backupObjectKey);
     }
+    if (store !== undefined) {
+      const activeStore = store;
+      await Promise.all(
+        [...restoreReceiptKeys].map(async (key) => {
+          await activeStore.delete(key);
+        }),
+      );
+    }
     if (database !== undefined) {
       await database.db.delete(branches).where(eq(branches.projectId, projectId));
       await database.db.delete(repositories).where(eq(repositories.id, repositoryId));
@@ -279,25 +289,29 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     expect(missing.status).toBe(404);
 
     const expectedBranches = await inventory.expectedBranches(organizationId, projectId);
-    let failedTargetRef: string | undefined;
+    const restoreInput = {
+      kind: 'manual' as const,
+      idempotencyKey: `live-${projectId}`,
+      source: repository,
+      backupKey: backedUp.key,
+    };
+    const failedOperation = await beginRestoreOperation(
+      { store, client: activeClient },
+      restoreInput,
+    );
+    restoreReceiptKeys.add(failedOperation.intentKey);
+    restoreReceiptKeys.add(failedOperation.intentKey.replace(/\.json$/, '.target.json'));
+    restoreReceiptKeys.add(failedOperation.intentKey.replace(/\.json$/, '.push-started.json'));
+    restoreReceiptKeys.add(failedOperation.intentKey.replace(/\.json$/, '.push-complete.json'));
+    restoreReceiptKeys.add(failedOperation.intentKey.replace(/\.json$/, '.verified.json'));
     await expect(
       restoreRepositoryBackup(
         {
           store,
           git,
-          createTarget: async () => {
-            const created = await activeProvider.createRepository({
-              organizationId,
-              projectId,
-              defaultBranch: 'main',
-            });
-            failedTargetRef = created.internalRepoRef;
-            return {
-              cloneUrl: created.cloneUrl,
-              compensate: async () => {
-                await activeProvider.deleteRepository(created.internalRepoRef);
-              },
-            };
+          resolveTarget: async () => await failedOperation.resolveTarget(),
+          recordPhase: async (phase, result) => {
+            await failedOperation.recordPhase(phase, result);
           },
         },
         {
@@ -308,32 +322,30 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
         },
       ),
     ).rejects.toThrow('Restored branch heads do not match the database');
-    const [failedOwner, failedName] = (failedTargetRef ?? '').split('/');
-    const compensatedTarget = await activeClient.send({
+    const [failedOwner, failedName] = failedOperation.targetRef.split('/');
+    const retainedTarget = await activeClient.send({
       method: 'GET',
       path: `/repos/${failedOwner ?? ''}/${failedName ?? ''}`,
       allow: [404],
     });
-    expect(compensatedTarget.status).toBe(404);
+    expect(retainedTarget.status).toBe(200);
 
+    const retryOperation = await beginRestoreOperation(
+      { store, client: activeClient },
+      restoreInput,
+    );
     let restoredCloneUrl: string | undefined;
     const restoreResult = await restoreRepositoryBackup(
       {
         store,
         git,
-        createTarget: async () => {
-          const created = await activeProvider.createRepository({
-            organizationId,
-            projectId,
-            defaultBranch: 'main',
-          });
-          restoredCloneUrl = created.cloneUrl;
-          return {
-            cloneUrl: created.cloneUrl,
-            compensate: async () => {
-              await activeProvider.deleteRepository(created.internalRepoRef);
-            },
-          };
+        resolveTarget: async () => {
+          const target = await retryOperation.resolveTarget();
+          restoredCloneUrl = target.cloneUrl;
+          return target;
+        },
+        recordPhase: async (phase, result) => {
+          await retryOperation.recordPhase(phase, result);
         },
       },
       { key: backedUp.key, expectedBranches: [...expectedBranches] },

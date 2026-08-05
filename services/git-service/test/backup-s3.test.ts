@@ -459,6 +459,104 @@ describe('createS3BackupObjectStore', () => {
     ]);
   });
 
+  it('reconciles an aborted single PUT with a fresh independently bounded HEAD signal', async () => {
+    const client = new FakeS3();
+    let uploadSignal: AbortSignal | undefined;
+    client.handler = (call) => {
+      if (call.name === 'PutObjectCommand') {
+        uploadSignal = call.signal;
+        return new Promise((_resolve, reject) => {
+          call.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(Object.assign(new Error('deadline expired'), { code: 'ETIMEDOUT' }));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        expect(call.signal).not.toBe(uploadSignal);
+        expect(call.signal?.aborted).toBe(false);
+        return { ContentLength: 12 };
+      }
+      return {};
+    };
+    const store = multipartStore(client, { uploadDeadlineMs: 100, maxAttempts: 1 });
+
+    await expect(store.put('single-timeout-published.bundle', source(12).source)).resolves.toBe(
+      'existing',
+    );
+    expect(client.calls.map((call) => call.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+    ]);
+  });
+
+  it('reports the original aborted PUT when fresh reconciliation proves the key absent', async () => {
+    const client = new FakeS3();
+    const timeout = Object.assign(new Error('deadline expired'), { code: 'ETIMEDOUT' });
+    client.handler = (call) => {
+      if (call.name === 'PutObjectCommand') {
+        return new Promise((_resolve, reject) => {
+          call.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(timeout);
+            },
+            { once: true },
+          );
+        });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        throw Object.assign(new Error('not found'), { $metadata: { httpStatusCode: 404 } });
+      }
+      return {};
+    };
+    const store = multipartStore(client, { uploadDeadlineMs: 100, maxAttempts: 1 });
+
+    await expect(store.put('single-timeout-absent.bundle', source(12).source)).rejects.toBe(
+      timeout,
+    );
+    expect(client.calls.map((call) => call.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+    ]);
+  });
+
+  it('reports a fresh reconciliation failure instead of guessing after an aborted PUT', async () => {
+    const client = new FakeS3();
+    const reconciliationFailure = Object.assign(new Error('head unavailable'), {
+      code: 'EACCES',
+    });
+    client.handler = (call) => {
+      if (call.name === 'PutObjectCommand') {
+        return new Promise((_resolve, reject) => {
+          call.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(Object.assign(new Error('deadline expired'), { code: 'ETIMEDOUT' }));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        throw reconciliationFailure;
+      }
+      return {};
+    };
+    const store = multipartStore(client, { uploadDeadlineMs: 100, maxAttempts: 1 });
+
+    await expect(store.put('single-timeout-unknown.bundle', source(12).source)).rejects.toBe(
+      reconciliationFailure,
+    );
+    expect(client.calls.map((call) => call.name)).toEqual([
+      'PutObjectCommand',
+      'HeadObjectCommand',
+    ]);
+  });
+
   it('retries multipart completion only after an ambiguous response reconciles as absent', async () => {
     const client = new FakeS3();
     let completions = 0;
@@ -490,6 +588,99 @@ describe('createS3BackupObjectStore', () => {
     expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
     expect(client.calls.filter((call) => call.name === 'AbortMultipartUploadCommand')).toEqual([]);
   });
+
+  it('reconciles an aborted multipart completion with a fresh independently bounded HEAD signal', async () => {
+    const client = new FakeS3();
+    let completionSignal: AbortSignal | undefined;
+    client.handler = (call) => {
+      if (call.name === 'CreateMultipartUploadCommand') {
+        return { UploadId: 'completion-timeout' };
+      }
+      if (call.name === 'UploadPartCommand') {
+        return { ETag: `etag-${String(call.input['PartNumber'])}` };
+      }
+      if (call.name === 'CompleteMultipartUploadCommand') {
+        completionSignal = call.signal;
+        return new Promise((_resolve, reject) => {
+          call.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(Object.assign(new Error('deadline expired'), { code: 'ETIMEDOUT' }));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (call.name === 'HeadObjectCommand') {
+        expect(call.signal).not.toBe(completionSignal);
+        expect(call.signal?.aborted).toBe(false);
+        return { ContentLength: 11 * MIB };
+      }
+      return {};
+    };
+    const store = multipartStore(client, { uploadDeadlineMs: 100, maxAttempts: 1 });
+
+    await expect(
+      store.put('multipart-timeout-published.bundle', source(11 * MIB).source),
+    ).resolves.toBe('existing');
+    expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
+    expect(client.calls.filter((call) => call.name === 'AbortMultipartUploadCommand')).toHaveLength(
+      1,
+    );
+  });
+
+  it.each(['absent', 'unknown'] as const)(
+    'reports an aborted multipart completion honestly when fresh reconciliation is %s',
+    async (reconciliation) => {
+      const client = new FakeS3();
+      const timeout = Object.assign(new Error('deadline expired'), { code: 'ETIMEDOUT' });
+      const headFailure = Object.assign(new Error('head unavailable'), { code: 'EACCES' });
+      let completionSignal: AbortSignal | undefined;
+      client.handler = (call) => {
+        if (call.name === 'CreateMultipartUploadCommand') {
+          return { UploadId: `completion-${reconciliation}` };
+        }
+        if (call.name === 'UploadPartCommand') {
+          return { ETag: `etag-${String(call.input['PartNumber'])}` };
+        }
+        if (call.name === 'CompleteMultipartUploadCommand') {
+          completionSignal = call.signal;
+          return new Promise((_resolve, reject) => {
+            call.signal?.addEventListener(
+              'abort',
+              () => {
+                reject(timeout);
+              },
+              { once: true },
+            );
+          });
+        }
+        if (call.name === 'HeadObjectCommand') {
+          expect(call.signal).not.toBe(completionSignal);
+          expect(call.signal?.aborted).toBe(false);
+          throw reconciliation === 'absent'
+            ? Object.assign(new Error('not found'), { $metadata: { httpStatusCode: 404 } })
+            : headFailure;
+        }
+        return {};
+      };
+      const store = multipartStore(client, { uploadDeadlineMs: 100, maxAttempts: 1 });
+      const result = store.put(
+        `multipart-timeout-${reconciliation}.bundle`,
+        source(11 * MIB).source,
+      );
+
+      if (reconciliation === 'absent') {
+        await expect(result).rejects.toBe(timeout);
+      } else {
+        await expect(result).rejects.toBe(headFailure);
+      }
+      expect(client.calls.filter((call) => call.name === 'HeadObjectCommand')).toHaveLength(1);
+      expect(
+        client.calls.filter((call) => call.name === 'AbortMultipartUploadCommand'),
+      ).toHaveLength(1);
+    },
+  );
 
   it('aborts incomplete parts after the shared upload deadline', async () => {
     const client = new FakeS3();

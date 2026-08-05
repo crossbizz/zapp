@@ -121,6 +121,7 @@ describe('the backup CLI entrypoint', () => {
       spawnEntrypoint('restore', {
         GIT_RESTORE_ORGANIZATION_ID: ORGANIZATION_ID,
         GIT_RESTORE_PROJECT_ID: PROJECT_ID,
+        GIT_RESTORE_IDEMPOTENCY_KEY: 'incident-invalid-date',
         GIT_RESTORE_KEY:
           'org/org_01J8ME7YQZJ2V9Q0X3T5B6K7N9/project/proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8/git-backups/2026-13-01.bundle',
       }),
@@ -167,6 +168,7 @@ describe('the backup CLI entrypoint', () => {
     const cli = processDouble('restore', {
       GIT_RESTORE_ORGANIZATION_ID: ORGANIZATION_ID,
       GIT_RESTORE_PROJECT_ID: PROJECT_ID,
+      GIT_RESTORE_IDEMPOTENCY_KEY: 'incident-valid-dispatch',
       GIT_RESTORE_KEY: RESTORE_KEY,
     });
     const fake = operationsDouble();
@@ -187,8 +189,28 @@ describe('the backup CLI entrypoint', () => {
     const cli = processDouble('restore', {
       GIT_RESTORE_ORGANIZATION_ID: ORGANIZATION_ID,
       GIT_RESTORE_PROJECT_ID: PROJECT_ID,
+      GIT_RESTORE_IDEMPOTENCY_KEY: 'incident-impossible-date',
       GIT_RESTORE_KEY:
         'org/org_01J8ME7YQZJ2V9Q0X3T5B6K7N9/project/proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8/git-backups/2026-02-30.bundle',
+    });
+    let factories = 0;
+
+    await runBackupCli(cli.process, () => {
+      factories += 1;
+      return Promise.resolve(operationsDouble().operations);
+    });
+
+    expect(factories).toBe(0);
+    expect(cli.process.exitCode).toBe(1);
+    expect(cli.stdout).toEqual([]);
+    expect(cli.stderr).toEqual(['Git backup operation failed\n']);
+  });
+
+  it('requires a durable manual idempotency key before creating operational clients', async () => {
+    const cli = processDouble('restore', {
+      GIT_RESTORE_ORGANIZATION_ID: ORGANIZATION_ID,
+      GIT_RESTORE_PROJECT_ID: PROJECT_ID,
+      GIT_RESTORE_KEY: RESTORE_KEY,
     });
     let factories = 0;
 
