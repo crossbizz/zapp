@@ -3,8 +3,10 @@ import { z } from 'zod';
 
 import { LOG_LEVELS } from './logging.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from './sweep.js';
+import { DEFAULT_TOKEN_TTL_SECONDS } from './tokens.js';
 
 const MIB = 1024 * 1024;
+const RESTORE_CREDENTIAL_TTL_MS = DEFAULT_TOKEN_TTL_SECONDS * 1_000;
 
 /**
  * Everything the git service needs to boot (plan 06 GIT-1).
@@ -160,6 +162,33 @@ export type ArtifactEnv = z.infer<typeof ArtifactEnvSchema>;
 /** Cloudflare R2 in production and the S3-compatible MinIO stack in development. */
 export function loadArtifactEnv(source: unknown = process.env): ArtifactEnv {
   return defineEnv(ArtifactEnvSchema, source);
+}
+
+const GitCommandDeadlineEnvSchema = z
+  .object({
+    GIT_BACKUP_COMMAND_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(7_200_000)
+      .default(900_000),
+    GIT_RESTORE_COMMAND_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(RESTORE_CREDENTIAL_TTL_MS - 1)
+      .default(240_000),
+  })
+  .transform((env) => ({
+    backupCommandDeadlineMs: env.GIT_BACKUP_COMMAND_DEADLINE_MS,
+    restoreCommandDeadlineMs: env.GIT_RESTORE_COMMAND_DEADLINE_MS,
+  }));
+
+export type GitCommandDeadlineEnv = z.infer<typeof GitCommandDeadlineEnvSchema>;
+
+/** Independent Git subprocess budgets for scheduled backup and restore operations. */
+export function loadGitCommandDeadlineEnv(source: unknown = process.env): GitCommandDeadlineEnv {
+  return defineEnv(GitCommandDeadlineEnvSchema, source);
 }
 
 /**

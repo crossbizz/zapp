@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { ArtifactEnvSchema, loadArtifactEnv, loadEnv, loadForgejoEnv } from '../src/env.js';
+import {
+  ArtifactEnvSchema,
+  loadArtifactEnv,
+  loadEnv,
+  loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
+} from '../src/env.js';
 import { DEFAULT_SWEEP_INTERVAL_MS } from '../src/sweep.js';
+import { DEFAULT_TOKEN_TTL_SECONDS } from '../src/tokens.js';
 
 const FORGEJO = {
   FORGEJO_URL: 'http://localhost:3300',
@@ -161,5 +168,47 @@ describe('loadArtifactEnv', () => {
       expect((error as Error).message).toBe('Invalid environment: ARTIFACT_ENDPOINT');
       expect((error as Error).message).not.toContain(secret);
     }
+  });
+});
+
+describe('loadGitCommandDeadlineEnv', () => {
+  it('defaults backup commands to fifteen minutes and restore commands to four minutes', () => {
+    expect(loadGitCommandDeadlineEnv({})).toEqual({
+      backupCommandDeadlineMs: 900_000,
+      restoreCommandDeadlineMs: 240_000,
+    });
+  });
+
+  it('accepts independently configured backup and restore command deadlines', () => {
+    expect(
+      loadGitCommandDeadlineEnv({
+        GIT_BACKUP_COMMAND_DEADLINE_MS: '1200000',
+        GIT_RESTORE_COMMAND_DEADLINE_MS: '180000',
+      }),
+    ).toEqual({
+      backupCommandDeadlineMs: 1_200_000,
+      restoreCommandDeadlineMs: 180_000,
+    });
+  });
+
+  it('caps backup commands at two hours', () => {
+    expect(
+      loadGitCommandDeadlineEnv({ GIT_BACKUP_COMMAND_DEADLINE_MS: '7200000' })
+        .backupCommandDeadlineMs,
+    ).toBe(7_200_000);
+    expect(() =>
+      loadGitCommandDeadlineEnv({ GIT_BACKUP_COMMAND_DEADLINE_MS: '7200001' }),
+    ).toThrow('Invalid environment: GIT_BACKUP_COMMAND_DEADLINE_MS');
+  });
+
+  it('requires the restore deadline to remain strictly below the credential TTL', () => {
+    expect(DEFAULT_TOKEN_TTL_SECONDS * 1_000).toBe(300_000);
+    expect(
+      loadGitCommandDeadlineEnv({ GIT_RESTORE_COMMAND_DEADLINE_MS: '299999' })
+        .restoreCommandDeadlineMs,
+    ).toBe(299_999);
+    expect(() =>
+      loadGitCommandDeadlineEnv({ GIT_RESTORE_COMMAND_DEADLINE_MS: '300000' }),
+    ).toThrow('Invalid environment: GIT_RESTORE_COMMAND_DEADLINE_MS');
   });
 });

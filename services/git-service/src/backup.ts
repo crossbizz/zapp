@@ -723,7 +723,7 @@ export function createGitBundleCommands(options: {
     .object({
       username: z.string().min(1),
       password: z.string().min(1),
-      timeoutMs: z.number().int().min(100).max(300_000),
+      timeoutMs: z.number().int().min(100).max(7_200_000),
     })
     .strict()
     .safeParse({

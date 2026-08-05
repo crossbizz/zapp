@@ -365,21 +365,25 @@ describe('intent-first restore recovery', () => {
   it('runs manual restore through the durable intent and phase-receipt callsite', async () => {
     const store = new ReceiptStore();
     store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
-    const git = new RestoreGit();
+    const backupGit = new RestoreGit();
+    const restoreGit = new RestoreGit();
+    const boundGit = new RestoreGit();
     const forgejo = new StatefulForgejo();
     const inventory: BackupInventory = {
       listProvisionedRepositories: () => Promise.resolve([SOURCE]),
       expectedBranches: () => Promise.resolve([{ name: 'main', headCommitSha: 'a'.repeat(40) }]),
     };
-    const operations = backupScript.createBackupOperations({
+    const dependencies: Parameters<typeof backupScript.createBackupOperations>[0] = {
       inventory,
       store,
-      git,
+      git: backupGit,
+      restoreGit,
       client: forgejo,
-      restoreCredentials: credentialsFor(git),
+      restoreCredentials: credentialsFor(boundGit),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
       close: () => Promise.resolve(),
-    });
+    };
+    const operations = backupScript.createBackupOperations(dependencies);
 
     await expect(
       operations.restore({
@@ -399,6 +403,9 @@ describe('intent-first restore recovery', () => {
         expect.stringMatching(/\.verified\.json$/),
       ]),
     );
+    expect(backupGit.phases).toEqual([]);
+    expect(restoreGit.phases).toEqual(['bundle-verified']);
+    expect(boundGit.phases).toEqual(['mirror-pushed', 'refs-read']);
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 
@@ -419,6 +426,7 @@ describe('intent-first restore recovery', () => {
       },
       store,
       git: adminGit,
+      restoreGit: adminGit,
       client: forgejo,
       restoreCredentials: {
         issue: (input: { readonly repositoryId: number }) => {
@@ -480,6 +488,7 @@ describe('intent-first restore recovery', () => {
       },
       store,
       git: adminGit,
+      restoreGit: adminGit,
       client: forgejo,
       restoreCredentials: {
         issue: (input) =>
@@ -520,6 +529,7 @@ describe('intent-first restore recovery', () => {
       },
       store,
       git,
+      restoreGit: git,
       client: forgejo,
       restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
@@ -805,6 +815,7 @@ describe('intent-first restore recovery', () => {
       },
       store,
       git,
+      restoreGit: git,
       client: forgejo,
       restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },
@@ -843,6 +854,7 @@ describe('intent-first restore recovery', () => {
       },
       store,
       git,
+      restoreGit: git,
       client: forgejo,
       restoreCredentials: credentialsFor(git),
       restoreDrillLease: { runExclusive: async (operation) => await operation() },

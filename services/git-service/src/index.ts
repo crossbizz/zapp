@@ -40,9 +40,11 @@ export {
   loadDatabaseUrl,
   loadEnv,
   loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
   loadServiceTokenConfig,
   type ArtifactEnv,
   type ForgejoEnv,
+  type GitCommandDeadlineEnv,
   type ServiceEnv,
 } from './env.js';
 export { GIT_SERVICE_AUDIENCE, SERVICE_TOKEN_HEADER } from './internal/service-auth.js';

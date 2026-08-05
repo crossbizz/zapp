@@ -271,6 +271,7 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
     const restoreCredentials = createForgejoRestoreCredentialIssuer(
       activeClient,
       createTokenService({ client: activeClient, audit: createRecordingGitAuditSink() }),
+      240_000,
     );
     const token = adminToken();
     const before = refs(await authenticatedGit(tmpdir(), token, ['ls-remote', cloneUrl]));

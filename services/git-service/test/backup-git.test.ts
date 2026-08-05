@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createGitBundleCommands,
@@ -24,10 +24,41 @@ async function workspace(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(workspaces.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe('createGitBundleCommands', () => {
+  it('applies operational backup deadlines through the approved two-hour ceiling', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const git = createGitBundleCommands({
+      username: USERNAME,
+      password: PASSWORD,
+      timeoutMs: 900_000,
+      executor: () => Promise.resolve({ stdout: '' }),
+    });
+
+    await git.verifyBundle('/tmp/controller.bundle');
+
+    expect(timeout).toHaveBeenCalledWith(900_000);
+    expect(() =>
+      createGitBundleCommands({
+        username: USERNAME,
+        password: PASSWORD,
+        timeoutMs: 7_200_000,
+        executor: () => Promise.resolve({ stdout: '' }),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createGitBundleCommands({
+        username: USERNAME,
+        password: PASSWORD,
+        timeoutMs: 7_200_001,
+        executor: () => Promise.resolve({ stdout: '' }),
+      }),
+    ).toThrow();
+  });
+
   it('creates a verified bundle containing every head, tag, and other ref', async () => {
     const root = await workspace();
     const source = join(root, 'source');

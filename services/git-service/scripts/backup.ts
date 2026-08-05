@@ -25,7 +25,12 @@ import {
   type RestoreRepositoryResult,
 } from '../src/backup.js';
 import { createDbGitAuditSink } from '../src/audit.js';
-import { loadArtifactEnv, loadDatabaseUrl, loadForgejoEnv } from '../src/env.js';
+import {
+  loadArtifactEnv,
+  loadDatabaseUrl,
+  loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
+} from '../src/env.js';
 import { createForgejoClient, type ForgejoClient } from '../src/forgejo/client.js';
 import { createTokenService, type TokenService } from '../src/tokens.js';
 
@@ -216,6 +221,7 @@ export interface RestoreCredentialIssuer {
 export function createForgejoRestoreCredentialIssuer(
   client: ForgejoClient,
   tokens: Pick<TokenService, 'mintForRepository'>,
+  commandDeadlineMs: number,
 ): RestoreCredentialIssuer {
   return {
     issue: async (input) => {
@@ -234,7 +240,7 @@ export function createForgejoRestoreCredentialIssuer(
           git: createGitBundleCommands({
             username: minted.username,
             password: minted.token,
-            timeoutMs: 30_000,
+            timeoutMs: commandDeadlineMs,
           }),
           release: async () => {
             await client.send({
@@ -537,12 +543,13 @@ export function createBackupOperations(deps: {
   readonly inventory: BackupInventory;
   readonly store: BackupObjectStore;
   readonly git: BackupGit;
+  readonly restoreGit: BackupGit;
   readonly client: ForgejoClient;
   readonly restoreCredentials: RestoreCredentialIssuer;
   readonly restoreDrillLease: RestoreDrillLease;
   readonly close: () => Promise<void>;
 }): BackupCliOperations {
-  const { inventory, store, git, client } = deps;
+  const { inventory, store, git, restoreGit, client } = deps;
 
   return {
     nightly: async () => await runNightlyBackups({ inventory, store, git }),
@@ -573,7 +580,7 @@ export function createBackupOperations(deps: {
       const result = await restoreRepositoryBackup(
         {
           store,
-          git,
+          git: restoreGit,
           resolveTarget: async () => {
             const target = await operation.resolveTarget();
             return await deps.restoreCredentials.issue({
@@ -614,7 +621,7 @@ export function createBackupOperations(deps: {
         const result = await restoreRepositoryBackup(
           {
             store,
-            git,
+            git: restoreGit,
             resolveTarget: async () => {
               const target = await operation.resolveTarget();
               return await deps.restoreCredentials.issue({
@@ -645,6 +652,7 @@ export function createBackupOperations(deps: {
 function createProductionOperations(): BackupCliOperations {
   const forgejo = loadForgejoEnv();
   const artifact = loadArtifactEnv();
+  const commandDeadlines = loadGitCommandDeadlineEnv();
   const database = createDb(loadDatabaseUrl());
   const client = createForgejoClient(forgejo);
   const inventory = createDbBackupInventory(database.db, forgejo.baseUrl);
@@ -653,17 +661,27 @@ function createProductionOperations(): BackupCliOperations {
     client,
     audit: createDbGitAuditSink(database.db),
   });
-  const git = createGitBundleCommands({
+  const backupGit = createGitBundleCommands({
     username: 'zapp-admin-token',
     password: forgejo.adminToken,
-    timeoutMs: 30_000,
+    timeoutMs: commandDeadlines.backupCommandDeadlineMs,
+  });
+  const restoreGit = createGitBundleCommands({
+    username: 'zapp-admin-token',
+    password: forgejo.adminToken,
+    timeoutMs: commandDeadlines.restoreCommandDeadlineMs,
   });
   return createBackupOperations({
     inventory,
     store,
-    git,
+    git: backupGit,
+    restoreGit,
     client,
-    restoreCredentials: createForgejoRestoreCredentialIssuer(client, tokens),
+    restoreCredentials: createForgejoRestoreCredentialIssuer(
+      client,
+      tokens,
+      commandDeadlines.restoreCommandDeadlineMs,
+    ),
     restoreDrillLease: createPostgresRestoreDrillLease(database.sql),
     close: async () => {
       await database.close();
