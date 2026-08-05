@@ -347,7 +347,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const nodeModuleNamespaceSymbols = new Set();
   const unresolvedNodeModuleMembers = new Map();
   const loaderOrigins = new Map();
+  const staticLoaderTargetsByCall = new Map();
   const trustedLoaderCounts = new Map();
+  const contextualLoaderTargets = new Map();
+  let collectLoaderContexts = false;
 
   function originsForSymbol(symbol) {
     if (!symbol) return new Set();
@@ -805,6 +808,434 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return !!bindOwner(callExpression);
   }
 
+  function emptyCallableValue() {
+    return { functions: [], kinds: 0, members: new Map(), strings: undefined };
+  }
+
+  function callableValueHasData(value) {
+    return (
+      value.kinds !== 0 ||
+      value.functions.length > 0 ||
+      value.members.size > 0 ||
+      value.strings !== undefined
+    );
+  }
+
+  function mergeCallableValues(...candidates) {
+    const values = candidates.filter((value) => value && callableValueHasData(value));
+    if (values.length === 0) return emptyCallableValue();
+    const merged = emptyCallableValue();
+    merged.kinds = values.reduce((kinds, value) => kinds | value.kinds, 0);
+    if (values.every((value) => value.strings !== undefined)) {
+      merged.strings = union(...values.map((value) => value.strings));
+    }
+    for (const value of values) {
+      for (const record of value.functions) {
+        if (
+          !merged.functions.some(
+            (existing) =>
+              existing.functionLike === record.functionLike &&
+              existing.environment === record.environment,
+          )
+        ) {
+          merged.functions.push(record);
+        }
+      }
+      for (const [memberName, memberValue] of value.members) {
+        merged.members.set(
+          memberName,
+          mergeCallableValues(merged.members.get(memberName), memberValue),
+        );
+      }
+    }
+    return merged;
+  }
+
+  function mergeCallableAlternatives(...values) {
+    const merged = mergeCallableValues(...values);
+    if (values.length === 0 || values.some((value) => value.strings === undefined)) {
+      merged.strings = undefined;
+    }
+    return merged;
+  }
+
+  function storedCallableValue(symbol) {
+    if (!symbol) return emptyCallableValue();
+    const targets = functionTargetsForSymbol(symbol);
+    const value = {
+      functions: [...targets].map((functionLike) => ({
+        environment: undefined,
+        functionLike,
+      })),
+      kinds: callableKindsForSymbol(symbol),
+      members: new Map(),
+      strings: undefined,
+    };
+    const memberKinds = memberMapForSymbol(callableMembersBySymbol, symbol);
+    const memberFunctions = memberSetMapForSymbol(functionMembersBySymbol, symbol);
+    for (const memberName of union(new Set(memberKinds.keys()), new Set(memberFunctions.keys()))) {
+      value.members.set(memberName, {
+        functions: [...(memberFunctions.get(memberName) ?? [])].map((functionLike) => ({
+          environment: undefined,
+          functionLike,
+        })),
+        kinds: memberKinds.get(memberName) ?? 0,
+        members: new Map(),
+        strings: undefined,
+      });
+    }
+    return value;
+  }
+
+  function capturedEnvironment(environment) {
+    return environment.size > 0 ? new Map(environment) : undefined;
+  }
+
+  function selectCallableMembers(value, memberNames) {
+    if (!memberNames) {
+      return mergeCallableValues(...value.members.values());
+    }
+    return mergeCallableValues(
+      value.members.get('*'),
+      ...[...memberNames].map((memberName) => value.members.get(memberName)),
+    );
+  }
+
+  function bindingElementValue(element, environment, state) {
+    const pattern = element.parent;
+    const owner = pattern.parent;
+    let ownerValue = emptyCallableValue();
+    if (ts.isVariableDeclaration(owner) && owner.initializer) {
+      ownerValue = callableValue(owner.initializer, environment, state);
+    } else if (ts.isParameter(owner)) {
+      const parameterSymbol = ts.isIdentifier(owner.name)
+        ? symbolAt(checker, owner.name)
+        : undefined;
+      ownerValue = environment.get(parameterSymbol) ?? emptyCallableValue();
+    } else if (ts.isBindingElement(owner)) {
+      ownerValue = bindingElementValue(owner, environment, state);
+    }
+    let selected;
+    if (element.dotDotDotToken) {
+      selected = mergeCallableValues(...ownerValue.members.values());
+    } else if (ts.isObjectBindingPattern(pattern)) {
+      const memberNames = element.propertyName
+        ? declarationMemberNames(element.propertyName)
+        : ts.isIdentifier(element.name)
+          ? new Set([element.name.text])
+          : undefined;
+      selected = selectCallableMembers(ownerValue, memberNames);
+    } else {
+      selected = selectCallableMembers(
+        ownerValue,
+        new Set([String(pattern.elements.indexOf(element))]),
+      );
+    }
+    return element.initializer
+      ? mergeCallableValues(selected, callableValue(element.initializer, environment, state))
+      : selected;
+  }
+
+  function callableValueForSymbol(symbol, environment, state) {
+    if (!symbol) return emptyCallableValue();
+    const target = aliasedSymbol(checker, symbol);
+    const contextual = environment.get(symbol) ?? environment.get(target);
+    if (contextual) return contextual;
+    const identity = target ?? symbol;
+    if (state.seenSymbols.has(identity)) return storedCallableValue(symbol);
+    const nextState = {
+      ...state,
+      seenSymbols: new Set([...state.seenSymbols, identity]),
+    };
+    const values = [storedCallableValue(symbol)];
+    for (const declaration of union(
+      new Set(symbol.declarations ?? []),
+      new Set(target?.declarations ?? []),
+    )) {
+      if (ts.isFunctionLike(declaration) && declaration.body) {
+        values.push({
+          functions: [{ environment: capturedEnvironment(environment), functionLike: declaration }],
+          kinds: 0,
+          members: new Map(),
+          strings: undefined,
+        });
+      } else if (
+        (ts.isVariableDeclaration(declaration) ||
+          ts.isPropertyDeclaration(declaration) ||
+          ts.isPropertyAssignment(declaration)) &&
+        declaration.initializer
+      ) {
+        values.push(callableValue(declaration.initializer, environment, nextState));
+      } else if (ts.isBindingElement(declaration)) {
+        values.push(bindingElementValue(declaration, environment, nextState));
+      }
+    }
+    return mergeCallableValues(...values);
+  }
+
+  function bindCallablePattern(name, value, environment) {
+    if (ts.isIdentifier(name)) {
+      const symbol = symbolAt(checker, name);
+      if (symbol) environment.set(symbol, value);
+      return;
+    }
+    if (ts.isObjectBindingPattern(name)) {
+      for (const element of name.elements) {
+        const memberNames = element.propertyName
+          ? declarationMemberNames(element.propertyName)
+          : ts.isIdentifier(element.name)
+            ? new Set([element.name.text])
+            : undefined;
+        bindCallablePattern(element.name, selectCallableMembers(value, memberNames), environment);
+      }
+      return;
+    }
+    name.elements.forEach((element, index) => {
+      if (ts.isBindingElement(element)) {
+        bindCallablePattern(
+          element.name,
+          selectCallableMembers(value, new Set([String(index)])),
+          environment,
+        );
+      }
+    });
+  }
+
+  function containsCallableKind(value, seen = new Set()) {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return (
+      value.kinds !== 0 ||
+      value.functions.some(
+        (record) => (callableReturnsByFunction.get(record.functionLike) ?? 0) !== 0,
+      ) ||
+      [...value.members.values()].some((memberValue) => containsCallableKind(memberValue, seen))
+    );
+  }
+
+  function functionResult(record, argumentValues, state) {
+    const functionLike = record.functionLike;
+    if (state.callStack.has(functionLike)) return emptyCallableValue();
+    const environment = new Map(record.environment ?? []);
+    functionLike.parameters.forEach((parameter, index) => {
+      let argumentValue;
+      if (parameter.dotDotDotToken) {
+        const members = new Map();
+        argumentValues.slice(index).forEach((value, restIndex) => {
+          members.set(String(restIndex), value);
+        });
+        argumentValue = { functions: [], kinds: 0, members, strings: undefined };
+      } else {
+        argumentValue = argumentValues[index] ?? emptyCallableValue();
+      }
+      if (!callableValueHasData(argumentValue) && parameter.initializer) {
+        argumentValue = callableValue(parameter.initializer, environment, state);
+      }
+      bindCallablePattern(parameter.name, argumentValue, environment);
+    });
+    const nextState = {
+      ...state,
+      callStack: new Set([...state.callStack, functionLike]),
+      seenSymbols: new Set(),
+    };
+    if (ts.isArrowFunction(functionLike) && !ts.isBlock(functionLike.body)) {
+      return callableValue(functionLike.body, environment, nextState);
+    }
+    if (!functionLike.body || !ts.isBlock(functionLike.body)) return emptyCallableValue();
+    const returns = [];
+    const inspectBodyCalls = [...environment.values()].some((value) => containsCallableKind(value));
+    function visit(node) {
+      if (node !== functionLike && ts.isFunctionLike(node)) return;
+      if (ts.isReturnStatement(node) && node.expression) {
+        returns.push(callableValue(node.expression, environment, nextState));
+        return;
+      }
+      if (inspectBodyCalls && ts.isCallExpression(node)) {
+        callableValue(node, environment, nextState);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(functionLike.body);
+    return mergeCallableAlternatives(...returns);
+  }
+
+  function recordContextualLoader(callExpression, environment, state) {
+    if (!collectLoaderContexts) return;
+    const records = contextualLoaderTargets.get(callExpression) ?? new Map();
+    if (environment.size === 0 && records.size > 0) return;
+    const targetExpression = callExpression.arguments[0];
+    let staticTargetsForCall = staticLoaderTargetsByCall.get(callExpression);
+    if (!staticTargetsForCall && targetExpression) {
+      staticTargetsForCall = staticTargets(targetExpression);
+      if (staticTargetsForCall) {
+        staticLoaderTargetsByCall.set(callExpression, staticTargetsForCall);
+      }
+    }
+    const targetValue =
+      targetExpression && !staticTargetsForCall
+        ? callableValue(targetExpression, environment, {
+            ...state,
+            seenSymbols: new Set(),
+          })
+        : emptyCallableValue();
+    const targets =
+      staticTargetsForCall ?? (targetValue.strings?.size ? targetValue.strings : undefined);
+    const key = targets ? [...targets].sort().join('\u0000') : '<unresolved>';
+    records.set(key, targets);
+    contextualLoaderTargets.set(callExpression, records);
+  }
+
+  function callableValue(
+    expression,
+    environment = new Map(),
+    state = { callStack: new Set(), seenSymbols: new Set() },
+  ) {
+    const current = unwrapExpression(expression);
+    if (ts.isStringLiteralLike(current)) {
+      return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
+    }
+    if (ts.isNoSubstitutionTemplateLiteral(current)) {
+      return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
+    }
+    if (ts.isTemplateExpression(current)) {
+      let strings = new Set([current.head.text]);
+      for (const span of current.templateSpans) {
+        const values = callableValue(span.expression, environment, state).strings;
+        if (!values) return emptyCallableValue();
+        strings = new Set(
+          [...strings].flatMap((prefix) =>
+            [...values].map((value) => `${prefix}${value}${span.literal.text}`),
+          ),
+        );
+      }
+      return { functions: [], kinds: 0, members: new Map(), strings };
+    }
+    if (ts.isIdentifier(current)) {
+      if (isUnshadowedIdentifier(current, 'require')) {
+        return { functions: [], kinds: CALLABLE_LOADER, members: new Map(), strings: undefined };
+      }
+      return callableValueForSymbol(symbolAt(checker, current), environment, state);
+    }
+    if (isModuleRequire(current)) {
+      return { functions: [], kinds: CALLABLE_LOADER, members: new Map(), strings: undefined };
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const memberNames = accessMemberNames(current);
+      let value = mergeCallableValues(
+        storedCallableValue(symbolForValue(current)),
+        selectCallableMembers(callableValue(current.expression, environment, state), memberNames),
+      );
+      if (isNodeModuleNamespaceValue(current.expression)) {
+        if (!memberNames) {
+          unresolvedNodeModuleMembers.set(current, current.getSourceFile());
+        } else if (memberNames.has('createRequire')) {
+          value = mergeCallableValues(value, {
+            functions: [],
+            kinds: CALLABLE_CREATE_REQUIRE,
+            members: new Map(),
+            strings: undefined,
+          });
+        }
+      }
+      return value;
+    }
+    if (ts.isCallExpression(current)) {
+      if (isBindCall(current)) return callableValue(bindOwner(current), environment, state);
+      const callee = callableValue(current.expression, environment, state);
+      if ((callee.kinds & CALLABLE_LOADER) !== 0) {
+        recordContextualLoader(current, environment, state);
+      }
+      const results = [];
+      if ((callee.kinds & CALLABLE_CREATE_REQUIRE) !== 0) {
+        results.push({
+          functions: [],
+          kinds: CALLABLE_LOADER,
+          members: new Map(),
+          strings: undefined,
+        });
+      }
+      const argumentValues = current.arguments.map((argument) =>
+        callableValue(argument, environment, state),
+      );
+      for (const record of callee.functions) {
+        results.push(functionResult(record, argumentValues, state));
+      }
+      return mergeCallableValues(...results);
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      return callableValue(current.right, environment, state);
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = callableValue(current.left, environment, state).strings;
+      const right = callableValue(current.right, environment, state).strings;
+      return left && right
+        ? {
+            functions: [],
+            kinds: 0,
+            members: new Map(),
+            strings: new Set(
+              [...left].flatMap((prefix) => [...right].map((value) => prefix + value)),
+            ),
+          }
+        : emptyCallableValue();
+    }
+    if (ts.isConditionalExpression(current)) {
+      return mergeCallableAlternatives(
+        callableValue(current.whenTrue, environment, state),
+        callableValue(current.whenFalse, environment, state),
+      );
+    }
+    if (ts.isAwaitExpression(current)) return callableValue(current.expression, environment, state);
+    if (ts.isArrayLiteralExpression(current)) {
+      const members = new Map();
+      current.elements.forEach((element, index) => {
+        if (!ts.isOmittedExpression(element)) {
+          members.set(String(index), callableValue(element, environment, state));
+        }
+      });
+      return { functions: [], kinds: 0, members, strings: undefined };
+    }
+    if (ts.isObjectLiteralExpression(current)) {
+      const members = new Map();
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          const spread = callableValue(property.expression, environment, state);
+          for (const [memberName, memberValue] of spread.members) {
+            members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+          }
+          continue;
+        }
+        const memberNames = declarationMemberNames(property.name);
+        let memberValue = emptyCallableValue();
+        if (ts.isPropertyAssignment(property)) {
+          memberValue = callableValue(property.initializer, environment, state);
+        } else if (ts.isShorthandPropertyAssignment(property)) {
+          memberValue = callableValue(property.name, environment, state);
+        } else if (ts.isMethodDeclaration(property)) {
+          memberValue = {
+            functions: [{ environment: capturedEnvironment(environment), functionLike: property }],
+            kinds: 0,
+            members: new Map(),
+            strings: undefined,
+          };
+        }
+        for (const memberName of memberNames ?? ['*']) {
+          members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
+        }
+      }
+      return { functions: [], kinds: 0, members, strings: undefined };
+    }
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      return {
+        functions: [{ environment: capturedEnvironment(environment), functionLike: current }],
+        kinds: 0,
+        members: new Map(),
+        strings: undefined,
+      };
+    }
+    return emptyCallableValue();
+  }
+
   function callableKinds(expression) {
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
@@ -903,25 +1334,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (combined === existing) return false;
     callableReturnsByFunction.set(functionLike, combined);
     return true;
-  }
-
-  function propagateCallableArguments(callExpression) {
-    let changed = false;
-    for (const functionLike of calledFunctionLikes(callExpression)) {
-      callExpression.arguments.forEach((argument, index) => {
-        const kinds = callableKinds(argument);
-        if (kinds === 0) return;
-        const parameter =
-          functionLike.parameters[index] ??
-          (functionLike.parameters.at(-1)?.dotDotDotToken
-            ? functionLike.parameters.at(-1)
-            : undefined);
-        if (parameter && ts.isIdentifier(parameter.name)) {
-          changed = addCallableKinds(symbolAt(checker, parameter.name), kinds) || changed;
-        }
-      });
-    }
-    return changed;
   }
 
   function addNodeModuleNamespaceIdentifier(identifier) {
@@ -1170,15 +1582,51 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             functionTargetsForExpression(node.initializer),
           ) || callableChanged;
       }
-      if (ts.isCallExpression(node)) {
-        callableChanged = propagateCallableArguments(node) || callableChanged;
-      }
       if (ts.isFunctionLike(node) && node.body) {
         callableChanged =
           addFunctionReturnKinds(node, functionReturnKinds(node)) || callableChanged;
       }
     });
   }
+
+  const loaderRelevantSourceFiles = new Set();
+  visitSourceFiles(sourceFiles, (node, sourceFile) => {
+    if (
+      (ts.isIdentifier(node) &&
+        (isUnshadowedIdentifier(node, 'require') ||
+          (callableKindsForSymbol(symbolAt(checker, node)) &
+            (CALLABLE_LOADER | CALLABLE_CREATE_REQUIRE)) !==
+            0)) ||
+      isModuleRequire(node) ||
+      ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
+        ts.isIdentifier(unwrapExpression(node.expression)) &&
+        nodeModuleNamespaceSymbols.has(symbolAt(checker, unwrapExpression(node.expression))))
+    ) {
+      loaderRelevantSourceFiles.add(sourceFile);
+    }
+  });
+  let loaderReachabilityChanged = true;
+  while (loaderReachabilityChanged) {
+    loaderReachabilityChanged = false;
+    for (const record of localImportRecords) {
+      const targetSourceFile = resolveLocalSourceFile(record.sourceFile, record.moduleSpecifier);
+      if (
+        targetSourceFile &&
+        loaderRelevantSourceFiles.has(targetSourceFile) &&
+        !loaderRelevantSourceFiles.has(record.sourceFile)
+      ) {
+        loaderRelevantSourceFiles.add(record.sourceFile);
+        loaderReachabilityChanged = true;
+      }
+    }
+  }
+  collectLoaderContexts = true;
+  visitSourceFiles(sourceFiles, (node, sourceFile) => {
+    if (loaderRelevantSourceFiles.has(sourceFile) && ts.isCallExpression(node)) {
+      callableValue(node);
+    }
+  });
+  collectLoaderContexts = false;
 
   for (const [node, sourceFile] of unresolvedNodeModuleMembers) {
     addImport(sourceFile, `unresolved-loader:${lineAndColumn(sourceFile, node)}`);
@@ -1373,13 +1821,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   visitSourceFiles(sourceFiles, (node, sourceFile) => {
     if (!ts.isCallExpression(node)) return;
     const dynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-    if (!dynamicImport && !isLoaderCallee(node.expression)) return;
-    const targetExpression = node.arguments[0];
-    const targets = targetExpression ? staticTargets(targetExpression) : undefined;
-    if (!targets) {
+    const contextRecords = dynamicImport
+      ? [node.arguments[0] ? staticTargets(node.arguments[0]) : undefined]
+      : [...(contextualLoaderTargets.get(node)?.values() ?? [])];
+    if (contextRecords.length === 0) return;
+    const targets = union(...contextRecords.filter((record) => record !== undefined));
+    if (contextRecords.some((record) => record === undefined)) {
       const detail = `unresolved-loader:${lineAndColumn(sourceFile, node)}`;
       addImport(sourceFile, detail);
-      return;
     }
     const values = new Set();
     const localTargets = new Set();

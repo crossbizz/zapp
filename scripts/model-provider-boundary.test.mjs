@@ -232,6 +232,13 @@ test('fails closed on a nonliteral loader target', () => {
   assert.match(result.stderr, /unresolved-loader/);
 });
 
+test('fails closed when one conditional loader target is unresolved', () => {
+  const result = runFixture('nonliteral-loader-conditional');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unresolved-loader/);
+});
+
 test('tracks a loader passed through a higher-order function', () => {
   const result = runFixture('loader-higher-order');
 
@@ -278,6 +285,96 @@ test('tracks a loader through an array element', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /new-provider path: .*loader-array-element\.ts/);
+});
+
+test('tracks a loader through object destructuring', () => {
+  const result = runFixture('loader-object-destructure');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-object-destructure\.ts/);
+});
+
+test('tracks a loader through array destructuring', () => {
+  const result = runFixture('loader-array-destructure');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-array-destructure\.ts/);
+});
+
+test('tracks a loader selected from nested literal containers', () => {
+  const result = runFixture('loader-nested-literal');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-nested-literal\.ts/);
+});
+
+test('tracks a loader container through argument and return provenance', () => {
+  const result = runFixture('loader-container-identity');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-container-identity\.ts/);
+});
+
+test('tracks a loader container consumed inside a function body', () => {
+  const result = runFixture('loader-container-consumer');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-container-consumer\.ts/);
+});
+
+test('tracks a createRequire container through argument and return provenance', () => {
+  const result = runFixture('create-require-container-identity');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-container-identity\.ts/);
+});
+
+test('tracks a createRequire container consumed inside a function body', () => {
+  const result = runFixture('create-require-container-consumer');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-container-consumer\.ts/);
+});
+
+test('tracks a loader returned by a closure', () => {
+  const result = runFixture('loader-closure-return');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-closure-return\.ts/);
+});
+
+test('tracks a loader-returning closure consumed inside a function body', () => {
+  const result = runFixture('loader-closure-consumer');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-closure-consumer\.ts/);
+});
+
+test('tracks a createRequire factory returned by a closure', () => {
+  const result = runFixture('create-require-closure-return');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-closure-return\.ts/);
+});
+
+test('tracks a createRequire-returning closure consumed inside a function body', () => {
+  const result = runFixture('create-require-closure-consumer');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-closure-consumer\.ts/);
+});
+
+test('tracks nested factory, container, bind, and comma composition', () => {
+  const result = runFixture('loader-nested-composition');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-nested-composition\.ts/);
+});
+
+test('keeps generic helper provenance isolated by call edge', () => {
+  const result = runFixture('loader-mixed-callsite-control');
+
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('tracks a createRequire factory through argument and return provenance', () => {
