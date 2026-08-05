@@ -51,6 +51,11 @@ type QueryOption<Value> = [OperationParameter<Value, 'query'>] extends [never]
   : OperationParameters<Value> extends { query: unknown }
     ? { readonly query: OperationParameter<Value, 'query'> }
     : { readonly query?: OperationParameter<Value, 'query'> };
+type HeaderOption<Value> = [OperationParameter<Value, 'header'>] extends [never]
+  ? { readonly headers?: ClientHeaders }
+  : OperationParameters<Value> extends { header: unknown }
+    ? { readonly headers: ClientHeaders & OperationParameter<Value, 'header'> }
+    : { readonly headers?: ClientHeaders & OperationParameter<Value, 'header'> };
 type RequestBody<Value> = Value extends { requestBody?: infer Body }
   ? Exclude<Body, undefined> extends { content: infer Content }
     ? Content extends { 'application/json': infer Json }
@@ -131,10 +136,10 @@ export interface ZappClientOptions {
 
 export type RequestOptions<Path extends PublicApiPath, Method extends PublicApiMethod<Path>> = {
   readonly method: Method;
-  readonly headers?: ClientHeaders;
   readonly signal?: AbortSignal;
 } & PathOption<Operation<Path, Method>> &
   QueryOption<Operation<Path, Method>> &
+  HeaderOption<Operation<Path, Method>> &
   BodyOption<Operation<Path, Method>>;
 
 export type RunEventData =

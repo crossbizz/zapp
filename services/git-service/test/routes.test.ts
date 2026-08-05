@@ -449,6 +449,24 @@ describe('the write routes', () => {
 });
 
 describe('POST /internal/git/tokens', () => {
+  it('rejects a caller-controlled reason as an unknown field', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens',
+      headers: serviceHeaders(await serviceToken('sandbox-service')),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        access: 'write',
+        reason: 'sentinel-token-value-must-never-enter-audit',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_failed' } });
+    expect(h.tokens.calls).toEqual([]);
+  });
+
   it('mints from the verified caller, not from the body', async () => {
     const runId = newId('run');
     const response = await h.app.inject({
@@ -460,7 +478,6 @@ describe('POST /internal/git/tokens', () => {
         projectId: project.projectId,
         access: 'write',
         ttlSec: 120,
-        reason: 'push the run branch',
         runId,
       },
     });
@@ -479,7 +496,6 @@ describe('POST /internal/git/tokens', () => {
       access: 'write',
       ttlSec: 120,
       requestingService: 'sandbox-service',
-      reason: 'push the run branch',
       runId,
     });
   });
@@ -490,7 +506,6 @@ describe('POST /internal/git/tokens', () => {
       organizationId: project.organizationId,
       projectId: project.projectId,
       access: 'read',
-      reason: 'clone for a run',
     };
 
     await h.app.inject({ method: 'POST', url: '/internal/git/tokens', headers, payload: body });
@@ -508,24 +523,6 @@ describe('POST /internal/git/tokens', () => {
     expect(tooLong.json()).toMatchObject({ error: { code: 'validation_failed' } });
   });
 
-  it('requires a reason long enough to be one', async () => {
-    const response = await h.app.inject({
-      method: 'POST',
-      url: '/internal/git/tokens',
-      headers: serviceHeaders(await serviceToken()),
-      payload: {
-        organizationId: project.organizationId,
-        projectId: project.projectId,
-        access: 'read',
-        // A required field that accepts "x" is a required field in name only,
-        // and the audit row is what an incident is reconstructed from.
-        reason: 'x',
-      },
-    });
-
-    expect(response.statusCode).toBe(400);
-  });
-
   it('refuses an access level that is not read or write', async () => {
     const response = await h.app.inject({
       method: 'POST',
@@ -535,7 +532,6 @@ describe('POST /internal/git/tokens', () => {
         organizationId: project.organizationId,
         projectId: project.projectId,
         access: 'admin',
-        reason: 'escalate quietly',
       },
     });
 
@@ -552,7 +548,6 @@ describe('POST /internal/git/tokens', () => {
         organizationId: project.organizationId,
         projectId: project.projectId,
         access: 'read',
-        reason: 'clone for a run',
       },
     });
 
@@ -568,7 +563,6 @@ describe('POST /internal/git/tokens', () => {
         organizationId: project.organizationId,
         projectId: project.projectId,
         access: 'write',
-        reason: 'clone for a run',
       },
     });
 
@@ -578,6 +572,23 @@ describe('POST /internal/git/tokens', () => {
 });
 
 describe('the revoke and sweep routes', () => {
+  it('rejects a caller-controlled revoke reason as an unknown field', async () => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/internal/git/tokens/revoke',
+      headers: serviceHeaders(await serviceToken('control-api')),
+      payload: {
+        organizationId: project.organizationId,
+        projectId: project.projectId,
+        reason: 'sentinel-token-value-must-never-enter-audit',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_failed' } });
+    expect(h.tokens.calls).toEqual([]);
+  });
+
   it('revokes every outstanding grant for a project', async () => {
     h.tokens.revoked = 3;
 
@@ -588,7 +599,6 @@ describe('the revoke and sweep routes', () => {
       payload: {
         organizationId: project.organizationId,
         projectId: project.projectId,
-        reason: 'project deleted',
       },
     });
 
@@ -600,7 +610,6 @@ describe('the revoke and sweep routes', () => {
           organizationId: project.organizationId,
           projectId: project.projectId,
           requestingService: 'control-api',
-          reason: 'project deleted',
         },
       ],
     });

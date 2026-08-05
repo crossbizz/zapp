@@ -1,7 +1,17 @@
-import { newId } from '@zapp/contracts';
+import {
+  AuditActionSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditTargetSchema,
+  idSchema,
+  newId,
+  type AuditActor,
+  type AuditRecord,
+} from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
 import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
+import { z } from 'zod';
 
 /**
  * The audit trail.
@@ -46,127 +56,31 @@ import fp from 'fastify-plugin';
  * grows one.
  */
 
-/**
- * Actions this service records, as a closed set — the vocabulary a support or
- * compliance query is written against, so a typo must not be able to invent a
- * new one. Later tasks extend the list; nothing removes from it.
- */
-export const AUDIT_ACTIONS = [
-  'organization.created',
-  'organization.updated',
-  'member.invited',
-  'member.joined',
-  'member.role_changed',
-  'member.removed',
-  'project.created',
-  'project.updated',
-  /**
-   * A capability scan was asked for. Recorded even though nothing is enqueued
-   * yet (plan 05 VF-3 owns the pipeline): the request is what a support question
-   * asks about, and a trail that starts only once the feature is finished has a
-   * hole in exactly the period people ask about.
-   */
-  'project.scan_requested',
-  'specification.created',
-  'specification.updated',
-  'specification.approved',
-  'run.created',
-  'run.events_ingested',
-  'run.pause_requested',
-  'run.paused',
-  'run.pause_rejected',
-  'run.resume_requested',
-  'run.resumed',
-  'run.resume_rejected',
-  'run.cancel_requested',
-  'run.cancelled',
-  'run.cancel_rejected',
-  'run.redirect_requested',
-  'run.redirected',
-  'run.redirect_rejected',
-  'workspace.create_requested',
-  'workspace.created',
-  'workspace.start_requested',
-  'workspace.started',
-  'workspace.start_rejected',
-  'workspace.checkpoint_requested',
-  'workspace.checkpointed',
-  'workspace.checkpoint_rejected',
-  'workspace.terminate_requested',
-  'workspace.terminated',
-  'workspace.terminate_rejected',
-  'workspace.preview_requested',
-  'workspace.previewed',
-  'workspace.preview_rejected',
-  'secret.created',
-  'secret.rotated',
-  'secret.deleted',
-  'release.created',
-  'release.approved',
-  'release.deploy_requested',
-  'release.rollback_requested',
-  'integration.connected',
-  /**
-   * A secret value was decrypted (plan 02 CP-7). The one action in this list
-   * that records a *read*, and the reason the internal decrypt route exists in
-   * this shape at all: PRD §18.12 makes plaintext available to the sandbox
-   * service at injection time, and an availability nobody can audit afterwards
-   * is indistinguishable from an exfiltration. Written in the same transaction
-   * as the read, so a decrypt that returned a value and left no row is not a
-   * state this service can reach.
-   */
-  'secret.decrypted',
-] as const;
-
-export type AuditAction = (typeof AUDIT_ACTIONS)[number];
-
-/** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export type AuditTargetType =
-  | 'organization'
-  | 'membership'
-  | 'invite'
-  | 'project'
-  | 'specification'
-  | 'run'
-  | 'workspace'
-  | 'secret'
-  | 'release'
-  | 'integration_connection';
-
-/** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
-export type AuditActorType = 'user' | 'service' | 'agent' | 'support';
-
-/** What a metadata field may hold. Nothing that can nest. */
-export type AuditScalar = string | number | boolean | null;
-
-/**
- * One metadata value.
- *
- * Scalars, plus an array of them — a diff summary ("which fields moved") is the
- * one shape that genuinely needs a list, and a list of scalars still cannot
- * smuggle an object, a buffer or a whole request body into the table.
- */
-export type AuditValue = AuditScalar | readonly AuditScalar[];
-
-/**
- * Tenant-safe context: which role, which fields changed. Never a credential —
- * an invite token, a secret value and a session token are all things this table
- * would otherwise preserve for years.
- */
-export type AuditMetadata = Readonly<Record<string, AuditValue>>;
-
-/** One row of PRD §23.6 `audit_events`, minus the id the sink mints. */
-export interface AuditRecord {
-  readonly organizationId: string;
-  readonly actorType: AuditActorType;
-  readonly actorId: string;
-  readonly action: AuditAction;
-  readonly targetType: AuditTargetType;
-  /** Null for an action with no single target. */
-  readonly targetId: string | null;
-  readonly metadata: AuditMetadata;
-  readonly occurredAt: Date;
-}
+// Kept as re-exports for existing control-api consumers. The definitions live
+// in @zapp/contracts because this table has writers outside this service.
+export {
+  AUDIT_ACTIONS,
+  AUDIT_ACTOR_TYPES,
+  AUDIT_TARGET_TYPES,
+  AuditActionSchema,
+  AuditActorSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditScalarSchema,
+  AuditTargetSchema,
+  AuditTargetTypeSchema,
+  AuditValueSchema,
+  type AuditAction,
+  type AuditActor,
+  type AuditActorType,
+  type AuditMetadata,
+  type AuditRecord,
+  type AuditScalar,
+  type AuditTarget,
+  type AuditTargetType,
+  type AuditValue,
+} from '@zapp/contracts';
 
 /**
  * What a store hands its audit hook where it has no transaction to offer — the
@@ -218,15 +132,21 @@ export interface InMemoryAuditSink extends AuditSink {
  */
 export function createInMemoryAuditSink(): InMemoryAuditSink {
   const events: AuditRecord[] = [];
+
+  function append(event: AuditRecord): Promise<void> {
+    return new Promise((resolve) => {
+      events.push(AuditRecordSchema.parse(event));
+      resolve();
+    });
+  }
+
   return {
     events,
     record(_tx, event) {
-      events.push(event);
-      return Promise.resolve();
+      return append(event);
     },
     recordDetached(event) {
-      events.push(event);
-      return Promise.resolve();
+      return append(event);
     },
   };
 }
@@ -240,16 +160,17 @@ export function createInMemoryAuditSink(): InMemoryAuditSink {
  */
 export function createDbAuditSink(db: Executor): AuditSink {
   async function insert(tx: Executor, event: AuditRecord): Promise<void> {
+    const parsed = AuditRecordSchema.parse(event);
     await tx.insert(auditEvents).values({
       id: newId('aud'),
-      organizationId: event.organizationId,
-      actorType: event.actorType,
-      actorId: event.actorId,
-      action: event.action,
-      targetType: event.targetType,
-      targetId: event.targetId,
-      metadataJson: event.metadata,
-      occurredAt: event.occurredAt,
+      organizationId: parsed.organizationId,
+      actorType: parsed.actorType,
+      actorId: parsed.actorId,
+      action: parsed.action,
+      targetType: parsed.targetType,
+      targetId: parsed.targetId,
+      metadataJson: parsed.metadata,
+      occurredAt: parsed.occurredAt,
     });
   }
 
@@ -270,12 +191,15 @@ export function createDbAuditSink(db: Executor): AuditSink {
 }
 
 /** What a route passes; everything else is filled in from the request. */
-export interface AuditEntry {
-  readonly organizationId: string;
-  readonly action: AuditAction;
-  readonly target: { readonly type: AuditTargetType; readonly id: string | null };
-  readonly metadata?: AuditMetadata;
-}
+export const AuditEntrySchema = z
+  .object({
+    organizationId: idSchema('org'),
+    action: AuditActionSchema,
+    target: AuditTargetSchema,
+    metadata: AuditMetadataSchema.optional(),
+  })
+  .strict();
+export type AuditEntry = z.infer<typeof AuditEntrySchema>;
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -312,51 +236,25 @@ export interface AuditLogOptions {
   readonly now: () => Date;
 }
 
-/**
- * Rejects anything that could carry more than it says it does.
- *
- * The types already say scalars; this is the second half of the same rule, for
- * the values that arrive from a database column or a JSON body and are typed
- * only by assertion. A throw here fails the mutation, which is the right
- * outcome: a row we cannot vouch for should not be written, and a metadata
- * object with something unexpected in it is a bug to fix, not to store.
- */
-function assertScalars(metadata: AuditMetadata): void {
-  const scalar = (value: unknown): boolean =>
-    value === null || ['string', 'number', 'boolean'].includes(typeof value);
-
-  for (const [field, value] of Object.entries(metadata)) {
-    const ok = Array.isArray(value) ? value.every(scalar) : scalar(value);
-    if (!ok) {
-      throw new Error(`audit metadata field "${field}" is not a scalar`);
-    }
-  }
-}
-
 export const auditLog = fp<AuditLogOptions>(
   (app, options, done) => {
     const { sink, now } = options;
 
-    function toRecord(
-      actor: { readonly type: AuditActorType; readonly id: string },
-      entry: AuditEntry,
-    ): AuditRecord {
-      const metadata = entry.metadata ?? {};
-      assertScalars(metadata);
-
-      return {
-        organizationId: entry.organizationId,
+    function toRecord(actor: AuditActor, entry: AuditEntry): AuditRecord {
+      const parsed = AuditEntrySchema.parse(entry);
+      return AuditRecordSchema.parse({
+        organizationId: parsed.organizationId,
         actorType: actor.type,
         actorId: actor.id,
-        action: entry.action,
-        targetType: entry.target.type,
-        targetId: entry.target.id,
-        metadata,
+        action: parsed.action,
+        targetType: parsed.target.type,
+        targetId: parsed.target.id,
+        metadata: parsed.metadata ?? {},
         occurredAt: now(),
-      };
+      });
     }
 
-    function userActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+    function userActor(request: FastifyRequest): AuditActor {
       const auth = request.auth;
       if (auth === undefined) {
         // Not reachable from a route with `requireSession`, which is all of
@@ -368,7 +266,7 @@ export const auditLog = fp<AuditLogOptions>(
       return { type: 'user', id: auth.userId };
     }
 
-    function serviceActor(request: FastifyRequest): { type: AuditActorType; id: string } {
+    function serviceActor(request: FastifyRequest): AuditActor {
       const service = request.service;
       if (service === undefined) {
         // Same argument, and the reverse mistake: a route that called this

@@ -2,6 +2,7 @@ import { newId } from '@zapp/contracts';
 import type {
   AgentEventRow,
   AgentRun,
+  AuditEvent,
   Branch,
   Environment,
   Project,
@@ -79,6 +80,7 @@ export class InMemoryTenantData {
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
   readonly events: AgentEventRow[] = [];
+  readonly auditEvents: AuditEvent[] = [];
   readonly workspaces: Workspace[] = [];
   readonly operations = new Map<
     string,
@@ -151,6 +153,25 @@ async function withSpecificationLock<T>(
 function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
   return {
     organizationId: orgId,
+
+    auditEvents: {
+      list(request): Promise<StorePage<AuditEvent>> {
+        const rows = mine(orgId, data.auditEvents)
+          .filter((event) => request.cursor === undefined || event.id < request.cursor)
+          .filter((event) => request.actorId === undefined || event.actorId === request.actorId)
+          .filter((event) => request.action === undefined || event.action === request.action)
+          .filter((event) => request.targetType === undefined || event.targetType === request.targetType)
+          .filter((event) => request.targetId === undefined || event.targetId === request.targetId)
+          .filter((event) => request.from === undefined || event.occurredAt >= request.from)
+          .filter((event) => request.to === undefined || event.occurredAt <= request.to)
+          .sort((left, right) => (left.id < right.id ? 1 : -1));
+        const items = rows.slice(0, request.limit);
+        return Promise.resolve({
+          items,
+          nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
+        });
+      },
+    },
 
     projects: {
       list(request): Promise<StorePage<Project>> {

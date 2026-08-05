@@ -57,6 +57,25 @@ describe('migration journal', () => {
       expect(allSql).toContain(`CREATE TABLE "${table}"`);
     }
   });
+
+  it('adds durable organization settings without a backfill migration', () => {
+    expect(allSql).toContain(
+      `ALTER TABLE "organizations" ADD COLUMN "settings_json" jsonb DEFAULT '{}'::jsonb NOT NULL`,
+    );
+  });
+
+  it('creates the audit read indexes under the same names as the Drizzle schema', () => {
+    // Break caught: a schema-only index passes unit types but never reaches a
+    // deployed database, or a migration rename drifts from Drizzle tooling.
+    for (const statement of [
+      'CREATE INDEX "audit_events_org_id_idx" ON "audit_events" USING btree ("organization_id","id")',
+      'CREATE INDEX "audit_events_org_actor_id_id_idx" ON "audit_events" USING btree ("organization_id","actor_id","id")',
+      'CREATE INDEX "audit_events_org_action_id_idx" ON "audit_events" USING btree ("organization_id","action","id")',
+      'CREATE INDEX "audit_events_org_target_id_idx" ON "audit_events" USING btree ("organization_id","target_type","target_id","id")',
+    ]) {
+      expect(allSql).toContain(statement);
+    }
+  });
 });
 
 describe('agent_events partitioning', () => {

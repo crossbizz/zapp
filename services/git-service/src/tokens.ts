@@ -83,9 +83,10 @@ export const DEFAULT_TOKEN_TTL_SECONDS = 300;
  * Load-bearing rather than cosmetic — the sweep reads the deadline back out of
  * it. The random suffix is what makes concurrent grants for one repository
  * distinct, and 12 hex characters is 48 bits, which is not a collision anyone
- * will see. Forgejo caps usernames at 40 characters; this is 26.
+ * will see. Forgejo caps usernames at 40 characters; this is 26. The audit
+ * boundary uses this same pattern to validate the non-secret `tokenUser`.
  */
-const EPHEMERAL_USER = /^zt-(\d{10,12})-[0-9a-f]{12}$/;
+export const EPHEMERAL_USERNAME_PATTERN = /^zt-(\d{10,12})-[0-9a-f]{12}$/;
 
 const EPHEMERAL_PREFIX = 'zt-';
 
@@ -105,7 +106,7 @@ export function ephemeralUsername(expiresAt: Date): string {
 
 /** The deadline encoded in `username`, or `undefined` if this is not one of ours. */
 export function expiryOf(username: string): Date | undefined {
-  const match = EPHEMERAL_USER.exec(username);
+  const match = EPHEMERAL_USERNAME_PATTERN.exec(username);
   if (match?.[1] === undefined) {
     return undefined;
   }
@@ -120,8 +121,6 @@ export interface MintTokenInput {
   readonly ttlSec?: number;
   /** Who asked, from the verified service token — never from a request body. */
   readonly requestingService: ServiceName;
-  /** Why. Written to the audit row; a grant nobody can explain is one nobody can review. */
-  readonly reason: string;
   /** Run and task attribution, when the caller has one. */
   readonly runId?: string;
   readonly taskId?: string;
@@ -179,7 +178,6 @@ export interface TokenService {
     readonly organizationId: string;
     readonly projectId: string;
     readonly requestingService: ServiceName;
-    readonly reason: string;
   }): Promise<number>;
   /** Deletes every ephemeral user whose deadline has passed. Idempotent; safe to run often. */
   sweepExpired(now?: Date): Promise<number>;
@@ -328,7 +326,6 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
           ttlSec,
           expiresAt: expiresAt.toISOString(),
           tokenUser: username,
-          reason: input.reason,
           runId: input.runId ?? null,
           taskId: input.taskId ?? null,
         },
@@ -420,7 +417,6 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
           metadata: {
             internalRepoRef: ref,
             revoked: ephemeral.length,
-            reason: input.reason,
           },
         });
       }

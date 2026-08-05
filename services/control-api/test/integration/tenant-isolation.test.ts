@@ -2,6 +2,7 @@ import { ApiErrorSchema, newId } from '@zapp/contracts';
 import {
   agentEvents,
   agentRuns,
+  auditEvents,
   branches,
   nextEventSequence,
   projectContracts,
@@ -102,6 +103,7 @@ interface Tenant {
   readonly projectIds: string[];
   readonly runIds: string[];
   readonly eventIds: string[];
+  readonly auditEventIds: string[];
   /** One secret per project, set through the API so the vault path is the real one. */
   readonly secretIds: string[];
 }
@@ -176,7 +178,7 @@ describe('the isolation suite itself', () => {
  * exactly that, silently and with a green tick. See the guard at the end of the
  * file.
  */
-const NEGATIVE_CONTROLS = 8;
+const NEGATIVE_CONTROLS = 9;
 let negativeControlsRun = 0;
 
 describe.skipIf(!hasDatabase)('tenant isolation', () => {
@@ -284,6 +286,19 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       audit: noAudit,
     });
     const organizationId = created.organization.id;
+    const auditEventId = newId('aud');
+    const auditEventIds = [auditEventId];
+    await database.db.insert(auditEvents).values({
+      id: auditEventId,
+      organizationId,
+      actorType: 'user',
+      actorId: owner.userId,
+      action: 'organization.created',
+      targetType: 'organization',
+      targetId: organizationId,
+      metadataJson: { seeded: true },
+      occurredAt: EVENT_TIME,
+    });
     await store.addMember({
       organizationId,
       userId: builder.userId,
@@ -396,6 +411,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       projectIds,
       runIds,
       eventIds,
+      auditEventIds,
       secretIds,
     };
   }
@@ -622,6 +638,34 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { name: 'Mine Now' },
       });
       expectRefusal(response, 404, 'organization_not_found');
+    });
+
+    it('does not read B’s audit trail or settings, or patch B’s settings', async () => {
+      const audit = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/audit-events`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(audit, 404, 'organization_not_found');
+
+      const settings = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expectRefusal(settings, 404, 'organization_not_found');
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: {
+          ...as(a.owner, a.organizationId),
+          'idempotency-key': 'isolation-settings-denied-01',
+        },
+        payload: { builderCanDeploy: true },
+      });
+      expectRefusal(patched, 404, 'organization_not_found');
+      expect(await store.getSettings(b.organizationId)).toEqual({ builderCanDeploy: false });
     });
 
     it('cannot invite anyone into B', async () => {
@@ -1171,6 +1215,40 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         payload: { email: 'newcomer@beta.test', role: 'viewer' },
       });
       expect(invited.statusCode, invited.body).toBe(201);
+      negativeControlsRun += 1;
+    });
+
+    it('lets B read its own audit trail and settings without exposing either tenant', async () => {
+      const audit = await app.inject({
+        method: 'GET',
+        url: `/v1/organizations/${b.organizationId}/audit-events`,
+        headers: as(b.owner, b.organizationId),
+      });
+      expectOnlyTenantRows(audit, b, b.auditEventIds);
+      expect(rowsOf(audit).map((row) => row.id)).not.toEqual(
+        expect.arrayContaining(a.auditEventIds),
+      );
+
+      const policy = { providerOrder: ['anthropic'] };
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/v1/organizations/${b.organizationId}/settings`,
+        headers: {
+          ...as(b.owner, b.organizationId),
+          'idempotency-key': 'isolation-settings-own-01',
+        },
+        payload: { defaultModelPolicy: policy },
+      });
+      expect(patched.statusCode, patched.body).toBe(200);
+      expect(patched.json()).toEqual({
+        settings: { builderCanDeploy: false, defaultModelPolicy: policy },
+      });
+
+      expect(await store.getSettings(a.organizationId)).toEqual({ builderCanDeploy: false });
+      expect(await store.getSettings(b.organizationId)).toEqual({
+        builderCanDeploy: false,
+        defaultModelPolicy: policy,
+      });
       negativeControlsRun += 1;
     });
 

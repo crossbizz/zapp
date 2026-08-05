@@ -109,6 +109,44 @@ describe('generated API types', () => {
     }
   });
 
+  it('documents the settings PATCH idempotency key and non-empty body contract', async () => {
+    // Break caught: a runtime-only body refinement or handler check leaves the
+    // generated SDK accepting `{}` or a PATCH with no Idempotency-Key.
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, unknown>> }>();
+    const operation = paths['/v1/organizations/{orgId}/settings']?.['patch'] as
+      | {
+          parameters?: {
+            in?: string;
+            name?: string;
+            required?: boolean;
+            schema?: Record<string, unknown>;
+          }[];
+          requestBody?: {
+            required?: boolean;
+            content?: Record<string, { schema?: Record<string, unknown> }>;
+          };
+        }
+      | undefined;
+
+    expect(
+      operation?.parameters?.find(
+        (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',
+      ),
+    ).toMatchObject({
+      required: true,
+      schema: { pattern: '^[A-Za-z0-9._:-]{8,255}$', type: 'string' },
+    });
+    expect(operation?.requestBody?.required).toBe(true);
+    expect(operation?.requestBody?.content?.['application/json']?.schema).toMatchObject({
+      anyOf: [
+        { additionalProperties: false, required: ['builderCanDeploy'] },
+        { additionalProperties: false, required: ['defaultModelPolicy'] },
+      ],
+    });
+  });
+
   it('documents every formerly schema-less redirect with its live status and location header', async () => {
     // Break caught: the fallback invents a JSON 200/null response for login and
     // callback even though both live handlers return an empty 302 with Location.

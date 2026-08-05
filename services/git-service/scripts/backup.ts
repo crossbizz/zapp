@@ -306,7 +306,6 @@ export function createForgejoRestoreCredentialIssuer(
           expectedRepositoryId: input.repositoryId,
           access: 'write',
           requestingService: 'git-service',
-          reason: 'restore a verified Git bundle into its receipt-owned target',
           onIdentityAllocated: async (identity) => {
             allocation = await input.reserveCredentialCleanup(identity);
           },

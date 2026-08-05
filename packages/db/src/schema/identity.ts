@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uniqueIndex, index, jsonb } from 'drizzle-orm/pg-core';
 
 export const users = pgTable(
   'users',
@@ -47,6 +47,13 @@ export const organizations = pgTable(
     plan: text('plan').notNull().default('trial'),
     billingCustomerId: text('billing_customer_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Durable organization-owned settings (ADR-0004). This is an intentional
+     * physical-schema extension to PRD §23.1, documented in the conformance
+     * allowlist. It remains raw JSON here; the control-plane boundary owns the
+     * strict schema and fail-closed defaults.
+     */
+    settingsJson: jsonb('settings_json').notNull().default({}),
   },
   (t) => [uniqueIndex('organizations_slug_idx').on(t.slug)],
 );

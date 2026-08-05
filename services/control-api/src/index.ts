@@ -68,17 +68,37 @@ export {
 // stores are exported so a later service composes the same seams rather than
 // inventing parallel ones; `composeApp` is what `server.ts` itself uses.
 export {
+  AUDIT_ACTOR_TYPES,
   AUDIT_ACTIONS,
+  AUDIT_TARGET_TYPES,
+  AuditActionSchema,
+  AuditActorSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditScalarSchema,
+  AuditTargetSchema,
+  AuditTargetTypeSchema,
+  AuditValueSchema,
+  type AuditAction,
+  type AuditActor,
+  type AuditActorType,
+  type AuditMetadata,
+  type AuditRecord,
+  type AuditScalar,
+  type AuditTarget,
+  type AuditTargetType,
+  type AuditValue,
+} from '@zapp/contracts';
+export {
+  AuditEntrySchema,
   createDbAuditSink,
   createInMemoryAuditSink,
   NO_TRANSACTION,
-  type AuditAction,
+  type AuditEntry,
   type AuditExecutor,
   type AuditHook,
-  type AuditMetadata,
-  type AuditRecord,
   type AuditSink,
-  type AuditValue,
 } from './plugins/audit.js';
 export { createRedisTokenDenylist } from './auth/denylist.js';
 export { createRedisDeviceStore } from './auth/device.js';

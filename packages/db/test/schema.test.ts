@@ -37,6 +37,7 @@ import {
   checkNames,
   columnNames,
   foreignKeys,
+  indexColumns,
   indexNames,
   requiredColumns,
   sqlType,
@@ -67,7 +68,7 @@ describe('identity tables', () => {
     ]);
   });
 
-  it('gives organizations exactly the PRD §23.1 columns, in order', () => {
+  it('gives organizations the PRD §23.1 columns plus ADR-0004 settings storage', () => {
     expect(columnNames(organizations)).toEqual([
       'id',
       'name',
@@ -75,7 +76,10 @@ describe('identity tables', () => {
       'plan',
       'billing_customer_id',
       'created_at',
+      'settings_json',
     ]);
+    expect(requiredColumns(organizations)).toContain('settings_json');
+    expect(sqlType(organizations, 'settings_json')).toBe('jsonb');
   });
 
   it('gives memberships exactly the PRD §23.1 columns, in order', () => {
@@ -167,6 +171,20 @@ describe('billing tables', () => {
       'deploy_provider',
       'artifact_storage',
     ]);
+  });
+});
+
+describe('audit read indexes', () => {
+  it('covers tenant keysets and each supported equality filter before the id cursor', () => {
+    // Break caught: the API query remains correct but every page or filtered
+    // read degrades into a tenant-wide audit_events scan.
+    expect(indexColumns(auditEvents)).toEqual({
+      audit_events_org_occurred_at_idx: ['organization_id', 'occurred_at'],
+      audit_events_org_id_idx: ['organization_id', 'id'],
+      audit_events_org_actor_id_id_idx: ['organization_id', 'actor_id', 'id'],
+      audit_events_org_action_id_idx: ['organization_id', 'action', 'id'],
+      audit_events_org_target_id_idx: ['organization_id', 'target_type', 'target_id', 'id'],
+    });
   });
 });
 

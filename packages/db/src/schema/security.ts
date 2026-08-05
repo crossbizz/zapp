@@ -174,7 +174,13 @@ export const auditEvents = pgTable(
      */
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
   },
-  (t) => [index('audit_events_org_occurred_at_idx').on(t.organizationId, t.occurredAt)],
+  (t) => [
+    index('audit_events_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+    index('audit_events_org_id_idx').on(t.organizationId, t.id),
+    index('audit_events_org_actor_id_id_idx').on(t.organizationId, t.actorId, t.id),
+    index('audit_events_org_action_id_idx').on(t.organizationId, t.action, t.id),
+    index('audit_events_org_target_id_idx').on(t.organizationId, t.targetType, t.targetId, t.id),
+  ],
 );
 
 export type SecretMetadata = typeof secretMetadata.$inferSelect;

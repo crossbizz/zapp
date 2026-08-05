@@ -160,6 +160,86 @@ export function describeOrganizationStore(name: string, setUp: () => Promise<Sto
       expect(await store.findById(organizationId)).toMatchObject({ name: 'Acme', slug: 'acme' });
     });
 
+    it('normalizes existing organization settings to fail closed', async () => {
+      const organizationId = await found();
+
+      expect(await store.getSettings(organizationId)).toEqual({ builderCanDeploy: false });
+      expect(await store.getSettings('org_01J00000000000000000000000')).toBeUndefined();
+    });
+
+    it('partially merges only the supplied settings and preserves arbitrary JSON policy', async () => {
+      const organizationId = await found();
+      const policy = {
+        routing: ['fast', { provider: null }],
+        budget: 0,
+        enabled: true,
+      };
+
+      await store.updateSettings({
+        organizationId,
+        patch: { defaultModelPolicy: policy },
+        operationKey: 'op_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        audit: noAudit,
+      });
+      const merged = await store.updateSettings({
+        organizationId,
+        patch: { builderCanDeploy: true },
+        operationKey: 'op_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        audit: noAudit,
+      });
+
+      expect(merged).toEqual({ builderCanDeploy: true, defaultModelPolicy: policy });
+      expect(await store.getSettings(organizationId)).toEqual(merged);
+    });
+
+    it('completes a fresh-key same-value patch as a no-op and retries after audit rollback', async () => {
+      const organizationId = await found();
+      const outcomes: unknown[] = [];
+      const operationKey = 'op_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+
+      await expect(
+        store.updateSettings({
+          organizationId,
+          patch: { builderCanDeploy: false },
+          operationKey,
+          audit: failingAudit,
+        }),
+      ).rejects.toBe(AUDIT_FAILED);
+      const settings = await store.updateSettings({
+        organizationId,
+        patch: { builderCanDeploy: false },
+        operationKey,
+        audit: (_tx, outcome) => {
+          outcomes.push(outcome);
+          return Promise.resolve();
+        },
+      });
+
+      expect(settings).toEqual({ builderCanDeploy: false });
+      expect(outcomes).toEqual([
+        {
+          settings: { builderCanDeploy: false },
+          changedFields: [],
+          noOp: true,
+        },
+      ]);
+    });
+
+    it('rolls back a settings patch whose audit row could not be written', async () => {
+      const organizationId = await found();
+
+      await expect(
+        store.updateSettings({
+          organizationId,
+          patch: { builderCanDeploy: true },
+          operationKey: 'op_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          audit: failingAudit,
+        }),
+      ).rejects.toBe(AUDIT_FAILED);
+
+      expect(await store.getSettings(organizationId)).toEqual({ builderCanDeploy: false });
+    });
+
     it('undoes a membership write whose audit row could not be written', async () => {
       const organizationId = await found();
       await store.addMember({ organizationId, userId: bob, role: 'builder', now, audit: noAudit });

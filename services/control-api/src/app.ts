@@ -52,6 +52,7 @@ import {
 import { createInMemoryRateLimiter, rateLimit, type RateLimiter } from './plugins/rate-limit.js';
 import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerAuditRoutes } from './routes/audit.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import {
@@ -68,7 +69,6 @@ import {
   registerIntegrationRoutes,
   type IntegrationPort,
 } from './routes/integrations.js';
-import type { PermissionContext } from './policy/permissions.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
@@ -138,8 +138,6 @@ export interface TenantDeps {
   readonly releasePort?: ReleasePort;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
-  /** CP-12 persists this setting; absent remains fail-closed for Builder deploys. */
-  readonly permissionContextFor?: (organizationId: string) => Promise<PermissionContext>;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
 }
@@ -429,6 +427,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
+          registerAuditRoutes(app, { organizations: orgs.organizations });
           registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
@@ -459,7 +458,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
-            permissionContextFor: tenant.permissionContextFor ?? (() => Promise.resolve({})),
+            permissionContextFor: async (organizationId) =>
+              (await orgs.organizations.getSettings(organizationId)) ?? {},
           });
           registerIntegrationRoutes(app, {
             port: tenant.integrationPort ?? createUnavailableIntegrationPort(),
