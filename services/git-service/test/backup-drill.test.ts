@@ -57,6 +57,7 @@ describe('the restore-drill lease', () => {
       },
       restoreGit: {
         verifyBundle: () => Promise.reject(new Error('not used')),
+        backupRepresentation: () => Promise.reject(new Error('not used')),
         prepareRestore: () => Promise.reject(new Error('not used')),
       },
       client: createFakeForgejo(),

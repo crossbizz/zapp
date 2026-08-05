@@ -118,7 +118,7 @@ class FakeGit implements BackupGit {
   readonly created: { cloneUrl: string; bundlePath: string }[] = [];
   readonly verified: string[] = [];
   readonly prepared: { bundlePath: string; mirrorPath: string }[] = [];
-  readonly pushed: { mirrorPath: string; targetCloneUrl: string; timeoutMs: number }[] = [];
+  readonly pushed: { mirrorPath: string; targetCloneUrl: string; deadlineAt: Date }[] = [];
   readonly heads = new Map<string, string>();
   readonly refs = new Map<string, string>();
   fail: 'create' | 'verify' | 'push' | undefined;
@@ -144,17 +144,17 @@ class FakeGit implements BackupGit {
     return Promise.resolve({ kind: 'bundle' as const, mirrorPath });
   }
 
-  pushMirror(mirrorPath: string, targetCloneUrl: string, timeoutMs: number): Promise<void> {
-    this.pushed.push({ mirrorPath, targetCloneUrl, timeoutMs });
+  pushMirror(mirrorPath: string, targetCloneUrl: string, deadlineAt: Date): Promise<void> {
+    this.pushed.push({ mirrorPath, targetCloneUrl, deadlineAt });
     if (this.fail === 'push') {
       return Promise.reject(new Error('forgejo-admin-secret-was-here'));
     }
     return Promise.resolve();
   }
 
-  remoteRefs(targetCloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>> {
+  remoteRefs(targetCloneUrl: string, deadlineAt: Date): Promise<ReadonlyMap<string, string>> {
     void targetCloneUrl;
-    void timeoutMs;
+    void deadlineAt;
     return Promise.resolve(
       new Map([
         ...[...this.heads].map(([name, sha]) => [`refs/heads/${name}`, sha] as const),
@@ -443,7 +443,7 @@ describe('restoreRepositoryBackup', () => {
     store.values.set(key, { body: Buffer.from('bundle bytes'), lastModified: NOW });
     let nowMs = NOW.getTime();
     const events: string[] = [];
-    const remoteBudgets: number[] = [];
+    const remoteDeadlines: Date[] = [];
     const localGit = {
       verifyBundle: () => Promise.resolve(),
       prepareRestore: (_bundlePath: string, mirrorPath: string) => {
@@ -453,15 +453,15 @@ describe('restoreRepositoryBackup', () => {
       },
     };
     const remoteGit = {
-      pushMirror: (_mirrorPath: string, _cloneUrl: string, timeoutMs: number) => {
+      pushMirror: (_mirrorPath: string, _cloneUrl: string, deadlineAt: Date) => {
         events.push('mirror-pushed');
-        remoteBudgets.push(timeoutMs);
+        remoteDeadlines.push(deadlineAt);
         nowMs += 230_000;
         return Promise.resolve();
       },
-      remoteRefs: (_cloneUrl: string, timeoutMs?: number) => {
+      remoteRefs: (_cloneUrl: string, deadlineAt: Date) => {
         events.push('refs-read');
-        remoteBudgets.push(timeoutMs ?? -1);
+        remoteDeadlines.push(deadlineAt);
         return Promise.resolve(new Map([['refs/heads/main', 'a'.repeat(40)]]));
       },
     };
@@ -490,7 +490,10 @@ describe('restoreRepositoryBackup', () => {
       }),
     ).resolves.toMatchObject({ checkedBranches: 1 });
     expect(events).toEqual(['local-prepared', 'credential-issued', 'mirror-pushed', 'refs-read']);
-    expect(remoteBudgets).toEqual([240_000, 10_000]);
+    expect(remoteDeadlines).toEqual([
+      new Date(NOW.getTime() + 320_000),
+      new Date(NOW.getTime() + 320_000),
+    ]);
   });
 
   it('refuses the next remote command once the cumulative credential deadline is exhausted', async () => {
@@ -505,8 +508,8 @@ describe('restoreRepositoryBackup', () => {
         Promise.resolve({ kind: 'bundle' as const, mirrorPath }),
     };
     const remoteGit = {
-      pushMirror: (_mirrorPath: string, _cloneUrl: string, timeoutMs: number) => {
-        expect(timeoutMs).toBe(100);
+      pushMirror: (_mirrorPath: string, _cloneUrl: string, deadlineAt: Date) => {
+        expect(deadlineAt).toEqual(new Date(nowMs + 100));
         nowMs += 100;
         return Promise.resolve();
       },
@@ -617,7 +620,7 @@ describe('restoreRepositoryBackup', () => {
     expect(git.pushed).toHaveLength(1);
     expect(git.pushed[0]?.mirrorPath).toBe(git.prepared[0]?.mirrorPath);
     expect(git.pushed[0]?.targetCloneUrl).toBe('https://git.test/drill/repository.git');
-    expect(git.pushed[0]?.timeoutMs).toBeGreaterThan(0);
+    expect(git.pushed[0]?.deadlineAt.getTime()).toBeGreaterThan(Date.now());
     await expect(access(dirname(git.verified[0] ?? ''))).rejects.toThrow();
   });
 

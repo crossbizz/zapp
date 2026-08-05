@@ -92,6 +92,11 @@ class RestoreGit implements BackupGit {
     return Promise.resolve();
   }
 
+  backupRepresentation(bundlePath: string): Promise<'bundle' | 'empty'> {
+    void bundlePath;
+    return Promise.resolve('bundle');
+  }
+
   prepareRestore(_bundlePath: string, mirrorPath: string) {
     this.phases.push('mirror-prepared');
     return Promise.resolve({ kind: 'bundle' as const, mirrorPath });
@@ -106,9 +111,9 @@ class RestoreGit implements BackupGit {
     return Promise.resolve();
   }
 
-  remoteRefs(targetCloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>> {
+  remoteRefs(targetCloneUrl: string, deadlineAt: Date): Promise<ReadonlyMap<string, string>> {
     void targetCloneUrl;
-    void timeoutMs;
+    void deadlineAt;
     this.phases.push('refs-read');
     return Promise.resolve(new Map(this.refs));
   }
@@ -116,6 +121,12 @@ class RestoreGit implements BackupGit {
 
 class CandidateRestoreGit extends RestoreGit {
   readonly verifiedBodies: string[] = [];
+
+  async backupRepresentation(bundlePath: string) {
+    return (await readFile(bundlePath, 'utf8')) === 'empty backup bytes'
+      ? ('empty' as const)
+      : ('bundle' as const);
+  }
 
   override async verifyBundle(bundlePath: string): Promise<void> {
     const body = await readFile(bundlePath, 'utf8');
@@ -719,6 +730,92 @@ describe('intent-first restore recovery', () => {
     expect(
       forgejo.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/repos')),
     ).toHaveLength(1);
+    expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
+  });
+
+  it('returns the immutable completed drill result without touching newer target refs', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const forgejo = new StatefulForgejo();
+    const git = new RestoreGit();
+    let expectedSha = 'a'.repeat(40);
+    let credentialIssues = 0;
+    let expectedBranchReads = 0;
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => {
+          expectedBranchReads += 1;
+          return Promise.resolve([{ name: 'main', headCommitSha: expectedSha }]);
+        },
+      },
+      store,
+      git,
+      restoreGit: git,
+      client: forgejo,
+      restoreCredentials: {
+        issue: (input) => {
+          credentialIssues += 1;
+          return credentialsFor(git).issue(input);
+        },
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+
+    const completed = await operations.restoreDrill();
+    const mutationCount = git.phases.filter((phase) => phase === 'mirror-pushed').length;
+    const forgejoCallCount = forgejo.calls.length;
+    expectedSha = 'b'.repeat(40);
+    git.refs.set('refs/heads/main', expectedSha);
+
+    await expect(operations.restoreDrill()).resolves.toEqual(completed);
+    expect(git.phases.filter((phase) => phase === 'mirror-pushed')).toHaveLength(mutationCount);
+    expect(credentialIssues).toBe(1);
+    expect(expectedBranchReads).toBe(1);
+    expect(forgejo.calls).toHaveLength(forgejoCallCount);
+  });
+
+  it('moves an empty drill backup to a separate receipt-owned target instead of retaining old refs', async () => {
+    const store = new ReceiptStore();
+    store.values.set(BACKUP_KEY, Buffer.from('bundle bytes'));
+    const forgejo = new StatefulForgejo();
+    const git = new CandidateRestoreGit();
+    const targetRefs: string[] = [];
+    const operations = backupScript.createBackupOperations({
+      inventory: {
+        listProvisionedRepositories: () => Promise.resolve([SOURCE]),
+        expectedBranches: () => Promise.resolve([]),
+      },
+      store,
+      git,
+      restoreGit: git,
+      client: forgejo,
+      restoreCredentials: {
+        issue: (input) => {
+          targetRefs.push(input.targetRef);
+          return credentialsFor(git).issue(input);
+        },
+      },
+      restoreDrillLease: { runExclusive: async (operation) => await operation() },
+      close: () => Promise.resolve(),
+    });
+
+    await operations.restoreDrill();
+    store.values.set(
+      `org/${ORGANIZATION_ID}/project/${PROJECT_ID}/git-backups/2026-08-05.bundle`,
+      Buffer.from('empty backup bytes'),
+    );
+    // The stateful fixture models one URL at a time; the empty representation
+    // must resolve a different URL, where Forgejo correctly answers 404.
+    forgejo.repository = undefined;
+    await operations.restoreDrill();
+
+    expect(targetRefs).toHaveLength(2);
+    expect(targetRefs[1]).not.toBe(targetRefs[0]);
+    expect(
+      forgejo.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/repos')),
+    ).toHaveLength(2);
     expect(forgejo.calls.filter((call) => call.method === 'DELETE')).toEqual([]);
   });
 

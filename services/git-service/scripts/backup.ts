@@ -23,8 +23,8 @@ import {
   type BackupInventory,
   type BackupObjectStore,
   type NightlyBackupReport,
+  type RestoreBackupInspectionGit,
   type RestorePhase,
-  type RestorePreparationGit,
   type RestoreRemoteGit,
   type RestoreRepositoryResult,
 } from '../src/backup.js';
@@ -79,6 +79,7 @@ export interface BackupCliProcess {
 
 type RestoreResult = {
   readonly status: 'restored';
+  readonly organizationId: string;
   readonly projectId: string;
 } & RestoreRepositoryResult;
 
@@ -159,6 +160,7 @@ const RestoreOperationInputSchema = z
     idempotencyKey: RestoreIdempotencyKeySchema,
     source: BackupRepositorySchema,
     backupKey: z.string().min(1),
+    targetMode: z.enum(['persistent', 'empty']).default('persistent'),
   })
   .strict()
   .superRefine((value, context) => {
@@ -537,7 +539,11 @@ export async function beginRestoreOperation(
     .update(`${parsed.data.kind}\0${parsed.data.idempotencyKey}`)
     .digest('hex');
   const intentKey = `git-restore-intents/${parsed.data.kind}/${operationId}.json`;
-  const drillTargetSeed = `org/${parsed.data.source.organizationId}/project/${parsed.data.source.projectId}/git-restore-drill-target/v1`;
+  const persistentDrillTargetSeed = `org/${parsed.data.source.organizationId}/project/${parsed.data.source.projectId}/git-restore-drill-target/v1`;
+  const drillTargetSeed =
+    parsed.data.targetMode === 'empty'
+      ? `${persistentDrillTargetSeed}/empty-repository`
+      : persistentDrillTargetSeed;
   const drillTargetDigest = createHash('sha256').update(drillTargetSeed).digest('hex');
   const targetOrganizationId =
     parsed.data.kind === 'drill'
@@ -641,7 +647,7 @@ export function createBackupOperations(deps: {
   readonly inventory: BackupInventory;
   readonly store: BackupObjectStore;
   readonly git: BackupGit;
-  readonly restoreGit: RestorePreparationGit;
+  readonly restoreGit: RestoreBackupInspectionGit;
   readonly client: ForgejoClient;
   readonly restoreCredentials: RestoreCredentialIssuer;
   readonly restoreDrillLease: RestoreDrillLease;
@@ -674,6 +680,7 @@ export function createBackupOperations(deps: {
       if (operation.completedResult !== undefined) {
         return {
           status: 'restored',
+          organizationId: selector.organizationId,
           projectId: selector.projectId,
           ...operation.completedResult,
         };
@@ -702,7 +709,12 @@ export function createBackupOperations(deps: {
         },
         { key: selector.key, expectedBranches: [...expectedBranches] },
       );
-      return { status: 'restored', projectId: selector.projectId, ...result };
+      return {
+        status: 'restored',
+        organizationId: selector.organizationId,
+        projectId: selector.projectId,
+        ...result,
+      };
     },
 
     restoreDrill: async () =>
@@ -711,20 +723,33 @@ export function createBackupOperations(deps: {
         if (repositories.length === 0) {
           throw new Error('No provisioned internal repository is available for the restore drill');
         }
-        const { repository, key } = await selectRestoreDrillBackup(
+        const { repository, key, representation } = await selectRestoreDrillBackup(
           { store, git: restoreGit },
           repositories,
-        );
-        const expectedBranches = await inventory.expectedBranches(
-          repository.organizationId,
-          repository.projectId,
         );
         const drillKey = `drill-${createHash('sha256')
           .update(`${repository.organizationId}\0${repository.projectId}\0${key}`)
           .digest('hex')}`;
         const operation = await beginRestoreOperation(
           { store, client },
-          { kind: 'drill', idempotencyKey: drillKey, source: repository, backupKey: key },
+          {
+            kind: 'drill',
+            idempotencyKey: drillKey,
+            source: repository,
+            backupKey: key,
+            targetMode: representation === 'empty' ? 'empty' : 'persistent',
+          },
+        );
+        if (operation.completedResult !== undefined) {
+          return {
+            status: 'restore-drill-verified',
+            projectId: repository.projectId,
+            ...operation.completedResult,
+          };
+        }
+        const expectedBranches = await inventory.expectedBranches(
+          repository.organizationId,
+          repository.projectId,
         );
         const result = await restoreRepositoryBackup(
           {

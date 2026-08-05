@@ -104,17 +104,19 @@ describe('createGitBundleCommands', () => {
     ).toThrow();
   });
 
-  it('applies caller-provided remaining budgets only to credential-bound push and ref commands', async () => {
+  it('recomputes remaining budget from one absolute deadline for each credential-bound command', async () => {
     const root = await workspace();
     const bundle = join(root, 'repository.bundle');
     const mirror = join(root, 'repository.git');
     await writeFile(bundle, 'bundle bytes');
     const calls: GitCommandCall[] = [];
     const timeout = vi.spyOn(AbortSignal, 'timeout');
+    let nowMs = new Date('2026-08-04T09:30:00.000Z').getTime();
     const git = createGitBundleCommands({
       username: USERNAME,
       password: PASSWORD,
       timeoutMs: 240_000,
+      now: () => new Date(nowMs),
       executor: (call) => {
         calls.push(call);
         return Promise.resolve({
@@ -127,8 +129,8 @@ describe('createGitBundleCommands', () => {
         bundlePath: string,
         mirrorPath: string,
       ) => Promise<{ readonly kind: 'bundle'; readonly mirrorPath: string }>;
-      pushMirror?: (mirrorPath: string, cloneUrl: string, timeoutMs: number) => Promise<void>;
-      remoteRefs(cloneUrl: string, timeoutMs: number): Promise<ReadonlyMap<string, string>>;
+      pushMirror?: (mirrorPath: string, cloneUrl: string, deadlineAt: Date) => Promise<void>;
+      remoteRefs(cloneUrl: string, deadlineAt: Date): Promise<ReadonlyMap<string, string>>;
     };
 
     expect(deadlineGit.prepareRestore).toBeTypeOf('function');
@@ -137,8 +139,10 @@ describe('createGitBundleCommands', () => {
       return;
     }
     await deadlineGit.prepareRestore(bundle, mirror);
-    await deadlineGit.pushMirror(mirror, 'https://git.test/drill/repository.git', 10_000);
-    await deadlineGit.remoteRefs('https://git.test/drill/repository.git', 2_500);
+    const deadlineAt = new Date(nowMs + 10_000);
+    await deadlineGit.pushMirror(mirror, 'https://git.test/drill/repository.git', deadlineAt);
+    nowMs += 7_500;
+    await deadlineGit.remoteRefs('https://git.test/drill/repository.git', deadlineAt);
 
     expect(calls.map((call) => call.args)).toEqual([
       ['clone', '--mirror', bundle, mirror],
@@ -148,6 +152,53 @@ describe('createGitBundleCommands', () => {
     expect(timeout).toHaveBeenNthCalledWith(1, 240_000);
     expect(timeout).toHaveBeenNthCalledWith(2, 10_000);
     expect(timeout).toHaveBeenNthCalledWith(3, 2_500);
+  });
+
+  it('does not launch Git when askpass setup consumes the absolute credential deadline', async () => {
+    let nowMs = 0;
+    let executorCalls = 0;
+    const filesystemCalls: string[] = [];
+    const git = createGitBundleCommands({
+      username: USERNAME,
+      password: PASSWORD,
+      timeoutMs: 240_000,
+      now: () => new Date(nowMs),
+      askpassFileSystem: {
+        mkdtemp: () => {
+          filesystemCalls.push('mkdtemp');
+          nowMs += 40;
+          return Promise.resolve('/tmp/zapp-delayed-askpass');
+        },
+        writeFile: () => {
+          filesystemCalls.push('writeFile');
+          nowMs += 40;
+          return Promise.resolve();
+        },
+        chmod: () => {
+          filesystemCalls.push('chmod');
+          nowMs += 40;
+          return Promise.resolve();
+        },
+        rm: () => {
+          filesystemCalls.push('rm');
+          return Promise.resolve();
+        },
+      },
+      executor: () => {
+        executorCalls += 1;
+        return Promise.resolve({ stdout: '' });
+      },
+    });
+
+    await expect(
+      git.pushMirror(
+        '/tmp/controller-mirror.git',
+        'https://git.test/drill/repository.git',
+        new Date(100),
+      ),
+    ).rejects.toThrow('Git mirror push command failed');
+    expect(filesystemCalls).toEqual(['mkdtemp', 'writeFile', 'chmod', 'rm']);
+    expect(executorCalls).toBe(0);
   });
 
   it('creates a verified bundle containing every head, tag, and other ref', async () => {
@@ -181,10 +232,22 @@ describe('createGitBundleCommands', () => {
     expect(stdout).toContain(' refs/notes/zapp-backup\n');
   });
 
-  it('backs up and restores an empty provisioned repository without invoking a mirror push', async () => {
+  it('backs up an empty repository and mirror-pushes it to clear a previously non-empty target', async () => {
     const root = await workspace();
     const source = join(root, 'empty.git');
+    const seed = join(root, 'seed');
+    const target = join(root, 'target.git');
     await run('git', ['init', '--bare', source]);
+    await run('git', ['init', '--bare', target]);
+    await run('git', ['--git-dir', target, 'config', 'receive.denyDeleteCurrent', 'ignore']);
+    await run('git', ['init', seed]);
+    await run('git', ['-C', seed, 'config', 'user.email', 'backup@zapp.test']);
+    await run('git', ['-C', seed, 'config', 'user.name', 'backup suite']);
+    await writeFile(join(seed, 'README.md'), 'stale target history\n');
+    await run('git', ['-C', seed, 'add', 'README.md']);
+    await run('git', ['-C', seed, 'commit', '-m', 'stale target']);
+    await run('git', ['-C', seed, 'branch', '-M', 'main']);
+    await run('git', ['-C', seed, 'push', new URL(`file://${target}`).toString(), 'main']);
     const store = new BundleStore();
     const git = createGitBundleCommands({
       username: USERNAME,
@@ -214,7 +277,6 @@ describe('createGitBundleCommands', () => {
       throw new Error('empty backup was not uploaded');
     }
     expect(store.values.get(uploaded.key)?.byteLength).toBeGreaterThan(0);
-    let pushes = 0;
     const issuedAt = Date.now();
     const restored = await restoreRepositoryBackup(
       {
@@ -222,14 +284,8 @@ describe('createGitBundleCommands', () => {
         git,
         resolveTarget: () =>
           Promise.resolve({
-            cloneUrl: 'https://git.test/restore/empty.git',
-            git: {
-              pushMirror: () => {
-                pushes += 1;
-                return Promise.resolve();
-              },
-              remoteRefs: () => Promise.resolve(new Map()),
-            },
+            cloneUrl: new URL(`file://${target}`).toString(),
+            git,
             expiresAt: new Date(issuedAt + 300_000),
             deadlineAt: new Date(issuedAt + 240_000),
             release: () => Promise.resolve(),
@@ -239,7 +295,8 @@ describe('createGitBundleCommands', () => {
     );
 
     expect(restored).toEqual({ checkedBranches: 0, branches: [], refs: [] });
-    expect(pushes).toBe(0);
+    await expect(run('git', ['--git-dir', target, 'for-each-ref', '--format=%(refname)'])).resolves
+      .toMatchObject({ stdout: '' });
   });
 
   it('uses argv arrays, an askpass environment, disabled prompts, and removes all credential scratch paths', async () => {
@@ -277,7 +334,7 @@ describe('createGitBundleCommands', () => {
     await git.pushMirror(
       '/tmp/controller-mirror.git',
       'https://git.test/drill/repository.git',
-      5_000,
+      new Date(Date.now() + 5_000),
     );
 
     expect(calls.map((call) => call.args)).toEqual([
@@ -312,7 +369,9 @@ describe('createGitBundleCommands', () => {
       executor,
     });
 
-    await expect(git.remoteRefs('https://git.test/org/repository.git', 5_000)).resolves.toEqual(
+    await expect(
+      git.remoteRefs('https://git.test/org/repository.git', new Date(Date.now() + 5_000)),
+    ).resolves.toEqual(
       new Map([
         ['refs/heads/main', 'a'.repeat(40)],
         ['refs/heads/feature/x', 'b'.repeat(40)],
@@ -329,7 +388,10 @@ describe('createGitBundleCommands', () => {
       executor: () => Promise.resolve({ stdout: 'not-a-sha\trefs/heads/main\n' }),
     });
     await expect(
-      malformed.remoteRefs('https://git.test/org/repository.git', 5_000),
+      malformed.remoteRefs(
+        'https://git.test/org/repository.git',
+        new Date(Date.now() + 5_000),
+      ),
     ).rejects.toThrow('Git remote ref listing was invalid');
   });
 

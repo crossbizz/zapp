@@ -13,9 +13,13 @@ const runbookPath = fileURLToPath(
   new URL('../../../docs/runbooks/git-restore.md', import.meta.url),
 );
 const temporaryDirectories: string[] = [];
+const organizationId = 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9';
+const projectId = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7N8';
 
 const matchingEvidence = JSON.stringify({
   status: 'restored',
+  organizationId,
+  projectId,
   checkedBranches: 1,
   branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
   refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
@@ -23,7 +27,7 @@ const matchingEvidence = JSON.stringify({
 
 async function runScript(
   mode: 'valid' | 'banner' | 'concatenated' | 'producer-failure' | 'sha-mismatch',
-  options: { readonly preexistingEvidence?: string } = {},
+  options: { readonly preexistingEvidence?: string; readonly evidence?: string } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'zapp-restore-runbook-'));
   temporaryDirectories.push(directory);
@@ -61,8 +65,10 @@ esac
         ...process.env,
         PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
         FAKE_PNPM_MODE: mode,
-        FAKE_EVIDENCE: matchingEvidence,
+        FAKE_EVIDENCE: options.evidence ?? matchingEvidence,
         FAKE_MISMATCH_EVIDENCE: mismatch,
+        GIT_RESTORE_ORGANIZATION_ID: organizationId,
+        GIT_RESTORE_PROJECT_ID: projectId,
       },
     }),
   };
@@ -117,6 +123,46 @@ describe('the executable Git restore runbook', () => {
 
   it('exits nonzero when any expected and actual SHA differ', async () => {
     const execution = await runScript('sha-mismatch');
+    await expect(execution.result).rejects.toMatchObject({ code: 1 });
+    await expect(access(execution.evidence)).rejects.toThrow();
+    expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    [
+      'a different organization',
+      { ...JSON.parse(matchingEvidence), organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7P0' },
+    ],
+    [
+      'a different project',
+      { ...JSON.parse(matchingEvidence), projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7P1' },
+    ],
+    [
+      'a malformed branch name',
+      {
+        ...JSON.parse(matchingEvidence),
+        branches: [{ name: 'bad..branch', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      },
+    ],
+    [
+      'a malformed full ref',
+      {
+        ...JSON.parse(matchingEvidence),
+        refs: [{ name: 'refs/heads/bad..ref', sha: 'a'.repeat(40) }],
+      },
+    ],
+    [
+      'a non-object SHA',
+      {
+        ...JSON.parse(matchingEvidence),
+        refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(39) }],
+      },
+    ],
+    ['an unknown result field', { ...JSON.parse(matchingEvidence), cloneUrl: 'https://secret.test' }],
+  ])('rejects evidence containing %s', async (_label, evidence) => {
+    const execution = await runScript('valid', { evidence: JSON.stringify(evidence) });
     await expect(execution.result).rejects.toMatchObject({ code: 1 });
     await expect(access(execution.evidence)).rejects.toThrow();
     expect((await readdir(execution.directory)).filter((name) => name.includes('.tmp.'))).toEqual(

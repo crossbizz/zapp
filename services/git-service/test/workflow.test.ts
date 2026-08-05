@@ -8,6 +8,8 @@ type WorkflowStep = {
   readonly name?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly run?: string;
+  readonly uses?: string;
+  readonly with?: Readonly<Record<string, unknown>>;
 };
 
 type Workflow = {
@@ -17,7 +19,10 @@ type Workflow = {
     Record<
       string,
       {
+        readonly if?: string;
+        readonly environment?: string;
         readonly env?: Readonly<Record<string, string>>;
+        readonly services?: Readonly<Record<string, unknown>>;
         readonly steps?: readonly WorkflowStep[];
       }
     >
@@ -27,6 +32,7 @@ type Workflow = {
 const workflowPath = fileURLToPath(
   new URL('../../../.github/workflows/git-backups.yml', import.meta.url),
 );
+const ciWorkflowPath = fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url));
 
 const secretEnvironment = {
   DATABASE_URL: '${{ secrets.GIT_BACKUP_DATABASE_URL }}',
@@ -52,6 +58,23 @@ function containsSecretReference(value: unknown): boolean {
 }
 
 describe('the Git backup workflow', () => {
+  it('allows secrets only on the protected default branch and checks out that branch explicitly', async () => {
+    const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
+    const job = workflow.jobs?.run;
+
+    expect(job?.if).toBe(
+      "github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.ref_protected",
+    );
+    expect(job?.environment).toBe('git-backups-default-branch');
+    expect(job?.steps?.find((step) => step.name === 'Checkout')).toMatchObject({
+      uses: 'actions/checkout@v5',
+      with: {
+        ref: '${{ github.event.repository.default_branch }}',
+        'persist-credentials': false,
+      },
+    });
+  });
+
   it('exposes operational secrets only to the backup or restore step', async () => {
     const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
     expect(workflow.concurrency).toEqual({
@@ -80,5 +103,29 @@ describe('the Git backup workflow', () => {
       'a non-operation workflow field receives a secret',
     ).toBe(false);
     expect(containsSecretReference({ ...operation, env: undefined })).toBe(false);
+  });
+
+  it('CI runs the live backup/delete/restore/clone proof with every declared dependency', async () => {
+    const workflow = parse(await readFile(ciWorkflowPath, 'utf8')) as Workflow;
+    const job = workflow.jobs?.['git-backup-live'];
+    const steps = job?.steps ?? [];
+
+    expect(job, 'missing dedicated live backup gate').toBeDefined();
+    expect(Object.keys(job?.services ?? {}).sort()).toEqual(['forgejo', 'postgres']);
+    expect(job?.env).toMatchObject({
+      GIT_BACKUP_LIVE: '1',
+      DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/zapp',
+      FORGEJO_URL: 'http://localhost:3000',
+      ARTIFACT_ENDPOINT: 'http://localhost:9000',
+      ARTIFACT_KEY: 'minioadmin',
+      ARTIFACT_SECRET: 'minioadmin',
+      ARTIFACT_BUCKET: 'zapp-git-backups',
+    });
+    expect(steps.find((step) => step.name === 'Start MinIO service')?.run).toContain(
+      'minio/minio:RELEASE.2025-04-22T22-12-26Z server /data',
+    );
+    expect(steps.find((step) => step.name === 'Live backup recovery gate')?.run).toBe(
+      'pnpm --filter @zapp/git-service exec vitest run test/integration/backup.test.ts --no-file-parallelism',
+    );
   });
 });

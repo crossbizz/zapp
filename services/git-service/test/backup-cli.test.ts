@@ -81,6 +81,7 @@ function operationsDouble(overrides: Partial<BackupCliOperations> = {}): {
         calls.push(`restore:${selector.key}`);
         return Promise.resolve({
           status: 'restored',
+          organizationId: selector.organizationId,
           projectId: selector.projectId,
           checkedBranches: 1,
           branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
@@ -179,6 +180,7 @@ describe('the backup CLI entrypoint', () => {
     expect(cli.process.exitCode).toBeUndefined();
     expect(JSON.parse(cli.stdout.join(''))).toMatchObject({
       status: 'restored',
+      organizationId: ORGANIZATION_ID,
       projectId: PROJECT_ID,
       branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
       refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
