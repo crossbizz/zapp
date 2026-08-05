@@ -601,6 +601,21 @@ test('AR-1 allows harmless positions after push and unshift mutations', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 preserves loader positions when arrays mutate through value aliases', () => {
+  const result = runFixture('loader-alias-mutation-positions');
+
+  assert.equal(result.status, 1);
+  for (const fileName of ['alias-unshift', 'late-alias-unshift']) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 keeps harmless positions clean when arrays mutate through value aliases', () => {
+  const result = runFixture('loader-alias-mutation-positions-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('AR-1 respects Object.assign source order for final loader values', () => {
   const result = runFixture('loader-object-assign-overwrite-semantics');
 

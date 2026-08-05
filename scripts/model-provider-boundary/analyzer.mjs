@@ -1029,6 +1029,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const identity = target ?? symbol;
     const targets = functionTargetsForSymbol(symbol);
     const value = {
+      arrayLike: arrayIdentitiesForSymbol(identity).size > 0,
       functions: [...targets].map((functionLike) => ({
         environment: undefined,
         functionLike,
@@ -1928,6 +1929,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return (aliasedSymbol(checker, symbol) ?? symbol) === expectedSymbol;
   }
 
+  function sameArrayValue(expression, expectedSymbol) {
+    if (sameValueSymbol(expression, expectedSymbol)) return true;
+    const current = unwrapExpression(expression);
+    if (!ts.isIdentifier(current)) return false;
+    const currentIdentities = arrayIdentitiesForSymbol(symbolAt(checker, current));
+    const expectedIdentities = arrayIdentitiesForSymbol(expectedSymbol);
+    return (
+      currentIdentities.size > 0 &&
+      currentIdentities.size === expectedIdentities.size &&
+      [...currentIdentities].every((arrayIdentity) => expectedIdentities.has(arrayIdentity))
+    );
+  }
+
   function assignmentIncludesSymbol(pattern, expectedSymbol) {
     const symbols = new Set();
     collectAssignmentSymbols(pattern, symbols);
@@ -1982,7 +1996,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       if (!ts.isCallExpression(expression)) continue;
       const arrayMutation = arrayMutationForCall(expression);
-      if (arrayMutation && sameValueSymbol(arrayMutation.owner, identity)) {
+      if (arrayMutation && sameArrayValue(arrayMutation.owner, identity)) {
         if (state?.kind !== 'array') return undefined;
         if (arrayMutation.methodName === 'push') state.elements.push(...expression.arguments);
         else state.elements.unshift(...expression.arguments);
