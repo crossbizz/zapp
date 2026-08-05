@@ -791,6 +791,13 @@ test('AR-1 flags getter-backed mutation receivers that reattach an alias', () =>
   assert.match(result.stderr, /new-provider path: .*getter-receiver-reattaches-alias-unsafe\.ts/);
 });
 
+test('AR-1 flags object-spread getters that reattach an alias', () => {
+  const result = runFixture('loader-array-alias-reachability');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*spread-getter-reattaches-alias-unsafe\.ts/);
+});
+
 test('AR-1 ignores detached array identities and definitely unreachable mutations', () => {
   const result = runFixture('loader-array-alias-reachability-control');
 
@@ -798,6 +805,12 @@ test('AR-1 ignores detached array identities and definitely unreachable mutation
 });
 
 test('AR-1 allows getter-backed mutation evaluation that keeps aliases detached', () => {
+  const result = runFixture('loader-array-alias-reachability-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 preserves detached aliases across proven data-only member and spread reads', () => {
   const result = runFixture('loader-array-alias-reachability-control');
 
   assert.equal(result.status, 0, result.stderr);

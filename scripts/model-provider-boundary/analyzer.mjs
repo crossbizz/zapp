@@ -4201,6 +4201,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (!scope) return undefined;
 
     const identitiesBySymbol = new Map();
+    const dataOnlyContainersBySymbol = new Map();
     const identitiesForExpression = (expression, state = identitiesBySymbol) => {
       const current = unwrapExpression(expression);
       if (ts.isArrayLiteralExpression(current)) return new Set([current]);
@@ -4231,10 +4232,131 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       return merged;
     };
-    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation) => {
+    const cloneDataOnlyContainers = (state) =>
+      new Map(
+        [...state].map(([identity, container]) => [
+          identity,
+          { members: new Set(container.members) },
+        ]),
+      );
+    const mergeDataOnlyContainers = (...states) => {
+      const merged = new Map();
+      if (states.length === 0) return merged;
+      for (const [identity, container] of states[0]) {
+        const alternatives = states.slice(1).map((state) => state.get(identity));
+        if (alternatives.some((alternative) => !alternative)) continue;
+        const members = new Set(
+          [...container.members].filter((memberName) =>
+            alternatives.every((alternative) => alternative.members.has(memberName)),
+          ),
+        );
+        merged.set(identity, { members });
+      }
+      return merged;
+    };
+    function dataOnlyValueEvaluationIsNeutral(expression, dataOnlyState) {
+      const current = unwrapExpression(expression);
+      if (
+        ts.isStringLiteralLike(current) ||
+        ts.isNumericLiteral(current) ||
+        current.kind === ts.SyntaxKind.NullKeyword ||
+        current.kind === ts.SyntaxKind.TrueKeyword ||
+        current.kind === ts.SyntaxKind.FalseKeyword ||
+        ts.isIdentifier(current)
+      ) {
+        return true;
+      }
+      if (ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current)) {
+        return !!dataOnlyContainerForExpression(current, dataOnlyState);
+      }
+      if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+        return dataOnlyMemberRead(current, dataOnlyState);
+      }
+      return false;
+    }
+    function dataOnlyContainerForExpression(expression, dataOnlyState) {
+      const current = unwrapExpression(expression);
+      if (ts.isIdentifier(current)) {
+        const identity = valueSymbolIdentity(current);
+        return identity ? dataOnlyState.get(identity) : undefined;
+      }
+      if (ts.isArrayLiteralExpression(current)) {
+        const members = new Set();
+        for (let index = 0; index < current.elements.length; index += 1) {
+          const element = current.elements[index];
+          if (ts.isOmittedExpression(element)) continue;
+          if (
+            ts.isSpreadElement(element) ||
+            !dataOnlyValueEvaluationIsNeutral(element, dataOnlyState)
+          ) {
+            return undefined;
+          }
+          members.add(String(index));
+        }
+        return { members };
+      }
+      if (!ts.isObjectLiteralExpression(current)) return undefined;
+
+      const members = new Set();
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          const spread = dataOnlyContainerForExpression(property.expression, dataOnlyState);
+          if (!spread) return undefined;
+          for (const memberName of spread.members) members.add(memberName);
+          continue;
+        }
+        if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+          return undefined;
+        }
+        if (
+          ts.isComputedPropertyName(property.name) &&
+          !dataOnlyValueEvaluationIsNeutral(property.name.expression, dataOnlyState)
+        ) {
+          return undefined;
+        }
+        const memberNames = declarationMemberNames(property.name);
+        if (!memberNames || memberNames.size !== 1 || memberNames.has('__proto__')) {
+          return undefined;
+        }
+        const valueExpression = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : property.name;
+        if (!dataOnlyValueEvaluationIsNeutral(valueExpression, dataOnlyState)) return undefined;
+        for (const memberName of memberNames) members.add(memberName);
+      }
+      return { members };
+    }
+    function dataOnlyMemberRead(access, dataOnlyState) {
+      const container = dataOnlyContainerForExpression(access.expression, dataOnlyState);
+      const memberNames = accessMemberNames(access);
+      return (
+        !!container &&
+        !!memberNames &&
+        memberNames.size > 0 &&
+        [...memberNames].every((memberName) => container.members.has(memberName))
+      );
+    }
+    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation, dataOnlyState) => {
       let mayChangeIdentity = false;
       const visit = (node) => {
         if (mayChangeIdentity) return;
+        if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+          if (!dataOnlyMemberRead(node, dataOnlyState)) {
+            mayChangeIdentity = true;
+            return;
+          }
+          visit(node.expression);
+          if (ts.isElementAccessExpression(node)) visit(node.argumentExpression);
+          return;
+        }
+        if (ts.isSpreadAssignment(node)) {
+          if (!dataOnlyContainerForExpression(node.expression, dataOnlyState)) {
+            mayChangeIdentity = true;
+            return;
+          }
+          visit(node.expression);
+          return;
+        }
         if (
           (ts.isBinaryExpression(node) &&
             node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -4243,8 +4365,6 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             (node.operator === ts.SyntaxKind.PlusPlusToken ||
               node.operator === ts.SyntaxKind.MinusMinusToken)) ||
           ts.isPostfixUnaryExpression(node) ||
-          ts.isPropertyAccessExpression(node) ||
-          ts.isElementAccessExpression(node) ||
           ts.isCallExpression(node) ||
           ts.isNewExpression(node) ||
           ts.isDeleteExpression(node) ||
@@ -4262,7 +4382,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       for (const expression of [mutation.owner, ...mutationCall.arguments]) visit(expression);
       return mayChangeIdentity;
     };
-    const applyStatement = (statement, state) => {
+    const applyStatement = (statement, state, dataOnlyState) => {
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (!ts.isIdentifier(declaration.name)) return false;
@@ -4274,6 +4394,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
                 ? identitiesForExpression(declaration.initializer, state)
                 : undefined,
             );
+            const dataOnlyContainer = declaration.initializer
+              ? dataOnlyContainerForExpression(declaration.initializer, dataOnlyState)
+              : undefined;
+            if (dataOnlyContainer) dataOnlyState.set(identity, dataOnlyContainer);
+            else dataOnlyState.delete(identity);
           }
         }
         return true;
@@ -4286,17 +4411,30 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           ts.isIdentifier(unwrapExpression(expression.left))
         ) {
           const identity = valueSymbolIdentity(unwrapExpression(expression.left));
-          if (identity) state.set(identity, identitiesForExpression(expression.right, state));
+          if (identity) {
+            state.set(identity, identitiesForExpression(expression.right, state));
+            const dataOnlyContainer = dataOnlyContainerForExpression(
+              expression.right,
+              dataOnlyState,
+            );
+            if (dataOnlyContainer) dataOnlyState.set(identity, dataOnlyContainer);
+            else dataOnlyState.delete(identity);
+          }
           return true;
         }
         if (ts.isCallExpression(expression)) {
           const mutation = arrayMutationForCall(expression);
-          if (mutation && !mutationEvaluationMayChangeIdentity(expression, mutation)) return true;
+          if (
+            mutation &&
+            !mutationEvaluationMayChangeIdentity(expression, mutation, dataOnlyState)
+          ) {
+            return true;
+          }
         }
         return ts.isStringLiteralLike(expression);
       }
       if (ts.isBlock(statement)) {
-        return statement.statements.every((nested) => applyStatement(nested, state));
+        return statement.statements.every((nested) => applyStatement(nested, state, dataOnlyState));
       }
       if (ts.isIfStatement(statement)) {
         const { truthiness } = runtimePossibilities(statement.expression);
@@ -4305,20 +4443,32 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         const branches = [];
         if (thenReachable) {
           const thenState = cloneIdentities(state);
-          if (!applyStatement(statement.thenStatement, thenState)) return false;
-          branches.push(thenState);
+          const thenDataOnlyState = cloneDataOnlyContainers(dataOnlyState);
+          if (!applyStatement(statement.thenStatement, thenState, thenDataOnlyState)) return false;
+          branches.push({ dataOnly: thenDataOnlyState, identities: thenState });
         }
         if (elseReachable) {
           const elseState = cloneIdentities(state);
-          if (statement.elseStatement && !applyStatement(statement.elseStatement, elseState)) {
+          const elseDataOnlyState = cloneDataOnlyContainers(dataOnlyState);
+          if (
+            statement.elseStatement &&
+            !applyStatement(statement.elseStatement, elseState, elseDataOnlyState)
+          ) {
             return false;
           }
-          branches.push(elseState);
+          branches.push({ dataOnly: elseDataOnlyState, identities: elseState });
         }
         if (branches.length === 0) return false;
-        const merged = mergeIdentities(...branches);
+        const merged = mergeIdentities(...branches.map((branch) => branch.identities));
+        const mergedDataOnly = mergeDataOnlyContainers(
+          ...branches.map((branch) => branch.dataOnly),
+        );
         state.clear();
         for (const [identity, identities] of merged) state.set(identity, identities);
+        dataOnlyState.clear();
+        for (const [identity, container] of mergedDataOnly) {
+          dataOnlyState.set(identity, container);
+        }
         return true;
       }
       return (
@@ -4335,7 +4485,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
     for (const statement of scope.statements) {
       if (statement === scope.statement) break;
-      if (!applyStatement(statement, identitiesBySymbol)) return undefined;
+      if (!applyStatement(statement, identitiesBySymbol, dataOnlyContainersBySymbol)) {
+        return undefined;
+      }
     }
 
     const ownerIdentity = valueSymbolIdentity(currentOwner);
