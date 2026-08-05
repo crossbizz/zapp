@@ -363,7 +363,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const trustedLoaderCounts = new Map();
   const contextualLoaderTargets = new Map();
   const contextualValueCache = new Map();
+  const functionBodiesCreatingInstance = new Map();
   const runtimeClassInstances = new Map();
+  const runtimeInstanceSymbols = new Map();
   const runtimeSymbolUsageBySourceFile = new Map();
   const readOnlyLiteralContainerSymbols = new Map();
   let collectLoaderContexts = false;
@@ -1130,6 +1132,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function mergeCallableValues(...candidates) {
     const values = candidates.filter((value) => value && callableValueHasData(value));
     if (values.length === 0) return emptyCallableValue();
+    if (values.length === 1 && values[0].runtimeInstance) return values[0];
     const merged = emptyCallableValue();
     merged.kinds = values.reduce((kinds, value) => kinds | value.kinds, 0);
     merged.arrayLike = values.some((value) => value.arrayLike);
@@ -1510,7 +1513,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const declarations = [
       ...union(new Set(symbol.declarations ?? []), new Set(target?.declarations ?? [])),
     ];
-    const values = hasReadOnlyLiteralContainer(identity, declarations)
+    const values =
+      hasReadOnlyLiteralContainer(identity, declarations) ||
+      declarations.some(
+        (declaration) => ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration),
+      )
       ? []
       : [storedCallableValue(symbol)];
     for (const declaration of declarations) {
@@ -1805,6 +1812,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         return { nullish: MAY_BE_NON_NULLISH, truthiness: MAY_BE_TRUTHY };
       }
       const symbol = symbolAt(checker, current);
+      const target = aliasedSymbol(checker, symbol);
+      const contextual = environment.get(symbol) ?? environment.get(target);
+      if (contextual) {
+        return {
+          nullish: contextual.nullish ?? (MAY_BE_NULLISH | MAY_BE_NON_NULLISH),
+          truthiness: contextual.truthiness ?? (MAY_BE_TRUTHY | MAY_BE_FALSY),
+        };
+      }
       if (symbol && !seenSymbols.has(symbol)) {
         for (const declaration of symbol.declarations ?? []) {
           if (ts.isFunctionLike(declaration) || ts.isClassDeclaration(declaration)) {
@@ -1874,6 +1889,56 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function functionBodyCreatesInstance(functionLike) {
+    if (functionBodiesCreatingInstance.has(functionLike)) {
+      return functionBodiesCreatingInstance.get(functionLike);
+    }
+    let createsInstance = false;
+    function visit(node) {
+      if (createsInstance || (node !== functionLike && ts.isFunctionLike(node))) return;
+      if (ts.isNewExpression(node)) {
+        createsInstance = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(functionLike.body);
+    functionBodiesCreatingInstance.set(functionLike, createsInstance);
+    return createsInstance;
+  }
+
+  function symbolDeclaresRuntimeInstance(symbol, seenSymbols = new Set()) {
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    if (!identity || seenSymbols.has(identity)) return false;
+    if (runtimeInstanceSymbols.has(identity)) return runtimeInstanceSymbols.get(identity);
+    const nextSeenSymbols = new Set([...seenSymbols, identity]);
+    const declaresInstance = [...(identity.declarations ?? [])].some((declaration) => {
+      if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) return false;
+      const initializer = unwrapExpression(declaration.initializer);
+      return (
+        ts.isNewExpression(initializer) ||
+        (ts.isIdentifier(initializer) &&
+          symbolDeclaresRuntimeInstance(symbolAt(checker, initializer), nextSeenSymbols))
+      );
+    });
+    runtimeInstanceSymbols.set(identity, declaresInstance);
+    return declaresInstance;
+  }
+
+  function callTargetsRuntimeInstance(callExpression, environment, state) {
+    const callee = unwrapExpression(callExpression.expression);
+    if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+      return false;
+    }
+    const owner = unwrapExpression(callee.expression);
+    if (owner.kind === ts.SyntaxKind.ThisKeyword) return !!state.thisValue?.runtimeInstance;
+    if (!ts.isIdentifier(owner)) return false;
+    const symbol = symbolAt(checker, owner);
+    const target = aliasedSymbol(checker, symbol);
+    const contextual = environment.get(symbol) ?? environment.get(target);
+    return !!contextual?.runtimeInstance || symbolDeclaresRuntimeInstance(symbol);
+  }
+
   function applyRuntimeAssignment(target, value, environment, state) {
     const current = unwrapExpression(target);
     if (ts.isIdentifier(current)) {
@@ -1897,7 +1962,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       for (const memberName of accessMemberNames(current) ?? ['*']) {
         owner.members.set(
           memberName,
-          owner.runtimeInstance ? value : mergeCallableValues(owner.members.get(memberName), value),
+          owner.runtimeInstance && !state.runtimeBranchAlternatives
+            ? value
+            : mergeCallableValues(owner.members.get(memberName), value),
         );
         if (owner.runtimeInstance && memberName !== '*') {
           owner.knownDefinedMembers.add(memberName);
@@ -1964,15 +2031,30 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     if (!functionLike.body || !ts.isBlock(functionLike.body)) return emptyCallableValue();
     const returns = [];
-    const inspectBodyCalls = [...environment.values()].some((value) => containsCallableKind(value));
-    function visit(node) {
+    const inspectBodyCalls = [...environment.values()].some((value) =>
+      containsCallableKind(value),
+    );
+    const inspectRuntimeInstanceCalls = functionBodyCreatesInstance(functionLike);
+    function visit(node, visitState = nextState) {
       if (node !== functionLike && ts.isFunctionLike(node)) return;
+      if (ts.isIfStatement(node)) {
+        const { truthiness } = runtimePossibilities(node.expression, environment, visitState);
+        const thenReachable = (truthiness & MAY_BE_TRUTHY) !== 0;
+        const elseReachable = (truthiness & MAY_BE_FALSY) !== 0;
+        const branchState =
+          thenReachable && elseReachable
+            ? { ...visitState, runtimeBranchAlternatives: true }
+            : visitState;
+        if (thenReachable) visit(node.thenStatement, branchState);
+        if (elseReachable && node.elseStatement) visit(node.elseStatement, branchState);
+        return;
+      }
       if (ts.isVariableDeclaration(node) && node.initializer) {
-        const alias = thisAliasValue(node.initializer, environment, nextState);
+        const alias = thisAliasValue(node.initializer, environment, visitState);
         if (alias) bindCallablePattern(node.name, alias, environment);
       }
       if (ts.isReturnStatement(node) && node.expression) {
-        returns.push(callableValue(node.expression, environment, nextState));
+        returns.push(callableValue(node.expression, environment, visitState));
         return;
       }
       if (
@@ -1982,15 +2064,20 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       ) {
         applyRuntimeAssignment(
           node.left,
-          callableValue(node.right, environment, nextState),
+          callableValue(node.right, environment, visitState),
           environment,
-          nextState,
+          visitState,
         );
       }
-      if ((inspectBodyCalls || record.thisValue) && ts.isCallExpression(node)) {
-        callableValue(node, environment, nextState);
+      if (
+        ts.isCallExpression(node) &&
+        (inspectBodyCalls ||
+          record.thisValue ||
+          (inspectRuntimeInstanceCalls && callTargetsRuntimeInstance(node, environment, visitState)))
+      ) {
+        callableValue(node, environment, visitState);
       }
-      ts.forEachChild(node, visit);
+      ts.forEachChild(node, (child) => visit(child, visitState));
     }
     visit(functionLike.body);
     return mergeCallableAlternatives(...returns);
@@ -2093,6 +2180,13 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return {
       ...state,
       runtimeInvocationPath: [...(state.runtimeInvocationPath ?? []), expression],
+    };
+  }
+
+  function stateForCallbackInvocation(state, expression, index) {
+    return {
+      ...state,
+      runtimeInvocationPath: [...(state.runtimeInvocationPath ?? []), expression, index],
     };
   }
 
@@ -2790,7 +2884,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             },
             owner,
           ],
-          state,
+          stateForCallbackInvocation(state, callExpression, index),
         );
         const results =
           methodName === 'flatMap' && callbackResult.arrayLike
@@ -2817,7 +2911,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             },
             owner,
           ],
-          state,
+          stateForCallbackInvocation(state, callExpression, index),
         );
       });
       return emptyCallableValue();
@@ -2846,7 +2940,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           },
           owner,
         ],
-        state,
+        stateForCallbackInvocation(state, callExpression, index),
       );
     });
     return accumulator;
@@ -3103,6 +3197,20 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function evaluateCallableValue(expression, environment, state) {
     const current = unwrapExpression(expression);
+    if (current.kind === ts.SyntaxKind.TrueKeyword) {
+      return {
+        ...emptyCallableValue(),
+        nullish: MAY_BE_NON_NULLISH,
+        truthiness: MAY_BE_TRUTHY,
+      };
+    }
+    if (current.kind === ts.SyntaxKind.FalseKeyword) {
+      return {
+        ...emptyCallableValue(),
+        nullish: MAY_BE_NON_NULLISH,
+        truthiness: MAY_BE_FALSY,
+      };
+    }
     if (ts.isStringLiteralLike(current)) {
       return { functions: [], kinds: 0, members: new Map(), strings: new Set([current.text]) };
     }

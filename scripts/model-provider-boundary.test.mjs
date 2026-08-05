@@ -824,11 +824,18 @@ test('AR-1 preserves mutations on the matching factory-created class instance', 
     'factory-instance-positive',
     'nested-factory-instance-positive',
     'recursive-factory-instance-positive',
+    'map-constructor-second-instance-unsafe',
+    'map-factory-second-instance-unsafe',
+    'map-mutator-same-instance-unsafe',
+    'factory-branch-configured-instance',
+    'factory-unknown-branch-conservative',
+    'factory-parameterized-loader-instance',
   ]) {
     assert.match(result.stderr, new RegExp(`new-provider path: .*/${fileName}\\.ts`));
   }
 });
 
+// Catches removal of callback/factory invocation identity or branch selection.
 test('AR-1 isolates factory-created instances across direct and nested calls', () => {
   const result = runFixture('loader-factory-created-instance-state-control');
 
