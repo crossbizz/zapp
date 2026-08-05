@@ -10,6 +10,10 @@ import fastify, {
 import { z, ZodError } from 'zod';
 import { PathViolationError } from '@zapp/workspace-runtime';
 import {
+  ContainmentUnavailableError,
+  type Containment,
+} from './containment/types.js';
+import {
   ExecManager,
   ExecPreflightError,
   ExecRequestSchema,
@@ -43,6 +47,14 @@ const MetricsSourceSchema = z.custom<MetricsSource>(
     return typeof (value as { sample?: unknown }).sample === 'function';
   },
 );
+const ContainmentSchema = z.custom<Containment>(
+  (value) => {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    return typeof (value as { create?: unknown }).create === 'function';
+  },
+);
 
 const BuildOptionsSchema = z
   .object({
@@ -50,6 +62,7 @@ const BuildOptionsSchema = z
     token: z.string().min(1),
     devServerPort: z.number().int().min(1).max(65_535).optional(),
     metricsSource: MetricsSourceSchema.optional(),
+    containment: ContainmentSchema.optional(),
   })
   .strict();
 export type BuildOptions = z.infer<typeof BuildOptionsSchema>;
@@ -387,7 +400,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     forceCloseConnections: true,
   });
   const expectedDigest = tokenDigest(parsed.token);
-  const execManager = new ExecManager(workspaceRoot);
+  const execManager = new ExecManager(workspaceRoot, parsed.containment);
   const idempotency = new IdempotencyStore();
   const activeStreamWriters = new Set<ActiveStreamWriter>();
   const idempotencyKeys = new WeakMap<FastifyRequest, string>();
@@ -482,6 +495,10 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     await execManager.killAll();
   });
   app.setErrorHandler(async (error, _request, reply) => {
+    if (error instanceof ContainmentUnavailableError) {
+      await reply.code(503).send(ErrorResponseSchema.parse({ error: 'containment_unavailable' }));
+      return;
+    }
     if (
       error instanceof ZodError ||
       error instanceof PathViolationError ||

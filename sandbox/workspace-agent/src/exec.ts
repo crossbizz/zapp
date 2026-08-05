@@ -8,9 +8,18 @@ import { execa } from 'execa';
 import * as nodePty from 'node-pty';
 import { z } from 'zod';
 import { MAX_EXEC_OUTPUT_BYTES, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
+import { createProductionContainment } from './containment/cgroup.js';
+import {
+  ContainmentUnavailableError,
+  type Containment,
+  type ContainmentTerminationReason,
+  type ExecutionContainment,
+} from './containment/types.js';
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXEC_LAUNCHER = join(PACKAGE_ROOT, 'dist', 'native', 'exec-launcher');
+const PATH_HELPER_PATH_VIOLATION = 65;
+const PATH_HELPER_CONTAINMENT_FAILURE = 75;
 
 const SAFE_INHERITED_ENV_NAMES = [
   'PATH',
@@ -29,9 +38,10 @@ const RESERVED_AGENT_ENV_NAMES = new Set([
   'ZAPP_AGENT_TOKEN',
   'ZAPP_WORKSPACE_ROOT',
   'ZAPP_DEV_SERVER_PORT',
+  'ZAPP_CGROUP_ROOT',
 ]);
 const MAX_STREAM_RECORD_BYTES = 8 * 1_024;
-const STREAM_RECORD_FLUSH_DELAY_MS = 5;
+const STREAM_RECORD_FLUSH_DELAY_MS = 25;
 const NoNulStringSchema = z
   .string()
   .refine((value) => !value.includes('\0'), 'NUL is not allowed');
@@ -123,8 +133,10 @@ export class ExecPreflightError extends Error {
 
 interface ActiveProcess {
   readonly processGroupId: number;
-  readonly kill: (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout') => void;
+  readonly containment: ExecutionContainment;
+  readonly kill: (reason: ContainmentTerminationReason) => void;
   readonly done: Promise<void>;
+  finish(): void;
 }
 
 type ExecStreamEmitter = (record: ExecStreamRecord) => Promise<void> | void;
@@ -157,6 +169,15 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
   let pendingBytes = 0;
   let flushTimer: NodeJS.Timeout | undefined;
 
+  const setAppendChain = (next: Promise<void>): Promise<void> => {
+    appendChain = next;
+    // A timer may flush after the HTTP writer has closed. Keep the rejection
+    // on the chain for result()/the execution path, while observing it here so
+    // Node never reports a transient unhandled rejection first.
+    void next.catch(() => undefined);
+    return next;
+  };
+
   const flushPending = async (): Promise<void> => {
     if (flushTimer !== undefined) {
       clearTimeout(flushTimer);
@@ -185,7 +206,7 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
     }
     flushTimer = setTimeout(() => {
       flushTimer = undefined;
-      appendChain = appendChain.then(flushPending);
+      void setAppendChain(appendChain.then(flushPending));
     }, STREAM_RECORD_FLUSH_DELAY_MS);
   };
 
@@ -258,10 +279,9 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
 
   return {
     append(stream, data) {
-      appendChain = appendChain.then(async () =>
-        appendText(stream, decoders[stream].write(data)),
+      return setAppendChain(
+        appendChain.then(async () => appendText(stream, decoders[stream].write(data))),
       );
-      return appendChain;
     },
     async result() {
       await appendChain;
@@ -275,21 +295,23 @@ function createOutputCollector(emit?: ExecStreamEmitter): OutputCollector {
   };
 }
 
-function killProcessGroup(pid: number, fallback: () => void): void {
-  if (process.platform !== 'win32') {
-    try {
-      process.kill(-pid, 'SIGKILL');
-      return;
-    } catch {
-      fallback();
-      return;
-    }
-  }
-  fallback();
-}
-
-function launcherArgs(workspaceRoot: string, cwd: string, input: ExecRequest): string[] {
-  return ['--workspace-root', workspaceRoot, '--cwd', cwd, '--', input.cmd, ...input.args];
+function launcherArgs(
+  workspaceRoot: string,
+  cwd: string,
+  containment: ExecutionContainment,
+  input: ExecRequest,
+): string[] {
+  return [
+    '--workspace-root',
+    workspaceRoot,
+    '--cwd',
+    cwd,
+    '--cgroup-procs',
+    containment.procsPath,
+    '--',
+    input.cmd,
+    ...input.args,
+  ];
 }
 
 async function assertExecutable(
@@ -316,11 +338,19 @@ async function assertExecutable(
 
 export class ExecManager {
   private readonly active = new Map<number, ActiveProcess>();
+  private readonly owned = new Set<ActiveProcess>();
 
-  constructor(private readonly workspaceRoot: string) {}
+  constructor(
+    private readonly workspaceRoot: string,
+    private readonly containment: Containment = createProductionContainment(),
+  ) {}
 
   activeProcessGroups(): readonly number[] {
-    return [...new Set([...this.active.values()].map((child) => child.processGroupId))];
+    return [...new Set([...this.owned].map((child) => child.processGroupId))];
+  }
+
+  activeContainmentCount(): number {
+    return this.owned.size;
   }
 
   async run(input: ExecRequest, emit?: ExecStreamEmitter): Promise<ExecResult> {
@@ -328,9 +358,10 @@ export class ExecManager {
     const checkedCwd = await resolveInRoot(this.workspaceRoot, cwd);
     const environment = buildChildEnv(input.env);
     await assertExecutable(input.cmd, checkedCwd, environment);
+    const containment = await this.containment.create();
     return input.pty === true
-      ? this.runPty(input, cwd, environment, emit)
-      : this.runProcess(input, cwd, environment, emit);
+      ? this.runPty(input, cwd, environment, containment, emit)
+      : this.runProcess(input, cwd, environment, containment, emit);
   }
 
   kill(pid: number): boolean {
@@ -343,22 +374,90 @@ export class ExecManager {
   }
 
   async killAll(): Promise<void> {
-    const active = [...this.active.values()];
+    const active = [...this.owned];
     for (const child of active) {
       child.kill('shutdown');
     }
     await Promise.allSettled(active.map(async (child) => child.done));
   }
 
+  private beginActive(
+    pid: number,
+    containment: ExecutionContainment,
+  ): {
+    readonly active: ActiveProcess;
+    readonly state: { termination: ContainmentTerminationReason | undefined };
+  } {
+    let resolveDone: () => void = () => undefined;
+    let rejectDone: (error: Error) => void = () => undefined;
+    const done = new Promise<void>((resolve, reject) => {
+      resolveDone = resolve;
+      rejectDone = reject;
+    });
+    void done.catch(() => undefined);
+    const state = { termination: undefined as ContainmentTerminationReason | undefined };
+    let killPromise: Promise<void> | undefined;
+    let finished = false;
+    const finish = (): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      this.active.delete(pid);
+      void (async () => {
+        try {
+          await killPromise;
+          await containment.waitForEmpty();
+          await containment.remove();
+          resolveDone();
+        } catch (error) {
+          rejectDone(error instanceof Error ? error : new Error('Containment cleanup failed'));
+        } finally {
+          this.owned.delete(active);
+        }
+      })();
+    };
+    const active: ActiveProcess = {
+      processGroupId: pid,
+      containment,
+      kill(reason) {
+        if (state.termination !== undefined) {
+          return;
+        }
+        state.termination = reason;
+        killPromise = containment.kill();
+        void killPromise.catch(() => undefined);
+      },
+      done,
+      finish,
+    };
+    this.active.set(pid, active);
+    this.owned.add(active);
+    return { active, state };
+  }
+
+  private async discardUnstarted(containment: ExecutionContainment): Promise<void> {
+    try {
+      await containment.waitForEmpty();
+      await containment.remove();
+    } catch {
+      // The original launch error is more actionable than a cleanup failure.
+    }
+  }
+
   private async runProcess(
     input: ExecRequest,
     cwd: string,
     environment: NodeJS.ProcessEnv,
+    containment: ExecutionContainment,
     emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
-    const subprocess = execa(EXEC_LAUNCHER, launcherArgs(this.workspaceRoot, cwd, input), {
+    const subprocess = execa(
+      EXEC_LAUNCHER,
+      launcherArgs(this.workspaceRoot, cwd, containment, input),
+      {
       env: environment,
       extendEnv: false,
       reject: false,
@@ -368,33 +467,30 @@ export class ExecManager {
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
-    });
+      },
+    );
     const pid = subprocess.pid;
     const stdout = subprocess.stdout;
     const stderr = subprocess.stderr;
     if (pid === undefined) {
       void subprocess.catch(() => undefined);
+      await this.discardUnstarted(containment);
       throw new ExecPreflightError();
     }
     if (stdout === null || stderr === null) {
-      subprocess.kill('SIGKILL');
+      await this.discardUnstarted(containment);
       throw new ExecPreflightError();
     }
-
-    let resolveDone: () => void = () => undefined;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
+    const { active, state } = this.beginActive(pid, containment);
+    // The PID route owns only the launcher process.  Its numeric identity must
+    // disappear as soon as that process exits, even when HTTP output delivery
+    // remains backpressured.  The separate containment ownership stays alive
+    // until cgroup.events reports populated 0.
+    const processCompletion = Promise.resolve(subprocess).finally(() => {
+      active.finish();
     });
-    const state = {
-      termination: undefined as 'disconnect' | 'explicit' | 'shutdown' | 'timeout' | undefined,
-    };
-    const kill = (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout'): void => {
-      state.termination ??= reason;
-      killProcessGroup(pid, () => subprocess.kill('SIGKILL'));
-    };
-    this.active.set(pid, { processGroupId: pid, kill, done });
     const timeout = setTimeout(() => {
-      kill('timeout');
+      active.kill('timeout');
     }, input.timeoutMs);
 
     try {
@@ -402,12 +498,18 @@ export class ExecManager {
         ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
       );
       const [completed] = await Promise.all([
-        subprocess,
+        processCompletion,
         consumeOutputChunks(stdout, async (data) => output.append('stdout', data)),
         consumeOutputChunks(stderr, async (data) => output.append('stderr', data)),
       ]);
       const completedExitCode = (completed as { exitCode?: number }).exitCode;
-      if (completedExitCode === 65 && state.termination === undefined) {
+      if (
+        completedExitCode === PATH_HELPER_CONTAINMENT_FAILURE &&
+        state.termination === undefined
+      ) {
+        throw new ContainmentUnavailableError();
+      }
+      if (completedExitCode === PATH_HELPER_PATH_VIOLATION && state.termination === undefined) {
         throw new PathViolationError(cwd);
       }
       const result = ExecResultSchema.parse({
@@ -431,13 +533,12 @@ export class ExecManager {
       );
       return result;
     } catch (error) {
-      kill('disconnect');
-      await Promise.allSettled([subprocess]);
+      active.kill('disconnect');
+      await Promise.allSettled([processCompletion]);
       throw error;
     } finally {
       clearTimeout(timeout);
-      this.active.delete(pid);
-      resolveDone();
+      active.finish();
     }
   }
 
@@ -445,38 +546,31 @@ export class ExecManager {
     input: ExecRequest,
     cwd: string,
     environment: NodeJS.ProcessEnv,
+    containment: ExecutionContainment,
     emit?: ExecStreamEmitter,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
     let terminal: nodePty.IPty;
     try {
-      terminal = nodePty.spawn(EXEC_LAUNCHER, launcherArgs(this.workspaceRoot, cwd, input), {
+      terminal = nodePty.spawn(
+        EXEC_LAUNCHER,
+        launcherArgs(this.workspaceRoot, cwd, containment, input),
+        {
         env: environment,
         cols: 80,
         rows: 24,
-      });
+        },
+      );
     } catch {
+      await this.discardUnstarted(containment);
       throw new ExecPreflightError();
     }
     const pid = terminal.pid;
     terminal.pause();
-    let resolveDone: () => void = () => undefined;
-    const done = new Promise<void>((resolveActive) => {
-      resolveDone = resolveActive;
-    });
-    const state = {
-      termination: undefined as 'disconnect' | 'explicit' | 'shutdown' | 'timeout' | undefined,
-    };
-    const kill = (reason: 'disconnect' | 'explicit' | 'shutdown' | 'timeout'): void => {
-      state.termination ??= reason;
-      killProcessGroup(pid, () => {
-        terminal.kill('SIGKILL');
-      });
-    };
-    this.active.set(pid, { processGroupId: pid, kill, done });
+    const { active, state } = this.beginActive(pid, containment);
     const timeout = setTimeout(() => {
-      kill('timeout');
+      active.kill('timeout');
     }, input.timeoutMs);
     let outputChain = Promise.resolve();
     let outputError: Error | undefined;
@@ -489,18 +583,21 @@ export class ExecManager {
         })
         .catch((error: unknown) => {
           outputError = error instanceof Error ? error : new Error('Output streaming failed');
-          kill('disconnect');
+          active.kill('disconnect');
         });
     });
     const completion = new Promise<ExecResult>((resolve, reject) => {
       terminal.onExit(({ exitCode }) => {
+        active.finish();
         void (async () => {
           await outputChain;
           if (outputError !== undefined) {
             throw outputError;
           }
           clearTimeout(timeout);
-          this.active.delete(pid);
+          if (exitCode === PATH_HELPER_CONTAINMENT_FAILURE && state.termination === undefined) {
+            throw new ContainmentUnavailableError();
+          }
           const result = ExecResultSchema.parse({
             exitCode:
               state.termination === 'timeout'
@@ -520,12 +617,10 @@ export class ExecManager {
               at: new Date().toISOString(),
             }),
           );
-          resolveDone();
           resolve(result);
         })().catch((error: unknown) => {
           clearTimeout(timeout);
-          this.active.delete(pid);
-          resolveDone();
+          active.finish();
           reject(error instanceof Error ? error : new Error('PTY execution failed'));
         });
       });
@@ -538,7 +633,7 @@ export class ExecManager {
       terminal.resume();
       return await completion;
     } catch (error) {
-      kill('disconnect');
+      active.kill('disconnect');
       await Promise.allSettled([completion]);
       throw error;
     }

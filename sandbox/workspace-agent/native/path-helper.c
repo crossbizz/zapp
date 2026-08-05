@@ -36,6 +36,7 @@ enum {
   PATH_HELPER_USAGE = 64,
   PATH_HELPER_PATH_VIOLATION = 65,
   PATH_HELPER_IO_FAILURE = 74,
+  PATH_HELPER_CONTAINMENT_FAILURE = 75,
 };
 
 static bool is_path_violation_errno(int error_code) {
@@ -284,6 +285,25 @@ static int pause_after_pinned_descriptor(void) {
   return -1;
 }
 
+static int write_all(int output_fd, const char *buffer, size_t length) {
+  size_t offset = 0;
+  while (offset < length) {
+    ssize_t bytes_written = write(output_fd, buffer + offset, length - offset);
+    if (bytes_written == 0) {
+      errno = EIO;
+      return -1;
+    }
+    if (bytes_written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    offset += (size_t)bytes_written;
+  }
+  return 0;
+}
+
 static int copy_stream(int input_fd, int output_fd) {
   char buffer[64 * 1024];
   for (;;) {
@@ -297,18 +317,63 @@ static int copy_stream(int input_fd, int output_fd) {
       }
       return -1;
     }
-    size_t offset = 0;
-    while (offset < (size_t)bytes_read) {
-      ssize_t bytes_written = write(output_fd, buffer + offset, (size_t)bytes_read - offset);
-      if (bytes_written < 0) {
-        if (errno == EINTR) {
-          continue;
-        }
-        return -1;
-      }
-      offset += (size_t)bytes_written;
+    if (write_all(output_fd, buffer, (size_t)bytes_read) != 0) {
+      return -1;
     }
   }
+}
+
+int join_cgroup(const char *procs_path) {
+  if (procs_path == NULL || procs_path[0] != '/') {
+    errno = EINVAL;
+    return -1;
+  }
+  char pid_text[32];
+  int length = snprintf(pid_text, sizeof(pid_text), "%ld\n", (long)getpid());
+  if (length < 0 || (size_t)length >= sizeof(pid_text)) {
+    errno = EINVAL;
+    return -1;
+  }
+  int write_fd = open(procs_path, O_WRONLY | O_CLOEXEC);
+  if (write_fd < 0) {
+    return -1;
+  }
+  int write_result = write_all(write_fd, pid_text, (size_t)length);
+  close(write_fd);
+  if (write_result != 0) {
+    return -1;
+  }
+
+  int read_fd = open(procs_path, O_RDONLY | O_CLOEXEC);
+  if (read_fd < 0) {
+    return -1;
+  }
+  FILE *members = fdopen(read_fd, "r");
+  if (members == NULL) {
+    close(read_fd);
+    return -1;
+  }
+  bool found = false;
+  char line[64];
+  while (fgets(line, sizeof(line), members) != NULL) {
+    char *end = NULL;
+    long member = strtol(line, &end, 10);
+    if (end != line && member == (long)getpid()) {
+      found = true;
+      break;
+    }
+  }
+  fclose(members);
+  if (!found) {
+    errno = EPERM;
+    return -1;
+  }
+  return 0;
+}
+
+int report_containment_failure(const char *program) {
+  (void)fprintf(stderr, "%s: execution containment unavailable\n", program);
+  return PATH_HELPER_CONTAINMENT_FAILURE;
 }
 
 static char *join_relative_path(const char *prefix, const char *name) {
@@ -329,23 +394,15 @@ static char *join_relative_path(const char *prefix, const char *name) {
 }
 
 static int write_list_record(char type, const char *path) {
-  if (write(STDOUT_FILENO, &type, 1) != 1) {
+  if (write_all(STDOUT_FILENO, &type, 1) != 0) {
     return -1;
   }
   size_t path_length = strlen(path);
-  size_t offset = 0;
-  while (offset < path_length) {
-    ssize_t written = write(STDOUT_FILENO, path + offset, path_length - offset);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    offset += (size_t)written;
+  if (write_all(STDOUT_FILENO, path, path_length) != 0) {
+    return -1;
   }
   const char terminator = '\0';
-  return write(STDOUT_FILENO, &terminator, 1) == 1 ? 0 : -1;
+  return write_all(STDOUT_FILENO, &terminator, 1);
 }
 
 static int list_directory(

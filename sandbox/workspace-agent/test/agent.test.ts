@@ -17,10 +17,12 @@ import { createConnection, createServer, type Server, type Socket } from 'node:n
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { execa } from 'execa';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { CgroupV2Containment } from '../src/containment/cgroup.js';
 import { consumeOutputChunks } from '../src/exec.js';
-import { portableMetricsSource } from '../src/health.js';
+import type { Containment, ExecutionContainment } from '../src/containment/types.js';
 import {
   buildWorkspaceAgent,
   closeWorkspaceAgentForSignal,
@@ -30,6 +32,118 @@ import {
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const OUTPUT_LIMIT = 1_024 * 1_024;
+
+interface ProcessUsageRow {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly processGroupId: number;
+  readonly rssBytes: number;
+  readonly systemMicros: number;
+  readonly userMicros: number;
+}
+
+function parseCpuTime(value: string): number {
+  const daySplit = value.split('-');
+  const clock = daySplit.at(-1)?.split(':').map(Number) ?? [];
+  if (clock.some((part) => !Number.isFinite(part))) {
+    return 0;
+  }
+  const days = daySplit.length === 2 ? Number(daySplit[0]) : 0;
+  const [hours = 0, minutes = 0, seconds = 0] =
+    clock.length === 3 ? clock : [0, clock[0] ?? 0, clock[1] ?? 0];
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1_000_000;
+}
+
+function parseProcessUsage(output: string): ProcessUsageRow[] {
+  const rows: ProcessUsageRow[] = [];
+  for (const line of output.trim().split('\n')) {
+    const [pid, parentPid, processGroupId, rssKiB, userTime, systemTime] = line
+      .trim()
+      .split(/\s+/u);
+    if (
+      pid === undefined ||
+      parentPid === undefined ||
+      processGroupId === undefined ||
+      rssKiB === undefined ||
+      userTime === undefined ||
+      systemTime === undefined
+    ) {
+      continue;
+    }
+    const numeric = [pid, parentPid, processGroupId, rssKiB].map(Number);
+    if (numeric.some((value) => !Number.isInteger(value) || value < 0)) {
+      continue;
+    }
+    rows.push({
+      pid: numeric[0] ?? 0,
+      parentPid: numeric[1] ?? 0,
+      processGroupId: numeric[2] ?? 0,
+      rssBytes: (numeric[3] ?? 0) * 1_024,
+      userMicros: parseCpuTime(userTime),
+      systemMicros: parseCpuTime(systemTime),
+    });
+  }
+  return rows;
+}
+
+function selectWorkspaceProcesses(
+  rows: readonly ProcessUsageRow[],
+  activeProcessGroups: readonly number[],
+): ProcessUsageRow[] {
+  const processGroups = new Set(activeProcessGroups);
+  const selected = new Set<number>();
+  for (const row of rows) {
+    if (processGroups.has(row.processGroupId)) {
+      selected.add(row.pid);
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (!selected.has(row.pid) && selected.has(row.parentPid)) {
+        selected.add(row.pid);
+        changed = true;
+      }
+    }
+  }
+  return rows.filter((row) => selected.has(row.pid));
+}
+
+const portableMetricsSource = {
+  async sample(activeProcessGroups: readonly number[]) {
+    const cpu = process.cpuUsage();
+    const memory = process.memoryUsage();
+    let childUserMicros = 0;
+    let childSystemMicros = 0;
+    let childRssBytes = 0;
+    if (activeProcessGroups.length > 0) {
+      const result = await execa('ps', ['-A', '-o', 'pid=,ppid=,pgid=,rss=,utime=,stime='], {
+        reject: false,
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+        extendEnv: false,
+      });
+      for (const row of selectWorkspaceProcesses(parseProcessUsage(result.stdout), activeProcessGroups)) {
+        childUserMicros += row.userMicros;
+        childSystemMicros += row.systemMicros;
+        childRssBytes += row.rssBytes;
+      }
+    }
+    return {
+      cpu: {
+        userMicros: cpu.user + childUserMicros,
+        systemMicros: cpu.system + childSystemMicros,
+      },
+      memory: {
+        rssBytes: memory.rss + childRssBytes,
+        heapTotalBytes: memory.heapTotal,
+        heapUsedBytes: memory.heapUsed,
+        externalBytes: memory.external,
+        arrayBuffersBytes: memory.arrayBuffers,
+      },
+    };
+  },
+};
 
 interface StreamRecord {
   readonly type: 'started' | 'stdout' | 'stderr' | 'exit';
@@ -79,6 +193,140 @@ function configureNativePause(readyPath: string, continuePath: string): () => vo
   };
 }
 
+interface DetachedSetsidFixture {
+  readonly childPidPath: string;
+  readonly escapeMarker: string;
+  readonly killMarker: string;
+  readonly parentPidPath: string;
+  readonly releasePath: string;
+  readonly script: string;
+}
+
+function createDetachedSetsidFixture(workspaceRoot: string, label: string): DetachedSetsidFixture {
+  const childPidPath = join(workspaceRoot, `${label}-child.pid`);
+  const escapeMarker = join(workspaceRoot, `${label}-escaped`);
+  const killMarker = join(workspaceRoot, `${label}-containment-killed`);
+  const parentPidPath = join(workspaceRoot, `${label}-parent.pid`);
+  const releasePath = join(workspaceRoot, `${label}-release`);
+  const childScript = [
+    "const fs = require('node:fs');",
+    `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+    'const timer = setInterval(() => {',
+    `  if (!fs.existsSync(${JSON.stringify(releasePath)})) return;`,
+    '  clearInterval(timer);',
+    `  if (!fs.existsSync(${JSON.stringify(killMarker)})) fs.writeFileSync(${JSON.stringify(escapeMarker)}, 'escaped');`,
+    '}, 10);',
+  ].join('');
+  const script = [
+    "const fs = require('node:fs');",
+    "const { spawn } = require('node:child_process');",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { detached: true, stdio: 'ignore' });`,
+    'child.unref();',
+    `fs.writeFileSync(${JSON.stringify(parentPidPath)}, String(process.pid));`,
+    'setInterval(() => {}, 1000);',
+  ].join('');
+  return { childPidPath, escapeMarker, killMarker, parentPidPath, releasePath, script };
+}
+
+async function releaseDetachedSetsidFixture(fixture: DetachedSetsidFixture): Promise<void> {
+  await writeFile(fixture.releasePath, 'release');
+  const childPid = Number(await readFile(fixture.childPidPath, 'utf8').catch(() => '0'));
+  if (Number.isSafeInteger(childPid) && childPid > 0) {
+    await waitForProcessExit(childPid).catch(() => undefined);
+  }
+}
+
+async function expectDetachedSetsidContainment(
+  fixture: DetachedSetsidFixture,
+): Promise<void> {
+  expect(await waitForFile(fixture.killMarker)).toBe('killed');
+  await releaseDetachedSetsidFixture(fixture);
+  await expect(access(fixture.escapeMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+}
+
+class MacosCgroupExecution implements ExecutionContainment {
+  private killed = false;
+
+  constructor(
+    readonly id: string,
+    private readonly directory: string,
+    private readonly killMarker: () => string | undefined,
+  ) {}
+
+  get procsPath(): string {
+    return join(this.directory, 'cgroup.procs');
+  }
+
+  private async memberProcessGroupId(): Promise<number | undefined> {
+    const member = Number((await readFile(this.procsPath, 'utf8')).trim().split('\n')[0]);
+    return Number.isSafeInteger(member) && member > 0 ? member : undefined;
+  }
+
+  async kill(): Promise<void> {
+    if (this.killed) {
+      return;
+    }
+    this.killed = true;
+    await writeFile(join(this.directory, 'cgroup.kill'), '1\n');
+    const marker = this.killMarker();
+    if (marker !== undefined) {
+      await writeFile(marker, 'killed');
+    }
+    const member = await this.memberProcessGroupId();
+    if (member !== undefined) {
+      // This is a macOS-only test double. Production never observes or kills a
+      // PID/PGID; it writes cgroup.kill and waits for cgroup.events instead.
+      try {
+        process.kill(-member, 'SIGKILL');
+      } catch {
+        try {
+          process.kill(member, 'SIGKILL');
+        } catch {
+          // The process can exit naturally between cgroup kill and this controlled test double.
+        }
+      }
+    }
+  }
+
+  async waitForEmpty(): Promise<void> {
+    const member = await this.memberProcessGroupId();
+    if (member !== undefined) {
+      // This polling exists only in the injected macOS double, where there is
+      // no cgroup-v2 populated signal. The production implementation reads
+      // cgroup.events and never observes process groups.
+      await waitForProcessGroupExit(member);
+    }
+    await writeFile(join(this.directory, 'cgroup.events'), 'populated 0\n');
+  }
+
+  async remove(): Promise<void> {
+    await rm(this.directory, { recursive: true, force: true });
+  }
+}
+
+class MacosCgroupDouble implements Containment {
+  private nextId = 0;
+  private marker: string | undefined;
+
+  constructor(private readonly root: string) {}
+
+  setKillMarker(marker: string | undefined): void {
+    this.marker = marker;
+  }
+
+  async create(): Promise<ExecutionContainment> {
+    const id = `execution-${String((this.nextId += 1))}`;
+    const directory = join(this.root, id);
+    await mkdir(directory, { recursive: true });
+    await Promise.all([
+      writeFile(join(directory, 'cgroup.procs'), ''),
+      writeFile(join(directory, 'cgroup.events'), 'populated 1\n'),
+      writeFile(join(directory, 'cgroup.kill'), ''),
+    ]);
+    return new MacosCgroupExecution(id, directory, () => this.marker);
+  }
+}
+
 async function waitForProcessExit(pid: number): Promise<void> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
@@ -90,6 +338,19 @@ async function waitForProcessExit(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Process ${String(pid)} was not reaped`);
+}
+
+async function waitForProcessGroupExit(processGroupId: number): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-processGroupId, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Process group ${String(processGroupId)} was not reaped`);
 }
 
 async function listen(server: Server): Promise<number> {
@@ -161,22 +422,32 @@ function parseNdjson(body: string): StreamRecord[] {
 
 describe('workspace-agent RPC daemon', () => {
   let workspaceRoot: string;
+  let containmentRoot: string;
   let token: string;
   let app: FastifyInstance | undefined;
+  let containment: MacosCgroupDouble;
   let idempotencySequence: number;
 
   beforeEach(async () => {
     workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-workspace-agent-'));
+    containmentRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-double-'));
     token = randomBytes(32).toString('hex');
     idempotencySequence = 0;
-    app = await buildWorkspaceAgent({ workspaceRoot, token });
+    containment = new MacosCgroupDouble(containmentRoot);
+    app = await buildWorkspaceAgent({ workspaceRoot, token, containment });
   });
 
   afterEach(async () => {
-    if (app !== undefined) {
-      await app.close();
+    try {
+      if (app !== undefined) {
+        await app.close();
+      }
+    } finally {
+      await Promise.all([
+        rm(workspaceRoot, { recursive: true, force: true }),
+        rm(containmentRoot, { recursive: true, force: true }),
+      ]);
     }
-    await rm(workspaceRoot, { recursive: true, force: true });
   });
 
   function authorization(
@@ -214,6 +485,25 @@ describe('workspace-agent RPC daemon', () => {
     expect(records.at(-1)).toMatchObject({ type: 'exit', exitCode: 0, truncated: false });
     expect(records.filter((record) => record.type === 'exit')).toHaveLength(1);
     expect(records.every((record) => Number.isFinite(Date.parse(record.at)))).toBe(true);
+  });
+
+  test('fails closed with a stable response when production cgroup containment is unavailable', async () => {
+    await requireApp().close();
+    app = await buildWorkspaceAgent({
+      workspaceRoot,
+      token,
+      containment: new CgroupV2Containment(join(workspaceRoot, 'missing-cgroup-root')),
+    });
+
+    const response = await requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: authorization(),
+      payload: { cmd: 'true', args: [], timeoutMs: 2_000 },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'containment_unavailable' });
   });
 
   test('stops pulling output while an NDJSON client is backpressured', async () => {
@@ -962,6 +1252,109 @@ describe('workspace-agent RPC daemon', () => {
     await expect(access(orphanMarker)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  test('requests containment kill for a detached setsid descendant on buffered timeout', async () => {
+    const fixture = createDetachedSetsidFixture(workspaceRoot, 'timeout-setsid');
+    containment.setKillMarker(fixture.killMarker);
+    const response = requireApp().inject({
+      method: 'POST',
+      url: '/exec',
+      headers: authorization(),
+      payload: { cmd: process.execPath, args: ['-e', fixture.script], timeoutMs: 1_000 },
+    });
+
+    try {
+      await waitForFile(fixture.childPidPath);
+      expect((await response).json()).toMatchObject({ exitCode: 124 });
+      await expectDetachedSetsidContainment(fixture);
+    } finally {
+      await releaseDetachedSetsidFixture(fixture);
+    }
+  });
+
+  test('requests containment kill for a detached setsid descendant on explicit kill', async () => {
+    const fixture = createDetachedSetsidFixture(workspaceRoot, 'explicit-setsid');
+    containment.setKillMarker(fixture.killMarker);
+    const request = requireApp().inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: authorization(),
+      payload: { cmd: process.execPath, args: ['-e', fixture.script], timeoutMs: 10_000 },
+    });
+
+    try {
+      await waitForFile(fixture.childPidPath);
+      const parentPid = Number(await readFile(fixture.parentPidPath, 'utf8'));
+      const killed = await requireApp().inject({
+        method: 'POST',
+        url: `/exec/${String(parentPid)}/kill`,
+        headers: authorization(),
+      });
+      expect(killed.json()).toEqual({ killed: true });
+      await request;
+      await expectDetachedSetsidContainment(fixture);
+    } finally {
+      await releaseDetachedSetsidFixture(fixture);
+    }
+  });
+
+  test('requests containment kill for a detached setsid descendant on client disconnect', async () => {
+    const fixture = createDetachedSetsidFixture(workspaceRoot, 'disconnect-setsid');
+    containment.setKillMarker(fixture.killMarker);
+    const activeApp = requireApp();
+    const address = await activeApp.listen({ host: '127.0.0.1', port: 0 });
+
+    try {
+      const response = await fetch(`${address}/exec?stream=1`, {
+        method: 'POST',
+        headers: { ...authorization(), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          cmd: process.execPath,
+          args: ['-e', fixture.script],
+          timeoutMs: 10_000,
+        }),
+      });
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error('Expected a streaming response body');
+      }
+      await waitForFile(fixture.childPidPath);
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      await expectDetachedSetsidContainment(fixture);
+    } finally {
+      await releaseDetachedSetsidFixture(fixture);
+      await activeApp.close();
+      app = undefined;
+    }
+  });
+
+  test('requests containment kill for a detached setsid descendant on agent shutdown', async () => {
+    const fixture = createDetachedSetsidFixture(workspaceRoot, 'shutdown-setsid');
+    containment.setKillMarker(fixture.killMarker);
+    const activeApp = requireApp();
+    const request = activeApp.inject({
+      method: 'POST',
+      url: '/exec?stream=1',
+      headers: authorization(),
+      payload: { cmd: process.execPath, args: ['-e', fixture.script], timeoutMs: 10_000 },
+    });
+    const requestOutcome = request.catch(() => undefined);
+
+    try {
+      await waitForFile(fixture.childPidPath);
+      await activeApp.close();
+      app = undefined;
+      await requestOutcome;
+      await expectDetachedSetsidContainment(fixture);
+    } finally {
+      await releaseDetachedSetsidFixture(fixture);
+      if (app !== undefined) {
+        await app.close();
+        app = undefined;
+      }
+    }
+  });
+
   test('kills an active streamed command by its real PID and reaps it', async () => {
     const pidFile = join(workspaceRoot, 'active.pid');
     const request = requireApp().inject({
@@ -1662,7 +2055,7 @@ describe('workspace-agent RPC daemon', () => {
     app = undefined;
     const devServer = createServer();
     const port = await listen(devServer);
-    app = await buildWorkspaceAgent({ workspaceRoot, token, devServerPort: port });
+    app = await buildWorkspaceAgent({ workspaceRoot, token, devServerPort: port, containment });
 
     const ready = await app.inject({ method: 'GET', url: '/healthz', headers: authorization() });
     const metrics = await app.inject({ method: 'GET', url: '/metrics', headers: authorization() });
@@ -1696,6 +2089,7 @@ describe('workspace-agent RPC daemon', () => {
     const options = {
       workspaceRoot,
       token,
+      containment,
       metricsSource: {
         sample: (activePids: readonly number[]) => Promise.resolve({
           cpu: { userMicros: activePids.length === 1 ? 111 : 0, systemMicros: 222 },
@@ -1754,7 +2148,7 @@ describe('workspace-agent RPC daemon', () => {
 
   test('portable metrics include process-group descendants with separate user and system CPU', async () => {
     await requireApp().close();
-    app = await buildWorkspaceAgent({ workspaceRoot, token, metricsSource: portableMetricsSource });
+    app = await buildWorkspaceAgent({ workspaceRoot, token, containment, metricsSource: portableMetricsSource });
     const rootPidFile = join(workspaceRoot, 'metrics-root.pid');
     const childPidFile = join(workspaceRoot, 'metrics-child.pid');
     const childScript = [
@@ -1818,9 +2212,10 @@ describe('workspace-agent RPC daemon', () => {
     expect(active.cpu.systemMicros - daemonCpu.system).toBeGreaterThan(50_000);
   });
 
-  test('portable metrics retain an owned process group after its leader exits', async () => {
+  test('portable metrics retain an owned containment after its leader exits', async () => {
     await requireApp().close();
-    app = await buildWorkspaceAgent({ workspaceRoot, token, metricsSource: portableMetricsSource });
+    app = await buildWorkspaceAgent({ workspaceRoot, token, containment, metricsSource: portableMetricsSource });
+    const activeApp = requireApp();
     const leaderPidFile = join(workspaceRoot, 'exited-metrics-leader.pid');
     const childPidFile = join(workspaceRoot, 'exited-metrics-child.pid');
     const childScript = [
@@ -1835,7 +2230,7 @@ describe('workspace-agent RPC daemon', () => {
       `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
       'setInterval(() => { value += memory[0]; }, 1000);',
     ].join('');
-    const activeRequest = requireApp().inject({
+    const activeRequest = activeApp.inject({
       method: 'POST',
       url: '/exec?stream=1',
       headers: authorization(),
@@ -1850,44 +2245,65 @@ describe('workspace-agent RPC daemon', () => {
         timeoutMs: 10_000,
       },
     });
-    const leaderPid = Number(await waitForFile(leaderPidFile));
-    const childPid = Number(await waitForFile(childPidFile));
-    await waitForProcessExit(leaderPid);
+    const requestOutcome = activeRequest.catch(() => undefined);
+    let childPid: number | undefined;
 
-    const activeResponse = await requireApp().inject({
-      method: 'GET',
-      url: '/metrics',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const active = activeResponse.json<{
-      activeChildren: number;
-      cpu: { userMicros: number; systemMicros: number };
-      memory: { rssBytes: number };
-    }>();
-    const daemonCpu = process.cpuUsage();
-    const daemonMemory = process.memoryUsage();
-    const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
-    const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
-    await requireApp().inject({
-      method: 'POST',
-      url: `/exec/${String(leaderPid)}/kill`,
-      headers: authorization(),
-    });
-    await activeRequest;
-    const afterResponse = await requireApp().inject({
-      method: 'GET',
-      url: '/metrics',
-      headers: { authorization: `Bearer ${token}` },
-    });
+    try {
+      const leaderPid = Number(await waitForFile(leaderPidFile));
+      childPid = Number(await waitForFile(childPidFile));
+      await waitForProcessExit(leaderPid);
 
-    expect(active.activeChildren).toBe(1);
-    expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
-    expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
-      childRssBytes - 8 * 1024 * 1024,
-    );
-    expect(active.cpu.userMicros - daemonCpu.user).toBeGreaterThan(50_000);
-    expect(active.cpu.systemMicros - daemonCpu.system).toBeGreaterThan(50_000);
-    expect(afterResponse.json<{ activeChildren: number }>().activeChildren).toBe(0);
+      const activeResponse = await activeApp.inject({
+        method: 'GET',
+        url: '/metrics',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const active = activeResponse.json<{
+        activeChildren: number;
+        cpu: { userMicros: number; systemMicros: number };
+        memory: { rssBytes: number };
+      }>();
+      const daemonCpu = process.cpuUsage();
+      const daemonMemory = process.memoryUsage();
+      const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
+      const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
+      const staleKill = await activeApp.inject({
+        method: 'POST',
+        url: `/exec/${String(leaderPid)}/kill`,
+        headers: authorization(),
+      });
+
+      expect(staleKill.json()).toEqual({ killed: false });
+      expect(active.activeChildren).toBe(1);
+      expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
+      expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
+        childRssBytes - 8 * 1024 * 1024,
+      );
+      expect(active.cpu.userMicros - daemonCpu.user).toBeGreaterThan(50_000);
+      expect(active.cpu.systemMicros - daemonCpu.system).toBeGreaterThan(50_000);
+
+      await activeApp.close();
+      app = undefined;
+      await requestOutcome;
+      await waitForProcessExit(childPid);
+    } finally {
+      if (app !== undefined) {
+        await app.close();
+        app = undefined;
+      }
+      if (childPid !== undefined) {
+        try {
+          await waitForProcessExit(childPid);
+        } catch {
+          // Test-only recovery: never leave a failed fixture process behind.
+          try {
+            process.kill(childPid, 'SIGKILL');
+          } catch {
+            // The fixture can already have exited.
+          }
+        }
+      }
+    }
   });
 
   test('closing the agent reaps every active child', async () => {
