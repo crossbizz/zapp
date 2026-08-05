@@ -1,6 +1,7 @@
 export {
   createZappClient,
   ZappApiError,
+  ZappProtocolError,
   type EventSubscription,
   type EventStreamRetryOptions,
   type FetchImplementation,

@@ -9,10 +9,26 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const MAX_JITTER_RATIO = 0.2;
 type HttpMethod = 'get' | 'put' | 'post' | 'delete' | 'options' | 'head' | 'patch' | 'trace';
 export type PublicApiPath = keyof paths;
+type PathOperation<Path extends PublicApiPath, Method extends HttpMethod> = Exclude<
+  paths[Path][Method],
+  undefined
+>;
+type ResponseMediaTypes<Value> = Value extends { content: infer Content }
+  ? keyof Content
+  : never;
+type SuccessfulMediaTypes<Value> = Value extends { responses: infer Responses }
+  ? {
+      [Status in keyof Responses]: `${Status & (string | number)}` extends `2${string}`
+        ? ResponseMediaTypes<Responses[Status]>
+        : never;
+    }[keyof Responses]
+  : never;
 export type PublicApiMethod<Path extends PublicApiPath> = {
-  [Method in HttpMethod]: [Exclude<paths[Path][Method], undefined>] extends [never]
+  [Method in HttpMethod]: [PathOperation<Path, Method>] extends [never]
     ? never
-    : Uppercase<Method>;
+    : 'text/event-stream' extends SuccessfulMediaTypes<PathOperation<Path, Method>>
+      ? never
+      : Uppercase<Method>;
 }[HttpMethod];
 type Operation<Path extends PublicApiPath, Method extends PublicApiMethod<Path>> = Exclude<
   paths[Path][Lowercase<Method> & HttpMethod],
@@ -34,7 +50,7 @@ type QueryOption<Value> = [OperationParameter<Value, 'query'>] extends [never]
   : OperationParameters<Value> extends { query: unknown }
     ? { readonly query: OperationParameter<Value, 'query'> }
     : { readonly query?: OperationParameter<Value, 'query'> };
-type RequestBody<Value> = Value extends { requestBody: infer Body }
+type RequestBody<Value> = Value extends { requestBody?: infer Body }
   ? Exclude<Body, undefined> extends { content: infer Content }
     ? Content extends { 'application/json': infer Json }
       ? Json
@@ -157,6 +173,14 @@ export class ZappApiError extends Error {
   }
 }
 
+/** A safe response-shape failure that never includes response contents. */
+export class ZappProtocolError extends Error {
+  constructor() {
+    super('API response was not valid JSON.');
+    this.name = 'ZappProtocolError';
+  }
+}
+
 class SseParseError extends Error {
   constructor(message: string) {
     super(`Malformed SSE event: ${message}`);
@@ -187,6 +211,11 @@ interface RuntimeRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+interface OperationMetadata {
+  readonly requiresAuth: boolean;
+  readonly successMediaTypes: readonly string[];
+}
+
 /** Creates an authenticated client for zapp.build's generated public `/v1` API. */
 export function createZappClient(options: ZappClientOptions): ZappClient {
   const baseUrl = new URL(options.baseUrl);
@@ -198,14 +227,27 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       requestOptions: RequestOptions<Path, Method>,
     ): Promise<SuccessfulResponse<Operation<Path, Method>>> {
       const runtimeOptions = requestOptions as RuntimeRequestOptions;
-      assertPublicOperation(path, runtimeOptions.method);
+      const operation = publicOperation(path, runtimeOptions.method);
+      if (operation.successMediaTypes.includes('text/event-stream')) {
+        throw new RangeError('Event stream operations must use subscribeRunEvents.');
+      }
       const url = requestUrl(baseUrl, path, runtimeOptions.path, runtimeOptions.query);
-      const response = await fetch(url, {
+      const headers = await requestHeaders(
+        options.getToken,
+        runtimeOptions.headers,
+        runtimeOptions.body,
+        operation.requiresAuth,
+        runtimeOptions.signal,
+      );
+      const responsePromise = fetch(url, {
         method: runtimeOptions.method,
-        headers: await requestHeaders(options.getToken, runtimeOptions.headers, runtimeOptions.body),
+        headers,
         ...(runtimeOptions.body === undefined ? {} : { body: JSON.stringify(runtimeOptions.body) }),
         ...(runtimeOptions.signal === undefined ? {} : { signal: runtimeOptions.signal }),
       });
+      const response = runtimeOptions.signal === undefined
+        ? await responsePromise
+        : await raceAbort(responsePromise, runtimeOptions.signal);
 
       if (!response.ok) throw await apiError(response);
       if (response.status === 204 || response.status === 205 || response.body === null) {
@@ -215,7 +257,11 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       if (payload.trim().length === 0) {
         return undefined as SuccessfulResponse<Operation<Path, Method>>;
       }
-      return JSON.parse(payload) as SuccessfulResponse<Operation<Path, Method>>;
+      try {
+        return JSON.parse(payload) as SuccessfulResponse<Operation<Path, Method>>;
+      } catch {
+        throw new ZappProtocolError();
+      }
     },
 
     subscribeRunEvents(runId: string, subscribeOptions: SubscribeRunEventsOptions): EventSubscription {
@@ -246,14 +292,21 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
   };
 }
 
-function assertPublicOperation(path: string, method: string): asserts path is PublicApiPath {
+function publicOperation(path: string, method: unknown): OperationMetadata {
   if (!Object.hasOwn(PUBLIC_API_OPERATIONS, path)) {
     throw new RangeError('Request path must be a generated public API path.');
   }
-  const operations = PUBLIC_API_OPERATIONS[path as keyof typeof PUBLIC_API_OPERATIONS] as readonly string[];
-  if (typeof method !== 'string' || !operations.includes(method.toLowerCase())) {
+  if (typeof method !== 'string') {
     throw new RangeError('Request method is not a supported operation for this public API path.');
   }
+  const operations = PUBLIC_API_OPERATIONS[path as keyof typeof PUBLIC_API_OPERATIONS];
+  const operation = (operations as unknown as Readonly<Record<string, OperationMetadata | undefined>>)[
+    method.toLowerCase()
+  ];
+  if (operation === undefined) {
+    throw new RangeError('Request method is not a supported operation for this public API path.');
+  }
+  return operation;
 }
 
 function requestUrl(
@@ -267,6 +320,7 @@ function requestUrl(
     if (typeof value !== 'string' || value.length === 0) {
       throw new RangeError(`A non-empty ${name} path parameter is required.`);
     }
+    assertSafePathParameter(value);
     return encodeURIComponent(value);
   });
   const url = new URL(expanded, baseUrl);
@@ -279,20 +333,46 @@ function requestUrl(
   return url;
 }
 
+function assertSafePathParameter(value: string): void {
+  let decoded = value;
+  for (let depth = 0; depth <= value.length; depth += 1) {
+    if (decoded === '.' || decoded === '..' || /[/\\\u0000-\u001f\u007f]/.test(decoded)) {
+      throw new RangeError('Path parameter contains an unsafe segment.');
+    }
+    if (!decoded.includes('%')) return;
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      throw new RangeError('Path parameter contains invalid encoding.');
+    }
+    if (next === decoded) return;
+    decoded = next;
+  }
+  throw new RangeError('Path parameter contains excessive encoding.');
+}
+
 async function requestHeaders(
   getToken: ZappClientOptions['getToken'],
   headers: ClientHeaders | undefined,
   body: unknown,
+  requiresAuth: boolean,
+  signal?: AbortSignal,
 ): Promise<Headers> {
-  const token = await getToken();
-  if (token.length === 0) throw new Error('A non-empty zapp API token is required.');
   const result =
     headers === undefined
       ? new Headers()
       : headers instanceof Headers
         ? new Headers(headers)
         : new Headers(Object.entries(headers));
-  result.set('authorization', `Bearer ${token}`);
+  if (requiresAuth) {
+    const tokenPromise = Promise.resolve().then(getToken);
+    const token = signal === undefined
+      ? await tokenPromise
+      : await raceAbort(tokenPromise, signal);
+    if (token.length === 0) throw new Error('A non-empty zapp API token is required.');
+    result.set('authorization', `Bearer ${token}`);
+  }
   if (body !== undefined && !result.has('content-type')) result.set('content-type', 'application/json');
   return result;
 }
@@ -318,10 +398,9 @@ interface RunEventSubscriptionInput {
   readonly signal: AbortSignal;
 }
 
-interface EventStreamResult {
-  readonly latestId: string | undefined;
-  readonly retryMs: number | undefined;
-  readonly delivered: boolean;
+interface EventStreamState {
+  latestId: string | undefined;
+  retryMs: number;
 }
 
 async function runEventSubscription(input: RunEventSubscriptionInput): Promise<void> {
@@ -331,13 +410,16 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
   }
 
   let initial = true;
-  let latestId = after === undefined ? undefined : String(after);
-  let retryMs = boundedDelay(input.retry?.initialDelayMs ?? INITIAL_RECONNECT_DELAY_MS);
+  const state: EventStreamState = {
+    latestId: after === undefined ? undefined : String(after),
+    retryMs: boundedDelay(input.retry?.initialDelayMs ?? INITIAL_RECONNECT_DELAY_MS),
+  };
   const maxDelayMs = boundedMaximum(input.retry?.maxDelayMs ?? MAX_RECONNECT_DELAY_MS);
   const random = input.retry?.random ?? Math.random;
   let failures = 0;
 
   while (!input.signal.aborted) {
+    const latestIdAtAttemptStart = state.latestId;
     try {
       const url = requestUrl(
         input.baseUrl,
@@ -345,26 +427,32 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
         { runId: input.runId },
         initial && after !== undefined ? { after } : undefined,
       );
-      const headers = await requestHeaders(input.getToken, { accept: 'text/event-stream' }, undefined);
-      if (!initial && latestId !== undefined) headers.set('last-event-id', latestId);
+      const headers = await requestHeaders(
+        input.getToken,
+        { accept: 'text/event-stream' },
+        undefined,
+        true,
+        input.signal,
+      );
+      if (!initial && state.latestId !== undefined) headers.set('last-event-id', state.latestId);
       initial = false;
 
-      const response = await input.fetch(url, { headers, signal: input.signal });
+      const response = await raceAbort(
+        input.fetch(url, { headers, signal: input.signal }),
+        input.signal,
+      );
       if (!response.ok) throw await apiError(response);
       assertEventStreamResponse(response);
       if (response.body === null) throw new SseProtocolError('the stream response has no body.');
-      const result = await consumeEventStream(
+      await consumeEventStream(
         response.body,
-        latestId,
+        state,
         input.options.onEvent,
         (error) => {
           reportSseError(input.options, error);
         },
         input.signal,
       );
-      latestId = result.latestId;
-      if (result.retryMs !== undefined) retryMs = result.retryMs;
-      failures = result.delivered ? 0 : failures;
     } catch (error) {
       if (isAborted(input.signal)) return;
       const safe = safeError(error);
@@ -373,8 +461,9 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
     }
 
     if (isAborted(input.signal)) return;
+    if (state.latestId !== latestIdAtAttemptStart) failures = 0;
     try {
-      await delay(reconnectDelay(retryMs, failures, maxDelayMs, random), input.signal);
+      await delay(reconnectDelay(state.retryMs, failures, maxDelayMs, random), input.signal);
       failures += 1;
     } catch {
       return;
@@ -384,24 +473,28 @@ async function runEventSubscription(input: RunEventSubscriptionInput): Promise<v
 
 async function consumeEventStream(
   body: ReadableStream<Uint8Array>,
-  latestId: string | undefined,
+  state: EventStreamState,
   onEvent: SubscribeRunEventsOptions['onEvent'],
   onError: (error: Error) => void,
   signal: AbortSignal,
-): Promise<EventStreamResult> {
+): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffered = '';
   let current: { id?: string; type?: string; data: string[] } = { data: [] };
-  let retryMs: number | undefined;
-  let delivered = false;
 
   const dispatch = async (): Promise<void> => {
     if (current.id === undefined && current.type === undefined && current.data.length === 0) return;
     const event = current;
     current = { data: [] };
-    if (event.id === undefined || !/^\d+$/.test(event.id)) {
-      onError(new SseParseError('id must be a non-negative integer.'));
+    if (event.id === undefined) {
+      onError(new SseParseError('id must be a non-negative safe integer.'));
+      return;
+    }
+    const eventId = event.id;
+    const eventSequence = parseEventSequence(eventId);
+    if (eventSequence === undefined) {
+      onError(new SseParseError('id must be a non-negative safe integer.'));
       return;
     }
     if (event.type === undefined || event.type.length === 0) {
@@ -412,7 +505,10 @@ async function consumeEventStream(
       onError(new SseParseError('data is required.'));
       return;
     }
-    if (latestId !== undefined && Number(event.id) <= Number(latestId)) return;
+    const latestSequence = state.latestId === undefined
+      ? undefined
+      : parseEventSequence(state.latestId);
+    if (latestSequence !== undefined && eventSequence <= latestSequence) return;
 
     let parsed: unknown;
     try {
@@ -430,19 +526,22 @@ async function consumeEventStream(
     // generated OpenAPI type models those properties as absent. Parsing strips
     // absent optionals at runtime, so this bridges that representational gap.
     const data = validated.data as unknown as RunEventData;
-    if (data.type !== event.type || data.sequence !== Number(event.id)) {
+    if (
+      !Number.isSafeInteger(data.sequence)
+      || data.sequence < 0
+      || data.type !== event.type
+      || data.sequence !== eventSequence
+    ) {
       onError(new SseParseError('id and event fields must match the AgentEvent data.'));
       return;
     }
     try {
-      await raceAbort(Promise.resolve(onEvent({ id: event.id, type: data.type, data })), signal);
+      await raceAbort(Promise.resolve(onEvent({ id: eventId, type: data.type, data })), signal);
     } catch {
       if (signal.aborted) throw abortError(signal);
-      onError(new SseCallbackError());
-      return;
+      throw new SseCallbackError();
     }
-    latestId = event.id;
-    delivered = true;
+    state.latestId = eventId;
   };
 
   const line = async (value: string): Promise<void> => {
@@ -458,7 +557,10 @@ async function consumeEventStream(
     if (field === 'id') current.id = data;
     else if (field === 'event') current.type = data;
     else if (field === 'data') current.data.push(data);
-    else if (field === 'retry') retryMs = parseRetry(data);
+    else if (field === 'retry') {
+      const parsedRetry = parseRetry(data);
+      if (parsedRetry !== undefined) state.retryMs = parsedRetry;
+    }
   };
 
   try {
@@ -489,7 +591,12 @@ async function consumeEventStream(
     }
     reader.releaseLock();
   }
-  return { latestId, retryMs, delivered };
+}
+
+function parseEventSequence(value: string): number | undefined {
+  if (!/^(0|[1-9]\d*)$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function takeLine(buffer: string, endOfFile: boolean): { value: string; rest: string } | undefined {

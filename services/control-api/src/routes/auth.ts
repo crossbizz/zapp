@@ -54,6 +54,12 @@ const TokenResponseSchema = z.object({
   refreshToken: z.string().optional(),
 });
 
+const OptionalRefreshTokenBodySchema = z
+  .object({ refreshToken: z.string().min(1).optional() })
+  .strict()
+  .nullable()
+  .default({});
+
 const MeResponseSchema = z.object({
   user: z.object({
     id: z.string(),
@@ -285,7 +291,10 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
       // refresh token revoked and the cookies cleared, and a 401 would leave a
       // live 30-day credential in the field.
       preHandler: [app.resolveSession, app.requireCsrf],
-      schema: { body: z.object({ refreshToken: z.string().min(1).optional() }).nullish() },
+      schema: {
+        body: OptionalRefreshTokenBodySchema,
+        response: { 204: z.void() },
+      },
     },
     async (request, reply) => {
       const auth = request.auth;
@@ -315,7 +324,7 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
     '/v1/auth/refresh',
     {
       schema: {
-        body: z.object({ refreshToken: z.string().min(1).optional() }).nullish(),
+        body: OptionalRefreshTokenBodySchema,
         response: { 200: TokenResponseSchema },
       },
     },
@@ -406,7 +415,10 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
    */
   app.post(
     '/v1/auth/device/approve',
-    { preHandler: [app.requireSession, app.requireCsrf], schema: { body: DeviceDecisionSchema } },
+    {
+      preHandler: [app.requireSession, app.requireCsrf],
+      schema: { body: DeviceDecisionSchema, response: { 204: z.void() } },
+    },
     async (request, reply) => {
       const auth = request.auth;
       if (auth === undefined || !(await deviceStore.approve(request.body.userCode, auth.userId))) {
@@ -420,7 +432,10 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
 
   app.post(
     '/v1/auth/device/deny',
-    { preHandler: [app.requireSession, app.requireCsrf], schema: { body: DeviceDecisionSchema } },
+    {
+      preHandler: [app.requireSession, app.requireCsrf],
+      schema: { body: DeviceDecisionSchema, response: { 204: z.void() } },
+    },
     async (request, reply) => {
       if (!(await deviceStore.deny(request.body.userCode))) {
         throw new ApiError('device_request_not_found', 404, 'That sign-in request is not open.');

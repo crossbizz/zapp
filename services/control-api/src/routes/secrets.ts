@@ -268,7 +268,7 @@ export function registerSecretRoutes(app: AppInstance, deps: SecretRoutesDeps): 
     '/v1/projects/:projectId/secrets/:secretId',
     {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-      schema: { params: SecretIdParams },
+      schema: { params: SecretIdParams, response: { 204: z.void() } },
     },
     async (request, reply) => {
       const ctx = tenantOf(request);

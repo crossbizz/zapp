@@ -1152,18 +1152,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
-                }
-              }
-            }
+          "204": {
+            "description": "Default Response"
           },
           "4XX": {
             "description": "Default Response",
@@ -10431,18 +10421,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
-                }
-              }
-            }
+          "204": {
+            "description": "Default Response"
           },
           "4XX": {
             "description": "Default Response",
@@ -10987,26 +10967,20 @@
     "/v1/auth/logout": {
       "post": {
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "not": {}
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "refreshToken": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "nullable": true
+                "type": "object",
+                "properties": {
+                  "refreshToken": {
+                    "type": "string",
+                    "minLength": 1
                   }
-                ]
+                },
+                "additionalProperties": false,
+                "nullable": true,
+                "default": {}
               }
             }
           }
@@ -11026,18 +11000,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
-                }
-              }
-            }
+          "204": {
+            "description": "Default Response"
           },
           "4XX": {
             "description": "Default Response",
@@ -11131,26 +11095,20 @@
     "/v1/auth/refresh": {
       "post": {
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "not": {}
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "refreshToken": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "nullable": true
+                "type": "object",
+                "properties": {
+                  "refreshToken": {
+                    "type": "string",
+                    "minLength": 1
                   }
-                ]
+                },
+                "additionalProperties": false,
+                "nullable": true,
+                "default": {}
               }
             }
           }
@@ -11453,18 +11411,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
-                }
-              }
-            }
+          "204": {
+            "description": "Default Response"
           },
           "4XX": {
             "description": "Default Response",
@@ -11587,18 +11535,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "enum": [
-                    "null"
-                  ],
-                  "nullable": true
-                }
-              }
-            }
+          "204": {
+            "description": "Default Response"
           },
           "4XX": {
             "description": "Default Response",

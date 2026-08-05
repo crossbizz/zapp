@@ -36,12 +36,45 @@ export function registerOpenApi(app: AppInstance): void {
       },
     },
     transform: (input) => publicRouteTransform(app, input),
+    transformObject: (documentObject) => 'openapiObject' in documentObject
+      ? finalizeOpenApiDocument(documentObject.openapiObject)
+      : documentObject.swaggerObject,
   });
 
   app.after((error) => {
     if (error) throw error;
     app.get('/v1/openapi.json', { schema: { hide: true } }, () => app.swagger());
   });
+}
+
+function finalizeOpenApiDocument<Document extends object>(document: Document): Document {
+  const root = document as unknown as Record<string, unknown>;
+  const paths = objectRecord(root['paths']);
+  if (paths === undefined) return document;
+
+  for (const path of ['/v1/auth/refresh', '/v1/auth/logout']) {
+    const operation = objectRecord(objectRecord(paths[path])?.['post']);
+    const requestBody = objectRecord(operation?.['requestBody']);
+    if (requestBody !== undefined) requestBody['required'] = false;
+  }
+
+  for (const pathItemValue of Object.values(paths)) {
+    const pathItem = objectRecord(pathItemValue);
+    if (pathItem === undefined) continue;
+    for (const operationValue of Object.values(pathItem)) {
+      const operation = objectRecord(operationValue);
+      const responses = objectRecord(operation?.['responses']);
+      const noContent = objectRecord(responses?.['204']);
+      if (noContent !== undefined) delete noContent['content'];
+    }
+  }
+  return document;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 /** The generated SDK is the client boundary, so internal service routes stay out. */

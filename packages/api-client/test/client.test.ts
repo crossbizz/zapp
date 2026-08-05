@@ -33,6 +33,21 @@ function stream(chunks: readonly string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function failingStream(chunk: string, error = new Error('socket failed')): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let delivered = false;
+  return new ReadableStream({
+    pull(controller) {
+      if (!delivered) {
+        delivered = true;
+        controller.enqueue(encoder.encode(chunk));
+        return;
+      }
+      controller.error(error);
+    },
+  });
+}
+
 function neverEndingStream(signal: AbortSignal): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -63,6 +78,21 @@ function agentEvent(sequence: number, type = 'task.updated', payload: Record<str
 
 function eventFrame(sequence: number, type = 'task.updated'): string {
   return `id: ${String(sequence)}\nevent: ${type}\ndata: ${JSON.stringify(agentEvent(sequence, type))}\n\n`;
+}
+
+function rawEventFrame(id: string, sequence: number): string {
+  return `id: ${id}\nevent: task.updated\ndata: ${JSON.stringify(agentEvent(sequence))}\n\n`;
+}
+
+async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<boolean> {
+  return Promise.race([
+    closed.then(() => true),
+    new Promise<false>((resolve) => {
+      setTimeout(() => {
+        resolve(false);
+      }, timeoutMs);
+    }),
+  ]);
 }
 
 describe('createZappClient', () => {
@@ -127,7 +157,7 @@ describe('createZappClient', () => {
     });
     await client.request('/v1/projects/{projectId}', {
       method: 'GET',
-      path: { projectId: 'proj/slash' },
+      path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
     });
 
     expect(fetch).toHaveBeenCalledTimes(3);
@@ -142,7 +172,146 @@ describe('createZappClient', () => {
     expect(new URL(String(fetch.mock.calls[1]?.[0])).href).toBe(
       'https://api.zapp.test/v1/projects?includeArchived=false&limit=20',
     );
-    expect(new URL(String(fetch.mock.calls[2]?.[0])).pathname).toBe('/v1/projects/proj%2Fslash');
+    expect(new URL(String(fetch.mock.calls[2]?.[0])).pathname).toBe(
+      '/v1/projects/proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+    );
+  });
+
+  it('rejects path parameters that can normalize into another route before authentication', async () => {
+    // Break caught: dot segments and encoded slash/backslash variants survive
+    // URL construction and can normalize an authenticated request to a new route.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const getToken = vi.fn(() => 'secret-token');
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(JSON.stringify({ project: { id: 'proj_1' } }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
+
+    for (const projectId of [
+      '.',
+      '..',
+      '%2e',
+      '%2E%2E',
+      '%252e%252e',
+      '.\\',
+      '..\\child',
+      '%2fchild',
+      '%5cchild',
+    ]) {
+      await expect(client.request('/v1/projects/{projectId}', {
+        method: 'GET',
+        path: { projectId },
+      })).rejects.toThrow(/path parameter/i);
+    }
+
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(client.request('/v1/projects/{projectId}', {
+      method: 'GET',
+      path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+    })).resolves.toEqual({ project: { id: 'proj_1' } });
+    expect(getToken).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not retrieve a bearer token for public auth operations', async () => {
+    // Break caught: bootstrap calls that cannot yet possess an access token
+    // invoke getToken and can fail before reaching their public endpoint.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const getToken = vi.fn(() => 'secret-token');
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
+
+    await client.request('/v1/auth/login', { method: 'GET' });
+    await client.request('/v1/auth/callback', { method: 'GET', query: { state: 'state' } });
+    await client.request('/v1/auth/device', { method: 'GET' });
+    await client.request('/v1/auth/device/token', {
+      method: 'POST',
+      body: { deviceCode: 'device-code' },
+    });
+    await client.request('/v1/auth/refresh', { method: 'POST' });
+    await client.request('/v1/auth/logout', { method: 'POST' });
+
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(getToken).not.toHaveBeenCalled();
+  });
+
+  it('decodes all documented no-content operations as undefined', async () => {
+    // Break caught: actual route handlers send 204 while generated clients claim
+    // a 200/null success contract for the same operation.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'token',
+      fetch,
+    });
+
+    await expect(client.request('/v1/auth/logout', { method: 'POST' })).resolves.toBeUndefined();
+    await expect(client.request('/v1/auth/device/approve', {
+      method: 'POST',
+      body: { userCode: 'ABCD-EFGH' },
+    })).resolves.toBeUndefined();
+    await expect(client.request('/v1/auth/device/deny', {
+      method: 'POST',
+      body: { userCode: 'ABCD-EFGH' },
+    })).resolves.toBeUndefined();
+    await expect(client.request('/v1/organizations/{orgId}/members/{userId}', {
+      method: 'DELETE',
+      path: { orgId: 'org_1', userId: 'user_1' },
+    })).resolves.toBeUndefined();
+    await expect(client.request('/v1/projects/{projectId}/secrets/{secretId}', {
+      method: 'DELETE',
+      path: { projectId: 'proj_1', secretId: 'secret_1' },
+    })).resolves.toBeUndefined();
+  });
+
+  it('rejects SSE via generic request and redacts invalid JSON response contents', async () => {
+    // Break caught: generic JSON decoding accepts the stream endpoint and leaks
+    // an HTML response prefix through JSON.parse's implementation error.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const getToken = vi.fn(() => 'token');
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(eventFrame(1), { headers: { 'content-type': 'text/event-stream' } }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken, fetch });
+
+    await expect(client.request('/v1/runs/{runId}/events' as never, {
+      method: 'GET',
+      path: { runId: 'run_1' },
+    } as never)).rejects.toThrow(/event stream|subscribeRunEvents/i);
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce(new Response('<html>secret upstream marker</html>', {
+      headers: { 'content-type': 'text/html' },
+    }));
+    let error: unknown;
+    try {
+      await client.request('/v1/runs/{runId}', {
+        method: 'GET',
+        path: { runId: 'run_1' },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toMatch(/protocol|JSON/i);
+    expect(String(error)).not.toContain('secret upstream marker');
+    expect(String(error)).not.toContain('<html>');
   });
 
   it('decodes an empty successful response and preserves caller aborts', async () => {
@@ -424,6 +593,59 @@ describe('subscribeRunEvents', () => {
     await subscription.closed;
   });
 
+  it('preserves delivered cursor and retry state when the reader rejects', async () => {
+    // Break caught: state is returned only at clean EOF, so a socket rejection
+    // drops Last-Event-ID/retry and escalates backoff after successful delivery.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    vi.useFakeTimers();
+    const delivered: string[] = [];
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(
+        new Response(failingStream(`${eventFrame(1)}retry: 250\n\n`), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(failingStream(`${eventFrame(1)}retry: 250\n\n`), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      )
+      .mockImplementation((_url, init) => Promise.resolve(
+        new Response(neverEndingStream(init.signal ?? new AbortController().signal), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ));
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'token',
+      fetch,
+      eventStreamRetry: { random: () => 0 },
+    });
+    const subscription = client.subscribeRunEvents('run_1', {
+      onEvent(event) {
+        delivered.push(event.id);
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(fetch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get('last-event-id')).toBeNull();
+    expect(new Headers(fetch.mock.calls[1]?.[1].headers).get('last-event-id')).toBe('1');
+    expect(delivered).toEqual(['1']);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    subscription.close();
+    await subscription.closed;
+  });
+
   it('aborts a blocked callback, cancels the reader, and closes promptly', async () => {
     // Break caught: close waits forever behind consumer work that never settles,
     // keeping an authenticated reader and its resources alive.
@@ -483,6 +705,40 @@ describe('subscribeRunEvents', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it.each(['getToken', 'fetch'] as const)(
+    'closes promptly while a non-cooperative %s promise is pending',
+    async (blockedAt) => {
+      // Break caught: AbortSignal cannot settle an injected promise that ignores
+      // it, so closed hangs before a stream reader even exists.
+      const sdk = await loadSdk();
+      expect(sdk?.createZappClient).toBeTypeOf('function');
+      if (sdk === undefined) return;
+      const add = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+      const remove = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+      const getToken = vi.fn(() => blockedAt === 'getToken'
+        ? new Promise<string>(() => {})
+        : 'token');
+      const fetch = vi.fn<FetchImplementation>(() => new Promise<Response>(() => {}));
+      const client = sdk.createZappClient({
+        baseUrl: 'https://api.zapp.test',
+        getToken,
+        fetch,
+      });
+      const subscription = client.subscribeRunEvents('run_1', { onEvent() {} });
+
+      await vi.waitFor(() => {
+        expect(blockedAt === 'getToken' ? getToken : fetch).toHaveBeenCalledOnce();
+      });
+      subscription.close();
+
+      await expect(closesWithin(subscription.closed)).resolves.toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(blockedAt === 'fetch' ? 1 : 0);
+      const addedAbortListeners = add.mock.calls.filter(([type]) => type === 'abort').length;
+      const removedAbortListeners = remove.mock.calls.filter(([type]) => type === 'abort').length;
+      expect(removedAbortListeners).toBeGreaterThanOrEqual(addedAbortListeners);
+    },
+  );
+
   it('reports callback failures separately from malformed JSON', async () => {
     // Break caught: consumer exceptions are rewritten as parse failures, which
     // sends debugging and retry policy down the wrong path.
@@ -508,6 +764,117 @@ describe('subscribeRunEvents', () => {
     expect(errors[0]).toMatchObject({ name: 'SseCallbackError' });
     expect(errors[0]?.message).toMatch(/callback/i);
     expect(errors[0]?.message).not.toMatch(/JSON/i);
+  });
+
+  it('reconnects and replays an event whose callback rejects without advancing the cursor', async () => {
+    // Break caught: callback rejection is reported but stream consumption keeps
+    // going, allowing a later event to advance the resume cursor past lost work.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    vi.useFakeTimers();
+    const delivered: string[] = [];
+    const errors: Error[] = [];
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(
+        new Response(stream([eventFrame(1), eventFrame(2)]), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(stream([eventFrame(1)]), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'token',
+      fetch,
+      eventStreamRetry: { random: () => 0 },
+    });
+    let attempts = 0;
+    const subscription = client.subscribeRunEvents('run_1', {
+      onEvent(event) {
+        delivered.push(event.id);
+        attempts += 1;
+        if (attempts === 1) return Promise.reject(new Error('consumer failed'));
+        return undefined;
+      },
+      onError(error) {
+        errors.push(error);
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+    subscription.close();
+    await subscription.closed;
+
+    expect(delivered).toEqual(['1', '1']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ name: 'SseCallbackError' });
+    expect(new Headers(fetch.mock.calls[1]?.[1].headers).get('last-event-id')).toBeNull();
+  });
+
+  it.each([
+    ['-1', -1],
+    ['1\0', 1],
+    ['9007199254740992', 9007199254740992],
+    ['9007199254740993', 9007199254740992],
+  ])('rejects unsafe SSE id %s without delivery', async (id, sequence) => {
+    // Break caught: Number conversion rounds an overflowing textual SSE id to
+    // the same unsafe number as AgentEvent.sequence and falsely accepts it.
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const delivered = vi.fn();
+    const errors: Error[] = [];
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(stream([rawEventFrame(id, sequence)]), {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const subscription = client.subscribeRunEvents('run_1', {
+      onEvent() {
+        delivered();
+        subscription.close();
+      },
+      onError(error) {
+        errors.push(error);
+        subscription.close();
+      },
+    });
+    await subscription.closed;
+
+    expect(delivered).not.toHaveBeenCalled();
+    expect(errors[0]?.message).toMatch(/malformed SSE event/i);
+  });
+
+  it('accepts and preserves the maximum safe SSE sequence id', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const delivered: string[] = [];
+    const maxSafe = Number.MAX_SAFE_INTEGER;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(stream([rawEventFrame(String(maxSafe), maxSafe)]), {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    const client = sdk.createZappClient({ baseUrl: 'https://api.zapp.test', getToken: () => 't', fetch });
+    const subscription = client.subscribeRunEvents('run_1', {
+      onEvent(event) {
+        delivered.push(event.id);
+        subscription.close();
+      },
+    });
+    await subscription.closed;
+
+    expect(delivered).toEqual([String(maxSafe)]);
   });
 
   it('removes the delay abort listener after a normal timeout', async () => {

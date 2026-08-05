@@ -214,13 +214,11 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };
@@ -291,13 +289,11 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };
@@ -479,11 +475,11 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
+            requestBody?: {
                 content: {
-                    "application/json": unknown | ({
+                    "application/json": {
                         refreshToken?: string;
-                    } | null);
+                    } | null;
                 };
             };
             responses: {
@@ -524,13 +520,11 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };
@@ -556,11 +550,11 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
+            requestBody?: {
                 content: {
-                    "application/json": unknown | ({
+                    "application/json": {
                         refreshToken?: string;
-                    } | null);
+                    } | null;
                 };
             };
             responses: {
@@ -1598,13 +1592,11 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };
@@ -2757,13 +2749,11 @@ export interface paths {
                     };
                 };
                 /** @description Default Response */
-                200: {
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": "null" | null;
-                    };
+                    content?: never;
                 };
             };
         };

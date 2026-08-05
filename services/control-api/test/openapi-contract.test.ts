@@ -16,6 +16,15 @@ const OPENAPI_DOCUMENT = resolve(import.meta.dirname, '../../../packages/api-cli
 const apps: AppInstance[] = [];
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
 
+interface OpenApiOperation {
+  requestBody?: {
+    required?: boolean;
+    content?: Record<string, { schema?: Record<string, unknown> }>;
+  };
+  responses?: Record<string, { content?: Record<string, unknown> }>;
+  security?: readonly Record<string, readonly string[]>[];
+}
+
 function documentedApp(): AppInstance {
   const built = buildHarness({
     tenantDb: (() => {
@@ -55,13 +64,58 @@ describe('generated API types', () => {
     await expect(readFile(GENERATED_TYPES, 'utf8')).resolves.toBe(generated);
     await expect(readFile(GENERATED_OPERATIONS, 'utf8')).resolves.toBe(operations);
   });
+
+  it('documents optional strict auth bodies and actual no-content responses', async () => {
+    // Break caught: nullish body schemas turn into required unknown request
+    // bodies, while five handlers return 204 under a generated 200/null contract.
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+
+    for (const path of ['/v1/auth/refresh', '/v1/auth/logout']) {
+      const requestBody = paths[path]?.['post']?.requestBody;
+      expect(requestBody?.required).toBe(false);
+      const schema = requestBody?.content?.['application/json']?.schema;
+      expect(JSON.stringify(schema)).toContain('refreshToken');
+      expect(JSON.stringify(schema)).toContain('additionalProperties');
+      expect(JSON.stringify(schema)).not.toContain('"not":{}');
+    }
+
+    for (const [path, method] of [
+      ['/v1/auth/logout', 'post'],
+      ['/v1/auth/device/approve', 'post'],
+      ['/v1/auth/device/deny', 'post'],
+      ['/v1/organizations/{orgId}/members/{userId}', 'delete'],
+      ['/v1/projects/{projectId}/secrets/{secretId}', 'delete'],
+    ] as const) {
+      const responses = paths[path]?.[method]?.responses;
+      expect(responses?.['204']).toBeDefined();
+      expect(responses?.['200']).toBeUndefined();
+    }
+  });
 });
 
 function generatedOperations(paths: Record<string, Record<string, unknown>>): string {
   const operations = Object.fromEntries(
     Object.keys(paths)
       .sort()
-      .map((path) => [path, HTTP_METHODS.filter((method) => paths[path]?.[method] !== undefined)]),
+      .map((path) => [
+        path,
+        Object.fromEntries(
+          HTTP_METHODS.flatMap((method) => {
+            const operation = paths[path]?.[method] as OpenApiOperation | undefined;
+            if (operation === undefined) return [];
+            const successMediaTypes = Object.entries(operation.responses ?? {})
+              .filter(([status]) => /^2\d\d$/.test(status))
+              .flatMap(([, response]) => Object.keys(response.content ?? {}))
+              .sort();
+            const requiresAuth = operation.security !== undefined
+              && operation.security.length > 0
+              && operation.security.every((requirement) => Object.keys(requirement).length > 0);
+            return [[method, { requiresAuth, successMediaTypes }]];
+          }),
+        ),
+      ]),
   );
   return `/** Generated from the live public OpenAPI document. Do not edit. */\nexport const PUBLIC_API_OPERATIONS = ${JSON.stringify(operations, null, 2)} as const;\n`;
 }

@@ -531,7 +531,7 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
     '/v1/organizations/:orgId/members/:userId',
     {
       preHandler: [app.requireSession, app.requireCsrf],
-      schema: { params: MemberParams },
+      schema: { params: MemberParams, response: { 204: z.void() } },
     },
     async (request, reply) => {
       const membership = await membershipOf(request, request.params.orgId);
