@@ -699,10 +699,7 @@ test('AR-1 preserves a detached Object.assign alias after source invocation', ()
   const result = runFixture('loader-object-assign-alias-reassignment');
 
   assert.equal(result.status, 1);
-  assert.match(
-    result.stderr,
-    /new-provider path: .*detached-alias-survives-source-invocation\.ts/,
-  );
+  assert.match(result.stderr, /new-provider path: .*detached-alias-survives-source-invocation\.ts/);
 });
 
 test('AR-1 keeps detached Object.assign aliases source-order controls clean', () => {
@@ -760,6 +757,27 @@ test('AR-1 tracks active and reattached array aliases plus reachable mutations',
 
 test('AR-1 drops detached array aliases and unreachable mutations', () => {
   const result = runFixture('loader-alias-mutation-positions-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 tracks runtime-reachable mutations on active array identities', () => {
+  const result = runFixture('loader-array-alias-reachability');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'function-local-active-alias-unsafe',
+    'do-while-false-mutation-unsafe',
+    'reachable-switch-mutation-unsafe',
+    'known-false-detach-unsafe',
+    'array-sibling-survives-detach-unsafe',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 ignores detached array identities and definitely unreachable mutations', () => {
+  const result = runFixture('loader-array-alias-reachability-control');
 
   assert.equal(result.status, 0, result.stderr);
 });
