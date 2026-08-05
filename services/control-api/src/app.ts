@@ -30,6 +30,7 @@ import {
   type RateLimitConfig,
 } from './config/rate-limits.js';
 import { errorHandler, notFoundHandler } from './errors.js';
+import { registerOpenApi } from './openapi.js';
 import type { EventStreamDependencies } from './events/sse.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
@@ -296,6 +297,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
+  registerOpenApi(app);
 
   // Liveness only, and deliberately outside `/v1`: it is infrastructure, not API, so
   // it carries no envelope and must never depend on a database or a downstream.

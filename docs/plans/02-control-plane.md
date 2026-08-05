@@ -194,7 +194,7 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 **Files:** Create: `services/control-api/src/openapi.ts`, `packages/api-client/*`
 **Effort:** M
 
-- [ ] Steps: serve `/v1/openapi.json` from zod route schemas → generate `packages/api-client` via openapi-typescript + a thin fetch wrapper (`createZappClient({ baseUrl, getToken })`, SSE helper `subscribeRunEvents(runId, { after, onEvent })` with auto-reconnect + Last-Event-ID) → contract test: generated types compile against a live app instance's JSON → commit: `feat(api-client): generated typed SDK with SSE helper`
+- [x] Steps: serve `/v1/openapi.json` from zod route schemas → generate `packages/api-client` via openapi-typescript + a thin fetch wrapper (`createZappClient({ baseUrl, getToken })`, SSE helper `subscribeRunEvents(runId, { after, onEvent })` with auto-reconnect + Last-Event-ID) → contract test: generated types compile against a live app instance's JSON → commit: `feat(api-client): generated typed SDK with SSE helper`
 
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
@@ -269,3 +269,4 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-04 CP-15 implementation committed — resumable tenant-scoped SSE now has bounded replay, bounded shutdown, and serialized backpressure; review pending.
 - 2026-08-04 CP-15 BLOCKED: final review 5/5 found shutdown still waits indefinitely for an already-stalled database `byRun()` read and valid bare post-`q` Accept extensions are rejected; task/tracker remain unchecked pending explicit approval for another remediation round.
 - 2026-08-04 CP-15 done — accepted ADR-0008; resumable tenant-scoped SSE now bounds replay and backpressure, revalidates active authorization, enforces stream ceilings, and safely cancels active or pool-queued PostgreSQL replay; final review CLEAN with clean-checkout DB 48/48, tenant isolation 46/46, SSE 57/57, and root gates green.
+- 2026-08-04 CP-16 done — versioned OpenAPI and generated SDK preserve security alternatives, exact status/body/media/header contracts, typed redirects, and resumable validated SSE; final review CLEAN with SDK 49/49, control API 415/415, forced build 7/7, lint 12/12, and typecheck 11/11.

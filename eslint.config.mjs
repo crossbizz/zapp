@@ -7,7 +7,14 @@ import noDyadProImports from './packages/eslint-rules/src/no-dyad-pro-imports.mj
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', '**/coverage/**'],
+    ignores: [
+      '**/dist/**',
+      '**/.next/**',
+      '**/.turbo/**',
+      '**/coverage/**',
+      // The OpenAPI generator owns this artifact; its source Zod schema is linted.
+      'packages/api-client/src/generated.ts',
+    ],
   },
   ...tseslint.configs.strictTypeChecked,
   {
