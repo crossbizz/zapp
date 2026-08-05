@@ -224,6 +224,21 @@ const RestoreCredentialReleaseSchema = z
 
 const RestoreCredentialCreatedSchema = RestoreCredentialReleaseSchema;
 
+const RestoreVerificationFenceSchema = z
+  .object({
+    version: z.literal(1),
+    intentKey: z.string().min(1),
+    operationId: z.string().regex(/^[0-9a-f]{64}$/),
+    backupKey: z.string().min(1),
+    targetRef: z.string().min(1),
+    repositoryId: z.number().int().positive(),
+    resultDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    result: RestoreRepositoryResultSchema,
+  })
+  .strict();
+
+type RestoreVerificationFence = z.infer<typeof RestoreVerificationFenceSchema>;
+
 export interface ResolvedForgejoRestoreTarget {
   readonly repositoryId: number;
   readonly cloneUrl: string;
@@ -438,6 +453,10 @@ function credentialReceiptPrefix(intentKey: string): string {
   return intentKey.replace(/\.json$/, '.credentials/');
 }
 
+function verificationFenceKey(intentKey: string): string {
+  return intentKey.replace(/\.json$/, '.verification-fence.json');
+}
+
 function credentialAllocationKey(prefix: string, generation: number): string {
   return `${prefix}${String(generation).padStart(8, '0')}.allocated.json`;
 }
@@ -610,6 +629,41 @@ async function readTargetReceipt(
   return parsed.data;
 }
 
+async function readVerificationFence(
+  store: BackupObjectStore,
+  intentKey: string,
+  intent: RestoreIntent,
+  targetRef: string,
+): Promise<RestoreVerificationFence | undefined> {
+  const fenceKey = verificationFenceKey(intentKey);
+  if (!(await store.exists(fenceKey))) {
+    return undefined;
+  }
+  const parsed = RestoreVerificationFenceSchema.safeParse(await readSmallJson(store, fenceKey));
+  if (
+    !parsed.success ||
+    parsed.data.intentKey !== intentKey ||
+    parsed.data.operationId !== intent.operationId ||
+    parsed.data.backupKey !== intent.backupKey ||
+    parsed.data.targetRef !== targetRef ||
+    parsed.data.resultDigest !== jsonDigest(parsed.data.result)
+  ) {
+    throw new Error('Restore verification fence is invalid');
+  }
+  if (!(await store.exists(intent.targetReceiptKey))) {
+    throw new Error('Restore verification fence has no immutable target receipt');
+  }
+  const targetReceipt = await readTargetReceipt(store, intent.targetReceiptKey);
+  if (
+    targetReceipt.targetRef !== targetRef ||
+    targetReceipt.repositoryId !== parsed.data.repositoryId ||
+    targetReceipt.targetMarker !== intent.targetMarker
+  ) {
+    throw new Error('Restore verification fence does not match the immutable target receipt');
+  }
+  return parsed.data;
+}
+
 async function readCompletedRestoreResult(
   store: BackupObjectStore,
   intentKey: string,
@@ -620,6 +674,10 @@ async function readCompletedRestoreResult(
   if (!(await store.exists(verifiedKey))) {
     return undefined;
   }
+  const fence = await readVerificationFence(store, intentKey, intent, targetRef);
+  if (fence === undefined) {
+    throw new Error('Restore verified receipt has no verification fence');
+  }
   const parsed = RestorePhaseReceiptSchema.safeParse(await readSmallJson(store, verifiedKey));
   if (
     !parsed.success ||
@@ -629,7 +687,10 @@ async function readCompletedRestoreResult(
     parsed.data.backupKey !== intent.backupKey ||
     parsed.data.result === undefined ||
     parsed.data.resultDigest !==
-      createHash('sha256').update(JSON.stringify(parsed.data.result)).digest('hex')
+      createHash('sha256').update(JSON.stringify(parsed.data.result)).digest('hex') ||
+    parsed.data.repositoryId !== fence.repositoryId ||
+    parsed.data.resultDigest !== fence.resultDigest ||
+    JSON.stringify(parsed.data.result) !== JSON.stringify(fence.result)
   ) {
     throw new Error('Restore verified receipt is invalid');
   }
@@ -816,6 +877,7 @@ export async function beginRestoreOperation(
   });
   let resolvedTarget: ResolvedForgejoRestoreTarget | undefined;
   const now = deps.now ?? ((): Date => new Date());
+  const fenceKey = verificationFenceKey(intentKey);
 
   const credentialBinding = (allocation: RestoreCredentialAllocation) => {
     const prefix = credentialReceiptPrefix(intentKey);
@@ -877,12 +939,38 @@ export async function beginRestoreOperation(
     }
   };
 
+  const completeTerminalizedRestore = async (): Promise<void> => {
+    const fence = await readVerificationFence(deps.store, intentKey, intent, targetRef);
+    if (fence === undefined) {
+      return;
+    }
+    const receipt = RestorePhaseReceiptSchema.parse({
+      version: 1,
+      intentKey,
+      operationId: intent.operationId,
+      backupKey: intent.backupKey,
+      repositoryId: fence.repositoryId,
+      phase: 'verified',
+      resultDigest: fence.resultDigest,
+      result: fence.result,
+    });
+    await putExactJson(
+      deps.store,
+      intentKey.replace(/\.json$/, '.verified.json'),
+      receipt,
+      'Restore phase receipt conflicts with replayed state',
+    );
+  };
+
   const reserveCredentialCleanup = async (identity: {
     readonly username: string;
     readonly expiresAt: Date;
   }): Promise<RestoreCredentialAllocation> => {
     if (resolvedTarget === undefined) {
       throw new Error('Restore target must be resolved before allocating a credential');
+    }
+    if (await deps.store.exists(fenceKey)) {
+      throw new Error('Restore credential allocation is closed');
     }
     await cleanupOutstandingCredentials();
     const state = await readCredentialCleanupState(deps.store, intentKey, intent, targetRef);
@@ -896,6 +984,9 @@ export async function beginRestoreOperation(
       username: identity.username,
       expiresAt: identity.expiresAt.toISOString(),
     });
+    if (await deps.store.exists(fenceKey)) {
+      throw new Error('Restore credential allocation is closed');
+    }
     await putExactJson(
       deps.store,
       credentialAllocationKey(
@@ -905,10 +996,15 @@ export async function beginRestoreOperation(
       allocation,
       'Restore credential allocation conflicts with a concurrent attempt',
     );
+    if (await deps.store.exists(fenceKey)) {
+      await completeCredentialCleanup(allocation);
+      throw new Error('Restore credential allocation is closed');
+    }
     return allocation;
   };
 
   await cleanupOutstandingCredentials();
+  await completeTerminalizedRestore();
   const completedResult = await readCompletedRestoreResult(
     deps.store,
     intentKey,
@@ -931,7 +1027,26 @@ export async function beginRestoreOperation(
         throw new Error('Restore target must be resolved before recording progress');
       }
       if (phase === 'verified') {
+        const verifiedResult = RestoreRepositoryResultSchema.parse(result);
+        const fence = RestoreVerificationFenceSchema.parse({
+          version: 1,
+          intentKey,
+          operationId: intent.operationId,
+          backupKey: intent.backupKey,
+          targetRef,
+          repositoryId: resolvedTarget.repositoryId,
+          resultDigest: jsonDigest(verifiedResult),
+          result: verifiedResult,
+        });
+        await putExactJson(
+          deps.store,
+          fenceKey,
+          fence,
+          'Restore verification fence conflicts with replayed state',
+        );
         await cleanupOutstandingCredentials();
+        await completeTerminalizedRestore();
+        return;
       }
       const verifiedResult =
         result === undefined ? undefined : RestoreRepositoryResultSchema.parse(result);

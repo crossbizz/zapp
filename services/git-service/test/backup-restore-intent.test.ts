@@ -36,6 +36,68 @@ class ReceiptStore implements BackupObjectStore {
   readonly puts: string[] = [];
   readonly deletes: string[] = [];
   failNextPutMatching: RegExp | undefined;
+  private nextPutPause:
+    | {
+        readonly pattern: RegExp;
+        readonly reached: () => void;
+        readonly resume: Promise<void>;
+      }
+    | undefined;
+  private nextListPause:
+    | {
+        readonly captured: () => void;
+        readonly resume: Promise<void>;
+      }
+    | undefined;
+
+  pauseNextPutBeforeWrite(
+    pattern: RegExp,
+  ): { readonly reached: Promise<void>; readonly resume: () => void } {
+    let signalReached: (() => void) | undefined;
+    const reached = new Promise<void>((resolve) => {
+      signalReached = resolve;
+    });
+    let resume: (() => void) | undefined;
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    this.nextPutPause = {
+      pattern,
+      reached: () => {
+        signalReached?.();
+      },
+      resume: resumed,
+    };
+    return {
+      reached,
+      resume: () => {
+        resume?.();
+      },
+    };
+  }
+
+  pauseNextList(): { readonly captured: Promise<void>; readonly resume: () => void } {
+    let signalCaptured: (() => void) | undefined;
+    const captured = new Promise<void>((resolve) => {
+      signalCaptured = resolve;
+    });
+    let resume: (() => void) | undefined;
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    this.nextListPause = {
+      captured: () => {
+        signalCaptured?.();
+      },
+      resume: resumed,
+    };
+    return {
+      captured,
+      resume: () => {
+        resume?.();
+      },
+    };
+  }
 
   exists(key: string): Promise<boolean> {
     return Promise.resolve(this.values.has(key));
@@ -43,6 +105,12 @@ class ReceiptStore implements BackupObjectStore {
 
   async put(key: string, source: BackupUploadSource): Promise<BackupPutResult> {
     this.puts.push(key);
+    const pause = this.nextPutPause;
+    if (pause !== undefined && pause.pattern.test(key)) {
+      this.nextPutPause = undefined;
+      pause.reached();
+      await pause.resume;
+    }
     if (this.failNextPutMatching?.test(key)) {
       this.failNextPutMatching = undefined;
       throw new Error('synthetic receipt write failure');
@@ -65,12 +133,19 @@ class ReceiptStore implements BackupObjectStore {
       : Promise.resolve(Readable.from(value));
   }
 
-  list(prefix: string): Promise<{ readonly objects: readonly BackupObject[] }> {
-    return Promise.resolve({
+  async list(prefix: string): Promise<{ readonly objects: readonly BackupObject[] }> {
+    const result = {
       objects: [...this.values.keys()]
         .filter((key) => key.startsWith(prefix))
         .map((key) => ({ key, lastModified: new Date('2026-08-04T09:30:00Z') })),
-    });
+    };
+    const pause = this.nextListPause;
+    if (pause !== undefined) {
+      this.nextListPause = undefined;
+      pause.captured();
+      await pause.resume;
+    }
+    return result;
   }
 
   delete(key: string): Promise<void> {
@@ -226,6 +301,11 @@ interface RestoreCredentialAllocation {
 interface RestoreOperation {
   readonly intentKey: string;
   readonly targetRef: string;
+  readonly completedResult?: {
+    readonly checkedBranches: number;
+    readonly branches: readonly unknown[];
+    readonly refs: readonly unknown[];
+  };
   resolveTarget(): Promise<{ readonly repositoryId: number; readonly cloneUrl: string }>;
   reserveCredentialCleanup(identity: {
     readonly username: string;
@@ -395,6 +475,7 @@ describe('intent-first restore recovery', () => {
       },
     );
     const intent = JSON.parse(store.values.get(operation.intentKey)?.toString('utf8') ?? '{}') as {
+      readonly operationId?: unknown;
       readonly targetMarker?: unknown;
     };
     const [owner, name] = operation.targetRef.split('/') as [string, string];
@@ -424,17 +505,36 @@ describe('intent-first restore recovery', () => {
 
     await operation.recordPhase('push-started');
     await operation.recordPhase('push-complete');
-    await operation.recordPhase('verified', {
+    const result = {
       checkedBranches: 1,
       branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
       refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
-    });
+    };
+    await operation.recordPhase('verified', result);
 
     expect(store.puts.slice(2)).toEqual([
       expect.stringMatching(/\.push-started\.json$/),
       expect.stringMatching(/\.push-complete\.json$/),
+      expect.stringMatching(/\.verification-fence\.json$/),
       expect.stringMatching(/\.verified\.json$/),
     ]);
+    const fenceBody = [...store.values]
+      .find(([key]) => key.endsWith('.verification-fence.json'))?.[1]
+      .toString('utf8');
+    const fence = JSON.parse(fenceBody ?? '{}') as {
+      readonly resultDigest?: unknown;
+    };
+    expect(fence).toMatchObject({
+      version: 1,
+      intentKey: operation.intentKey,
+      operationId: intent.operationId,
+      backupKey: BACKUP_KEY,
+      targetRef: operation.targetRef,
+      repositoryId: 419,
+      result,
+    });
+    expect(fence.resultDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(fenceBody).not.toMatch(/token|password/i);
   });
 
   it('runs manual restore through the durable intent and phase-receipt callsite', async () => {
@@ -623,6 +723,185 @@ describe('intent-first restore recovery', () => {
     ]);
     expect(JSON.stringify(cleanupReceipts)).not.toMatch(/token|password/i);
     expect(completedAfterFailure).toBe(false);
+  });
+
+  it('rejects a credential allocation added after verification cleanup snapshots receipts', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-verification-allocation-race',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const verifier = await begin(operationDeps, input);
+    await verifier.resolveTarget();
+    const allocator = await begin(operationDeps, input);
+    await allocator.resolveTarget();
+    const cleanupSnapshot = store.pauseNextList();
+
+    const verifying = verifier.recordPhase('verified', {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    });
+    await cleanupSnapshot.captured;
+
+    let active = false;
+    const allocationOutcome = await allocator
+      .reserveCredentialCleanup({
+        username: 'zt-1785837900-000000000001',
+        expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+      })
+      .then(async (allocation) => {
+        active = true;
+        await allocator.recordCredentialCreated(allocation);
+        return 'accepted' as const;
+      })
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : 'non-error credential coordination failure',
+      );
+    cleanupSnapshot.resume();
+    await verifying;
+
+    expect({
+      allocationOutcome,
+      verified: [...store.values.keys()].some((key) => key.endsWith('.verified.json')),
+      created: [...store.values.keys()].some((key) => key.endsWith('.created.json')),
+      released: [...store.values.keys()].some((key) => key.endsWith('.released.json')),
+      active,
+    }).toEqual({
+      allocationOutcome: 'Restore credential allocation is closed',
+      verified: true,
+      created: false,
+      released: false,
+      active: false,
+    });
+  });
+
+  it('rejects an allocation whose write lands after its terminal-fence check', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-late-allocation-write',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const allocator = await begin(operationDeps, input);
+    await allocator.resolveTarget();
+    const verifier = await begin(operationDeps, input);
+    await verifier.resolveTarget();
+    const allocationWrite = store.pauseNextPutBeforeWrite(/\.allocated\.json$/);
+
+    let active = false;
+    const allocating = allocator
+      .reserveCredentialCleanup({
+        username: 'zt-1785837900-000000000002',
+        expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+      })
+      .then(async (allocation) => {
+        active = true;
+        await allocator.recordCredentialCreated(allocation);
+        return 'accepted' as const;
+      })
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : 'non-error credential coordination failure',
+      );
+    await allocationWrite.reached;
+    await verifier.recordPhase('verified', {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    });
+    allocationWrite.resume();
+    const allocationOutcome = await allocating;
+
+    expect({
+      allocationOutcome,
+      verified: [...store.values.keys()].some((key) => key.endsWith('.verified.json')),
+      allocated: [...store.values.keys()].some((key) => key.endsWith('.allocated.json')),
+      created: [...store.values.keys()].some((key) => key.endsWith('.created.json')),
+      released: [...store.values.keys()].some((key) => key.endsWith('.released.json')),
+      active,
+    }).toEqual({
+      allocationOutcome: 'Restore credential allocation is closed',
+      verified: true,
+      allocated: true,
+      created: false,
+      released: true,
+      active: false,
+    });
+  });
+
+  it('resumes a terminalized result after an accepted creator becomes releasable', async () => {
+    const begin = beginRestoreOperation();
+    expect(begin).toBeTypeOf('function');
+    if (begin === undefined) {
+      return;
+    }
+    const store = new ReceiptStore();
+    const forgejo = new StatefulForgejo();
+    const now = new Date('2026-08-04T10:00:00.000Z');
+    const input = {
+      kind: 'manual' as const,
+      idempotencyKey: 'incident-2026-08-04-terminalized-creator-replay',
+      source: SOURCE,
+      backupKey: BACKUP_KEY,
+    };
+    const operationDeps = { store, client: forgejo, now: () => now };
+    const creator = await begin(operationDeps, input);
+    await creator.resolveTarget();
+    const allocation = await creator.reserveCredentialCleanup({
+      username: 'zt-1785837900-000000000003',
+      expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+    });
+    const result = {
+      checkedBranches: 1,
+      branches: [{ name: 'main', expectedSha: 'a'.repeat(40), actualSha: 'a'.repeat(40) }],
+      refs: [{ name: 'refs/heads/main', sha: 'a'.repeat(40) }],
+    };
+
+    await expect(creator.recordPhase('verified', result)).rejects.toThrow(
+      'Restore credential creator is still pending',
+    );
+    let active = true;
+    forgejo.deleteUser = () => {
+      active = false;
+      return Promise.resolve();
+    };
+    await creator.recordCredentialCreated(allocation);
+
+    const recovery = await begin(operationDeps, input);
+    expect(recovery.completedResult).toEqual(result);
+    await recovery.resolveTarget();
+    await expect(
+      recovery.reserveCredentialCleanup({
+        username: 'zt-1785837900-000000000004',
+        expiresAt: new Date('2026-08-04T10:05:00.000Z'),
+      }),
+    ).rejects.toThrow('Restore credential allocation is closed');
+
+    expect({
+      verified: [...store.values.keys()].some((key) => key.endsWith('.verified.json')),
+      created: [...store.values.keys()].some((key) => key.endsWith('.created.json')),
+      released: [...store.values.keys()].some((key) => key.endsWith('.released.json')),
+      active,
+    }).toEqual({ verified: true, created: true, released: true, active: false });
   });
 
   it('cannot release a creator before its Forgejo user creation is resolved', async () => {
