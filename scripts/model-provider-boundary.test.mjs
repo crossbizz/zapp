@@ -155,6 +155,34 @@ test('rejects provider loads through a createRequire alias', () => {
   assert.match(result.stderr, /new-provider path: .*create-require\.ts/);
 });
 
+test('tracks createRequire from a node:module default-import namespace', () => {
+  const result = runFixture('create-require-default-namespace');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-default-namespace\.ts/);
+});
+
+test('tracks createRequire from a dynamic module namespace', () => {
+  const result = runFixture('create-require-dynamic-namespace');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-dynamic-namespace\.ts/);
+});
+
+test('tracks createRequire from a computed dynamic node:module namespace', () => {
+  const result = runFixture('create-require-computed-dynamic-namespace');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-computed-dynamic-namespace\.ts/);
+});
+
+test('tracks createRequire from a node:module import-equals namespace', () => {
+  const result = runFixture('create-require-import-equals-namespace');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*create-require-import-equals-namespace\.ts/);
+});
+
 test('rejects provider loads through assignment destructuring from module', () => {
   const result = runFixture('assignment-destructured-require');
 
@@ -183,11 +211,51 @@ test('fails closed on a nonliteral loader target', () => {
   assert.match(result.stderr, /unresolved-loader/);
 });
 
+test('tracks a loader passed through a higher-order function', () => {
+  const result = runFixture('loader-higher-order');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-higher-order\.ts/);
+});
+
+test('tracks a loader transformed through bind', () => {
+  const result = runFixture('loader-bind');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-bind\.ts/);
+});
+
+test('tracks a loader selected by a comma expression', () => {
+  const result = runFixture('loader-comma');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*loader-comma\.ts/);
+});
+
+test('allows a harmless non-loader higher-order function', () => {
+  const result = runFixture('non-loader-higher-order');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('default-denies generateSpeech imported from ai', () => {
   const result = runFixture('generate-speech');
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /new-provider path: .*generate-speech\.ts/);
+});
+
+test('default-denies an unused runtime provider import', () => {
+  const result = runFixture('unused-runtime-import');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /new-provider path: .*unused-runtime-import\.ts/);
+});
+
+test('allows an unused type-only provider import', () => {
+  const result = runFixture('unused-type-only-import');
+
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('default-denies experimental_generateVideo imported from ai', () => {
@@ -362,11 +430,19 @@ test('rejects a reversible reduction against the immutable anchor inventory', ()
 test('validates the accepted baseline schema, commit, and exact path set', () => {
   assert.doesNotThrow(() => validateBaseline(acceptedBaseline, { accepted: true }));
 
-  assert.equal(baselineConstantsForTests.ACCEPTED_PATHS.length, 8);
+  assert.equal(baselineConstantsForTests.ACCEPTED_PATHS.length, 9);
   assert.deepEqual(acceptedBaseline.files['apps/desktop/src/ipc/utils/stream_text_utils.ts'], {
     providerCalls: { 'call:ai#Output': 1 },
     providerImports: { 'import:ai#Output': 1 },
     providerUses: { 'use:ai#Output': 2 },
+  });
+  assert.deepEqual(acceptedBaseline.files['apps/desktop/src/ipc/utils/provider_options.ts'], {
+    providerCalls: {},
+    providerImports: {
+      'import:@ai-sdk/google#GoogleGenerativeAIProviderOptions': 1,
+      'import:@ai-sdk/openai#OpenAIResponsesProviderOptions': 1,
+    },
+    providerUses: {},
   });
 
   const wrongSchema = structuredClone(acceptedBaseline);
@@ -386,10 +462,7 @@ test('validates the accepted baseline schema, commit, and exact path set', () =>
       ([relativePath]) => relativePath !== baselineConstantsForTests.ACCEPTED_PATHS[0],
     ),
   );
-  assert.throws(
-    () => validateBaseline(wrongPaths, { accepted: true }),
-    /exactly these eight paths/,
-  );
+  assert.throws(() => validateBaseline(wrongPaths, { accepted: true }), /exactly these nine paths/);
 
   const casuallyBlessedGrowth = structuredClone(acceptedBaseline);
   casuallyBlessedGrowth.files['apps/desktop/src/ipc/utils/stream_text_utils.ts'].providerCalls[

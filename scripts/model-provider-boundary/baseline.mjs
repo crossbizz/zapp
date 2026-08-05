@@ -5,9 +5,9 @@ const FIXTURE_SCHEMA_VERSION = 1;
 const ACCEPTED_BASELINE_COMMIT = 'df81175a82ed9cb2d7508caafd291a2c26bc4794';
 const ACCEPTED_BASELINE_TREE = '1b6e03ed3f396cc6597a7aea16468e1de2536699';
 const ACCEPTED_ADR = 'docs/adr/0005-desktop-provider-migration-window.md';
-const ACCEPTED_ADR_SHA256 = '74810252edbe3f9fb4592aa66c624b621e231088b9e22949afda7579f35e3049';
+const ACCEPTED_ADR_SHA256 = 'a6d53ba07e14f19d01971795c7c74ec2dec187e20bcd34fe1e9a6cd4a3bedcae';
 const ACCEPTED_INVENTORY_SHA256 =
-  '5cf5d15ca80ba836bb90344fcc56fa41fb918efb671c43211c85b1e199703d00';
+  '2b9a0e97a918d2789cdc133ef89f8821e277c495ec6caa5723a9a1ab04124fdf';
 const ACCEPTED_REMOVAL_TASK = 'MAC-6';
 const INVENTORY_CATEGORIES = ['providerCalls', 'providerImports', 'providerUses'];
 const ACCEPTED_PATHS = [
@@ -18,6 +18,7 @@ const ACCEPTED_PATHS = [
   'apps/desktop/src/ipc/utils/get_model_client.ts',
   'apps/desktop/src/ipc/utils/llm_engine_provider.ts',
   'apps/desktop/src/ipc/utils/ollama_provider.ts',
+  'apps/desktop/src/ipc/utils/provider_options.ts',
   'apps/desktop/src/ipc/utils/stream_text_utils.ts',
 ];
 const REQUIRED_ADR_DECISIONS = [
@@ -106,7 +107,7 @@ export function validateBaseline(baseline, { accepted = false } = {}) {
     const actualPaths = Object.keys(baseline.files);
     if (!sameStrings(actualPaths, ACCEPTED_PATHS)) {
       throw new Error(
-        `accepted baseline must contain exactly these eight paths: ${ACCEPTED_PATHS.join(', ')}`,
+        `accepted baseline must contain exactly these nine paths: ${ACCEPTED_PATHS.join(', ')}`,
       );
     }
   }

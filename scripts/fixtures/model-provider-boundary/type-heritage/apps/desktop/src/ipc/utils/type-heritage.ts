@@ -1,4 +1,4 @@
-import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
+import type { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 
 export interface FixtureInterface extends OpenAICompatibleChatLanguageModel {}
