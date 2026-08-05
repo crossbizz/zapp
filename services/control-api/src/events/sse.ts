@@ -27,6 +27,7 @@ const QUALITY_VALUE = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/;
 
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 export const SSE_AUTHORIZATION_INTERVAL_MS = 60_000;
+export const SSE_AUTHORIZATION_TIMEOUT_MS = 5_000;
 export const SSE_MAX_CONNECTION_MS = 4 * 60 * 60 * 1_000;
 const SSE_REPLAY_PAGE_SIZE = 100;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
@@ -378,6 +379,38 @@ async function waitForDrain(reply: FastifyReply, signal: AbortSignal): Promise<v
   });
 }
 
+async function settleWithin<T>(input: {
+  readonly operation: Promise<T>;
+  readonly signal: AbortSignal;
+  readonly timers: EventStreamTimers;
+  readonly timeoutMs: number;
+}): Promise<T> {
+  const { operation, signal, timers, timeoutMs } = input;
+  let timeout: EventStreamTimerHandle | undefined;
+  let onAbort: (() => void) | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = timers.setTimeout(() => {
+      reject(new Error(`event stream authorization check exceeded ${String(timeoutMs)} ms`));
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+  const closed = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      const error = new Error('event stream closed during authorization check');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, deadline, closed]);
+  } finally {
+    if (timeout !== undefined) timers.clearTimeout(timeout);
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+}
+
 async function streamEvents(input: {
   readonly reply: FastifyReply;
   readonly tenantDb: RequestTenantDb;
@@ -499,24 +532,32 @@ async function streamEvents(input: {
   const authorizationTimer = timers.setInterval(() => {
     if (closed || authorizationPending) return;
     authorizationPending = true;
-    void revalidate(authorization)
-      .then(async (allowed) => {
-        if (!allowed) {
-          stopAndEnd();
-          return;
-        }
-        if (access === 'support') {
-          const decision = EventAccessDecisionSchema.parse(
-            dependencies.supportAccess === undefined
-              ? { access: 'user' }
-              : await dependencies.supportAccess.decide(authorization),
-          );
-          if (decision.access !== 'support') stopAndEnd();
-        }
+    const authorizeActiveStream = async (): Promise<boolean> => {
+      if (!(await revalidate(authorization))) return false;
+      if (access === 'support') {
+        const decision = EventAccessDecisionSchema.parse(
+          dependencies.supportAccess === undefined
+            ? { access: 'user' }
+            : await dependencies.supportAccess.decide(authorization),
+        );
+        return decision.access === 'support';
+      }
+      return true;
+    };
+    void settleWithin({
+      operation: authorizeActiveStream(),
+      signal: closeController.signal,
+      timers,
+      timeoutMs: SSE_AUTHORIZATION_TIMEOUT_MS,
+    })
+      .then((allowed) => {
+        if (!allowed) stopAndEnd();
       })
       .catch((error: unknown) => {
-        report(error);
-        stopAndEnd();
+        if (!closed) {
+          report(error);
+          stopAndEnd();
+        }
       })
       .finally(() => {
         authorizationPending = false;

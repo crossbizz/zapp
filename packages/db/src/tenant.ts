@@ -81,6 +81,10 @@ function aborted(): Error {
   return error;
 }
 
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 /**
  * Binds a database handle to one organization.
  *
@@ -137,6 +141,7 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
 
     events: {
       async byRun(runId: string, range: EventRange = {}): Promise<AgentEventRow[]> {
+        if (isAborted(range.signal)) throw aborted();
         const parameters: (number | string)[] = [orgId, runId];
         const filters = ['organization_id = $1', 'run_id = $2'];
         if (range.fromSequence !== undefined) {
@@ -172,14 +177,32 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
             order by sequence asc${limit}`,
           parameters,
         );
-        void pending.execute();
+        const driverPending = pending as typeof pending & { readonly state: object | null };
+        let settled = false;
+        let cancellationScheduled = false;
         const cancel = (): void => {
-          pending.cancel();
+          if (cancellationScheduled) return;
+          cancellationScheduled = true;
+          // postgres.js 3.4 assigns `state` only when a connection owns the
+          // query. Calling cancel() before that assignment can reject the
+          // promise and still strand the deferred query in the pool. Wait for
+          // assignment, then use the driver's real PostgreSQL cancellation.
+          const cancelWhenAssigned = (): void => {
+            if (settled) return;
+            if (driverPending.state !== null) {
+              pending.cancel();
+              return;
+            }
+            setImmediate(cancelWhenAssigned);
+          };
+          setImmediate(cancelWhenAssigned);
         };
         range.signal?.addEventListener('abort', cancel, { once: true });
-        if (range.signal?.aborted === true) cancel();
+        void pending.execute();
+        if (isAborted(range.signal)) cancel();
         try {
           const rows = await pending;
+          if (isAborted(range.signal)) throw aborted();
           return rows.map((row) => ({
             id: row.id,
             organizationId: row.organizationId,
@@ -196,9 +219,10 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
             agentId: row.agentId,
           }));
         } catch (error) {
-          if (range.signal?.aborted === true) throw aborted();
+          if (isAborted(range.signal)) throw aborted();
           throw error;
         } finally {
+          settled = true;
           range.signal?.removeEventListener('abort', cancel);
         }
       },

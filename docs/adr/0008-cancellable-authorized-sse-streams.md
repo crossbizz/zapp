@@ -21,10 +21,12 @@ Expand CP-15's internal file contract and preserve its public API:
 - `EventRange` accepts an optional `AbortSignal`; the postgres.js-backed event
   repository executes replay through a cancel-capable pending query and maps a
   caller abort to `AbortError` after sending PostgreSQL's cancellation request.
+  Pre-aborted reads never start, and cancellation waits for postgres.js to
+  assign the pending query before invoking its driver canceller.
 - The app composes a stream revalidator from the existing token denylist,
   access-token expiry, and organization membership store. Active streams run it
-  every 60 seconds and fail closed on revocation, removal, expiry, or lookup
-  failure.
+  every 60 seconds with a five-second deadline and fail closed on revocation,
+  removal, expiry, denied support access, lookup failure, or a stalled lookup.
 - Each API process enforces concurrent ceilings of 8 streams per user, 64 per
   organization, and 256 total before allocating a Redis subscription. Tests may
   inject lower limits, but production cannot disable any tier.

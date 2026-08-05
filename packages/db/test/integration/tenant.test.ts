@@ -2,6 +2,7 @@ import { newId } from '@zapp/contracts';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { createDb } from '../../src/client.js';
 import { nextEventSequence } from '../../src/events.js';
 import { runEventCounters } from '../../src/schema/execution.js';
 import { agentRuns } from '../../src/schema/planning.js';
@@ -120,6 +121,49 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           toSequence: 1_000,
         }),
       ).toEqual([]);
+    });
+
+    it('rejects early-aborted reads without consuming database pool slots', async () => {
+      // Break caught: postgres.js defers connection assignment by one microtask;
+      // cancelling before that assignment can reject the promise yet still
+      // enqueue a dead query that permanently owns a pool slot.
+      const probe = createDb(handle.url);
+      const controller = new AbortController();
+      controller.abort();
+      try {
+        const scoped = forOrg(probe.db, alpha.organizationId);
+        const attempts = Array.from({ length: 32 }, async () => {
+          await expect(
+            scoped.events.byRun(alpha.runId, { signal: controller.signal }),
+          ).rejects.toMatchObject({ name: 'AbortError' });
+        });
+        await Promise.all(attempts);
+
+        const immediateAttempts = Array.from({ length: 32 }, async () => {
+          const immediate = new AbortController();
+          const read = scoped.events.byRun(alpha.runId, { signal: immediate.signal });
+          immediate.abort();
+          await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+        });
+        await Promise.all(immediateAttempts);
+
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+          const rows = await Promise.race([
+            probe.sql<{ ok: number }[]>`select 1::int as ok`,
+            new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => {
+                reject(new Error('database pool did not recover after pre-aborted reads'));
+              }, 1_000);
+            }),
+          ]);
+          expect(rows[0]?.ok).toBe(1);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
+      } finally {
+        await probe.sql.end({ timeout: 0 });
+      }
     });
   });
 

@@ -17,6 +17,8 @@ import type {
   EventStreamTimers,
 } from '../../src/events/sse.js';
 import {
+  SSE_AUTHORIZATION_INTERVAL_MS,
+  SSE_AUTHORIZATION_TIMEOUT_MS,
   SSE_HEARTBEAT_INTERVAL_MS,
   SSE_MAX_CONNECTION_MS,
 } from '../../src/events/sse.js';
@@ -244,7 +246,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   let authorization: string;
   let accessJti: string;
   let accessExpiresAt: Date;
+  let clock: Date;
   let denylist: TokenDenylist;
+  let denylistHangs: boolean;
   let usersStore: InMemoryUserStore;
   let organizationStore: InMemoryOrganizationStore;
   let eventReadCount: number;
@@ -329,14 +333,23 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       role: 'owner',
       status: 'active',
     });
+    clock = new Date();
     const tokens = await createSessionSigner({ secret: TEST_AUTH_CONFIG.sessionSecret }).mintSession({
       userId,
-      now: new Date(),
+      now: clock,
     });
     authorization = `Bearer ${tokens.access.token}`;
     accessJti = tokens.access.jti;
     accessExpiresAt = tokens.access.expiresAt;
-    denylist = createInMemoryTokenDenylist();
+    denylistHangs = false;
+    const inMemoryDenylist = createInMemoryTokenDenylist(() => clock);
+    denylist = {
+      deny: async (key, expiresAt) => await inMemoryDenylist.deny(key, expiresAt),
+      isDenied: async (...keys) => {
+        if (denylistHangs) return await new Promise<boolean>(() => undefined);
+        return await inMemoryDenylist.isDenied(...keys);
+      },
+    };
 
     eventReadCount = 0;
     eventReadRanges = [];
@@ -387,6 +400,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
         eventStream: { wakeups, ...eventStream },
       },
       limits: { config: TEST_RATE_LIMITS },
+      now: () => clock,
     });
     app = nextApp;
     baseUrl = await nextApp.listen({ host: '127.0.0.1', port: 0 });
@@ -1146,11 +1160,11 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     await connect({ signal: controller.signal });
     await eventually(() => {
       expect(wakeups.pendingCount).toBe(1);
-    });
+    }, 5_000);
     controller.abort();
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
-    });
+    }, 5_000);
     expect(timers.cleared).toHaveLength(3);
   });
 
@@ -1197,7 +1211,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     });
 
     await denylist.deny(accessJti, accessExpiresAt);
-    timers.fire(60_000, 'interval');
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
@@ -1222,7 +1236,99 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       role: 'owner',
       status: 'removed',
     });
-    timers.fire(60_000, 'interval');
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('ends an active stream when its access token expires', async () => {
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    clock = new Date(accessExpiresAt.getTime() + 1);
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('fails closed when active stream revalidation never settles', async () => {
+    const timers = new ManualTimers();
+    await startApp({ timers });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    denylistHangs = true;
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    timers.fire(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('ends a support stream when support access is lost', async () => {
+    const timers = new ManualTimers();
+    let support = true;
+    await startApp({
+      timers,
+      supportAccess: {
+        decide: () => Promise.resolve({ access: support ? 'support' : 'user' }),
+        audit: () => Promise.resolve(),
+      },
+    });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    support = false;
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    await eventually(() => {
+      expect(wakeups.closed).toBe(1);
+    });
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('fails closed when active support access revalidation never settles', async () => {
+    const timers = new ManualTimers();
+    let decisions = 0;
+    await startApp({
+      timers,
+      supportAccess: {
+        decide: () => {
+          decisions += 1;
+          return decisions === 1
+            ? Promise.resolve({ access: 'support' })
+            : new Promise<never>(() => undefined);
+        },
+        audit: () => Promise.resolve(),
+      },
+    });
+    const response = await connect();
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('SSE response has no body');
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(1);
+    });
+
+    timers.fire(SSE_AUTHORIZATION_INTERVAL_MS, 'interval');
+    timers.fire(SSE_AUTHORIZATION_TIMEOUT_MS, 'timeout');
     await eventually(() => {
       expect(wakeups.closed).toBe(1);
     });
