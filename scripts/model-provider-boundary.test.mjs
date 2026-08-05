@@ -754,6 +754,27 @@ test('AR-1 keeps Object.assign target identity clean after final harmless writes
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 recovers exact Object.assign members after earlier unknown sources', () => {
+  const result = runFixture('loader-object-assign-unknown-source-overwrite-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 keeps Object.assign unknown source order conservative', () => {
+  const result = runFixture('loader-object-assign-unknown-source-overwrite');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'unknown-before-final-require',
+    'require-before-unknown',
+    'multi-source-final-require',
+    'array-index-unknown-before-final-require',
+    'array-index-require-before-unknown',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
 test('round-6 tracks static class fields and assignments through aliases of this', () => {
   const result = runFixture('loader-class-aliases');
 

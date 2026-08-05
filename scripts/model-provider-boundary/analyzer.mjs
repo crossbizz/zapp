@@ -2257,6 +2257,52 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return true;
   }
 
+  function applyObjectAssignSources(state, sources) {
+    state.exactMembersAfterUnknownSource ??= new Set();
+    for (const source of sources) {
+      const current = unwrapExpression(source);
+      if (!ts.isObjectLiteralExpression(current)) {
+        state.hasUnknownSource = true;
+        state.exactMembersAfterUnknownSource.clear();
+        continue;
+      }
+      for (const property of current.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          state.hasUnknownSource = true;
+          state.exactMembersAfterUnknownSource.clear();
+          continue;
+        }
+        const memberNames = declarationMemberNames(property.name);
+        if (!memberNames || memberNames.size !== 1) {
+          state.hasUnknownSource = true;
+          state.exactMembersAfterUnknownSource.clear();
+          continue;
+        }
+        const valueExpression = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : ts.isShorthandPropertyAssignment(property)
+            ? property.name
+            : property;
+        for (const memberName of memberNames) {
+          if (state.kind === 'array') {
+            const index = exactArrayIndex(memberName);
+            if (index === undefined) {
+              state.hasUnknownSource = true;
+              state.exactMembersAfterUnknownSource.clear();
+              continue;
+            }
+            state.elements[index] = valueExpression;
+          } else {
+            state.members.set(memberName, valueExpression);
+          }
+          if (state.hasUnknownSource) {
+            state.exactMembersAfterUnknownSource.add(memberName);
+          }
+        }
+      }
+    }
+  }
+
   function valueSymbolIdentity(expression) {
     const current = unwrapExpression(expression);
     if (!ts.isIdentifier(current)) return undefined;
@@ -2371,14 +2417,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         expression.arguments[0] &&
         isTrackedValue(expression.arguments[0])
       ) {
-        if (!state || !applyExactObjectSources(state, expression.arguments.slice(1))) {
-          return undefined;
-        }
+        if (!state) return undefined;
+        applyObjectAssignSources(state, expression.arguments.slice(1));
         refined = true;
       }
     }
     if (!refined || !state) return undefined;
     const memberName = [...memberNames][0];
+    if (state.hasUnknownSource && !state.exactMembersAfterUnknownSource?.has(memberName)) {
+      return undefined;
+    }
     let valueExpression;
     if (state.kind === 'array') {
       const index = exactArrayIndex(memberName);
