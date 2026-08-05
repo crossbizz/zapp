@@ -15,6 +15,9 @@ const TRUSTED_TYPESCRIPT_LOADER_PATHS = new Set([
 const CALLABLE_LOADER = 1;
 const CALLABLE_CREATE_REQUIRE = 2;
 const CALLABLE_OBJECT_ASSIGN = 4;
+const CALLABLE_INTRINSIC_CALL = 8;
+const CALLABLE_INTRINSIC_APPLY = 16;
+const CALLABLE_INTRINSIC_INVOCATION = CALLABLE_INTRINSIC_CALL | CALLABLE_INTRINSIC_APPLY;
 const MAY_BE_TRUTHY = 1;
 const MAY_BE_FALSY = 2;
 const MAY_BE_NULLISH = 1;
@@ -1827,6 +1830,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return accumulator;
   }
 
+  function isFunctionPrototypeExpression(expression) {
+    const current = unwrapExpression(expression);
+    if (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) {
+      return false;
+    }
+    const memberNames = accessMemberNames(current);
+    const owner = unwrapExpression(current.expression);
+    return (
+      memberNames?.size === 1 &&
+      memberNames.has('prototype') &&
+      ts.isIdentifier(owner) &&
+      isUnshadowedIdentifier(owner, 'Function')
+    );
+  }
+
   function intrinsicInvocationMethod(expression) {
     const current = unwrapExpression(expression);
     if (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) {
@@ -1840,18 +1858,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     ) {
       return undefined;
     }
-    const prototype = unwrapExpression(current.expression);
-    if (!ts.isPropertyAccessExpression(prototype) && !ts.isElementAccessExpression(prototype)) {
-      return undefined;
-    }
-    const prototypeNames = accessMemberNames(prototype);
-    const owner = unwrapExpression(prototype.expression);
-    return prototypeNames?.size === 1 &&
-      prototypeNames.has('prototype') &&
-      ts.isIdentifier(owner) &&
-      isUnshadowedIdentifier(owner, 'Function')
-      ? [...methodNames][0]
-      : undefined;
+    return isFunctionPrototypeExpression(current.expression) ? [...methodNames][0] : undefined;
   }
 
   function arrayInvocationArguments(expression, value) {
@@ -1874,8 +1881,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (!outerNames || outerNames.size !== 1) return undefined;
     const outerMethod = [...outerNames][0];
     if (outerMethod !== 'call' && outerMethod !== 'apply') return undefined;
-    const intrinsicMethod = intrinsicInvocationMethod(callee.expression);
-    if (!intrinsicMethod || !callExpression.arguments[0]) return undefined;
+    const intrinsicKinds = callableKinds(callee.expression) & CALLABLE_INTRINSIC_INVOCATION;
+    if (intrinsicKinds === 0 || !callExpression.arguments[0]) return undefined;
 
     let passedArguments;
     if (outerMethod === 'call') {
@@ -1895,21 +1902,34 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       );
     }
 
-    let argumentsForTarget;
-    if (intrinsicMethod === 'call') {
-      argumentsForTarget = {
+    const argumentAlternatives = [];
+    if ((intrinsicKinds & CALLABLE_INTRINSIC_CALL) !== 0) {
+      argumentAlternatives.push({
         expressions: passedArguments.expressions.slice(1),
         values: passedArguments.values.slice(1),
-      };
-    } else {
-      argumentsForTarget = arrayInvocationArguments(
-        passedArguments.expressions[1],
-        passedArguments.values[1] ?? emptyCallableValue(),
+      });
+    }
+    if ((intrinsicKinds & CALLABLE_INTRINSIC_APPLY) !== 0) {
+      argumentAlternatives.push(
+        arrayInvocationArguments(
+          passedArguments.expressions[1],
+          passedArguments.values[1] ?? emptyCallableValue(),
+        ),
       );
     }
+    const argumentCount = Math.max(0, ...argumentAlternatives.map(({ values }) => values.length));
+    const argumentExpressions = Array.from({ length: argumentCount }, (_, index) => {
+      const expressions = argumentAlternatives.map(({ expressions }) => expressions[index]);
+      return expressions.every((expression) => expression === expressions[0])
+        ? expressions[0]
+        : undefined;
+    });
+    const argumentValues = Array.from({ length: argumentCount }, (_, index) =>
+      mergeCallableValues(...argumentAlternatives.map(({ values }) => values[index])),
+    );
     return {
-      argumentExpressions: argumentsForTarget.expressions,
-      argumentValues: argumentsForTarget.values,
+      argumentExpressions,
+      argumentValues,
       callee: callableValue(callExpression.arguments[0], environment, state),
     };
   }
@@ -2243,6 +2263,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       ) {
         kinds |= CALLABLE_OBJECT_ASSIGN;
       }
+      const intrinsicMethod = intrinsicInvocationMethod(current);
+      if (intrinsicMethod === 'call') kinds |= CALLABLE_INTRINSIC_CALL;
+      if (intrinsicMethod === 'apply') kinds |= CALLABLE_INTRINSIC_APPLY;
       if (isNodeModuleNamespaceValue(current.expression)) {
         if (!memberNames) {
           unresolvedNodeModuleMembers.set(current, current.getSourceFile());
@@ -2257,7 +2280,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       const callee = unwrapExpression(current.expression);
       const nestedTarget =
         (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
-        intrinsicInvocationMethod(callee.expression)
+        (callableKinds(callee.expression) & CALLABLE_INTRINSIC_INVOCATION) !== 0
           ? current.arguments[0]
           : undefined;
       const invocationOwner =
@@ -2455,6 +2478,41 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             CALLABLE_OBJECT_ASSIGN,
           ) || changed;
       }
+    }
+    return changed;
+  }
+
+  function addIntrinsicInvocationDestructuredAliases(target) {
+    const current = unwrapExpression(target);
+    const properties = ts.isObjectBindingPattern(current)
+      ? current.elements
+      : ts.isObjectLiteralExpression(current)
+        ? current.properties
+        : [];
+    let changed = false;
+    for (const property of properties) {
+      let memberName;
+      let alias;
+      if (ts.isBindingElement(property) && ts.isIdentifier(property.name)) {
+        memberName = property.propertyName?.getText() ?? property.name.text;
+        alias = property.name;
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        memberName = property.name.text;
+        alias = property.name;
+      } else if (
+        ts.isPropertyAssignment(property) &&
+        ts.isIdentifier(unwrapExpression(property.initializer))
+      ) {
+        memberName = propertyNameText(property.name);
+        alias = unwrapExpression(property.initializer);
+      }
+      const kinds =
+        memberName === 'call'
+          ? CALLABLE_INTRINSIC_CALL
+          : memberName === 'apply'
+            ? CALLABLE_INTRINSIC_APPLY
+            : 0;
+      changed = addCallableKinds(alias ? symbolAt(checker, alias) : undefined, kinds) || changed;
     }
     return changed;
   }
@@ -2772,6 +2830,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         isUnshadowedIdentifier(unwrapExpression(node.right), 'Object')
       ) {
         callableChanged = addObjectAssignDestructuredAliases(node.left) || callableChanged;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isObjectBindingPattern(node.name) &&
+        node.initializer &&
+        isFunctionPrototypeExpression(node.initializer)
+      ) {
+        callableChanged = addIntrinsicInvocationDestructuredAliases(node.name) || callableChanged;
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        isFunctionPrototypeExpression(node.right)
+      ) {
+        callableChanged = addIntrinsicInvocationDestructuredAliases(node.left) || callableChanged;
       }
       if (ts.isFunctionDeclaration(node) && node.name) {
         callableChanged =

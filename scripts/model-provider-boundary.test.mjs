@@ -629,6 +629,26 @@ test('round-6 does not normalize unrelated call and apply methods as loaders', (
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 tracks aliased Function.prototype call and apply invocations', () => {
+  const result = runFixture('loader-intrinsic-invocation-aliases');
+
+  assert.equal(result.status, 1);
+  for (const fileName of [
+    'property-call-alias',
+    'property-apply-alias',
+    'destructured-call-alias',
+    'destructured-apply-alias',
+  ]) {
+    assert.match(result.stderr, new RegExp(`new-provider path: .*${fileName}\\.ts`));
+  }
+});
+
+test('AR-1 allows unrelated and shadowed intrinsic invocation aliases', () => {
+  const result = runFixture('loader-intrinsic-invocation-aliases-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('round-6 tracks nested assigned literals through cyclic rest and default destructuring', () => {
   const result = runFixture('loader-cyclic-nested-destructuring');
 
