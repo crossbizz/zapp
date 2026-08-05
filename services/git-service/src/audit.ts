@@ -1,6 +1,13 @@
-import type { ServiceName } from '@zapp/config';
-import { newId } from '@zapp/contracts';
+import { SERVICE_NAMES } from '@zapp/config';
+import {
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  GitAuditActionSchema,
+  idSchema,
+  newId,
+} from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
+import { z } from 'zod';
 
 /**
  * The audit trail for repository credentials (plan 06 GIT-3).
@@ -15,48 +22,34 @@ import { auditEvents, type Executor } from '@zapp/db';
  * incident.
  *
  * **Where this sits relative to the control plane, and why.** The control plane
- * owns the *audit surface* — the vocabulary its own routes write, and any API
- * over `audit_events` — but `audit_events` itself is PRD §23.6's platform-wide
- * append-only ledger rather than one service's table. This service appends its
- * own rows directly, with `actor_type = 'service'` and `actor_id` naming the
- * caller, which is the exact shape `request.auditService` writes in the control
- * plane (`services/control-api/src/plugins/audit.ts`).
- *
- * The alternative was for this service to POST its audit rows to a new internal
- * route on the control plane. That is arguably the tidier ownership story, and it
- * was rejected on cost: it needs a new service-token audience, a new internal
- * route, and an addition to the control plane's `AUDIT_ACTIONS` — three files
- * this task does not own — and it buys a network hop between an action and the
- * record of it, which is a hop in which the record can be lost. Worth revisiting
- * when a second service needs to write a row; recorded here so the decision is
- * visible rather than assumed.
+ * owns the HTTP read surface, while `@zapp/contracts` owns the platform action
+ * vocabulary and row boundaries every writer and reader shares. This service
+ * appends directly, with `actor_type = 'service'` and `actor_id` naming the
+ * caller, then the control plane reads the same row through the same schemas.
+ * Keeping the write local also avoids a network hop between issuing a credential
+ * and recording who received it.
  *
  * **Never the token.** {@link GitAuditEvent} has no field one fits in, which is
  * the only reliable way to keep it out: the ephemeral username is recorded (so a
  * Forgejo access log line can be tied back to a request) and the secret is not.
  */
 
-/**
- * Actions this service records. A closed set, so a typo cannot invent a new
- * vocabulary term that a compliance query will then silently miss.
- */
-export const GIT_AUDIT_ACTIONS = ['git_token.minted', 'git_token.revoked'] as const;
+export { GIT_AUDIT_ACTIONS, GitAuditActionSchema, type GitAuditAction } from '@zapp/contracts';
 
-export type GitAuditAction = (typeof GIT_AUDIT_ACTIONS)[number];
-
-/** Scalars only, for the reason the control plane's metadata is scalars only. */
-export type AuditValue = string | number | boolean | null;
-
-export interface GitAuditEvent {
-  readonly organizationId: string;
-  readonly action: GitAuditAction;
-  /** The project the credential was for. `audit_events.target_id`. */
-  readonly projectId: string;
-  /** Which service asked. From the verified token, never from a request body. */
-  readonly requestingService: ServiceName;
-  readonly occurredAt: Date;
-  readonly metadata: Readonly<Record<string, AuditValue>>;
-}
+/** The service-specific input before it becomes one shared platform audit row. */
+export const GitAuditEventSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    action: GitAuditActionSchema,
+    /** The project the credential was for. `audit_events.target_id`. */
+    projectId: idSchema('proj'),
+    /** Which service asked. From the verified token, never from a request body. */
+    requestingService: z.enum(SERVICE_NAMES),
+    occurredAt: z.date(),
+    metadata: AuditMetadataSchema,
+  })
+  .strict();
+export type GitAuditEvent = z.infer<typeof GitAuditEventSchema>;
 
 export interface GitAuditSink {
   /** @throws when the row cannot be written — see `src/tokens.ts` for what the caller then does. */
@@ -73,18 +66,29 @@ export interface GitAuditSink {
 export function createDbGitAuditSink(db: Executor): GitAuditSink {
   return {
     async record(event) {
+      const parsed = GitAuditEventSchema.parse(event);
+      const record = AuditRecordSchema.parse({
+        organizationId: parsed.organizationId,
+        actorType: 'service',
+        actorId: parsed.requestingService,
+        action: parsed.action,
+        targetType: 'project',
+        targetId: parsed.projectId,
+        metadata: parsed.metadata,
+        occurredAt: parsed.occurredAt,
+      });
       await db.insert(auditEvents).values({
         id: newId('aud'),
-        organizationId: event.organizationId,
+        organizationId: record.organizationId,
         // Not `user`: no person is on the other end of this, and filing it as one
         // would put a service's action into a person's history.
-        actorType: 'service',
-        actorId: event.requestingService,
-        action: event.action,
-        targetType: 'project',
-        targetId: event.projectId,
-        metadataJson: event.metadata,
-        occurredAt: event.occurredAt,
+        actorType: record.actorType,
+        actorId: record.actorId,
+        action: record.action,
+        targetType: record.targetType,
+        targetId: record.targetId,
+        metadataJson: record.metadata,
+        occurredAt: record.occurredAt,
       });
     },
   };
@@ -114,7 +118,7 @@ export function createRecordingGitAuditSink(): RecordingGitAuditSink {
         failure = undefined;
         return Promise.reject(thrown);
       }
-      events.push(event);
+      events.push(GitAuditEventSchema.parse(event));
       return Promise.resolve();
     },
   };

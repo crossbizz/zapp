@@ -1330,7 +1330,9 @@
                 "release.deploy_requested",
                 "release.rollback_requested",
                 "integration.connected",
-                "secret.decrypted"
+                "secret.decrypted",
+                "git_token.minted",
+                "git_token.revoked"
               ]
             },
             "in": "query",
@@ -1489,7 +1491,9 @@
                               "release.deploy_requested",
                               "release.rollback_requested",
                               "integration.connected",
-                              "secret.decrypted"
+                              "secret.decrypted",
+                              "git_token.minted",
+                              "git_token.revoked"
                             ]
                           },
                           "targetType": {

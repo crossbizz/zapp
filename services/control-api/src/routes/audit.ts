@@ -1,4 +1,11 @@
-import { PageSchema, idSchema } from '@zapp/contracts';
+import {
+  AuditActionSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditTargetTypeSchema,
+  PageSchema,
+  idSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -8,12 +15,6 @@ import {
   OrganizationSettingsSchema,
   type OrganizationStore,
 } from '../orgs/store.js';
-import {
-  AuditActionSchema,
-  AuditActorTypeSchema,
-  AuditMetadataSchema,
-  AuditTargetTypeSchema,
-} from '../plugins/audit.js';
 import { IdempotencyHeadersSchema } from '../plugins/idempotency.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { DEFAULT_PAGE_SIZE } from '../pagination.js';

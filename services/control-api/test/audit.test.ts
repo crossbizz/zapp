@@ -118,6 +118,45 @@ function auditRow(
 }
 
 describe('organization audit log reads', () => {
+  it('returns both audit actions persisted by git-service', async () => {
+    const wired = await wire();
+    const projectId = newId('proj');
+    wired.rows.push(
+      auditRow(wired, {
+        actorType: 'service',
+        actorId: 'git-service',
+        action: 'git_token.minted',
+        targetType: 'project',
+        targetId: projectId,
+        occurredAt: new Date('2026-08-05T10:00:00.000Z'),
+        metadataJson: { requestingService: 'sandbox-service' },
+      }),
+      auditRow(wired, {
+        actorType: 'service',
+        actorId: 'git-service',
+        action: 'git_token.revoked',
+        targetType: 'project',
+        targetId: projectId,
+        occurredAt: new Date('2026-08-05T10:01:00.000Z'),
+        metadataJson: { requestingService: 'control-api' },
+      }),
+    );
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/organizations/${wired.organizationId}/audit-events`,
+      headers: wired.headers(wired.owner),
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(
+      response
+        .json<{ items: { action: string }[] }>()
+        .items.map((item) => item.action)
+        .sort(),
+    ).toEqual(['git_token.minted', 'git_token.revoked']);
+  });
+
   it('denies a Builder with 403 after resolving their real membership', async () => {
     const wired = await wire();
     const builder = await joinBuilder(wired);

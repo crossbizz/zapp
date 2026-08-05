@@ -1,4 +1,13 @@
-import { idSchema, newId } from '@zapp/contracts';
+import {
+  AuditActionSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditTargetSchema,
+  idSchema,
+  newId,
+  type AuditActor,
+  type AuditRecord,
+} from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
 import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
@@ -47,150 +56,31 @@ import { z } from 'zod';
  * grows one.
  */
 
-/**
- * Actions this service records, as a closed set — the vocabulary a support or
- * compliance query is written against, so a typo must not be able to invent a
- * new one. Later tasks extend the list; nothing removes from it.
- */
-export const AUDIT_ACTIONS = [
-  'organization.created',
-  'organization.updated',
-  'organization.settings_updated',
-  'member.invited',
-  'member.joined',
-  'member.role_changed',
-  'member.removed',
-  'project.created',
-  'project.updated',
-  /**
-   * A capability scan was asked for. Recorded even though nothing is enqueued
-   * yet (plan 05 VF-3 owns the pipeline): the request is what a support question
-   * asks about, and a trail that starts only once the feature is finished has a
-   * hole in exactly the period people ask about.
-   */
-  'project.scan_requested',
-  'specification.created',
-  'specification.updated',
-  'specification.approved',
-  'run.created',
-  'run.events_ingested',
-  'run.pause_requested',
-  'run.paused',
-  'run.pause_rejected',
-  'run.resume_requested',
-  'run.resumed',
-  'run.resume_rejected',
-  'run.cancel_requested',
-  'run.cancelled',
-  'run.cancel_rejected',
-  'run.redirect_requested',
-  'run.redirected',
-  'run.redirect_rejected',
-  'workspace.create_requested',
-  'workspace.created',
-  'workspace.start_requested',
-  'workspace.started',
-  'workspace.start_rejected',
-  'workspace.checkpoint_requested',
-  'workspace.checkpointed',
-  'workspace.checkpoint_rejected',
-  'workspace.terminate_requested',
-  'workspace.terminated',
-  'workspace.terminate_rejected',
-  'workspace.preview_requested',
-  'workspace.previewed',
-  'workspace.preview_rejected',
-  'secret.created',
-  'secret.rotated',
-  'secret.deleted',
-  'release.created',
-  'release.approved',
-  'release.deploy_requested',
-  'release.rollback_requested',
-  'integration.connected',
-  /**
-   * A secret value was decrypted (plan 02 CP-7). The one action in this list
-   * that records a *read*, and the reason the internal decrypt route exists in
-   * this shape at all: PRD §18.12 makes plaintext available to the sandbox
-   * service at injection time, and an availability nobody can audit afterwards
-   * is indistinguishable from an exfiltration. Written in the same transaction
-   * as the read, so a decrypt that returned a value and left no row is not a
-   * state this service can reach.
-   */
-  'secret.decrypted',
-] as const;
-
-export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
-export type AuditAction = z.infer<typeof AuditActionSchema>;
-
-/** PRD §23.6 `target_type`: the entity kind an action landed on. */
-export const AUDIT_TARGET_TYPES = [
-  'organization',
-  'membership',
-  'invite',
-  'project',
-  'specification',
-  'run',
-  'workspace',
-  'secret',
-  'release',
-  'integration_connection',
-] as const;
-export const AuditTargetTypeSchema = z.enum(AUDIT_TARGET_TYPES);
-export type AuditTargetType = z.infer<typeof AuditTargetTypeSchema>;
-
-/** PRD §23.6 `actor_type`. Only `user` has a session behind it. */
-export const AUDIT_ACTOR_TYPES = ['user', 'service', 'agent', 'support'] as const;
-export const AuditActorTypeSchema = z.enum(AUDIT_ACTOR_TYPES);
-export type AuditActorType = z.infer<typeof AuditActorTypeSchema>;
-
-/** What a metadata field may hold. Nothing that can nest. */
-export const AuditScalarSchema = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
-export type AuditScalar = z.infer<typeof AuditScalarSchema>;
-
-/**
- * One metadata value.
- *
- * Scalars, plus an array of them — a diff summary ("which fields moved") is the
- * one shape that genuinely needs a list, and a list of scalars still cannot
- * smuggle an object, a buffer or a whole request body into the table.
- */
-export const AuditValueSchema = z.union([AuditScalarSchema, z.array(AuditScalarSchema)]);
-export type AuditValue = z.infer<typeof AuditValueSchema>;
-
-/**
- * Tenant-safe context: which role, which fields changed. Never a credential —
- * an invite token, a secret value and a session token are all things this table
- * would otherwise preserve for years.
- */
-export const AuditMetadataSchema = z.record(AuditValueSchema);
-export type AuditMetadata = z.infer<typeof AuditMetadataSchema>;
-
-export const AuditActorSchema = z
-  .object({ type: AuditActorTypeSchema, id: z.string().min(1) })
-  .strict();
-export type AuditActor = z.infer<typeof AuditActorSchema>;
-
-export const AuditTargetSchema = z
-  .object({ type: AuditTargetTypeSchema, id: z.string().nullable() })
-  .strict();
-export type AuditTarget = z.infer<typeof AuditTargetSchema>;
-
-/** One row of PRD §23.6 `audit_events`, minus the id the sink mints. */
-export const AuditRecordSchema = z
-  .object({
-    organizationId: idSchema('org'),
-    actorType: AuditActorTypeSchema,
-    actorId: z.string().min(1),
-    action: AuditActionSchema,
-    targetType: AuditTargetTypeSchema,
-    /** Null for an action with no single target. */
-    targetId: z.string().nullable(),
-    metadata: AuditMetadataSchema,
-    occurredAt: z.date(),
-  })
-  .strict();
-export type AuditRecord = z.infer<typeof AuditRecordSchema>;
+// Kept as re-exports for existing control-api consumers. The definitions live
+// in @zapp/contracts because this table has writers outside this service.
+export {
+  AUDIT_ACTIONS,
+  AUDIT_ACTOR_TYPES,
+  AUDIT_TARGET_TYPES,
+  AuditActionSchema,
+  AuditActorSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditScalarSchema,
+  AuditTargetSchema,
+  AuditTargetTypeSchema,
+  AuditValueSchema,
+  type AuditAction,
+  type AuditActor,
+  type AuditActorType,
+  type AuditMetadata,
+  type AuditRecord,
+  type AuditScalar,
+  type AuditTarget,
+  type AuditTargetType,
+  type AuditValue,
+} from '@zapp/contracts';
 
 /**
  * What a store hands its audit hook where it has no transaction to offer — the

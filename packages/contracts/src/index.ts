@@ -126,6 +126,32 @@ export {
   type RollbackInput,
 } from './deployment.js';
 export { ApiErrorSchema, IdempotencyHeader, PageSchema, type ApiError, type Page } from './api.js';
+export {
+  AUDIT_ACTIONS,
+  AUDIT_ACTOR_TYPES,
+  AUDIT_TARGET_TYPES,
+  AuditActionSchema,
+  AuditActorSchema,
+  AuditActorTypeSchema,
+  AuditMetadataSchema,
+  AuditRecordSchema,
+  AuditScalarSchema,
+  AuditTargetSchema,
+  AuditTargetTypeSchema,
+  AuditValueSchema,
+  GIT_AUDIT_ACTIONS,
+  GitAuditActionSchema,
+  type AuditAction,
+  type AuditActor,
+  type AuditActorType,
+  type AuditMetadata,
+  type AuditRecord,
+  type AuditScalar,
+  type AuditTarget,
+  type AuditTargetType,
+  type AuditValue,
+  type GitAuditAction,
+} from './audit.js';
 // PRD §19.1 — the internal Git service, provider-neutral (plan 06 GIT-2).
 export {
   BranchRefSchema,

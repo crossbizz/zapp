@@ -1,4 +1,12 @@
-import { newId } from '@zapp/contracts';
+import {
+  AuditActionSchema as PlatformAuditActionSchema,
+  GitAuditActionSchema as PlatformGitAuditActionSchema,
+  newId,
+} from '@zapp/contracts';
+import {
+  GIT_AUDIT_ACTIONS,
+  GitAuditActionSchema as GitServiceAuditActionSchema,
+} from '@zapp/git-service';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 
@@ -27,6 +35,14 @@ import {
 import { JsonValueSchema, type JsonValue } from '../src/orgs/store.js';
 
 describe('schema-inferred service boundaries', () => {
+  it('accepts every git-service writer action through the control-api read vocabulary', () => {
+    expect(AuditActionSchema).toBe(PlatformAuditActionSchema);
+    expect(GitServiceAuditActionSchema).toBe(PlatformGitAuditActionSchema);
+    for (const action of GIT_AUDIT_ACTIONS) {
+      expect(AuditActionSchema.safeParse(action).success, action).toBe(true);
+    }
+  });
+
   it('exports boundary types inferred from their public schemas', () => {
     expectTypeOf<JsonValue>().toEqualTypeOf<z.infer<typeof JsonValueSchema>>();
     expectTypeOf<AuditAction>().toEqualTypeOf<z.infer<typeof AuditActionSchema>>();
