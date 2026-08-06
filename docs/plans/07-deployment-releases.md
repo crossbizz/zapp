@@ -50,6 +50,12 @@ export interface ReleasePort {
 }
 ```
 
+AR-4 compatibility note (product-owner delegated controller decision 2026-08-06,
+ADR-0012): this six-method set remains binding. Agent-tools preview/smoke and
+deployment-health operations use separately named adapter ports and do not extend or
+replace `ReleasePort`. Agent-originated mutations may supply optional trusted
+idempotency/cancellation call options without changing these lifecycle operations.
+
 Release flow states: `candidate → verifying → ready|warnings|blocked → approved → deploying → healthy|failed → superseded`. Creation requires: exact commit SHA exists in internal Git (GIT-2 lookup), spec version reference (or explicit waiver object), no release for prototype-only runs (AR-15 rule).
 **Effort:** M
 
@@ -168,6 +174,8 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 ## Execution log
 
 - (empty)
+
+- 2026-08-06 DEP-1 interface ownership clarified — ADR-0012 preserves the six-method `ReleasePort`; AR-4 tool-only preview/smoke/health operations remain separate adapters.
 
 ## Execution log
 

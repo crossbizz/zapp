@@ -1,16 +1,55 @@
 import { TOOL_NAMES, type ToolDefinition, type ToolName } from '@zapp/contracts';
 import { PathViolationError, type WorkspaceRuntime } from '@zapp/workspace-runtime';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { createExecutionTools, type BrowserEvidencePort } from './execution.js';
 import { createGitTools } from './git.js';
 import { createMutationTools, type EnvironmentPort, type MigrationPort } from './mutation.js';
 import { createReadTools, type ProjectDataPort } from './read.js';
-import { createReleaseTools, type ReleasePort } from './release.js';
+import {
+  createReleaseTools,
+  type DeploymentHealthPort,
+  type PreviewToolPort,
+  type ReleasePort,
+} from './release.js';
 
-export type { BrowserEvidencePort, EnvironmentPort, MigrationPort, ProjectDataPort, ReleasePort };
+export type {
+  BrowserEvidencePort,
+  DeploymentHealthPort,
+  EnvironmentPort,
+  MigrationPort,
+  PreviewToolPort,
+  ProjectDataPort,
+  ReleasePort,
+};
 
 export interface OutputRedactor {
   redact(value: string): string;
+}
+
+export const ToolExecutionContextSchema = z
+  .object({
+    organizationId: z.string().min(1),
+    projectId: z.string().min(1),
+    runId: z.string().min(1),
+    taskId: z.string().min(1),
+    step: z.string().min(1),
+  })
+  .strict();
+
+export type ToolExecutionContext = z.infer<typeof ToolExecutionContextSchema>;
+
+export interface ToolMutationContext extends ToolExecutionContext {
+  readonly idempotencyKey: string;
+}
+
+export function mutationContext(
+  context: ToolExecutionContext,
+  tool: ToolName,
+): ToolMutationContext {
+  return {
+    ...context,
+    idempotencyKey: `${context.runId}:${context.taskId}:${context.step}:${tool}`,
+  };
 }
 
 export interface ToolRegistryDependencies {
@@ -21,23 +60,29 @@ export interface ToolRegistryDependencies {
   readonly environment: EnvironmentPort;
   readonly browser: BrowserEvidencePort;
   readonly release: ReleasePort;
+  readonly preview: PreviewToolPort;
+  readonly deploymentHealth: DeploymentHealthPort;
 }
 
 export interface ToolSpec<I extends z.ZodTypeAny, O extends z.ZodTypeAny> extends ToolDefinition<
   I,
   O
 > {
-  run(input: z.infer<I>): Promise<unknown>;
+  run(
+    input: z.infer<I>,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
+  ): Promise<unknown>;
 }
 
 type UnknownSchema = z.ZodType<unknown, z.ZodTypeDef, unknown>;
 
 export interface AnyToolSpec extends ToolDefinition<UnknownSchema, UnknownSchema> {
-  run(input: unknown): Promise<unknown>;
+  run(input: unknown, context: ToolExecutionContext, signal: AbortSignal): Promise<unknown>;
 }
 
 export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, UnknownSchema> {
-  execute(rawInput: unknown): Promise<unknown>;
+  execute(rawInput: unknown, rawContext: unknown): Promise<unknown>;
 }
 
 export class ToolExecutionError extends Error {
@@ -56,11 +101,18 @@ function sleep(milliseconds: number): Promise<void> {
   });
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, tool: ToolName): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  tool: ToolName,
+  controller: AbortController,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      reject(new ToolExecutionError(tool, 'tool_timeout'));
+      const error = new ToolExecutionError(tool, 'tool_timeout');
+      controller.abort(error);
+      reject(error);
     }, timeoutMs);
   });
 
@@ -108,9 +160,17 @@ export class ToolRegistry {
         dependencies.migrations,
         dependencies.environment,
       ),
-      ...createExecutionTools(dependencies.runtime, dependencies.browser),
+      ...createExecutionTools(
+        dependencies.runtime,
+        dependencies.browser,
+        dependencies.projectData,
+      ),
       ...createGitTools(dependencies.runtime),
-      ...createReleaseTools(dependencies.release),
+      ...createReleaseTools(
+        dependencies.release,
+        dependencies.preview,
+        dependencies.deploymentHealth,
+      ),
     ];
     assertExactRegistry(specs);
     this.definitions = new Map(
@@ -130,18 +190,25 @@ export class ToolRegistry {
     return definition;
   }
 
-  execute(name: ToolName, rawInput: unknown): Promise<unknown> {
-    return this.get(name).execute(rawInput);
+  execute(name: ToolName, rawInput: unknown, rawContext: unknown): Promise<unknown> {
+    return this.get(name).execute(rawInput, rawContext);
   }
 
   private makeExecutable(spec: AnyToolSpec, redactor: OutputRedactor): ExecutableToolDefinition {
-    const execute = async (rawInput: unknown): Promise<unknown> => {
+    const execute = async (rawInput: unknown, rawContext: unknown): Promise<unknown> => {
       const input = spec.inputSchema.parse(rawInput);
+      const context = ToolExecutionContextSchema.parse(rawContext);
       let lastError: unknown;
 
       for (let attempt = 1; attempt <= spec.retryPolicy.maxAttempts; attempt += 1) {
+        const controller = new AbortController();
         try {
-          const rawOutput = await withTimeout(spec.run(input), spec.timeoutMs, spec.name);
+          const rawOutput = await withTimeout(
+            spec.run(input, context, controller.signal),
+            spec.timeoutMs,
+            spec.name,
+            controller,
+          );
           const output = spec.outputSchema.parse(rawOutput);
           const visibleOutput = spec.redactOutput ? redactValue(output, redactor) : output;
           return spec.outputSchema.parse(visibleOutput);

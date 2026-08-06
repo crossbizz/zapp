@@ -1,5 +1,6 @@
-import { readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createConnection } from 'node:net';
 import type { ExecutionContract, ExecInput } from '@zapp/contracts';
@@ -29,6 +30,11 @@ export interface FileEntry {
 export interface FileStat extends FileEntry {
   readonly size: number;
   readonly mtimeMs: number;
+}
+
+export interface AtomicFileWrite {
+  readonly path: string;
+  readonly data: Uint8Array;
 }
 
 export type GitOperation =
@@ -82,11 +88,13 @@ export interface WorkspaceRuntime {
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
   delete(path: string): Promise<void>;
   git(op: GitOp): Promise<GitResult>;
   startDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
+  restartDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
   health(): Promise<{ ok: boolean; details: string }>;
 }
 
@@ -308,6 +316,7 @@ function trimIncompleteUtf8(buffer: Buffer): Buffer {
 /** A local, filesystem-backed runtime used as the test double for runtime consumers. */
 export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
+  private devServer: ChildProcess | undefined;
 
   constructor(readonly root: string) {}
 
@@ -422,6 +431,60 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     await writeFile(await resolveInRoot(this.root, path), data);
   }
 
+  async writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void> {
+    const paths = files.map((file) => file.path);
+    if (new Set(paths).size !== paths.length) {
+      throw new Error('Atomic file batch contains duplicate paths');
+    }
+
+    const staged = await Promise.all(
+      files.map(async (file) => {
+        const target = await resolveInRoot(this.root, file.path);
+        const temporary = resolve(dirname(target), `.zapp-atomic-${randomUUID()}`);
+        let original: Uint8Array | undefined;
+        try {
+          original = new Uint8Array(await readFile(target));
+        } catch (error: unknown) {
+          if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
+            throw error;
+          }
+        }
+        return { target, temporary, data: file.data, original };
+      }),
+    );
+
+    try {
+      await Promise.all(staged.map((file) => writeFile(file.temporary, file.data)));
+      const committed: typeof staged = [];
+      try {
+        for (const file of staged) {
+          await rename(file.temporary, file.target);
+          committed.push(file);
+        }
+      } catch (error: unknown) {
+        const rollback = await Promise.allSettled(
+          committed.reverse().map((file) =>
+            file.original === undefined
+              ? rm(file.target, { force: true })
+              : writeFile(file.target, file.original),
+          ),
+        );
+        const rollbackFailure = rollback.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (rollbackFailure !== undefined) {
+          throw new AggregateError(
+            [error, rollbackFailure.reason],
+            'Atomic file batch failed and could not be rolled back',
+          );
+        }
+        throw error;
+      }
+    } finally {
+      await Promise.all(staged.map((file) => rm(file.temporary, { force: true })));
+    }
+  }
+
   async listFiles(
     path: string,
     opts: { glob?: string; maxDepth?: number } = {},
@@ -514,6 +577,9 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async startDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }> {
+    if (this.devServer !== undefined && this.devServer.exitCode === null) {
+      throw new Error('Development server is already running');
+    }
     const child = spawn(contract.develop.command, {
       cwd: await resolveInRoot(this.root, contract.workspace_root),
       shell: true,
@@ -570,7 +636,25 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       checkReadiness();
     });
 
+    this.devServer = child;
     return { port: contract.develop.port, pid: child.pid };
+  }
+
+  async restartDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }> {
+    const current = this.devServer;
+    if (current !== undefined && current.exitCode === null) {
+      const stopped = new Promise<void>((resolveStopped) => {
+        current.once('close', () => {
+          resolveStopped();
+        });
+      });
+      terminateProcessGroup(current);
+      await stopped;
+    }
+    if (this.devServer === current) {
+      this.devServer = undefined;
+    }
+    return this.startDevServer(contract);
   }
 
   async health(): Promise<{ ok: boolean; details: string }> {

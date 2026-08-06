@@ -1,0 +1,43 @@
+# ADR-0011: Agent-tool restart and atomic workspace writes
+
+- Status: Accepted
+- Date: 2026-08-06
+- Owners: Workspace runtime / agent runtime
+- Approval: product-owner delegated controller decision, 2026-08-06
+- Affects: WS-1, AR-4
+- References: PRD §16.1–§16.3, Plan 03 WS-1, Plan 04 AR-4
+
+## Context
+
+AR-4 originally represented `restart_dev_server` by starting another process and
+applied a validated multi-file patch through separate `writeFile` calls. The first
+behavior was not a restart, and the second could leave an earlier file changed if a
+later write failed. Agent-tools may not use host processes or host filesystem calls
+to repair either behavior because workspace lifecycle and files belong to
+`WorkspaceRuntime`.
+
+## Decision
+
+Extend WS-1 with exactly two workspace-owned primitives:
+
+- `restartDevServer(contract)` stops and waits for the currently managed development
+  server before starting and readiness-checking its replacement.
+- `writeFilesAtomically(files)` validates the complete workspace-relative path set,
+  stages all bytes before changing targets, and rolls back committed targets if a
+  later commit fails.
+
+Both primitives preserve `resolveInRoot` lexical and symlink checks. The batch API
+accepts only `{ path, data }` records and the restart API accepts only the validated
+`ExecutionContract`; neither exposes host paths, shell fragments, or process-control
+options to agent-tools.
+
+## Consequences
+
+- `restart_dev_server` can report a replacement PID only after the prior managed
+  process has stopped and the contract port is ready.
+- Unified patches cross the runtime boundary as one staged batch, preventing an
+  agent-tools loop from creating partial writes.
+- Runtime implementations must provide equivalent lifecycle and batch rollback
+  semantics before claiming complete WS-1 support.
+- These two narrow additions are included in the AR-4 review-fix commit under the
+  product-owner delegated approval recorded on 2026-08-06.

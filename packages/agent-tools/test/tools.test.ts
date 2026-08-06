@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TOOL_GROUPS, TOOL_NAMES, type ExecutionContract, type ToolName } from '@zapp/contracts';
@@ -13,7 +13,7 @@ import {
   type GitResult,
   type WorkspaceRuntime,
 } from '@zapp/workspace-runtime';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ToolRegistry,
   type BrowserEvidencePort,
@@ -21,6 +21,8 @@ import {
   type MigrationPort,
   type OutputRedactor,
   type ProjectDataPort,
+  type DeploymentHealthPort,
+  type PreviewToolPort,
   type ReleasePort,
   type ToolRegistryDependencies,
 } from '../src/registry.js';
@@ -30,6 +32,14 @@ const attribution = {
   projectId: 'project_test',
   runId: 'run_test',
   taskId: 'task_test',
+} as const;
+
+const trustedContext = {
+  organizationId: 'org_trusted',
+  projectId: 'project_trusted',
+  runId: 'run_trusted',
+  taskId: 'task_trusted',
+  step: 'step-1',
 } as const;
 
 const contract: ExecutionContract = {
@@ -48,6 +58,8 @@ class RecordingRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
   readonly execCalls: Array<Parameters<WorkspaceRuntime['exec']>[0]> = [];
   readonly gitCalls: GitOp[] = [];
+  readonly atomicWriteCalls: Array<readonly { path: string; data: Uint8Array }[]> = [];
+  restartCalls = 0;
   execResult: ExecResult = {
     exitCode: 0,
     stdout: '',
@@ -86,6 +98,15 @@ class RecordingRuntime implements WorkspaceRuntime {
     return Promise.resolve();
   }
 
+  async writeFilesAtomically(
+    files: readonly { path: string; data: Uint8Array }[],
+  ): Promise<void> {
+    this.atomicWriteCalls.push(files);
+    for (const file of files) {
+      await this.writeFile(file.path, file.data);
+    }
+  }
+
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]> {
     void path;
     void opts;
@@ -98,6 +119,9 @@ class RecordingRuntime implements WorkspaceRuntime {
   }
 
   async stat(path: string): Promise<FileStat> {
+    if (path === '.' || path === 'src') {
+      return { path, type: 'directory', size: 0, mtimeMs: 1 };
+    }
     const value = await this.readFile(path);
     return { path, type: 'file', size: value.byteLength, mtimeMs: 1 };
   }
@@ -117,6 +141,12 @@ class RecordingRuntime implements WorkspaceRuntime {
     return Promise.resolve({ port: 3000, pid: 42 });
   }
 
+  restartDevServer(contractInput: ExecutionContract): Promise<{ port: number; pid: number }> {
+    void contractInput;
+    this.restartCalls += 1;
+    return Promise.resolve({ port: 3000, pid: 84 });
+  }
+
   health(): Promise<{ ok: boolean; details: string }> {
     return Promise.resolve({ ok: true, details: 'ready' });
   }
@@ -130,7 +160,6 @@ function defaultPorts(): Omit<ToolRegistryDependencies, 'runtime'> {
     readLogs: () => Promise.resolve({ ok: true, entries: [], truncated: false }),
     readTestResults: () =>
       Promise.resolve({
-        ok: true,
         status: 'passed',
         summary: 'Checks passed',
         artifactId: 'artifact_tests',
@@ -146,7 +175,6 @@ function defaultPorts(): Omit<ToolRegistryDependencies, 'runtime'> {
   const migrations: MigrationPort = {
     executeMigration: () =>
       Promise.resolve({
-        ok: true,
         migrationId: 'migration_test',
         status: 'applied',
       }),
@@ -154,7 +182,6 @@ function defaultPorts(): Omit<ToolRegistryDependencies, 'runtime'> {
   const environment: EnvironmentPort = {
     setEnvironmentVariable: () =>
       Promise.resolve({
-        ok: true,
         updated: true,
         name: 'CONFIG_VALUE',
         scope: 'preview',
@@ -162,46 +189,45 @@ function defaultPorts(): Omit<ToolRegistryDependencies, 'runtime'> {
   };
   const browser: BrowserEvidencePort = {
     runBrowserTests: () =>
-      Promise.resolve({ ok: true, passed: true, summary: 'Browser checks passed' }),
+      Promise.resolve({ passed: true, summary: 'Browser checks passed' }),
     captureScreenshot: () =>
       Promise.resolve({
-        ok: true,
         artifactId: 'artifact_screenshot',
         path: 'artifacts/home.png',
       }),
-    inspectConsole: () => Promise.resolve({ ok: true, entries: [] }),
-    inspectNetwork: () => Promise.resolve({ ok: true, requests: [] }),
+    inspectConsole: () => Promise.resolve({ entries: [] }),
+    inspectNetwork: () => Promise.resolve({ requests: [] }),
   };
   const release: ReleasePort = {
-    createPreview: () =>
-      Promise.resolve({
-        ok: true,
-        previewId: 'preview_test',
-        url: 'https://preview.example.test',
-      }),
-    runPreviewSmokeTest: () =>
-      Promise.resolve({ ok: true, passed: true, summary: 'Preview healthy' }),
     createReleaseCandidate: () =>
       Promise.resolve({
-        ok: true,
-        releaseId: 'release_test',
+        id: 'release_test',
         status: 'candidate',
       }),
-    deployRelease: () =>
-      Promise.resolve({
-        ok: true,
-        deploymentId: 'deployment_test',
-        status: 'deploying',
-      }),
-    checkDeploymentHealth: () => Promise.resolve({ ok: true, healthy: true, details: 'healthy' }),
-    rollbackRelease: () =>
-      Promise.resolve({
-        ok: true,
-        deploymentId: 'deployment_rollback',
-        status: 'rolling_back',
-      }),
+    getReadiness: () => Promise.resolve({ state: 'ready', findings: [] }),
+    approve: () => Promise.resolve({ id: 'release_test', status: 'approved' }),
+    deploy: () => Promise.resolve({ deploymentId: 'deployment_test' }),
+    rollback: () => Promise.resolve({ deploymentId: 'deployment_rollback' }),
+    getEvidence: () => Promise.resolve({ releaseId: 'release_test', artifacts: [] }),
   };
-  return { redactor, projectData, migrations, environment, browser, release };
+  const preview: PreviewToolPort = {
+    createPreview: () =>
+      Promise.resolve({ previewId: 'preview_test', url: 'https://preview.example.test' }),
+    runPreviewSmokeTest: () => Promise.resolve({ passed: true, summary: 'Preview healthy' }),
+  };
+  const deploymentHealth: DeploymentHealthPort = {
+    checkDeploymentHealth: () => Promise.resolve({ healthy: true, details: 'healthy' }),
+  };
+  return {
+    redactor,
+    projectData,
+    migrations,
+    environment,
+    browser,
+    release,
+    preview,
+    deploymentHealth,
+  };
 }
 
 function registryFor(
@@ -212,12 +238,12 @@ function registryFor(
 }
 
 async function withMemoryRegistry(
-  run: (runtime: MemoryWorkspaceRuntime, registry: ToolRegistry) => Promise<void>,
+  run: (runtime: MemoryWorkspaceRuntime, registry: ToolRegistry, root: string) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-'));
   const runtime = new MemoryWorkspaceRuntime(root);
   try {
-    await run(runtime, registryFor(runtime));
+    await run(runtime, registryFor(runtime), root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -233,10 +259,10 @@ const toolInputs: Record<ToolName, unknown> = {
   git_diff: { cached: false },
   git_log: { maxCount: 10 },
   git_show: { ref: '0123456789abcdef0123456789abcdef01234567' },
-  read_logs: { ...attribution, limit: 50 },
-  read_test_results: { ...attribution, suite: 'unit' },
-  read_database_schema: { ...attribution, environmentId: 'environment_test' },
-  read_project_contract: attribution,
+  read_logs: { limit: 50 },
+  read_test_results: { suite: 'unit' },
+  read_database_schema: { environmentId: 'environment_test' },
+  read_project_contract: {},
   write_file: { path: 'written.txt', content: 'written' },
   apply_patch: {
     patch: '--- a/source.txt\n+++ b/source.txt\n@@ -1,1 +1,1 @@\n-source\n+updated\n',
@@ -246,58 +272,51 @@ const toolInputs: Record<ToolName, unknown> = {
   delete_file: { path: 'delete.txt' },
   install_dependency: { packageManager: 'pnpm', packages: ['zod'], dev: false },
   execute_migration: {
-    ...attribution,
     environmentId: 'environment_test',
-    idempotencyKey: 'migration-key',
     migration: 'CREATE TABLE sample (id text)',
   },
   set_environment_variable: {
-    ...attribution,
     environmentId: 'environment_test',
-    idempotencyKey: 'environment-key',
     name: 'CONFIG_VALUE',
-    value: 'private-marker',
+    secretRef: 'sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
     scope: 'preview',
   },
   run_command: { cmd: 'node', args: ['--version'] },
-  run_dev_server: { contract },
-  restart_dev_server: { contract },
-  run_build: { cmd: 'pnpm', args: ['build'] },
-  run_typecheck: { cmd: 'pnpm', args: ['typecheck'] },
-  run_lint: { cmd: 'pnpm', args: ['lint'] },
-  run_unit_tests: { cmd: 'pnpm', args: ['test'] },
-  run_integration_tests: { cmd: 'pnpm', args: ['test:integration'] },
-  run_browser_tests: { ...attribution, baseUrl: 'https://preview.example.test' },
+  run_dev_server: {},
+  restart_dev_server: {},
+  run_build: {},
+  run_typecheck: {},
+  run_lint: {},
+  run_unit_tests: {},
+  run_integration_tests: {},
+  run_browser_tests: { previewId: 'preview_test', route: '/' },
   capture_screenshot: {
-    ...attribution,
-    url: 'https://preview.example.test',
+    previewId: 'preview_test',
+    route: '/',
     name: 'home',
   },
-  inspect_browser_console: { ...attribution, sessionId: 'browser_session' },
-  inspect_network_requests: { ...attribution, sessionId: 'browser_session' },
+  inspect_browser_console: { previewId: 'preview_test', route: '/' },
+  inspect_network_requests: { previewId: 'preview_test', route: '/' },
   create_branch: { name: 'feature/agent-tools' },
   create_checkpoint: { paths: ['source.txt'], message: 'checkpoint' },
   commit_changes: { paths: ['source.txt'], message: 'change' },
   restore_file: { path: 'source.txt' },
   revert_commit: { commit: '0123456789abcdef0123456789abcdef01234567' },
   merge_branch: { ref: 'feature/agent-tools' },
-  create_preview: { ...attribution, branchId: 'branch_test', commitSha: '0123456789abcdef' },
-  run_preview_smoke_test: { ...attribution, previewId: 'preview_test' },
+  create_preview: { branchId: 'branch_test', commitSha: '0123456789abcdef' },
+  run_preview_smoke_test: { previewId: 'preview_test' },
   create_release_candidate: {
-    ...attribution,
     environmentId: 'environment_test',
     commitSha: '0123456789abcdef',
     specificationId: 'specification_test',
   },
   deploy_release: {
-    ...attribution,
     releaseId: 'release_test',
-    deploymentType: 'managed',
+    deploymentType: 'redeploy',
     confirmationId: 'confirmation_test',
   },
-  check_deployment_health: { ...attribution, deploymentId: 'deployment_test' },
+  check_deployment_health: { deploymentId: 'deployment_test' },
   rollback_release: {
-    ...attribution,
     environmentId: 'environment_test',
     toDeploymentId: 'deployment_previous',
     reason: 'Regression detected',
@@ -324,7 +343,7 @@ describe('ToolRegistry contract', () => {
       expect(
         definition.inputSchema.safeParse({ ...(input as object), unexpected: true }).success,
       ).toBe(false);
-      const output = await definition.execute(input);
+      const output = await definition.execute(input, trustedContext);
       expect(definition.outputSchema.safeParse(output).success).toBe(true);
       expect(
         definition.outputSchema.safeParse({ ...(output as object), unexpected: true }).success,
@@ -398,9 +417,9 @@ describe('ToolRegistry contract', () => {
 describe('workspace-bound tools', () => {
   it('preserves WorkspaceRuntime rejection of a read_file escape path', async () => {
     await withMemoryRegistry(async (_runtime, registry) => {
-      await expect(registry.execute('read_file', { path: '../outside' })).rejects.toBeInstanceOf(
-        PathViolationError,
-      );
+      await expect(
+        registry.execute('read_file', { path: '../outside' }, trustedContext),
+      ).rejects.toBeInstanceOf(PathViolationError);
     });
   });
 
@@ -410,7 +429,7 @@ describe('workspace-bound tools', () => {
       await expect(
         registry.execute('apply_patch', {
           patch: '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+changed\n third\n',
-        }),
+        }, trustedContext),
       ).resolves.toMatchObject({ ok: true, filesChanged: 1, hunksApplied: 1 });
       await expect(runtime.readFile('app.ts')).resolves.toEqual(
         new TextEncoder().encode('first\nchanged\nthird\n'),
@@ -419,7 +438,7 @@ describe('workspace-bound tools', () => {
       const conflict = await registry.execute('apply_patch', {
         patch:
           '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-missing-context\n+wrong\n third\n',
-      });
+      }, trustedContext);
       expect(conflict).toMatchObject({
         ok: false,
         error: { code: 'patch_conflict' },
@@ -439,7 +458,7 @@ describe('workspace-bound tools', () => {
         registry.execute('apply_patch', {
           patch:
             '--- a/first.txt\n+++ b/first.txt\n@@ -1,1 +1,1 @@\n-first\n+changed\n--- a/second.txt\n+++ b/second.txt\n@@ -1,1 +1,1 @@\n-missing\n+wrong\n',
-        }),
+        }, trustedContext),
       ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
       await expect(runtime.readFile('first.txt')).resolves.toEqual(
         new TextEncoder().encode('first\n'),
@@ -463,7 +482,7 @@ describe('workspace-bound tools', () => {
       query: 'needle',
       path: 'src',
       glob: '*.ts',
-    });
+    }, trustedContext);
 
     expect(runtime.execCalls).toEqual([
       {
@@ -474,6 +493,73 @@ describe('workspace-bound tools', () => {
       },
     ]);
     expect(result).toMatchObject({ ok: true, matches: ['src/app.ts:2:needle'] });
+  });
+
+  it('rejects absolute, parent, and symlink-escape paths for search_code and grep', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-outside-'));
+    const outsideFile = join(outside, 'outside.txt');
+    await writeFile(outsideFile, 'outside marker');
+
+    try {
+      await withMemoryRegistry(async (_runtime, registry, root) => {
+        await symlink(outside, join(root, 'escape'));
+        for (const name of ['search_code', 'grep'] as const) {
+          for (const path of [outsideFile, '../outside.txt', 'escape/outside.txt']) {
+            const modelInput =
+              name === 'search_code'
+                ? { query: 'outside', path }
+                : { pattern: 'outside', path };
+            await expect(registry.execute(name, modelInput, trustedContext)).rejects.toBeInstanceOf(
+              PathViolationError,
+            );
+          }
+        }
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects delete_file for workspace roots and directories before runtime deletion', async () => {
+    class GuardedDeleteRuntime extends RecordingRuntime {
+      readonly deleted: string[] = [];
+
+      override stat(path: string): Promise<FileStat> {
+        return Promise.resolve({ path, type: 'directory', size: 0, mtimeMs: 1 });
+      }
+
+      override delete(path: string): Promise<void> {
+        this.deleted.push(path);
+        return Promise.resolve();
+      }
+    }
+
+    for (const path of ['.', './', 'directory']) {
+      const runtime = new GuardedDeleteRuntime();
+      await expect(
+        registryFor(runtime).execute('delete_file', { path }, trustedContext),
+      ).rejects.toThrow();
+      expect(runtime.deleted).toEqual([]);
+    }
+  });
+
+  it('treats ripgrep exit 1 as a successful search with no matches', async () => {
+    const runtime = new RecordingRuntime();
+    runtime.execResult = {
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+      durationMs: 2,
+      truncated: false,
+    };
+
+    await expect(
+      registryFor(runtime).execute(
+        'search_code',
+        { query: 'absent', path: 'source.txt' },
+        trustedContext,
+      ),
+    ).resolves.toMatchObject({ ok: true, exitCode: 1, matches: [] });
   });
 });
 
@@ -489,7 +575,11 @@ describe('execution truth and redaction', () => {
     };
 
     await expect(
-      registryFor(runtime).execute('run_command', { cmd: 'node', args: ['--version'] }),
+      registryFor(runtime).execute(
+        'run_command',
+        { cmd: 'node', args: ['--version'] },
+        trustedContext,
+      ),
     ).resolves.toMatchObject({
       ok: true,
       stdout: 'stdout [REDACTED]',
@@ -510,9 +600,17 @@ describe('execution truth and redaction', () => {
     const registry = registryFor(runtime);
 
     await expect(
-      registry.execute('run_command', { cmd: 'node', args: ['missing.js'], ok: true }),
+      registry.execute(
+        'run_command',
+        { cmd: 'node', args: ['missing.js'], ok: true },
+        trustedContext,
+      ),
     ).rejects.toThrow();
-    const output = await registry.execute('run_command', { cmd: 'node', args: ['missing.js'] });
+    const output = await registry.execute(
+      'run_command',
+      { cmd: 'node', args: ['missing.js'] },
+      trustedContext,
+    );
     expect(output).toMatchObject({ ok: false, exitCode: 7 });
     expect(
       registry.get('run_command').userSummary({ cmd: 'node', args: ['missing.js'] }, output),
@@ -524,16 +622,16 @@ describe('execution truth and redaction', () => {
       ...defaultPorts().browser,
       inspectConsole: () =>
         Promise.resolve({
-          ok: true,
           entries: [{ level: 'error', message: 'raw-marker', timestamp: '2026-08-06T00:00:00Z' }],
         }),
     };
 
     await expect(
-      registryFor(new RecordingRuntime(), { browser }).execute('inspect_browser_console', {
-        ...attribution,
-        sessionId: 'browser_session',
-      }),
+      registryFor(new RecordingRuntime(), { browser }).execute(
+        'inspect_browser_console',
+        { previewId: 'preview_test', route: '/' },
+        trustedContext,
+      ),
     ).resolves.toMatchObject({
       entries: [{ message: '[REDACTED]' }],
     });
@@ -545,21 +643,89 @@ describe('git runtime boundary', () => {
     const runtime = new RecordingRuntime();
     const registry = registryFor(runtime);
 
-    await registry.execute('merge_branch', { ref: 'feature/agent-tools' });
+    await registry.execute('merge_branch', { ref: 'feature/agent-tools' }, trustedContext);
     await registry.execute('revert_commit', {
       commit: '0123456789abcdef0123456789abcdef01234567',
-    });
+    }, trustedContext);
 
     expect(runtime.gitCalls).toEqual([
       { operation: 'merge', ref: 'feature/agent-tools' },
       { operation: 'revert', commit: '0123456789abcdef0123456789abcdef01234567' },
     ]);
-    await expect(registry.execute('merge_branch', { ref: '--strategy=ours' })).rejects.toThrow();
-    await expect(registry.execute('revert_commit', { commit: 'HEAD' })).rejects.toThrow();
+    await expect(
+      registry.execute('merge_branch', { ref: '--strategy=ours' }, trustedContext),
+    ).rejects.toThrow();
+    await expect(
+      registry.execute('revert_commit', { commit: 'HEAD' }, trustedContext),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a git_show option where an object ref is required', () => {
+    const definition = registryFor(new RecordingRuntime()).get('git_show');
+    expect(definition.inputSchema.safeParse({ ref: '--stat' }).success).toBe(false);
   });
 });
 
 describe('validated service ports', () => {
+  it('injects trusted attribution separately and rejects model override fields', async () => {
+    const calls: unknown[] = [];
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLatestProjectContract: (input) => {
+        calls.push(input);
+        return Promise.resolve({ ok: true, version: 9, contract });
+      },
+    };
+    const registry = registryFor(new RecordingRuntime(), { projectData });
+
+    await registry.execute('read_project_contract', {}, trustedContext);
+    expect(calls).toEqual([trustedContext]);
+    await expect(
+      registry.execute(
+        'read_project_contract',
+        { organizationId: 'org_override' },
+        trustedContext,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('keeps plaintext environment values and command environments out of model schemas', () => {
+    const registry = registryFor(new RecordingRuntime());
+    expect(
+      registry.get('set_environment_variable').inputSchema.safeParse({
+        ...attribution,
+        environmentId: 'environment_test',
+        idempotencyKey: 'model-key',
+        name: 'CONFIG_VALUE',
+        value: 'plaintext-marker',
+        scope: 'preview',
+      }).success,
+    ).toBe(false);
+    expect(
+      registry.get('set_environment_variable').inputSchema.safeParse({
+        environmentId: 'environment_test',
+        name: 'CONFIG_VALUE',
+        secretRef: 'sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
+        scope: 'preview',
+      }).success,
+    ).toBe(true);
+    expect(
+      registry.get('set_environment_variable').inputSchema.safeParse({
+        environmentId: 'environment_test',
+        name: 'CONFIG_VALUE',
+        secretRef: 'plaintext-marker',
+        scope: 'preview',
+      }).success,
+    ).toBe(false);
+    expect(
+      registry.get('run_command').inputSchema.safeParse({
+        cmd: 'node',
+        args: ['--version'],
+        env: { CONFIG_VALUE: 'plaintext-marker' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('reads the latest project contract through the tenant-aware port', async () => {
     const calls: unknown[] = [];
     const projectData: ProjectDataPort = {
@@ -571,10 +737,11 @@ describe('validated service ports', () => {
     };
     const result = await registryFor(new RecordingRuntime(), { projectData }).execute(
       'read_project_contract',
-      attribution,
+      {},
+      trustedContext,
     );
 
-    expect(calls).toEqual([attribution]);
+    expect(calls).toEqual([trustedContext]);
     expect(result).toMatchObject({ ok: true, version: 9, contract });
   });
 
@@ -592,35 +759,36 @@ describe('validated service ports', () => {
     };
 
     await expect(
-      registryFor(new RecordingRuntime(), { projectData }).execute('read_logs', {
-        ...attribution,
-        limit: 10,
-      }),
+      registryFor(new RecordingRuntime(), { projectData }).execute(
+        'read_logs',
+        { limit: 10 },
+        trustedContext,
+      ),
     ).resolves.toMatchObject({ ok: true });
     expect(attempts).toBe(2);
   });
 
-  it('passes an environment value only to its port and keeps summaries, audits, outputs, and errors clean', async () => {
+  it('passes only an opaque secret reference to its port and keeps summaries, audits, outputs, and errors clean', async () => {
     const received: unknown[] = [];
     const environment: EnvironmentPort = {
       setEnvironmentVariable: (input) => {
         received.push(input);
-        return Promise.resolve({ ok: true, updated: true, name: 'CONFIG_VALUE', scope: 'preview' });
+        return Promise.resolve({ updated: true, name: 'CONFIG_VALUE', scope: 'preview' });
       },
     };
     const registry = registryFor(new RecordingRuntime(), { environment });
     const input = toolInputs.set_environment_variable;
-    const output = await registry.execute('set_environment_variable', input);
+    const output = await registry.execute('set_environment_variable', input, trustedContext);
     const definition = registry.get('set_environment_variable');
 
     expect(received).toEqual([input]);
-    expect(JSON.stringify(output)).not.toContain('private-marker');
+    expect(JSON.stringify(output)).not.toContain('sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND');
     expect(definition.userSummary(definition.inputSchema.parse(input), output)).not.toContain(
-      'private-marker',
+      'sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
     );
     expect(
       JSON.stringify(definition.auditPayload(definition.inputSchema.parse(input), output)),
-    ).not.toContain('private-marker');
+    ).not.toContain('sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND');
 
     const failingEnvironment: EnvironmentPort = {
       setEnvironmentVariable: () => Promise.reject(new Error('private-marker')),
@@ -629,7 +797,343 @@ describe('validated service ports', () => {
       registryFor(new RecordingRuntime(), { environment: failingEnvironment }).execute(
         'set_environment_variable',
         input,
+        trustedContext,
       ),
     ).rejects.not.toThrow('private-marker');
+  });
+});
+
+describe('review round 1 safety regressions', () => {
+  it('applies a multi-file patch through one atomic runtime batch without partial writes on first, middle, or final failure', async () => {
+    const patch =
+      '--- a/first.txt\n+++ b/first.txt\n@@ -1,1 +1,1 @@\n-first\n+changed-first\n' +
+      '--- a/second.txt\n+++ b/second.txt\n@@ -1,1 +1,1 @@\n-second\n+changed-second\n' +
+      '--- a/third.txt\n+++ b/third.txt\n@@ -1,1 +1,1 @@\n-third\n+changed-third\n';
+
+    for (const failAt of [0, 1, 2]) {
+      class FailingBatchRuntime extends RecordingRuntime {
+        private writes = 0;
+
+        constructor() {
+          super();
+          this.files.set('first.txt', new TextEncoder().encode('first\n'));
+          this.files.set('second.txt', new TextEncoder().encode('second\n'));
+          this.files.set('third.txt', new TextEncoder().encode('third\n'));
+        }
+
+        override writeFile(path: string, data: Uint8Array): Promise<void> {
+          if (this.writes === failAt) {
+            return Promise.reject(new Error(`injected write ${String(failAt)}`));
+          }
+          this.writes += 1;
+          return super.writeFile(path, data);
+        }
+
+        override writeFilesAtomically(
+          files: readonly { path: string; data: Uint8Array }[],
+        ): Promise<void> {
+          this.atomicWriteCalls.push(files);
+          const staged: Array<{ path: string; data: Uint8Array }> = [];
+          for (const [index, file] of files.entries()) {
+            if (index === failAt) {
+              return Promise.reject(new Error(`injected atomic write ${String(failAt)}`));
+            }
+            staged.push(file);
+          }
+          for (const file of staged) {
+            this.files.set(file.path, file.data);
+          }
+          return Promise.resolve();
+        }
+      }
+
+      const runtime = new FailingBatchRuntime();
+      await expect(
+        registryFor(runtime).execute('apply_patch', { patch }, trustedContext),
+      ).rejects.toThrow();
+      expect(runtime.atomicWriteCalls).toHaveLength(1);
+      expect(new TextDecoder().decode(runtime.files.get('first.txt'))).toBe('first\n');
+      expect(new TextDecoder().decode(runtime.files.get('second.txt'))).toBe('second\n');
+      expect(new TextDecoder().decode(runtime.files.get('third.txt'))).toBe('third\n');
+    }
+  });
+
+  it('uses the runtime restart primitive instead of starting another development server', async () => {
+    class RestartRuntime extends RecordingRuntime {
+      startCalls = 0;
+
+      override startDevServer(
+        contractInput: ExecutionContract,
+      ): Promise<{ port: number; pid: number }> {
+        void contractInput;
+        this.startCalls += 1;
+        return Promise.resolve({ port: 3000, pid: 42 });
+      }
+    }
+    const runtime = new RestartRuntime();
+
+    await expect(
+      registryFor(runtime).execute('restart_dev_server', {}, trustedContext),
+    ).resolves.toMatchObject({ ok: true, pid: 84 });
+    expect(runtime.restartCalls).toBe(1);
+    expect(runtime.startCalls).toBe(0);
+  });
+
+  it('binds every named command to the latest validated execution contract and rejects command overrides', async () => {
+    const runtime = new RecordingRuntime();
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLatestProjectContract: () => Promise.resolve({ ok: true, version: 9, contract }),
+    };
+    const registry = registryFor(runtime, { projectData });
+
+    await expect(registry.execute('run_build', {}, trustedContext)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(runtime.execCalls).toEqual([
+      {
+        cmd: 'sh',
+        args: ['-lc', contract.build?.command],
+        cwd: contract.workspace_root,
+        timeoutMs: 120_000,
+      },
+    ]);
+    await expect(
+      registry.execute(
+        'run_build',
+        { cmd: 'node', args: ['malicious.js'] },
+        trustedContext,
+      ),
+    ).rejects.toThrow();
+
+    runtime.execCalls.length = 0;
+    await expect(
+      registry.execute('run_integration_tests', {}, trustedContext),
+    ).resolves.toMatchObject({ ok: false, exitCode: 2 });
+    expect(runtime.execCalls).toEqual([]);
+  });
+
+  it('accepts only attributed browser targets with relative routes and rejects absolute or protocol-relative input', () => {
+    const registry = registryFor(new RecordingRuntime());
+    const browserInputs = [
+      ['run_browser_tests', { previewId: 'preview_test', route: '/checks' }],
+      [
+        'capture_screenshot',
+        { deploymentId: 'deployment_test', route: '/home', name: 'home' },
+      ],
+      ['inspect_browser_console', { previewId: 'preview_test', route: '/' }],
+      ['inspect_network_requests', { deploymentId: 'deployment_test', route: '/requests' }],
+    ] as const;
+
+    for (const [name, input] of browserInputs) {
+      expect(registry.get(name).inputSchema.safeParse(input).success).toBe(true);
+      for (const route of [
+        'http://169.254.169.254/latest/meta-data',
+        'http://127.0.0.1:1/admin',
+        '//169.254.169.254/latest/meta-data',
+      ]) {
+        expect(registry.get(name).inputSchema.safeParse({ ...input, route }).success).toBe(false);
+      }
+      expect(
+        registry.get(name).inputSchema.safeParse({ ...input, baseUrl: 'http://127.0.0.1' })
+          .success,
+      ).toBe(false);
+      expect(
+        registry.get(name).inputSchema.safeParse({ ...input, url: 'http://127.0.0.1' }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('passes the latest contracted browser command and trusted mutation context to the browser port', async () => {
+    const calls: unknown[] = [];
+    const browser: BrowserEvidencePort = {
+      ...defaultPorts().browser,
+      runBrowserTests: (input, context, signal) => {
+        calls.push({ input, context, aborted: signal.aborted });
+        return Promise.resolve({ passed: true, summary: 'browser passed' });
+      },
+    };
+
+    await registryFor(new RecordingRuntime(), { browser }).execute(
+      'run_browser_tests',
+      { previewId: 'preview_test', route: '/checks' },
+      trustedContext,
+    );
+    expect(calls).toEqual([
+      {
+        input: {
+          previewId: 'preview_test',
+          route: '/checks',
+          command: 'pnpm test:browser',
+          workspaceRoot: '.',
+        },
+        context: {
+          ...trustedContext,
+          idempotencyKey: 'run_trusted:task_trusted:step-1:run_browser_tests',
+        },
+        aborted: false,
+      },
+    ]);
+  });
+
+  it('derives failed migration, browser, smoke, and health envelopes from their status fields', async () => {
+    const migrations: MigrationPort = {
+      executeMigration: () =>
+        Promise.resolve({ migrationId: 'migration_test', status: 'rejected', reason: 'blocked' }),
+    };
+    const browser: BrowserEvidencePort = {
+      ...defaultPorts().browser,
+      runBrowserTests: () => Promise.resolve({ passed: false, summary: 'failed checks' }),
+    };
+    const preview = {
+      ...defaultPorts().preview,
+      runPreviewSmokeTest: () => Promise.resolve({ passed: false, summary: 'smoke failed' }),
+    };
+    const deploymentHealth = {
+      ...defaultPorts().deploymentHealth,
+      checkDeploymentHealth: () =>
+        Promise.resolve({ healthy: false, details: 'health failed' }),
+    };
+    const registry = registryFor(new RecordingRuntime(), {
+      migrations,
+      browser,
+      preview,
+      deploymentHealth,
+    });
+
+    await expect(
+      registry.execute('execute_migration', toolInputs.execute_migration, trustedContext),
+    ).resolves.toMatchObject({ ok: false, status: 'rejected' });
+    await expect(
+      registry.execute(
+        'run_browser_tests',
+        { previewId: 'preview_test', route: '/' },
+        trustedContext,
+      ),
+    ).resolves.toMatchObject({ ok: false, passed: false });
+    await expect(
+      registry.execute('run_preview_smoke_test', { previewId: 'preview_test' }, trustedContext),
+    ).resolves.toMatchObject({ ok: false, passed: false });
+    await expect(
+      registry.execute(
+        'check_deployment_health',
+        { deploymentId: 'deployment_test' },
+        trustedContext,
+      ),
+    ).resolves.toMatchObject({ ok: false, healthy: false });
+  });
+
+  it('derives a failed test-result envelope from the trusted status field', async () => {
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readTestResults: () =>
+        Promise.resolve({ status: 'failed', summary: 'unit failures', artifactId: 'artifact_tests' }),
+    };
+
+    await expect(
+      registryFor(new RecordingRuntime(), { projectData }).execute(
+        'read_test_results',
+        { suite: 'unit' },
+        trustedContext,
+      ),
+    ).resolves.toMatchObject({ ok: false, status: 'failed' });
+  });
+
+  it('exports the Plan 07 ReleasePort method set and maps release tools through narrow adapters', async () => {
+    const calls: unknown[] = [];
+    const release: ReleasePort = {
+      createReleaseCandidate: (input) => {
+        calls.push(input);
+        return Promise.resolve({ id: 'release_test', status: 'candidate' });
+      },
+      getReadiness: () => Promise.resolve({ state: 'ready', findings: [] }),
+      approve: () => Promise.resolve({ id: 'release_test', status: 'approved' }),
+      deploy: () => Promise.resolve({ deploymentId: 'deployment_test' }),
+      rollback: (input) => {
+        calls.push(input);
+        return Promise.resolve({ deploymentId: 'deployment_rollback' });
+      },
+      getEvidence: () => Promise.resolve({ releaseId: 'release_test', artifacts: [] }),
+    };
+    const preview: PreviewToolPort = {
+      createPreview: () =>
+        Promise.resolve({ previewId: 'preview_test', url: 'https://preview.example.test' }),
+      runPreviewSmokeTest: () => Promise.resolve({ passed: true, summary: 'healthy' }),
+    };
+    const deploymentHealth: DeploymentHealthPort = {
+      checkDeploymentHealth: () => Promise.resolve({ healthy: true, details: 'healthy' }),
+    };
+    const registry = new ToolRegistry({
+      runtime: new RecordingRuntime(),
+      ...defaultPorts(),
+      release,
+      preview,
+      deploymentHealth,
+    });
+
+    await expect(
+      registry.execute('create_release_candidate', toolInputs.create_release_candidate, trustedContext),
+    ).resolves.toMatchObject({ ok: true, releaseId: 'release_test' });
+    expect(Object.keys(release).sort()).toEqual(
+      ['approve', 'createReleaseCandidate', 'deploy', 'getEvidence', 'getReadiness', 'rollback'].sort(),
+    );
+  });
+
+  it('derives mutation idempotency keys from trusted context and marks rollback metadata truthfully', async () => {
+    const calls: unknown[] = [];
+    const release: ReleasePort = {
+      ...defaultPorts().release,
+      rollback: (_input, options) => {
+        calls.push(options);
+        return Promise.resolve({ deploymentId: 'deployment_rollback' });
+      },
+    };
+    const registry = registryFor(new RecordingRuntime(), { release });
+
+    await registry.execute('rollback_release', toolInputs.rollback_release, trustedContext);
+    expect(calls).toEqual([
+      expect.objectContaining({
+        idempotencyKey: 'run_trusted:task_trusted:step-1:rollback_release',
+      }),
+    ]);
+    expect(registry.get('rollback_release').idempotent).toBe(false);
+    await expect(
+      registry.execute(
+        'rollback_release',
+        { ...(toolInputs.rollback_release as object), idempotencyKey: 'model-key' },
+        trustedContext,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('aborts a cancellable service operation when the registry timeout wins', async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    const browser: BrowserEvidencePort = {
+      ...defaultPorts().browser,
+      captureScreenshot: (_input, _context, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted = true;
+            reject(
+              signal.reason instanceof Error ? signal.reason : new Error('Operation aborted'),
+            );
+          });
+        }),
+    };
+
+    try {
+      const execution = registryFor(new RecordingRuntime(), { browser }).execute(
+        'capture_screenshot',
+        { previewId: 'preview_test', route: '/', name: 'home' },
+        trustedContext,
+      );
+      const timedOut = expect(execution).rejects.toMatchObject({ code: 'tool_timeout' });
+      await vi.advanceTimersByTimeAsync(60_001);
+      await timedOut;
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,37 +1,46 @@
+import { idSchema } from '@zapp/contracts';
 import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
-import type { AnyToolSpec, ToolSpec } from './registry.js';
+import type { AnyToolSpec, ToolMutationContext, ToolSpec } from './registry.js';
+import { mutationContext } from './registry.js';
 
 const pathSchema = z.string().min(1);
-const attributionFields = {
-  organizationId: z.string().min(1),
-  projectId: z.string().min(1),
-  runId: z.string().min(1),
-  taskId: z.string().min(1),
-} as const;
 
 const ExecuteMigrationInputSchema = z
   .object({
-    ...attributionFields,
     environmentId: z.string().min(1),
-    idempotencyKey: z.string().min(1),
     migration: z.string().min(1),
   })
   .strict();
-const ExecuteMigrationOutputSchema = z
+const ExecuteMigrationOutputSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      ok: z.literal(true),
+      migrationId: z.string().min(1),
+      status: z.literal('applied'),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      migrationId: z.string().min(1),
+      status: z.literal('rejected'),
+      reason: z.string().optional(),
+    })
+    .strict(),
+]);
+const ExecuteMigrationPortOutputSchema = z
   .object({
-    ok: z.literal(true),
     migrationId: z.string().min(1),
     status: z.enum(['applied', 'rejected']),
+    reason: z.string().optional(),
   })
   .strict();
 const SetEnvironmentVariableInputSchema = z
   .object({
-    ...attributionFields,
     environmentId: z.string().min(1),
-    idempotencyKey: z.string().min(1),
     name: z.string().regex(/^[A-Z_][A-Z0-9_]*$/u),
-    value: z.string(),
+    secretRef: idSchema('sec'),
     scope: z.enum(['preview', 'staging', 'production']),
   })
   .strict();
@@ -43,14 +52,23 @@ const SetEnvironmentVariableOutputSchema = z
     scope: z.enum(['preview', 'staging', 'production']),
   })
   .strict();
+const SetEnvironmentVariablePortOutputSchema = SetEnvironmentVariableOutputSchema.omit({
+  ok: true,
+}).strict();
 
 export interface MigrationPort {
-  executeMigration(input: z.infer<typeof ExecuteMigrationInputSchema>): Promise<unknown>;
+  executeMigration(
+    input: z.infer<typeof ExecuteMigrationInputSchema>,
+    context: ToolMutationContext,
+    signal: AbortSignal,
+  ): Promise<unknown>;
 }
 
 export interface EnvironmentPort {
   setEnvironmentVariable(
     input: z.infer<typeof SetEnvironmentVariableInputSchema>,
+    context: ToolMutationContext,
+    signal: AbortSignal,
   ): Promise<unknown>;
 }
 
@@ -312,9 +330,9 @@ export function createMutationTools(
               hunks: applied.hunksApplied,
             });
           }
-          for (const file of staged) {
-            await runtime.writeFile(file.path, file.data);
-          }
+          await runtime.writeFilesAtomically(
+            staged.map((file) => ({ path: file.path, data: file.data })),
+          );
           return {
             ok: true,
             filesChanged: staged.length,
@@ -390,6 +408,10 @@ export function createMutationTools(
       timeoutMs: 30_000,
       redactOutput: false,
       run: async (input) => {
+        const entry = await runtime.stat(input.path);
+        if (entry.type !== 'file') {
+          throw new Error('delete_file only accepts regular files');
+        }
         await runtime.delete(input.path);
         return { ok: true, path: input.path };
       },
@@ -440,11 +462,19 @@ export function createMutationTools(
       idempotent: true,
       timeoutMs: 120_000,
       redactOutput: true,
-      run: (input) => migrations.executeMigration(input),
+      run: async (input, context, signal) => {
+        const output = ExecuteMigrationPortOutputSchema.parse(
+          await migrations.executeMigration(
+            input,
+            mutationContext(context, 'execute_migration'),
+            signal,
+          ),
+        );
+        return { ...output, ok: output.status === 'applied' };
+      },
       userSummary: (input, output) =>
         `Migration ${output.migrationId} ${output.status} in ${input.environmentId}`,
       auditPayload: (input, output) => ({
-        projectId: input.projectId,
         environmentId: input.environmentId,
         migrationId: output.migrationId,
         status: output.status,
@@ -459,13 +489,21 @@ export function createMutationTools(
       idempotent: true,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: (input) => environment.setEnvironmentVariable(input),
+      run: async (input, context, signal) => ({
+        ok: true,
+        ...SetEnvironmentVariablePortOutputSchema.parse(
+          await environment.setEnvironmentVariable(
+            input,
+            mutationContext(context, 'set_environment_variable'),
+            signal,
+          ),
+        ),
+      }),
       userSummary: (input, output) =>
         output.updated
           ? `Updated ${input.name} in ${input.scope}`
           : `${input.name} was already current in ${input.scope}`,
       auditPayload: (input, output) => ({
-        projectId: input.projectId,
         environmentId: input.environmentId,
         name: input.name,
         scope: input.scope,

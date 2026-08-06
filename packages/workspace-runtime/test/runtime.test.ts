@@ -132,6 +132,36 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       await rm(outside, { recursive: true, force: true });
     }
   });
+
+  it('validates every path before writing an atomic file batch', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await runtime.writeFile('first.txt', new TextEncoder().encode('first'));
+      await runtime.writeFile('second.txt', new TextEncoder().encode('second'));
+
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'first.txt', data: new TextEncoder().encode('changed first') },
+          { path: '../outside.txt', data: new TextEncoder().encode('escape') },
+        ]),
+      ).rejects.toBeInstanceOf(PathViolationError);
+      await expect(runtime.readFile('first.txt')).resolves.toEqual(
+        new TextEncoder().encode('first'),
+      );
+
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'first.txt', data: new TextEncoder().encode('changed first') },
+          { path: 'second.txt', data: new TextEncoder().encode('changed second') },
+        ]),
+      ).resolves.toBeUndefined();
+      await expect(runtime.readFile('first.txt')).resolves.toEqual(
+        new TextEncoder().encode('changed first'),
+      );
+      await expect(runtime.readFile('second.txt')).resolves.toEqual(
+        new TextEncoder().encode('changed second'),
+      );
+    });
+  });
 });
 
 describe('MemoryWorkspaceRuntime git safety', () => {
@@ -242,6 +272,34 @@ describe('MemoryWorkspaceRuntime git safety', () => {
 });
 
 describe('MemoryWorkspaceRuntime development server', () => {
+  it('restarts by stopping the managed process before starting a replacement pid', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const port = await availablePort();
+      const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `require('node:net').createServer(() => {}).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
+      )}`;
+      let replacementPid: number | undefined;
+
+      try {
+        const initial = await runtime.startDevServer(executionContract(command, port));
+        const replacement = await runtime.restartDevServer(executionContract(command, port));
+        replacementPid = replacement.pid;
+
+        expect(replacement.port).toBe(port);
+        expect(replacement.pid).not.toBe(initial.pid);
+        await expect(processIsGone(initial.pid, 1_000)).resolves.toBe(true);
+      } finally {
+        if (replacementPid !== undefined) {
+          try {
+            process.kill(process.platform === 'win32' ? replacementPid : -replacementPid, 'SIGKILL');
+          } catch {
+            // The replacement can already be gone during failed setup.
+          }
+        }
+      }
+    });
+  });
+
   it('rejects a dev command that exits before its contract port is ready', async () => {
     await withWorkspace(async (_root, runtime) => {
       const port = await availablePort();

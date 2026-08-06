@@ -1,33 +1,25 @@
 import { ExecutionContractSchema } from '@zapp/contracts';
 import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
-import type { AnyToolSpec, ToolSpec } from './registry.js';
+import type { AnyToolSpec, ToolExecutionContext, ToolSpec } from './registry.js';
 
 const pathSchema = z.string().min(1);
-const attributionFields = {
-  organizationId: z.string().min(1),
-  projectId: z.string().min(1),
-  runId: z.string().min(1),
-  taskId: z.string().min(1),
-} as const;
 
 const ReadLogsInputSchema = z
   .object({
-    ...attributionFields,
     source: z.string().min(1).optional(),
     limit: z.number().int().positive().max(1_000).default(100),
   })
   .strict();
 const ReadTestResultsInputSchema = z
   .object({
-    ...attributionFields,
     suite: z.enum(['unit', 'integration', 'browser', 'all']).default('all'),
   })
   .strict();
 const ReadDatabaseSchemaInputSchema = z
-  .object({ ...attributionFields, environmentId: z.string().min(1) })
+  .object({ environmentId: z.string().min(1) })
   .strict();
-const ReadProjectContractInputSchema = z.object(attributionFields).strict();
+const ReadProjectContractInputSchema = z.object({}).strict();
 
 const LogsOutputSchema = z
   .object({
@@ -44,14 +36,20 @@ const LogsOutputSchema = z
     truncated: z.boolean(),
   })
   .strict();
-const TestResultsOutputSchema = z
+const TestResultsPortOutputSchema = z
   .object({
-    ok: z.literal(true),
     status: z.enum(['passed', 'failed', 'running', 'not_run']),
     summary: z.string(),
     artifactId: z.string().min(1).optional(),
   })
   .strict();
+const TestResultsOutputSchema = z.union([
+  TestResultsPortOutputSchema.extend({ ok: z.literal(true), status: z.literal('passed') }).strict(),
+  TestResultsPortOutputSchema.extend({
+    ok: z.literal(false),
+    status: z.enum(['failed', 'running', 'not_run']),
+  }).strict(),
+]);
 const DatabaseSchemaOutputSchema = z
   .object({ ok: z.literal(true), dialect: z.string().min(1), schema: z.string() })
   .strict();
@@ -64,11 +62,24 @@ const ProjectContractOutputSchema = z
   .strict();
 
 export interface ProjectDataPort {
-  readLogs(input: z.infer<typeof ReadLogsInputSchema>): Promise<unknown>;
-  readTestResults(input: z.infer<typeof ReadTestResultsInputSchema>): Promise<unknown>;
-  readDatabaseSchema(input: z.infer<typeof ReadDatabaseSchemaInputSchema>): Promise<unknown>;
+  readLogs(
+    input: z.infer<typeof ReadLogsInputSchema>,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
+  ): Promise<unknown>;
+  readTestResults(
+    input: z.infer<typeof ReadTestResultsInputSchema>,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
+  ): Promise<unknown>;
+  readDatabaseSchema(
+    input: z.infer<typeof ReadDatabaseSchemaInputSchema>,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
+  ): Promise<unknown>;
   readLatestProjectContract(
-    input: z.infer<typeof ReadProjectContractInputSchema>,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
   ): Promise<unknown>;
 }
 
@@ -112,7 +123,7 @@ function searchResult(
   result: Awaited<ReturnType<WorkspaceRuntime['exec']>>,
 ): z.infer<typeof SearchOutputSchema> {
   return {
-    ok: result.exitCode === 0,
+    ok: result.exitCode === 0 || result.exitCode === 1,
     exitCode: result.exitCode,
     matches: result.stdout.split('\n').filter((line) => line.length > 0),
     stderr: result.stderr,
@@ -183,7 +194,10 @@ export function createReadTools(
     .object({ maxCount: z.number().int().positive().max(1_000).default(50) })
     .strict();
   const gitShowInput = z
-    .object({ ref: z.string().min(1), stat: z.boolean().default(false) })
+    .object({
+      ref: z.string().min(1).refine((value) => !value.startsWith('-'), 'Git object cannot be an option'),
+      stat: z.boolean().default(false),
+    })
     .strict();
 
   return [
@@ -240,6 +254,7 @@ export function createReadTools(
       timeoutMs: 30_000,
       redactOutput: true,
       run: async (input) => {
+        await runtime.stat(input.path);
         const args = ['--line-number', '--color', 'never'];
         if (input.glob !== undefined) args.push('--glob', input.glob);
         args.push('--', input.query, input.path);
@@ -263,6 +278,7 @@ export function createReadTools(
       timeoutMs: 30_000,
       redactOutput: true,
       run: async (input) => {
+        await runtime.stat(input.path);
         const args = ['--line-number', '--color', 'never'];
         if (input.fixedStrings) args.push('--fixed-strings');
         if (input.ignoreCase) args.push('--ignore-case');
@@ -356,13 +372,9 @@ export function createReadTools(
       outputSchema: LogsOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: (input) => projectData.readLogs(input),
+      run: (input, context, signal) => projectData.readLogs(input, context, signal),
       userSummary: (_input, output) => `Read ${String(output.entries.length)} log entries`,
-      auditPayload: (input, output) => ({
-        projectId: input.projectId,
-        runId: input.runId,
-        count: output.entries.length,
-      }),
+      auditPayload: (_input, output) => ({ count: output.entries.length }),
     }),
     readTool({
       name: 'read_test_results',
@@ -371,13 +383,14 @@ export function createReadTools(
       outputSchema: TestResultsOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: (input) => projectData.readTestResults(input),
+      run: async (input, context, signal) => {
+        const output = TestResultsPortOutputSchema.parse(
+          await projectData.readTestResults(input, context, signal),
+        );
+        return { ...output, ok: output.status === 'passed' };
+      },
       userSummary: (_input, output) => `Read ${output.status} test results`,
-      auditPayload: (input, output) => ({
-        projectId: input.projectId,
-        runId: input.runId,
-        status: output.status,
-      }),
+      auditPayload: (_input, output) => ({ status: output.status }),
     }),
     readTool({
       name: 'read_database_schema',
@@ -386,10 +399,9 @@ export function createReadTools(
       outputSchema: DatabaseSchemaOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: (input) => projectData.readDatabaseSchema(input),
+      run: (input, context, signal) => projectData.readDatabaseSchema(input, context, signal),
       userSummary: (_input, output) => `Read ${output.dialect} database schema`,
       auditPayload: (input, output) => ({
-        projectId: input.projectId,
         environmentId: input.environmentId,
         dialect: output.dialect,
       }),
@@ -401,9 +413,9 @@ export function createReadTools(
       outputSchema: ProjectContractOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: (input) => projectData.readLatestProjectContract(input),
+      run: (_input, context, signal) => projectData.readLatestProjectContract(context, signal),
       userSummary: (_input, output) => `Read project contract version ${String(output.version)}`,
-      auditPayload: (input, output) => ({ projectId: input.projectId, version: output.version }),
+      auditPayload: (_input, output) => ({ version: output.version }),
     }),
   ];
 }
