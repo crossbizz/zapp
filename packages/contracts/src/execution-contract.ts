@@ -62,16 +62,20 @@ export const ExecutionContractSchema = z
     start: commandBlockSchema.optional(),
     typecheck: commandBlockSchema.optional(),
     lint: commandBlockSchema.optional(),
-    /** Test entry points the gate engine (plan 05) runs; either may be absent, but not both. */
+    /** Test entry points the gate engine (plan 05) runs; at least one suite is required. */
     test: z
       .object({
         unit: commandSchema.optional(),
         browser: commandSchema.optional(),
+        integration: commandSchema.optional(),
       })
       .strict()
-      .refine((t) => t.unit !== undefined || t.browser !== undefined, {
-        message: 'test must declare a unit or browser command',
-      })
+      .refine(
+        (t) => t.unit !== undefined || t.browser !== undefined || t.integration !== undefined,
+        {
+          message: 'test must declare a unit, browser, or integration command',
+        },
+      )
       .optional(),
     /** Path probed for readiness and for the pre-deployment health gate (plan 07 DEP-7). */
     health: z.object({ path: AppPathSchema }).strict().optional(),

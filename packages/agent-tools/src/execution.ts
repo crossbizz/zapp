@@ -189,11 +189,11 @@ function commandFor(
   contract: ExecutionContract,
   kind: 'build' | 'typecheck' | 'lint' | 'unit' | 'integration',
 ): { command: string; timeoutMs: number } | undefined {
-  if (kind === 'integration') return undefined;
-  if (kind === 'unit') {
-    return contract.test?.unit === undefined
+  if (kind === 'unit' || kind === 'integration') {
+    const command = contract.test?.[kind];
+    return command === undefined
       ? undefined
-      : { command: contract.test.unit, timeoutMs: 120_000 };
+      : { command, timeoutMs: 120_000 };
   }
   const block = contract[kind];
   if (block === undefined) return undefined;

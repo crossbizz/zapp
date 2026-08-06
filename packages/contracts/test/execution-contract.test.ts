@@ -76,9 +76,27 @@ describe('ExecutionContractSchema', () => {
 
   it('rejects a test block declaring no suite at all', () => {
     expect(ExecutionContractSchema.safeParse({ ...prdExample, test: {} }).success).toBe(false);
+    for (const test of [
+      { unit: 'pnpm test' },
+      { browser: 'pnpm playwright test' },
+      { integration: 'pnpm test:integration' },
+    ]) {
+      expect(ExecutionContractSchema.safeParse({ ...prdExample, test }).success).toBe(true);
+    }
+  });
+
+  it('strictly round-trips an optional integration-test command', () => {
+    const withIntegration = {
+      ...minimalContract,
+      test: { integration: 'pnpm test:integration' },
+    };
+    expect(ExecutionContractSchema.parse(withIntegration)).toEqual(withIntegration);
     expect(
-      ExecutionContractSchema.safeParse({ ...prdExample, test: { unit: 'pnpm test' } }).success,
-    ).toBe(true);
+      ExecutionContractSchema.safeParse({
+        ...withIntegration,
+        test: { ...withIntegration.test, integration_timeout: 60 },
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects an install block with no command', () => {

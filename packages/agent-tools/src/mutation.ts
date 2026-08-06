@@ -390,9 +390,11 @@ export function createMutationTools(
       timeoutMs: 30_000,
       redactOutput: false,
       run: async (input) => {
-        const data = await runtime.readFile(input.source);
-        await runtime.writeFile(input.destination, data);
-        await runtime.delete(input.source);
+        await runtime.renameFile({
+          source: input.source,
+          destination: input.destination,
+          overwrite: 'replace',
+        });
         return { ok: true, source: input.source, destination: input.destination };
       },
       userSummary: (input) => `Renamed ${input.source} to ${input.destination}`,
@@ -408,11 +410,7 @@ export function createMutationTools(
       timeoutMs: 30_000,
       redactOutput: false,
       run: async (input) => {
-        const entry = await runtime.stat(input.path);
-        if (entry.type !== 'file') {
-          throw new Error('delete_file only accepts regular files');
-        }
-        await runtime.delete(input.path);
+        await runtime.deleteFile(input.path);
         return { ok: true, path: input.path };
       },
       userSummary: (input) => `Deleted ${input.path}`,

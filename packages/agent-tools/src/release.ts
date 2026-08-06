@@ -9,6 +9,7 @@ import { mutationContext } from './registry.js';
 
 const commitSchema = z.string().regex(/^[0-9a-f]{7,64}$/iu);
 const deploymentTypeSchema = z.enum(['first_deploy', 'redeploy', 'replace_deployment']);
+const dataDispositionSchema = z.enum(['preserve', 'transfer', 'reset']);
 
 const CreatePreviewInputSchema = z
   .object({ branchId: z.string().min(1), commitSha: commitSchema })
@@ -21,13 +22,27 @@ const ReleaseCandidateInputSchema = z
     specificationId: z.string().min(1),
   })
   .strict();
-const DeployReleaseInputSchema = z
-  .object({
-    releaseId: z.string().min(1),
-    deploymentType: deploymentTypeSchema,
-    confirmationId: z.string().min(1),
-  })
-  .strict();
+const DeployReleaseInputSchema = z.discriminatedUnion('deploymentType', [
+  z
+    .object({
+      releaseId: z.string().min(1),
+      deploymentType: z.literal('first_deploy'),
+    })
+    .strict(),
+  z
+    .object({
+      releaseId: z.string().min(1),
+      deploymentType: z.literal('redeploy'),
+    })
+    .strict(),
+  z
+    .object({
+      releaseId: z.string().min(1),
+      deploymentType: z.literal('replace_deployment'),
+      dataDisposition: dataDispositionSchema,
+    })
+    .strict(),
+]);
 const DeploymentHealthInputSchema = z
   .object({ deploymentId: z.string().min(1) })
   .strict();
@@ -77,6 +92,10 @@ export interface ReleaseCallOptions {
   readonly signal: AbortSignal;
 }
 
+export interface DeploymentConfirmation {
+  readonly dataDisposition: z.infer<typeof dataDispositionSchema> | null;
+}
+
 /** Binding Plan 07 DEP-1 method set. Tool-only operations live on separate adapters below. */
 export interface ReleasePort {
   createReleaseCandidate(
@@ -94,7 +113,7 @@ export interface ReleasePort {
     releaseId: string,
     input: {
       readonly deploymentType: z.infer<typeof deploymentTypeSchema>;
-      readonly confirmation: { readonly id: string };
+      readonly confirmation: DeploymentConfirmation;
     },
     options?: ReleaseCallOptions,
   ): Promise<unknown>;
@@ -247,7 +266,12 @@ export function createReleaseTools(
             input.releaseId,
             {
               deploymentType: input.deploymentType,
-              confirmation: { id: input.confirmationId },
+              confirmation: {
+                dataDisposition:
+                  input.deploymentType === 'replace_deployment'
+                    ? input.dataDisposition
+                    : null,
+              },
             },
             releaseOptions(context, 'deploy_release', signal),
           ),

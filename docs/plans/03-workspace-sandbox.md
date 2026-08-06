@@ -62,9 +62,12 @@ export interface WorkspaceRuntime {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
   writeFilesAtomically(files: readonly { path: string; data: Uint8Array }[]): Promise<void>;
+  search(input: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
   delete(path: string): Promise<void>;
+  deleteFile(path: string): Promise<void>;                             // nonrecursive; directories reject
+  renameFile(input: { source: string; destination: string; overwrite: "replace" }): Promise<void>;
   git(op: GitOp): Promise<GitResult>;                                  // status|diff|log|show|add_commit|push|checkout|branch|restore|merge|revert
   startDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
   restartDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
@@ -73,6 +76,8 @@ export interface WorkspaceRuntime {
 ```
 
 All paths resolved under workspace root; `..`/symlink escape → `PathViolationError` (PRD §16.3).
+Production/cloud `search`, `deleteFile`, and `renameFile` are single descriptor-relative
+operations under ADR-0006 and ADR-0013; callers must not split validation from use.
 **Effort:** M
 
 - [x] Steps: failing tests for a `MemoryWorkspaceRuntime` test double (path traversal rejected: `../etc/passwd`, `a/../../x`, symlink target outside root; exec timeout kills process; truncation at 1 MiB output with `truncated: true`) → implement double + path guard util `resolveInRoot(root, p)` → commit: `feat(workspace-runtime): shared runtime interface + path safety`
@@ -215,6 +220,7 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added typed, allowlisted `merge` and `revert` Git operations required by AR-4; ADR-0010 records the deviation.
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added managed dev-server restart and atomic workspace batch writes required by AR-4 review fixes; ADR-0011 records the deviation.
+- 2026-08-06 WS-1 interface extension approved — ADR-0013 adds typed search, nonrecursive file deletion, atomic replace rename, and process-owned readiness; production/cloud adapters bind path operations to ADR-0006 descriptor-relative enforcement.
 - 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
 - 2026-08-05 WS-3 review fixes verified / smoke pending — isolated branch `task/WS-3` at `e8f08bb` passed independent spec and quality review, workspace-agent current Node and Node 22.23.1 suites 74/74, and uncached repository test/lint/typecheck/build 17/17, 14/14, 13/13, 8/8. WS-3 remains unchecked and off `main` until WS-2's real Modal dev VM capability smoke passes.
 - 2026-08-05 WS-10 BLOCKED — five independent review-fix rounds exhausted on isolated branch `task/WS-10`; final package suite is 55/55 on current Node and Node 22.23.1 with uncached repository test/lint/typecheck/build at 17/17, 13/13, 12/12, and 8/8, but two real load-bearing parser findings remain: unquoted client-script `src` recognition and `<style>` raw-text scanning. The task stays unchecked and uncommitted; WS-2 remains blocked on it.

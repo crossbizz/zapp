@@ -82,23 +82,50 @@ export interface AnyToolSpec extends ToolDefinition<UnknownSchema, UnknownSchema
 }
 
 export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, UnknownSchema> {
-  execute(rawInput: unknown, rawContext: unknown): Promise<unknown>;
+  execute(rawInput: unknown, rawContext: unknown, callerSignal?: AbortSignal): Promise<unknown>;
 }
 
 export class ToolExecutionError extends Error {
-  readonly code: 'tool_failed' | 'tool_timeout';
+  readonly code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled';
 
-  constructor(tool: ToolName, code: 'tool_failed' | 'tool_timeout') {
-    super(code === 'tool_timeout' ? `${tool} timed out` : `${tool} failed`);
+  constructor(tool: ToolName, code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled') {
+    super(
+      code === 'tool_timeout'
+        ? `${tool} timed out`
+        : code === 'tool_cancelled'
+          ? `${tool} was cancelled`
+          : `${tool} failed`,
+    );
     this.name = 'ToolExecutionError';
     this.code = code;
   }
 }
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason as unknown;
+  return reason instanceof Error ? reason : new Error('Tool execution cancelled');
+}
+
+function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) {
+    return Promise.reject(abortReason(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted ?? false;
 }
 
 async function withTimeout<T>(
@@ -106,8 +133,19 @@ async function withTimeout<T>(
   timeoutMs: number,
   tool: ToolName,
   controller: AbortController,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectCancellation: ((reason: unknown) => void) | undefined;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  const onCallerAbort = (): void => {
+    const error = new ToolExecutionError(tool, 'tool_cancelled');
+    controller.abort(error);
+    rejectCancellation?.(error);
+  };
+  callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const error = new ToolExecutionError(tool, 'tool_timeout');
@@ -117,11 +155,12 @@ async function withTimeout<T>(
   });
 
   try {
-    return await Promise.race([promise, timeout]);
+    return await Promise.race([promise, timeout, cancellation]);
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
     }
+    callerSignal?.removeEventListener('abort', onCallerAbort);
   }
 }
 
@@ -190,17 +229,29 @@ export class ToolRegistry {
     return definition;
   }
 
-  execute(name: ToolName, rawInput: unknown, rawContext: unknown): Promise<unknown> {
-    return this.get(name).execute(rawInput, rawContext);
+  execute(
+    name: ToolName,
+    rawInput: unknown,
+    rawContext: unknown,
+    callerSignal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.get(name).execute(rawInput, rawContext, callerSignal);
   }
 
   private makeExecutable(spec: AnyToolSpec, redactor: OutputRedactor): ExecutableToolDefinition {
-    const execute = async (rawInput: unknown, rawContext: unknown): Promise<unknown> => {
+    const execute = async (
+      rawInput: unknown,
+      rawContext: unknown,
+      callerSignal?: AbortSignal,
+    ): Promise<unknown> => {
       const input = spec.inputSchema.parse(rawInput);
       const context = ToolExecutionContextSchema.parse(rawContext);
       let lastError: unknown;
 
       for (let attempt = 1; attempt <= spec.retryPolicy.maxAttempts; attempt += 1) {
+        if (isAborted(callerSignal)) {
+          throw new ToolExecutionError(spec.name, 'tool_cancelled');
+        }
         const controller = new AbortController();
         try {
           const rawOutput = await withTimeout(
@@ -208,6 +259,7 @@ export class ToolRegistry {
             spec.timeoutMs,
             spec.name,
             controller,
+            callerSignal,
           );
           const output = spec.outputSchema.parse(rawOutput);
           const visibleOutput = spec.redactOutput ? redactValue(output, redactor) : output;
@@ -216,9 +268,19 @@ export class ToolRegistry {
           if (error instanceof PathViolationError) {
             throw error;
           }
+          if (
+            (error instanceof ToolExecutionError && error.code === 'tool_cancelled') ||
+            isAborted(callerSignal)
+          ) {
+            throw new ToolExecutionError(spec.name, 'tool_cancelled');
+          }
           lastError = error;
           if (attempt < spec.retryPolicy.maxAttempts) {
-            await sleep(spec.retryPolicy.backoffMs);
+            try {
+              await sleep(spec.retryPolicy.backoffMs, callerSignal);
+            } catch {
+              throw new ToolExecutionError(spec.name, 'tool_cancelled');
+            }
           }
         }
       }

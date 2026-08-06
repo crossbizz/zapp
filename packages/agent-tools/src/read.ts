@@ -120,7 +120,7 @@ const GitReadOutputSchema = z
   .strict();
 
 function searchResult(
-  result: Awaited<ReturnType<WorkspaceRuntime['exec']>>,
+  result: Awaited<ReturnType<WorkspaceRuntime['search']>>,
 ): z.infer<typeof SearchOutputSchema> {
   return {
     ok: result.exitCode === 0 || result.exitCode === 1,
@@ -253,13 +253,14 @@ export function createReadTools(
       outputSchema: SearchOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: async (input) => {
-        await runtime.stat(input.path);
-        const args = ['--line-number', '--color', 'never'];
-        if (input.glob !== undefined) args.push('--glob', input.glob);
-        args.push('--', input.query, input.path);
-        return searchResult(await runtime.exec({ cmd: 'rg', args, timeoutMs: 30_000 }));
-      },
+      run: async (input) =>
+        searchResult(
+          await runtime.search({
+            pattern: input.query,
+            path: input.path,
+            ...(input.glob === undefined ? {} : { glob: input.glob }),
+          }),
+        ),
       userSummary: (input, output) =>
         output.ok
           ? `Found ${String(output.matches.length)} matches for ${input.query}`
@@ -277,14 +278,15 @@ export function createReadTools(
       outputSchema: SearchOutputSchema,
       timeoutMs: 30_000,
       redactOutput: true,
-      run: async (input) => {
-        await runtime.stat(input.path);
-        const args = ['--line-number', '--color', 'never'];
-        if (input.fixedStrings) args.push('--fixed-strings');
-        if (input.ignoreCase) args.push('--ignore-case');
-        args.push('--', input.pattern, input.path);
-        return searchResult(await runtime.exec({ cmd: 'rg', args, timeoutMs: 30_000 }));
-      },
+      run: async (input) =>
+        searchResult(
+          await runtime.search({
+            pattern: input.pattern,
+            path: input.path,
+            fixedStrings: input.fixedStrings,
+            ignoreCase: input.ignoreCase,
+          }),
+        ),
       userSummary: (input, output) =>
         output.ok
           ? `Found ${String(output.matches.length)} matches for ${input.pattern}`

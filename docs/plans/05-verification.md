@@ -52,7 +52,7 @@ services/verification-service/src/{app,browser-agent/{session,driver},routes}.ts
 **Files:** Create: `packages/project-adapters/src/scan.ts`; Modify: CP-6 scan route wiring; Create: `test/integration/scan.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §17.1): `POST /v1/projects/:id/scan` → Temporal activity in workspace: run detection → derive `ExecutionContract` → detect DB provider (env/DATABASE_URL/supabase config/drizzle|prisma configs), auth provider, deployment config (vercel.json/fly.toml/Dockerfile), existing tests/playwright, observability (sentry/faro/otel/posthog imports — detection covers tools users already have, independent of zapp's own stack) → store `project_contracts` row (version++) → compute support level: `compatible` always; `verified`-eligible flag when build+typecheck+test contracts known; report card artifact with missing-capability list ("Harden this project" input, PRD §10.2 step 8).
+- [ ] Binding behavior (PRD §17.1): `POST /v1/projects/:id/scan` → Temporal activity in workspace: run detection → derive `ExecutionContract` → detect DB provider (env/DATABASE_URL/supabase config/drizzle|prisma configs), auth provider, deployment config (vercel.json/fly.toml/Dockerfile), existing unit/integration/browser tests (ADR-0014), observability (sentry/faro/otel/posthog imports — detection covers tools users already have, independent of zapp's own stack) → store `project_contracts` row (version++) → compute support level: `compatible` always; `verified`-eligible flag when build+typecheck+test contracts known; report card artifact with missing-capability list ("Harden this project" input, PRD §10.2 step 8).
 - [ ] Failing integration test: scan a fixture next+supabase project → contract row with framework=next, database=supabase, eligibility flags correct.
 - [ ] Commit: `feat: capability scan pipeline producing execution contracts + support level`
 
@@ -195,3 +195,4 @@ Binding behavior (PRD §24.4): agent session (verifier role, model via gateway) 
 ## Execution log
 
 - (empty)
+- 2026-08-06 VF-3 interface input approved — ADR-0014 adds optional `ExecutionContract.test.integration`; capability scanning owns detection and population of that command.

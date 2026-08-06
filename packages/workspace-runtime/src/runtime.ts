@@ -1,8 +1,19 @@
-import { readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createConnection } from 'node:net';
 import type { ExecutionContract, ExecInput } from '@zapp/contracts';
 
 export const MAX_EXEC_OUTPUT_BYTES = 1_024 * 1_024;
@@ -35,6 +46,33 @@ export interface FileStat extends FileEntry {
 export interface AtomicFileWrite {
   readonly path: string;
   readonly data: Uint8Array;
+}
+
+export interface WorkspaceSearchInput {
+  readonly pattern: string;
+  readonly path: string;
+  readonly glob?: string;
+  readonly fixedStrings?: boolean;
+  readonly ignoreCase?: boolean;
+}
+
+export interface WorkspaceRenameInput {
+  readonly source: string;
+  readonly destination: string;
+  readonly overwrite: 'replace';
+}
+
+export interface AtomicFileOperations {
+  read(path: string): Promise<Uint8Array>;
+  metadata(path: string): Promise<{ mode: number }>;
+  write(path: string, data: Uint8Array, mode?: number): Promise<void>;
+  move(source: string, destination: string): Promise<void>;
+  setMode(path: string, mode: number): Promise<void>;
+  remove(path: string): Promise<void>;
+}
+
+export interface MemoryWorkspaceRuntimeOptions {
+  readonly atomicFileOperations?: AtomicFileOperations;
 }
 
 export type GitOperation =
@@ -89,9 +127,12 @@ export interface WorkspaceRuntime {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
   writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void>;
+  search(input: WorkspaceSearchInput): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
   delete(path: string): Promise<void>;
+  deleteFile(path: string): Promise<void>;
+  renameFile(input: WorkspaceRenameInput): Promise<void>;
   git(op: GitOp): Promise<GitResult>;
   startDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
   restartDevServer(contract: ExecutionContract): Promise<{ port: number; pid: number }>;
@@ -102,6 +143,19 @@ export class PathViolationError extends Error {
   constructor(path: string) {
     super(`Path escapes workspace root: ${path}`);
     this.name = 'PathViolationError';
+  }
+}
+
+export class AtomicWriteError extends Error {
+  constructor(
+    readonly code:
+      | 'atomic_commit_failed'
+      | 'atomic_rollback_failed'
+      | 'atomic_cleanup_failed',
+    readonly causes: readonly unknown[],
+  ) {
+    super(code);
+    this.name = 'AtomicWriteError';
   }
 }
 
@@ -222,17 +276,111 @@ function validateCommitId(commit: string): void {
   }
 }
 
-function portIsReady(port: number): Promise<boolean> {
-  return new Promise((resolveReady) => {
-    const socket = createConnection({ host: '127.0.0.1', port });
-    socket.once('connect', () => {
-      socket.destroy();
-      resolveReady(true);
+function validateRenameOverwrite(overwrite: unknown): asserts overwrite is 'replace' {
+  if (overwrite !== 'replace') throw new Error('Unsupported rename overwrite behavior');
+}
+
+async function commandOutput(command: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolveOutput) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    child.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString('utf8');
     });
-    socket.once('error', () => {
-      resolveReady(false);
+    child.once('error', () => {
+      resolveOutput('');
+    });
+    child.once('close', () => {
+      resolveOutput(stdout);
     });
   });
+}
+
+async function linuxListenerPids(port: number): Promise<number[]> {
+  const inodes = new Set<string>();
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      const rows = (await readFile(table, 'utf8')).split('\n').slice(1);
+      for (const row of rows) {
+        const fields = row.trim().split(/\s+/u);
+        const local = fields[1]?.split(':');
+        if (
+          local?.[1] !== undefined &&
+          Number.parseInt(local[1], 16) === port &&
+          fields[3] === '0A' &&
+          fields[9] !== undefined
+        ) {
+          inodes.add(fields[9]);
+        }
+      }
+    } catch {
+      // A platform without this proc table falls through to no owned listener.
+    }
+  }
+  if (inodes.size === 0) return [];
+
+  const pids: number[] = [];
+  let processEntries: string[] = [];
+  try {
+    processEntries = await readdir('/proc');
+  } catch {
+    return [];
+  }
+  for (const entry of processEntries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    try {
+      const descriptors = await readdir(`/proc/${entry}/fd`);
+      for (const descriptor of descriptors) {
+        const target = await readlink(`/proc/${entry}/fd/${descriptor}`);
+        const match = /^socket:\[(\d+)\]$/u.exec(target);
+        if (match?.[1] !== undefined && inodes.has(match[1])) {
+          pids.push(Number(entry));
+          break;
+        }
+      }
+    } catch {
+      // Other users' or already-exited processes are not candidates we can own.
+    }
+  }
+  return pids;
+}
+
+async function listenerPids(port: number): Promise<number[]> {
+  if (process.platform === 'linux') return linuxListenerPids(port);
+  if (process.platform === 'win32') return [];
+  const output = await commandOutput('lsof', [
+    '-nP',
+    '-t',
+    `-iTCP:${String(port)}`,
+    '-sTCP:LISTEN',
+  ]);
+  return output
+    .split('\n')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+}
+
+async function processGroupId(pid: number): Promise<number | undefined> {
+  if (process.platform === 'linux') {
+    try {
+      const row = await readFile(`/proc/${String(pid)}/stat`, 'utf8');
+      const fields = row.slice(row.lastIndexOf(')') + 1).trim().split(/\s+/u);
+      const group = Number(fields[2]);
+      return Number.isInteger(group) && group > 0 ? group : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  if (process.platform === 'win32') return undefined;
+  const output = await commandOutput('ps', ['-o', 'pgid=', '-p', String(pid)]);
+  const group = Number(output.trim());
+  return Number.isInteger(group) && group > 0 ? group : undefined;
+}
+
+async function listenerBelongsToProcessGroup(port: number, groupId: number): Promise<boolean> {
+  const pids = await listenerPids(port);
+  const groups = await Promise.all(pids.map((pid) => processGroupId(pid)));
+  return groups.includes(groupId);
 }
 
 function terminateProcessGroup(child: ChildProcess): void {
@@ -317,8 +465,23 @@ function trimIncompleteUtf8(buffer: Buffer): Buffer {
 export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
   private devServer: ChildProcess | undefined;
+  private readonly atomicFileOperations: AtomicFileOperations;
 
-  constructor(readonly root: string) {}
+  constructor(
+    readonly root: string,
+    options: MemoryWorkspaceRuntimeOptions = {},
+  ) {
+    this.atomicFileOperations = options.atomicFileOperations ?? {
+      read: async (path) => new Uint8Array(await readFile(path)),
+      metadata: async (path) => ({ mode: (await stat(path)).mode }),
+      write: async (path, data, mode) => {
+        await writeFile(path, data, mode === undefined ? undefined : { mode });
+      },
+      move: rename,
+      setMode: chmod,
+      remove: async (path) => rm(path, { force: true }),
+    };
+  }
 
   async exec(input: {
     cmd: string;
@@ -441,9 +604,13 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       files.map(async (file) => {
         const target = await resolveInRoot(this.root, file.path);
         const temporary = resolve(dirname(target), `.zapp-atomic-${randomUUID()}`);
-        let original: Uint8Array | undefined;
+        let original: { data: Uint8Array; mode: number } | undefined;
         try {
-          original = new Uint8Array(await readFile(target));
+          const metadata = await this.atomicFileOperations.metadata(target);
+          original = {
+            data: await this.atomicFileOperations.read(target),
+            mode: metadata.mode & 0o7777,
+          };
         } catch (error: unknown) {
           if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
             throw error;
@@ -453,36 +620,77 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       }),
     );
 
+    let failure: unknown;
     try {
-      await Promise.all(staged.map((file) => writeFile(file.temporary, file.data)));
+      for (const file of staged) {
+        await this.atomicFileOperations.write(file.temporary, file.data, file.original?.mode);
+        if (file.original !== undefined) {
+          await this.atomicFileOperations.setMode(file.temporary, file.original.mode);
+        }
+      }
       const committed: typeof staged = [];
       try {
         for (const file of staged) {
-          await rename(file.temporary, file.target);
           committed.push(file);
+          await this.atomicFileOperations.move(file.temporary, file.target);
         }
       } catch (error: unknown) {
-        const rollback = await Promise.allSettled(
-          committed.reverse().map((file) =>
-            file.original === undefined
-              ? rm(file.target, { force: true })
-              : writeFile(file.target, file.original),
-          ),
-        );
-        const rollbackFailure = rollback.find(
-          (result): result is PromiseRejectedResult => result.status === 'rejected',
-        );
-        if (rollbackFailure !== undefined) {
-          throw new AggregateError(
-            [error, rollbackFailure.reason],
-            'Atomic file batch failed and could not be rolled back',
-          );
+        const rollbackFailures: unknown[] = [];
+        for (const file of committed.reverse()) {
+          try {
+            if (file.original === undefined) {
+              await this.atomicFileOperations.remove(file.target);
+            } else {
+              await this.atomicFileOperations.write(
+                file.target,
+                file.original.data,
+                file.original.mode,
+              );
+              await this.atomicFileOperations.setMode(file.target, file.original.mode);
+            }
+          } catch (rollbackError: unknown) {
+            rollbackFailures.push(rollbackError);
+          }
         }
-        throw error;
+        failure =
+          rollbackFailures.length === 0
+            ? new AtomicWriteError('atomic_commit_failed', [error])
+            : new AtomicWriteError('atomic_rollback_failed', [error, ...rollbackFailures]);
       }
-    } finally {
-      await Promise.all(staged.map((file) => rm(file.temporary, { force: true })));
+    } catch (error: unknown) {
+      failure = error;
     }
+
+    const cleanup = await Promise.allSettled(
+      staged.map((file) => this.atomicFileOperations.remove(file.temporary)),
+    );
+    const cleanupFailures: unknown[] = [];
+    for (const result of cleanup) {
+      if (result.status === 'rejected') cleanupFailures.push(result.reason as unknown);
+    }
+    if (cleanupFailures.length > 0) {
+      throw new AtomicWriteError('atomic_cleanup_failed', [
+        ...(failure === undefined ? [] : [failure]),
+        ...cleanupFailures,
+      ]);
+    }
+    if (failure !== undefined) {
+      if (failure instanceof Error) throw failure;
+      throw new AtomicWriteError('atomic_commit_failed', [failure]);
+    }
+  }
+
+  async search(input: WorkspaceSearchInput): Promise<ExecResult> {
+    const root = await realpath(this.root);
+    const canonical = await realpath(await resolveInRoot(this.root, input.path));
+    if (!isWithin(root, canonical)) throw new PathViolationError(input.path);
+    const searchPath = relative(root, canonical) || '.';
+    const args = ['--line-number', '--color', 'never'];
+    if (input.glob !== undefined) args.push('--glob', input.glob);
+    if (input.fixedStrings === true) args.push('--fixed-strings');
+    if (input.ignoreCase === true) args.push('--ignore-case');
+    args.push('--', input.pattern, searchPath);
+    return this.exec({ cmd: 'rg', args, timeoutMs: 30_000 });
   }
 
   async listFiles(
@@ -530,6 +738,20 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
 
   async delete(path: string): Promise<void> {
     await rm(await resolveInRoot(this.root, path), { recursive: true, force: true });
+  }
+
+  async deleteFile(path: string): Promise<void> {
+    await unlink(await resolveInRoot(this.root, path));
+  }
+
+  async renameFile(input: WorkspaceRenameInput): Promise<void> {
+    const source = await resolveInRoot(this.root, input.source);
+    const destination = await resolveInRoot(this.root, input.destination);
+    if (source === destination) throw new Error('source and destination must differ');
+    validateRenameOverwrite(input.overwrite);
+    const sourceMetadata = await lstat(source);
+    if (!sourceMetadata.isFile()) throw new Error('renameFile only accepts regular files');
+    await rename(source, destination);
   }
 
   async git(op: GitOp): Promise<GitResult> {
@@ -604,7 +826,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
           return;
         }
         checking = true;
-        void portIsReady(contract.develop.port).then((ready) => {
+        void listenerBelongsToProcessGroup(contract.develop.port, child.pid ?? -1).then((ready) => {
           checking = false;
           if (ready) {
             complete(resolveReady);

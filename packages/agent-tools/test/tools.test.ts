@@ -11,6 +11,8 @@ import {
   type FileStat,
   type GitOp,
   type GitResult,
+  type WorkspaceRenameInput,
+  type WorkspaceSearchInput,
   type WorkspaceRuntime,
 } from '@zapp/workspace-runtime';
 import { describe, expect, it, vi } from 'vitest';
@@ -51,12 +53,19 @@ const contract: ExecutionContract = {
   build: { command: 'pnpm build' },
   typecheck: { command: 'pnpm typecheck' },
   lint: { command: 'pnpm lint' },
-  test: { unit: 'pnpm test', browser: 'pnpm test:browser' },
+  test: {
+    unit: 'pnpm test',
+    browser: 'pnpm test:browser',
+    integration: 'pnpm test:integration',
+  },
 };
 
 class RecordingRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
   readonly execCalls: Array<Parameters<WorkspaceRuntime['exec']>[0]> = [];
+  readonly searchCalls: WorkspaceSearchInput[] = [];
+  readonly deleteFileCalls: string[] = [];
+  readonly renameFileCalls: WorkspaceRenameInput[] = [];
   readonly gitCalls: GitOp[] = [];
   readonly atomicWriteCalls: Array<readonly { path: string; data: Uint8Array }[]> = [];
   restartCalls = 0;
@@ -107,6 +116,11 @@ class RecordingRuntime implements WorkspaceRuntime {
     }
   }
 
+  search(input: WorkspaceSearchInput): Promise<ExecResult> {
+    this.searchCalls.push(input);
+    return Promise.resolve(this.execResult);
+  }
+
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]> {
     void path;
     void opts;
@@ -128,6 +142,24 @@ class RecordingRuntime implements WorkspaceRuntime {
 
   delete(path: string): Promise<void> {
     this.files.delete(path);
+    return Promise.resolve();
+  }
+
+  deleteFile(path: string): Promise<void> {
+    this.deleteFileCalls.push(path);
+    if (!this.files.delete(path)) return Promise.reject(new Error(`Missing test file: ${path}`));
+    return Promise.resolve();
+  }
+
+  renameFile(input: WorkspaceRenameInput): Promise<void> {
+    this.renameFileCalls.push(input);
+    if (input.source === input.destination) {
+      return Promise.reject(new Error('source and destination must differ'));
+    }
+    const data = this.files.get(input.source);
+    if (data === undefined) return Promise.reject(new Error(`Missing test file: ${input.source}`));
+    this.files.set(input.destination, data);
+    this.files.delete(input.source);
     return Promise.resolve();
   }
 
@@ -313,7 +345,6 @@ const toolInputs: Record<ToolName, unknown> = {
   deploy_release: {
     releaseId: 'release_test',
     deploymentType: 'redeploy',
-    confirmationId: 'confirmation_test',
   },
   check_deployment_health: { deploymentId: 'deployment_test' },
   rollback_release: {
@@ -469,7 +500,7 @@ describe('workspace-bound tools', () => {
     });
   });
 
-  it('runs search_code through rg on WorkspaceRuntime.exec', async () => {
+  it('runs search_code through one typed WorkspaceRuntime search call', async () => {
     const runtime = new RecordingRuntime();
     runtime.execResult = {
       exitCode: 0,
@@ -484,15 +515,58 @@ describe('workspace-bound tools', () => {
       glob: '*.ts',
     }, trustedContext);
 
-    expect(runtime.execCalls).toEqual([
+    expect(runtime.searchCalls).toEqual([
       {
-        cmd: 'rg',
-        args: ['--line-number', '--color', 'never', '--glob', '*.ts', '--', 'needle', 'src'],
-        cwd: undefined,
-        timeoutMs: 30_000,
+        pattern: 'needle',
+        path: 'src',
+        glob: '*.ts',
       },
     ]);
+    expect(runtime.execCalls).toEqual([]);
     expect(result).toMatchObject({ ok: true, matches: ['src/app.ts:2:needle'] });
+  });
+
+  it('does not expose search_code or grep to a stat-then-exec path swap', async () => {
+    class RacingSearchRuntime extends RecordingRuntime {
+      override stat(path: string): Promise<FileStat> {
+        return Promise.resolve({ path, type: 'file', size: 1, mtimeMs: 1 });
+      }
+
+      override exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
+        this.execCalls.push(input);
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: '1:outside marker\n',
+          stderr: '',
+          durationMs: 1,
+          truncated: false,
+        });
+      }
+
+      override search(input: WorkspaceSearchInput): Promise<ExecResult> {
+        this.searchCalls.push(input);
+        return Promise.resolve({
+          exitCode: 1,
+          stdout: '',
+          stderr: '',
+          durationMs: 1,
+          truncated: false,
+        });
+      }
+    }
+
+    for (const [name, input] of [
+      ['search_code', { query: 'outside', path: 'target' }],
+      ['grep', { pattern: 'outside', path: 'target' }],
+    ] as const) {
+      const runtime = new RacingSearchRuntime();
+      await expect(registryFor(runtime).execute(name, input, trustedContext)).resolves.toMatchObject({
+        ok: true,
+        matches: [],
+      });
+      expect(runtime.searchCalls).toHaveLength(1);
+      expect(runtime.execCalls).toEqual([]);
+    }
   });
 
   it('rejects absolute, parent, and symlink-escape paths for search_code and grep', async () => {
@@ -541,6 +615,48 @@ describe('workspace-bound tools', () => {
       ).rejects.toThrow();
       expect(runtime.deleted).toEqual([]);
     }
+  });
+
+  it('cannot recursively delete a directory swapped in after a file check', async () => {
+    class RacingDeleteRuntime extends RecordingRuntime {
+      directoryDeleted = false;
+
+      override stat(path: string): Promise<FileStat> {
+        return Promise.resolve({ path, type: 'file', size: 1, mtimeMs: 1 });
+      }
+
+      override delete(): Promise<void> {
+        this.directoryDeleted = true;
+        return Promise.resolve();
+      }
+
+      override deleteFile(path: string): Promise<void> {
+        this.deleteFileCalls.push(path);
+        return Promise.reject(Object.assign(new Error('is a directory'), { code: 'EISDIR' }));
+      }
+    }
+
+    const runtime = new RacingDeleteRuntime();
+    await expect(
+      registryFor(runtime).execute('delete_file', { path: 'victim' }, trustedContext),
+    ).rejects.toThrow();
+    expect(runtime.deleteFileCalls).toEqual(['victim']);
+    expect(runtime.directoryDeleted).toBe(false);
+  });
+
+  it('rejects a resolved self-rename without deleting the source file', async () => {
+    await withMemoryRegistry(async (runtime, registry) => {
+      await runtime.writeFile('same.txt', new TextEncoder().encode('same'));
+
+      await expect(
+        registry.execute(
+          'rename_file',
+          { source: 'same.txt', destination: './same.txt' },
+          trustedContext,
+        ),
+      ).rejects.toThrow();
+      await expect(runtime.readFile('same.txt')).resolves.toEqual(new TextEncoder().encode('same'));
+    });
   });
 
   it('treats ripgrep exit 1 as a successful search with no matches', async () => {
@@ -909,8 +1025,32 @@ describe('review round 1 safety regressions', () => {
     runtime.execCalls.length = 0;
     await expect(
       registry.execute('run_integration_tests', {}, trustedContext),
+    ).resolves.toMatchObject({ ok: true, exitCode: 0 });
+    expect(runtime.execCalls).toEqual([
+      {
+        cmd: 'sh',
+        args: ['-lc', contract.test?.integration],
+        cwd: contract.workspace_root,
+        timeoutMs: 120_000,
+      },
+    ]);
+
+    const withoutIntegration: ExecutionContract = {
+      ...contract,
+      test: { unit: 'pnpm test', browser: 'pnpm test:browser' },
+    };
+    const missingProjectData: ProjectDataPort = {
+      ...projectData,
+      readLatestProjectContract: () =>
+        Promise.resolve({ ok: true, version: 10, contract: withoutIntegration }),
+    };
+    await expect(
+      registryFor(runtime, { projectData: missingProjectData }).execute(
+        'run_integration_tests',
+        {},
+        trustedContext,
+      ),
     ).resolves.toMatchObject({ ok: false, exitCode: 2 });
-    expect(runtime.execCalls).toEqual([]);
   });
 
   it('accepts only attributed browser targets with relative routes and rejects absolute or protocol-relative input', () => {
@@ -1079,6 +1219,102 @@ describe('review round 1 safety regressions', () => {
     );
   });
 
+  it('uses the Plan 07 deployment confirmation shape and requires replace data disposition', async () => {
+    const calls: unknown[] = [];
+    const release: ReleasePort = {
+      ...defaultPorts().release,
+      deploy: (releaseId, input, options) => {
+        calls.push({ releaseId, input, idempotencyKey: options?.idempotencyKey });
+        return Promise.resolve({ deploymentId: 'deployment_test' });
+      },
+    };
+    type Plan07Deploy = (
+      releaseId: string,
+      input: {
+        deploymentType: 'first_deploy' | 'redeploy' | 'replace_deployment';
+        confirmation: { dataDisposition: 'preserve' | 'transfer' | 'reset' | null };
+      },
+    ) => Promise<unknown>;
+    const plan07CompatibleDeploy: Plan07Deploy = (releaseId, input) =>
+      release.deploy(releaseId, input);
+    void plan07CompatibleDeploy;
+    const registry = registryFor(new RecordingRuntime(), { release });
+    const definition = registry.get('deploy_release');
+
+    for (const deploymentType of ['first_deploy', 'redeploy'] as const) {
+      expect(
+        definition.inputSchema.safeParse({ releaseId: 'release_test', deploymentType }).success,
+      ).toBe(true);
+      expect(
+        definition.inputSchema.safeParse({
+          releaseId: 'release_test',
+          deploymentType,
+          dataDisposition: 'preserve',
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      definition.inputSchema.safeParse({
+        releaseId: 'release_test',
+        deploymentType: 'replace_deployment',
+      }).success,
+    ).toBe(false);
+    for (const dataDisposition of ['preserve', 'transfer', 'reset'] as const) {
+      expect(
+        definition.inputSchema.safeParse({
+          releaseId: 'release_test',
+          deploymentType: 'replace_deployment',
+          dataDisposition,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      definition.inputSchema.safeParse({
+        releaseId: 'release_test',
+        deploymentType: 'redeploy',
+        confirmationId: 'invented',
+      }).success,
+    ).toBe(false);
+
+    for (const input of [
+      { releaseId: 'release_test', deploymentType: 'first_deploy' as const },
+      { releaseId: 'release_test', deploymentType: 'redeploy' as const },
+      {
+        releaseId: 'release_test',
+        deploymentType: 'replace_deployment' as const,
+        dataDisposition: 'preserve' as const,
+      },
+    ]) {
+      await registry.execute('deploy_release', input, trustedContext);
+    }
+    expect(calls).toEqual([
+      {
+        releaseId: 'release_test',
+        input: {
+          deploymentType: 'first_deploy',
+          confirmation: { dataDisposition: null },
+        },
+        idempotencyKey: 'run_trusted:task_trusted:step-1:deploy_release',
+      },
+      {
+        releaseId: 'release_test',
+        input: {
+          deploymentType: 'redeploy',
+          confirmation: { dataDisposition: null },
+        },
+        idempotencyKey: 'run_trusted:task_trusted:step-1:deploy_release',
+      },
+      {
+        releaseId: 'release_test',
+        input: {
+          deploymentType: 'replace_deployment',
+          confirmation: { dataDisposition: 'preserve' },
+        },
+        idempotencyKey: 'run_trusted:task_trusted:step-1:deploy_release',
+      },
+    ]);
+  });
+
   it('derives mutation idempotency keys from trusted context and marks rollback metadata truthfully', async () => {
     const calls: unknown[] = [];
     const release: ReleasePort = {
@@ -1135,5 +1371,65 @@ describe('review round 1 safety regressions', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('rejects a caller-aborted tool before starting its service operation', async () => {
+    let calls = 0;
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLogs: () => {
+        calls += 1;
+        return Promise.resolve({ ok: true, entries: [], truncated: false });
+      },
+    };
+    const caller = new AbortController();
+    caller.abort(new Error('caller stopped run'));
+
+    await expect(
+      registryFor(new RecordingRuntime(), { projectData }).execute(
+        'read_logs',
+        {},
+        trustedContext,
+        caller.signal,
+      ),
+    ).rejects.toMatchObject({ code: 'tool_cancelled' });
+    expect(calls).toBe(0);
+  });
+
+  it('propagates in-flight caller cancellation and halts retries immediately', async () => {
+    let calls = 0;
+    let receivedSignal: AbortSignal | undefined;
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLogs: (_input, _context, signal) => {
+        calls += 1;
+        receivedSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'));
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const caller = new AbortController();
+    const execution = registryFor(new RecordingRuntime(), { projectData }).execute(
+      'read_logs',
+      {},
+      trustedContext,
+      caller.signal,
+    );
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+
+    caller.abort(new Error('caller stopped run'));
+
+    await expect(execution).rejects.toMatchObject({ code: 'tool_cancelled' });
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(calls).toBe(1);
   });
 });

@@ -1,10 +1,40 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ExecutionContract } from '@zapp/contracts';
 import { MemoryWorkspaceRuntime, PathViolationError } from '../src/runtime.js';
+
+interface TestAtomicFileOperations {
+  read(path: string): Promise<Uint8Array>;
+  metadata(path: string): Promise<{ mode: number }>;
+  write(path: string, data: Uint8Array, mode?: number): Promise<void>;
+  move(source: string, destination: string): Promise<void>;
+  setMode(path: string, mode: number): Promise<void>;
+  remove(path: string): Promise<void>;
+}
+
+const nodeAtomicFileOperations: TestAtomicFileOperations = {
+  read: async (path) => new Uint8Array(await readFile(path)),
+  metadata: async (path) => ({ mode: (await stat(path)).mode }),
+  write: async (path, data, mode) =>
+    writeFile(path, data, mode === undefined ? undefined : { mode }),
+  move: rename,
+  setMode: chmod,
+  remove: (path) => rm(path, { force: true }),
+};
 
 async function withWorkspace(
   run: (root: string, runtime: MemoryWorkspaceRuntime) => Promise<void>,
@@ -39,6 +69,44 @@ async function availablePort(): Promise<number> {
     });
   });
   return address.port;
+}
+
+async function listenEventually(port: number, timeoutMs: number): Promise<Server> {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    const server = createServer();
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(port, '127.0.0.1', resolveListen);
+      });
+      return server;
+    } catch (error: unknown) {
+      await new Promise<void>((resolveClose) => {
+        server.close(() => {
+          resolveClose();
+        });
+      });
+      if (
+        !(error instanceof Error) ||
+        !('code' in error) ||
+        error.code !== 'EADDRINUSE' ||
+        performance.now() >= deadline
+      ) {
+        throw error;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 20));
+    }
+  }
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.close((error) => {
+      if (error === undefined) resolveClose();
+      else rejectClose(error);
+    });
+  });
 }
 
 function executionContract(command: string, port: number): ExecutionContract {
@@ -161,6 +229,179 @@ describe('MemoryWorkspaceRuntime path safety', () => {
         new TextEncoder().encode('changed second'),
       );
     });
+  });
+
+  it('owns ripgrep path validation and execution in one typed search operation', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await runtime.writeFile('inside.txt', new TextEncoder().encode('inside marker\n'));
+
+      const result = await runtime.search({
+        pattern: 'inside',
+        path: 'inside.txt',
+        fixedStrings: true,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('inside marker');
+      await expect(
+        runtime.search({ pattern: 'outside', path: '../outside.txt' }),
+      ).rejects.toBeInstanceOf(PathViolationError);
+    });
+  });
+
+  it('deletes only regular files without recursive directory behavior', async () => {
+    await withWorkspace(async (root, runtime) => {
+      await runtime.writeFile('victim.txt', new TextEncoder().encode('victim'));
+      await expect(runtime.deleteFile('victim.txt')).resolves.toBeUndefined();
+      await expect(readFile(join(root, 'victim.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await runtime.writeFile('keep.txt', new TextEncoder().encode('keep'));
+      let deletionError: unknown;
+      try {
+        await runtime.deleteFile('.');
+      } catch (error: unknown) {
+        deletionError = error;
+      }
+      expect(deletionError).toBeInstanceOf(Error);
+      expect(
+        deletionError instanceof Error && 'code' in deletionError
+          ? String(deletionError.code)
+          : '',
+      ).toMatch(/EISDIR|EPERM/u);
+      await expect(runtime.readFile('keep.txt')).resolves.toEqual(
+        new TextEncoder().encode('keep'),
+      );
+    });
+  });
+
+  it('atomically renames with replace semantics and rejects self-renames before mutation', async () => {
+    await withWorkspace(async (root, runtime) => {
+      await runtime.writeFile('source.txt', new TextEncoder().encode('source'));
+      await runtime.writeFile('destination.txt', new TextEncoder().encode('destination'));
+
+      await expect(
+        runtime.renameFile({
+          source: 'source.txt',
+          destination: 'destination.txt',
+          overwrite: 'replace',
+        }),
+      ).resolves.toBeUndefined();
+      await expect(runtime.readFile('destination.txt')).resolves.toEqual(
+        new TextEncoder().encode('source'),
+      );
+      await expect(readFile(join(root, 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await runtime.writeFile('same.txt', new TextEncoder().encode('same'));
+      await expect(
+        runtime.renameFile({
+          source: 'same.txt',
+          destination: './same.txt',
+          overwrite: 'replace',
+        }),
+      ).rejects.toThrow('source and destination must differ');
+      await expect(runtime.readFile('same.txt')).resolves.toEqual(new TextEncoder().encode('same'));
+    });
+  });
+
+  it('preserves executable modes on successful atomic writes', async () => {
+    await withWorkspace(async (root, runtime) => {
+      const script = join(root, 'script.sh');
+      await runtime.writeFile('script.sh', new TextEncoder().encode('before\n'));
+      await chmod(script, 0o755);
+
+      await runtime.writeFilesAtomically([
+        { path: 'script.sh', data: new TextEncoder().encode('after\n') },
+      ]);
+
+      expect((await lstat(script)).mode & 0o777).toBe(0o755);
+      await expect(runtime.readFile('script.sh')).resolves.toEqual(
+        new TextEncoder().encode('after\n'),
+      );
+    });
+  });
+
+  it('rolls back bytes and modes and cleans staging after failures following commits 1, 2, and 3', async () => {
+    for (const failAfter of [1, 2, 3]) {
+      const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-fault-'));
+      let commitCount = 0;
+      const operations: TestAtomicFileOperations = {
+        ...nodeAtomicFileOperations,
+        move: async (source, destination) => {
+          await rename(source, destination);
+          commitCount += 1;
+          if (commitCount === failAfter) throw new Error(`commit ${String(failAfter)} failed`);
+        },
+      };
+      const runtime = new MemoryWorkspaceRuntime(root, { atomicFileOperations: operations });
+
+      try {
+        for (const [index, name] of ['first.txt', 'second.txt', 'third.txt'].entries()) {
+          await runtime.writeFile(name, new TextEncoder().encode(`${name} before\n`));
+          await chmod(join(root, name), 0o750 + index);
+        }
+
+        await expect(
+          runtime.writeFilesAtomically(
+            ['first.txt', 'second.txt', 'third.txt'].map((path) => ({
+              path,
+              data: new TextEncoder().encode(`${path} after\n`),
+            })),
+          ),
+        ).rejects.toMatchObject({ code: 'atomic_commit_failed' });
+
+        for (const [index, name] of ['first.txt', 'second.txt', 'third.txt'].entries()) {
+          await expect(runtime.readFile(name)).resolves.toEqual(
+            new TextEncoder().encode(`${name} before\n`),
+          );
+          expect((await lstat(join(root, name))).mode & 0o777).toBe(0o750 + index);
+        }
+        expect((await readdir(root)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('reports rollback and cleanup failures without claiming atomic restoration', async () => {
+    for (const failure of ['rollback', 'cleanup'] as const) {
+      const root = await mkdtemp(join(tmpdir(), `zapp-atomic-${failure}-`));
+      let commitFailed = false;
+      const operations: TestAtomicFileOperations = {
+        ...nodeAtomicFileOperations,
+        move: async (source, destination) => {
+          await rename(source, destination);
+          commitFailed = true;
+          throw new Error('commit failed after rename');
+        },
+        write: async (path, data, mode) => {
+          if (failure === 'rollback' && commitFailed && path.endsWith('first.txt')) {
+            throw new Error('rollback write failed');
+          }
+          await writeFile(path, data, mode === undefined ? undefined : { mode });
+        },
+        remove: async (path) => {
+          if (failure === 'cleanup' && path.includes('.zapp-atomic-')) {
+            throw new Error('cleanup failed');
+          }
+          await rm(path, { force: true });
+        },
+      };
+      const runtime = new MemoryWorkspaceRuntime(root, { atomicFileOperations: operations });
+
+      try {
+        await runtime.writeFile('first.txt', new TextEncoder().encode('before\n'));
+        await chmod(join(root, 'first.txt'), 0o755);
+        await expect(
+          runtime.writeFilesAtomically([
+            { path: 'first.txt', data: new TextEncoder().encode('after\n') },
+            { path: 'second.txt', data: new TextEncoder().encode('new\n') },
+          ]),
+        ).rejects.toMatchObject({
+          code: failure === 'rollback' ? 'atomic_rollback_failed' : 'atomic_cleanup_failed',
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
   });
 });
 
@@ -299,6 +540,28 @@ describe('MemoryWorkspaceRuntime development server', () => {
       }
     });
   });
+
+  it('rejects restart readiness when an unrelated contender owns the contracted port', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const port = await availablePort();
+      const servingCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `require('node:net').createServer(() => {}).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
+      )}`;
+      const idleCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        'setInterval(() => {}, 1000);',
+      )}`;
+      const initial = await runtime.startDevServer(executionContract(servingCommand, port));
+      const restarting = runtime.restartDevServer(executionContract(idleCommand, port));
+      const contender = await listenEventually(port, 2_000);
+
+      try {
+        await expect(restarting).rejects.toThrow('Development server did not become ready');
+        await expect(processIsGone(initial.pid, 1_000)).resolves.toBe(true);
+      } finally {
+        await closeServer(contender);
+      }
+    });
+  }, 8_000);
 
   it('rejects a dev command that exits before its contract port is ready', async () => {
     await withWorkspace(async (_root, runtime) => {
