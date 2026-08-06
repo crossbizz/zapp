@@ -1,6 +1,7 @@
 import { newId } from '@zapp/contracts';
 import { users, type Database } from '@zapp/db';
 
+import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
 import type { AuthIdentity } from './port.js';
 
 /**
@@ -19,6 +20,7 @@ export interface SessionUser {
 }
 
 export interface ProfileMembership {
+  readonly allowedModels: readonly string[];
   readonly organization: { readonly id: string; readonly name: string; readonly slug: string };
   readonly role: 'owner' | 'builder' | 'viewer';
   readonly status: 'invited' | 'active' | 'removed';
@@ -101,7 +103,7 @@ export function createDbUserStore(db: Database): UserStore {
           ? []
           : await db.query.organizations.findMany({
               where: (row, { inArray }) => inArray(row.id, organizationIds),
-              columns: { id: true, name: true, slug: true },
+              columns: { id: true, name: true, slug: true, settingsJson: true },
             });
       const byId = new Map(organizations.map((organization) => [organization.id, organization]));
 
@@ -109,9 +111,26 @@ export function createDbUserStore(db: Database): UserStore {
         user,
         memberships: rows.flatMap((row) => {
           const organization = byId.get(row.organizationId);
+          const settings = organization?.settingsJson;
+          const defaultModelPolicy =
+            typeof settings === 'object'
+            && settings !== null
+            && !Array.isArray(settings)
+            && 'defaultModelPolicy' in settings
+              ? settings.defaultModelPolicy
+              : undefined;
           return organization === undefined
             ? []
-            : [{ organization, role: row.role, status: row.status }];
+            : [{
+                allowedModels: [...allowedModelsFromPolicy(defaultModelPolicy)],
+                organization: {
+                  id: organization.id,
+                  name: organization.name,
+                  slug: organization.slug,
+                },
+                role: row.role,
+                status: row.status,
+              }];
         }),
       };
     },

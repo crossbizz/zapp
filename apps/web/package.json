@@ -16,6 +16,7 @@
     "@zapp/api-client": "workspace:*",
     "@zapp/ui": "workspace:*",
     "next": "^15.5.0",
+    "posthog-js": "^1.265.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

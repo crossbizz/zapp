@@ -1167,6 +1167,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             memberships: {
+                                allowedModels: string[];
                                 organization: {
                                     id: string;
                                     name: string;

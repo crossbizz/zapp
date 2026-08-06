@@ -22,16 +22,19 @@ const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
 
 const memberships: UserProfile['memberships'] = [
   {
+    allowedModels: ['anthropic/claude-sonnet-5', 'openai:gpt_5.1-mini'],
     organization: { id: 'org-alpha', name: 'Alpha Org', slug: 'alpha' },
     role: 'owner',
     status: 'active',
   },
   {
+    allowedModels: [],
     organization: { id: 'org-beta', name: 'Beta Org', slug: 'beta' },
     role: 'builder',
     status: 'active',
   },
   {
+    allowedModels: [],
     organization: { id: 'org-invited', name: 'Invited Org', slug: 'invited' },
     role: 'viewer',
     status: 'invited',

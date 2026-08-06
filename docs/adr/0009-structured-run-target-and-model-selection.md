@@ -35,6 +35,11 @@ the `agent_runs` row before starting Temporal, includes them in run reads, and p
 them through `StartRunInput` to the durable workflow. OpenAPI and `@zapp/api-client`
 are regenerated before a UI can enable Mobile App or an explicit model choice.
 
+The public `GET /v1/me` membership projection includes only the validated
+`allowedModels` identifiers for that organization. This lets Owners and Builders
+who can start runs discover the same candidate set the run route enforces without
+granting them `manage_organization` or exposing the owner-only settings document.
+
 Until this ADR is accepted and the API/runtime work lands, WEB-3 keeps Mobile App
 disabled and exposes only policy-managed automatic model selection. It must not show
 an enabled control whose value is ignored.
@@ -47,6 +52,8 @@ Rejected alternatives:
   run never receives them, and another client cannot reconstruct the run intent.
 - Change organization-wide model settings for one run: that is a global policy
   mutation, not a per-run selection, and can race other users' runs.
+- Read `GET /v1/organizations/:orgId/settings` from the home screen: that route is
+  intentionally Owner-only, while Builders are allowed to start runs.
 - Expose controls now and wire them later: that reports a user choice as applied when
   the platform discarded it.
 
@@ -59,6 +66,8 @@ Rejected alternatives:
   `model` preserves policy routing.
 - Explicit model selection becomes auditable and enforceable at the tenant boundary;
   Mobile App acquires durable semantics instead of being a cosmetic tab.
+- Membership reads disclose model identifiers only, not mutable organization settings;
+  generated clients receive the projection before WEB-3 consumes it.
 - WEB-3 remains blocked and unchecked until this ADR is accepted and the public API
   ships, after which its reviewed branch must also repair retry idempotency, tooltip
   accessibility, true textarea autosizing, reactive organization switching, and

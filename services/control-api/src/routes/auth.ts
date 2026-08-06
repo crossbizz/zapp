@@ -1,4 +1,5 @@
 import type { FastifyReply } from 'fastify';
+import { ModelIdentifierSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -69,6 +70,7 @@ const MeResponseSchema = z.object({
   }),
   memberships: z.array(
     z.object({
+      allowedModels: z.array(ModelIdentifierSchema),
       organization: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
       role: z.enum(['owner', 'builder', 'viewer']),
       status: z.enum(['invited', 'active', 'removed']),
@@ -279,7 +281,7 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
         // outlive its subject.
         throw new ApiError('unauthenticated', 401, 'Authentication is required.');
       }
-      return { user: profile.user, memberships: [...profile.memberships] };
+      return MeResponseSchema.parse({ user: profile.user, memberships: profile.memberships });
     },
   );
 

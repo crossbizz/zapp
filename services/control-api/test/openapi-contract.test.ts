@@ -131,6 +131,42 @@ describe('generated API types', () => {
     expect(runSchema?.properties).not.toHaveProperty('requestFingerprint');
   });
 
+  it('projects validated model choices through the public membership schema', async () => {
+    // Break caught: WEB-3 falls back to the Owner-only settings route when /v1/me
+    // does not carry the model identifiers a Builder is permitted to select.
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const meSchema = paths['/v1/me']?.['get']?.responses?.['200']?.content?.[
+      'application/json'
+    ] as
+      | {
+          schema?: {
+            properties?: {
+              memberships?: {
+                items?: {
+                  properties?: Record<string, Record<string, unknown>>;
+                  required?: string[];
+                };
+              };
+            };
+          };
+        }
+      | undefined;
+    const membership = meSchema?.schema?.properties?.memberships?.items;
+
+    expect(membership?.properties?.['allowedModels']).toMatchObject({
+      items: {
+        maxLength: 160,
+        minLength: 1,
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$',
+        type: 'string',
+      },
+      type: 'array',
+    });
+    expect(membership?.required).toContain('allowedModels');
+  });
+
   it('documents optional strict auth bodies and actual no-content responses', async () => {
     // Break caught: nullish body schemas turn into required unknown request
     // bodies, while five handlers return 204 under a generated 200/null contract.

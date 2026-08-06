@@ -109,11 +109,25 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
     const removedOrganizationId = newId('org');
 
     await database.db.insert(organizations).values([
-      { id: organizationId, name: 'Acme', slug: `acme-${organizationId}` },
+      {
+        id: organizationId,
+        name: 'Acme',
+        slug: `acme-${organizationId}`,
+        settingsJson: {
+          defaultModelPolicy: {
+            allowedModels: [
+              'anthropic/claude-sonnet-5',
+              'model with spaces',
+              42,
+              'anthropic/claude-sonnet-5',
+            ],
+          },
+        },
+      },
       { id: removedOrganizationId, name: 'Former', slug: `former-${removedOrganizationId}` },
     ]);
     await database.db.insert(memberships).values([
-      { organizationId, userId: user?.id ?? '', role: 'owner', status: 'active' },
+      { organizationId, userId: user?.id ?? '', role: 'builder', status: 'active' },
       {
         organizationId: removedOrganizationId,
         userId: user?.id ?? '',
@@ -131,15 +145,16 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
     expect(response.statusCode).toBe(200);
     const body: {
       user: { id: string };
-      memberships: { organization: { id: string }; role: string }[];
+      memberships: { allowedModels: string[]; organization: { id: string }; role: string }[];
     } = response.json();
     expect(body.user.id).toBe(user?.id);
     // A removed membership is not a membership: it stays in the table as the
     // record of an access change and must never appear here.
     expect(body.memberships).toEqual([
       {
+        allowedModels: ['anthropic/claude-sonnet-5'],
         organization: { id: organizationId, name: 'Acme', slug: `acme-${organizationId}` },
-        role: 'owner',
+        role: 'builder',
         status: 'active',
       },
     ]);

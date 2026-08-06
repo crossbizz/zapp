@@ -1,0 +1,425 @@
+.home {
+  min-height: 100vh;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-hero);
+  font-family: var(--zapp-font-sans);
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+}
+
+.homePill,
+.avatarButton,
+.shuffleButton,
+.supportButton {
+  border: 1px solid var(--zapp-border);
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+}
+
+.homePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.5rem 0.875rem;
+  font-size: var(--zapp-text-14);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.organizationContext {
+  margin: 0 auto 0 0;
+  color: var(--zapp-text-primary);
+  font-size: var(--zapp-text-14);
+}
+
+.accountControls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.accountMenuContainer {
+  position: relative;
+}
+
+.avatarButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.25rem 0.625rem 0.25rem 0.25rem;
+  cursor: pointer;
+}
+
+.accountMenu,
+.attachmentMenu,
+.supportMenu {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.5rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  box-shadow: var(--zapp-shadow-overlay);
+}
+
+.accountMenu {
+  top: calc(100% + 0.5rem);
+  right: 0;
+  min-width: 14rem;
+}
+
+.menuHeading {
+  margin: 0;
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.625rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  font-size: var(--zapp-text-14);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menuItem:hover,
+.menuItem:focus-visible {
+  background: var(--zapp-surface-subtle);
+}
+
+.contextWarning {
+  max-width: 48rem;
+  margin: 0.5rem auto;
+  border: 1px solid var(--zapp-status-warning);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.75rem 1rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+}
+
+.heroContent {
+  width: min(48rem, calc(100% - 2rem));
+  margin: 3.5rem auto 0;
+  padding-bottom: 6rem;
+}
+
+.heading {
+  max-width: 42rem;
+  margin: 0 auto 2rem;
+  color: var(--zapp-text-inverse);
+  font-size: var(--zapp-text-32);
+  line-height: 1.15;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.productTabs {
+  width: 100%;
+}
+
+.productHelp {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.productHelpButton {
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.25rem 0.625rem;
+  color: var(--zapp-text-secondary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  font-size: var(--zapp-text-12);
+  cursor: help;
+}
+
+.composerCard {
+  position: relative;
+  margin-top: 0.75rem;
+  padding: 0;
+  overflow: visible;
+}
+
+.selectionChips {
+  display: flex;
+  min-height: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.selectionChip {
+  display: inline-flex;
+  border: 1px solid var(--zapp-accent);
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.25rem 0.625rem;
+  color: var(--zapp-accent);
+  background: var(--zapp-support-verified-bg);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+}
+
+.composerTextarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: 0;
+  padding: 1rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  font-size: var(--zapp-text-16);
+  line-height: 1.5;
+  outline: 0;
+}
+
+.composerTextarea::placeholder {
+  color: var(--zapp-text-muted);
+}
+
+.composerTextarea:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--zapp-focus);
+}
+
+.composerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 1rem 1rem;
+}
+
+.composerActionSpacer {
+  flex: 1;
+}
+
+.attachmentMenu {
+  top: calc(100% - 0.5rem);
+  left: 1rem;
+  min-width: 20rem;
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.submenu {
+  display: grid;
+  gap: 0.75rem;
+  border-top: 1px solid var(--zapp-border);
+  margin-top: 0.25rem;
+  padding: 0.75rem 0.5rem 0.5rem;
+}
+
+.fieldset {
+  display: grid;
+  gap: 0.5rem;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.fieldset legend,
+.fieldLabel {
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+}
+
+.radioOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: var(--zapp-text-14);
+}
+
+.radioOption span {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.radioOption small {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+.policyContext {
+  margin: 0;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+.fieldLabel {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.fieldLabel input {
+  min-height: 2.5rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.5rem 0.625rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+}
+
+.composerStatus {
+  min-height: 1.25rem;
+  margin: 0;
+  padding: 0 1rem 0.5rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-12);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.suggestionsTitle {
+  width: 100%;
+  margin: 0;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  text-align: center;
+}
+
+.suggestionList {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.625rem;
+}
+
+.suggestionDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--zapp-radius-pill);
+}
+
+.suggestionDotAccent {
+  background: var(--zapp-accent);
+}
+
+.suggestionDotInfo {
+  background: var(--zapp-status-info);
+}
+
+.suggestionDotSuccess {
+  background: var(--zapp-status-success);
+}
+
+.shuffleButton,
+.supportButton {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border-radius: var(--zapp-radius-pill);
+  cursor: pointer;
+}
+
+.support {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 10;
+}
+
+.supportMenu {
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  min-width: 11rem;
+}
+
+.supportMenu a {
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+  color: var(--zapp-text-primary);
+  font-size: var(--zapp-text-14);
+  text-decoration: none;
+}
+
+.supportMenu a:hover,
+.supportMenu a:focus-visible {
+  background: var(--zapp-surface-subtle);
+}
+
+.homePill:focus-visible,
+.avatarButton:focus-visible,
+.menuItem:focus-visible,
+.shuffleButton:focus-visible,
+.supportButton:focus-visible,
+.productHelpButton:focus-visible,
+.fieldLabel input:focus-visible,
+.radioOption input:focus-visible {
+  outline: 3px solid var(--zapp-focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 44rem) {
+  .topBar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 0.75rem;
+  }
+
+  .organizationContext {
+    order: 3;
+    width: 100%;
+  }
+
+  .accountControls {
+    margin-left: auto;
+  }
+
+  .avatarButton > span:last-child {
+    display: none;
+  }
+
+  .heroContent {
+    margin-top: 2rem;
+  }
+
+  .heading {
+    font-size: var(--zapp-text-24);
+  }
+
+  .attachmentMenu {
+    right: 0.5rem;
+    left: 0.5rem;
+    min-width: 0;
+  }
+}

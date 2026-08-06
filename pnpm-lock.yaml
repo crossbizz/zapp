@@ -505,6 +505,9 @@ importers:
       next:
         specifier: ^15.5.0
         version: 15.5.22(@opentelemetry/api@1.9.1)(@playwright/test@1.62.1)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      posthog-js:
+        specifier: ^1.265.1
+        version: 1.410.6
       react:
         specifier: ^19.0.0
         version: 19.2.8

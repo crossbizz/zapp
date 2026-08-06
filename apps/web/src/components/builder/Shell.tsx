@@ -15,6 +15,7 @@ import {
 } from 'react';
 
 import { createControlPlaneClient } from '../../lib/api';
+import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { organizationStorageKey, resolveOrganization } from '../../lib/session';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import { TopBar } from './TopBar';
@@ -108,6 +109,21 @@ function BuilderStyles(): ReactElement {
         display: flex;
         align-items: center;
         gap: 0.625rem;
+      }
+
+      .zapp-builder-first-message {
+        max-width: 90%;
+        align-self: flex-end;
+        margin: 1.5rem;
+        border-radius: var(--zapp-radius-panel);
+        padding: 0.875rem 1rem;
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-first-message p {
+        margin: 0;
+        white-space: pre-wrap;
       }
 
       .zapp-builder-project-identity {
@@ -396,6 +412,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const [conversationMinimum, setConversationMinimum] = useState(minimumConversationWidth);
   const [errorDetail, setErrorDetail] = useState<string>();
   const [focusPreviewRequest, setFocusPreviewRequest] = useState(0);
+  const [firstPrompt, setFirstPrompt] = useState<string>();
   const [inlineMissionControl, setInlineMissionControl] = useState(false);
   const [invalidOrganizationOverride, setInvalidOrganizationOverride] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -445,6 +462,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       setFailedPreferenceKeys(new Set());
       setInvalidOrganizationOverride(false);
       setLoadFailed(false);
+      setFirstPrompt(undefined);
       setProject(undefined);
       try {
         const me = await createControlPlaneClient().getMe();
@@ -474,6 +492,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
         setEffectiveConversationWidth(restoredWidth);
         setMissionControlOpen(localStorage.getItem(missionControlKey(projectId)) === 'true');
         setInvalidOrganizationOverride(selected.invalidOverride);
+        setFirstPrompt(readFirstPrompt(projectId));
         setProject(loadedProject);
       } catch (error) {
         if (error instanceof ZappApiError && error.status === 401) {
@@ -728,10 +747,16 @@ export function Shell({ projectId }: ShellProps): ReactElement {
               data-mobile-active={activePane === 'conversation' ? 'true' : 'false'}
               id="conversation-pane"
             >
-              <EmptyState
-                description="Start a run to begin building with the agent."
-                title="No conversation yet"
-              />
+              {firstPrompt === undefined ? (
+                <EmptyState
+                  description="Start a run to begin building with the agent."
+                  title="No conversation yet"
+                />
+              ) : (
+                <article aria-label="You" className="zapp-builder-first-message">
+                  <p>{firstPrompt}</p>
+                </article>
+              )}
             </section>
             <div
               aria-controls="conversation-pane surface-pane"

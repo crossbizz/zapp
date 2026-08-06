@@ -74,7 +74,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ### Plan 08 — Web core
 - [x] WEB-1 Next scaffold + session + org context
 - [x] WEB-2 packages/ui design system (Next+Vite)
-- [ ] WEB-3 Home screen (Emergent-modeled)
+- [x] WEB-3 Home screen (Emergent-modeled)
 - [ ] WEB-4 Dashboard + org switcher + import entry
 - [x] WEB-5 Builder two-pane shell
 - [ ] WEB-6 Event-sourced conversation thread

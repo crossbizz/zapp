@@ -1,7 +1,15 @@
-import { createZappClient, type FetchImplementation } from '@zapp/api-client';
+import {
+  createZappClient,
+  type FetchImplementation,
+  type paths,
+} from '@zapp/api-client';
 
 const csrfCookieName = 'zapp_csrf';
 const csrfHeaderName = 'x-zapp-csrf';
+const idempotencyHeaderName = 'idempotency-key';
+
+export type CreateProjectInput = paths['/v1/projects']['post']['requestBody']['content']['application/json'];
+export type CreateRunInput = paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -48,12 +56,43 @@ export function createControlPlaneClient(organizationId?: string) {
   });
   const organizationHeaders =
     organizationId === undefined ? undefined : { 'x-organization-id': organizationId };
+  const headers = (
+    mutating = false,
+    keyed = mutating,
+    idempotencyKey?: string,
+  ): Record<string, string> => ({
+    ...(organizationHeaders ?? {}),
+    ...(mutating
+      ? {
+          [csrfHeaderName]: csrfToken(),
+        }
+      : {}),
+    ...(keyed ? { [idempotencyHeaderName]: idempotencyKey ?? crypto.randomUUID() } : {}),
+  });
 
   return {
     getMe: () =>
       client.request('/v1/me', {
         method: 'GET',
-        ...(organizationHeaders === undefined ? {} : { headers: organizationHeaders }),
+        ...(organizationHeaders === undefined ? {} : { headers: headers() }),
+      }),
+    createProject: (body: CreateProjectInput, idempotencyKey?: string) =>
+      client.request('/v1/projects', {
+        method: 'POST',
+        headers: headers(true, true, idempotencyKey),
+        body,
+      }),
+    createRun: (projectId: string, body: CreateRunInput, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}/runs', {
+        method: 'POST',
+        path: { projectId },
+        headers: headers(true, true, idempotencyKey),
+        body,
+      }),
+    logout: () =>
+      client.request('/v1/auth/logout', {
+        method: 'POST',
+        headers: headers(true, false),
       }),
     approveDevice: (userCode: string) =>
       client.request('/v1/auth/device/approve', {

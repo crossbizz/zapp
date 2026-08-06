@@ -63,7 +63,7 @@ Master plan §Global Constraints, plus:
 
 ### Task WEB-3: Home screen (Emergent-modeled)
 
-**Files:** Create: `src/app/(home)/page.tsx`, `src/components/home/{Hero,PromptComposer,SuggestionChips}.tsx`, e2e `e2e/home.spec.ts`
+**Files:** Create: `src/app/(home)/page.tsx`, `src/components/home/{Hero,PromptComposer,SuggestionChips}.tsx`, `src/lib/{feature-flags,prompt-handoff}.ts`, e2e `e2e/home.spec.ts`; Modify: `src/components/session-home.tsx`, `src/components/builder/Shell.tsx`, e2e fixture server, web package manifest/lockfile, `.env.example`; review-driven API projection: auth profile route/store/tests, generated SDK artifacts, ADR-0009
 **Effort:** M
 
 Layout spec (mirrors benchmark screenshot, zapp copy):
@@ -75,8 +75,8 @@ Layout spec (mirrors benchmark screenshot, zapp copy):
 - Bottom-right support bubble (links to docs/support mail P0).
 - Submit → `POST /v1/projects` (name auto-derived) + `POST /v1/projects/:id/runs` (mode: recommended per prompt heuristic — Prototype for exploratory wording, Build otherwise; `appType` from the product tab; optional policy-approved `model`; user can change mode in builder) → route `/projects/:id` with composer text as first message.
 
-- [ ] Failing e2e: renders hero + tabs + chips; typing < 10 chars keeps submit disabled; chip click fills composer; submit navigates to builder with first message visible; keyboard-only path works (tab order: tabs → composer → attach → submit → chips).
-- [ ] Commit: `feat(web): prompt-first home screen`
+- [x] Failing e2e: renders hero + tabs + chips; typing < 10 chars keeps submit disabled; chip click fills composer; submit navigates to builder with first message visible; keyboard-only path works (tab order: tabs → composer → attach → submit → chips).
+- [x] Commit: `feat(web): prompt-first home screen`
 
 ### Task WEB-4: Projects dashboard + org switcher + new/import
 
@@ -221,3 +221,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-05 WEB-3 BLOCKED — independent review found that the locked run API cannot carry the required model or Web/Mobile selection; ADR-0009 proposes structured public/durable fields. The task stays unchecked, and its uncommitted branch also retains five repair findings for resumption.
 - 2026-08-05 WEB-4 BLOCKED — the binding New project → home composer modal depends on blocked WEB-3; dashboard work is deferred intact while independent WEB-5 proceeds.
 - 2026-08-05 WEB-5 done — shipped the tenant-scoped responsive builder shell with persisted resizing and Mission Control, 39/39 web E2E, clean independent spec and quality reviews after three rounds each, and an uncached Node 22 repository gate of 38/38.
+- 2026-08-06 WEB-3 done — shipped the prompt-first home, public structured run intent, Builder-safe model projection, real default-off PostHog flag subscription, and resilient first-prompt handoff; independent closure review approved, home+builder E2E passed 39/39, control/API tests passed 77/77, SDK tests passed 50/50, PostgreSQL auth passed 3/3, and lint/typecheck/build were green (2 live Stytch tests skipped: no `STYTCH_PROJECT_ID` / `STYTCH_SECRET`).

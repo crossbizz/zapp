@@ -268,8 +268,9 @@ describe('GET /v1/me', () => {
     const [user] = [...users.users.values()];
     users.memberships.set(user?.id ?? '', [
       {
+        allowedModels: ['anthropic/claude-sonnet-5'],
         organization: { id: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9', name: 'Acme', slug: 'acme' },
-        role: 'owner',
+        role: 'builder',
         status: 'active',
       },
     ]);
@@ -286,8 +287,9 @@ describe('GET /v1/me', () => {
       },
       memberships: [
         {
+          allowedModels: ['anthropic/claude-sonnet-5'],
           organization: { id: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7N9', name: 'Acme', slug: 'acme' },
-          role: 'owner',
+          role: 'builder',
           status: 'active',
         },
       ],
