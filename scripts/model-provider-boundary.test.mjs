@@ -914,6 +914,40 @@ test('AR-1 fails closed when an array mutation receiver identity is unknown', ()
   assert.match(result.stderr, /unresolved-loader/);
 });
 
+test('AR-1 uses one source-ordered mutation evaluator for unsafe receiver results', () => {
+  const result = runFixture('loader-mutation-evaluator-unsafe');
+
+  assert.equal(result.status, 1);
+  const fileNames = [
+    'array-destructure-assignment-unsafe',
+    'object-destructure-assignment-unsafe',
+    'logical-and-assignment-unsafe',
+    'logical-or-assignment-unsafe',
+    'logical-nullish-assignment-unsafe',
+    'call-condition-side-effect-unsafe',
+    'call-logical-side-effect-unsafe',
+    'method-logical-side-effect-unsafe',
+  ];
+  const missingFileNames = fileNames.filter(
+    (fileName) => !new RegExp(`new-provider path: .*${fileName}\\.ts`).test(result.stderr),
+  );
+  assert.deepEqual(missingFileNames, []);
+});
+
+test('AR-1 keeps source-ordered mutation evaluator reachability controls clean', () => {
+  const result = runFixture('loader-mutation-evaluator-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 fails closed on an opaque source-ordered mutation receiver', () => {
+  const result = runFixture('loader-mutation-evaluator-unknown');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /opaque-call-unknown\.ts/);
+  assert.match(result.stderr, /unresolved-loader/);
+});
+
 test('AR-1 respects Object.assign source order for final loader values', () => {
   const result = runFixture('loader-object-assign-overwrite-semantics');
 
