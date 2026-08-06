@@ -135,7 +135,7 @@ Loop: assemble messages → gateway stream → on tool-call: policy check (AR-5)
 **Files:** Create: `src/worker.ts`, `src/workflows/run.ts` (v1), `src/activities/{workspace,session,events}.ts`, `test/integration/m1-run.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior: `runWorkflow(runId)` v1: activity `ensureWorkspace` (sandbox-service create/restore) → activity `runBuilderSession` (AR-6, heartbeats every 10 s, checkpoint transcript) → activity `commitAndPush` (via runtime git; every task ends in commit — Global Constraint 7) → complete; events batched to CP-13 (`events.ts` client: flush ≤ 1 s or 20 events); run row status transitions queued→running→completed/failed.
+- [ ] Binding behavior: `runWorkflow(runId)` v1 consumes CP-9's ADR-0009 durable run intent (`appType: "web" | "mobile"`, `model: string | null`; null delegates to organization policy): activity `ensureWorkspace` (sandbox-service create/restore) → activity `runBuilderSession` (AR-6, heartbeats every 10 s, checkpoint transcript) → activity `commitAndPush` (via runtime git; every task ends in commit — Global Constraint 7) → complete; events batched to CP-13 (`events.ts` client: flush ≤ 1 s or 20 events); run row status transitions queued→running→completed/failed.
 - [ ] Failing integration test (Temporal dev server + fakes for sandbox): start run via CP-9 → workflow completes → events include `run.started`, `agent.started`, ≥1 `tool.completed`, `commit.created`, `run.completed` in sequence order; **kill the worker process mid-session and restart** → workflow resumes from last heartbeat/checkpoint, no duplicate commits (idempotency key on commit activity).
 - [ ] Commit: `feat(orchestrator): durable minimal chat run (M1 walking skeleton)`
 

@@ -1,8 +1,9 @@
 # ADR-0009: Structured run target and model selection
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-05
 - Owners: Control plane / agent runtime / web
+- Approval: controller decision under the user's delegated decision authority, 2026-08-05
 - Affects: CP-9, AR-1/AR-8, WEB-3/WEB-6, generated public API and SDK
 - References: master Global Constraint 11, master API-first directive, Plan 08 WEB-3
 
@@ -20,7 +21,7 @@ the run is false product state, and sending the values through a private route,
 prompt convention, or browser-only state would violate API-first and the rule that
 workflow state is structured rather than parsed from prose.
 
-## Proposed decision
+## Decision
 
 Extend the public and durable run-intent contracts with two optional, structured
 fields:
