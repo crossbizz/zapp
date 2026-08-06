@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   PublishImageInputSchema,
   type ModalImagePublisher,
@@ -13,6 +13,22 @@ import {
   parseModalPublishArgs,
   publishImagesTransaction,
 } from '../publish.js';
+
+const filesystemTestHooks = vi.hoisted(
+  (): { afterStat?: ((path: string) => Promise<void>) | undefined } => ({}),
+);
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    async stat(path: Parameters<typeof actual.stat>[0]) {
+      const result = await actual.stat(path);
+      await filesystemTestHooks.afterStat?.(String(path));
+      return result;
+    },
+  };
+});
 
 const SOURCE_REVISION = {
   repositoryUrl: 'https://github.com/crossbizz/zapp.git',
@@ -493,6 +509,171 @@ describe('Modal image publication transaction', () => {
     } finally {
       continueRecovery();
       await transaction.catch(() => undefined);
+      await rm(lockDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves a newly acquired owner while two recoverers contend for an abandoned lock', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    const ownerPath = join(lockDirectory, 'owner.json');
+    await mkdir(lockDirectory);
+    await writeFile(
+      ownerPath,
+      JSON.stringify({
+        token: randomUUID(),
+        pid: 2_147_483_647,
+        hostname: hostname(),
+      }),
+    );
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockDirectory, old, old);
+
+    let releaseFirstStat: () => void = () => undefined;
+    const firstStatMayContinue = new Promise<void>((resolve) => {
+      releaseFirstStat = resolve;
+    });
+    let firstStatReached: () => void = () => undefined;
+    const firstStatObserved = new Promise<void>((resolve) => {
+      firstStatReached = resolve;
+    });
+    let secondStatReached: () => void = () => undefined;
+    const secondStatObserved = new Promise<void>((resolve) => {
+      secondStatReached = resolve;
+    });
+    let lockStatCalls = 0;
+    filesystemTestHooks.afterStat = async (path) => {
+      if (path !== lockDirectory) return;
+      lockStatCalls += 1;
+      if (lockStatCalls === 1) {
+        firstStatReached();
+        await firstStatMayContinue;
+      } else if (lockStatCalls === 2) {
+        secondStatReached();
+      }
+    };
+
+    let releaseFirstWait: () => void = () => undefined;
+    const firstWaitMayContinue = new Promise<void>((resolve) => {
+      releaseFirstWait = resolve;
+    });
+    let firstWaitReached: () => void = () => undefined;
+    const firstWaitObserved = new Promise<void>((resolve) => {
+      firstWaitReached = resolve;
+    });
+    let firstWaitCalls = 0;
+    let firstNow = Date.now();
+    const firstCalls: Array<{ operation: string; input: unknown }> = [];
+    const firstTransaction = publishImagesTransaction({
+      ...transactionInput(lockFilePath, successfulPublisher(firstCalls), ['dev']),
+      lockTiming: {
+        now: () => firstNow,
+        async wait(milliseconds: number) {
+          firstWaitCalls += 1;
+          if (firstWaitCalls === 1) {
+            firstWaitReached();
+            await firstWaitMayContinue;
+          }
+          firstNow += milliseconds;
+        },
+        timeoutMs: 50,
+      },
+    });
+    const firstOutcome = firstTransaction.then(
+      () => 'resolved',
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    let releaseSecondWait: () => void = () => undefined;
+    const secondWaitMayContinue = new Promise<void>((resolve) => {
+      releaseSecondWait = resolve;
+    });
+    let secondWaitReached: () => void = () => undefined;
+    const secondWaitObserved = new Promise<void>((resolve) => {
+      secondWaitReached = resolve;
+    });
+    let secondWaitCalls = 0;
+    let secondNow = Date.now();
+    let releaseNewOwner: () => void = () => undefined;
+    const newOwnerMayFinish = new Promise<void>((resolve) => {
+      releaseNewOwner = resolve;
+    });
+    let newOwnerStarted: () => void = () => undefined;
+    const newOwnerIsPublishing = new Promise<void>((resolve) => {
+      newOwnerStarted = resolve;
+    });
+    const secondPublisher = successfulPublisher([]);
+    const publishSecond = secondPublisher.publishImage.bind(secondPublisher);
+    let secondPublishCalls = 0;
+    secondPublisher.publishImage = async (input) => {
+      secondPublishCalls += 1;
+      if (secondPublishCalls === 1) {
+        newOwnerStarted();
+        await newOwnerMayFinish;
+      }
+      return publishSecond(input);
+    };
+
+    await firstStatObserved;
+    const secondTransaction = publishImagesTransaction({
+      ...transactionInput(lockFilePath, secondPublisher, ['staging']),
+      lockTiming: {
+        now: () => secondNow,
+        async wait(milliseconds: number) {
+          secondWaitCalls += 1;
+          if (secondWaitCalls === 1) {
+            secondWaitReached();
+            await secondWaitMayContinue;
+          }
+          secondNow += milliseconds;
+        },
+        timeoutMs: 50,
+      },
+    });
+    const secondOutcome = secondTransaction.then(
+      () => 'resolved',
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+    try {
+      const secondRecoveryPath = await Promise.race([
+        secondStatObserved.then(() => 'observed-stale-lock'),
+        secondWaitObserved.then(() => 'waited-for-recovery-claim'),
+      ]);
+
+      if (secondRecoveryPath === 'observed-stale-lock') {
+        releaseSecondWait();
+        await newOwnerIsPublishing;
+        const newLiveOwner = await readFile(ownerPath, 'utf8');
+        releaseFirstStat();
+        await firstWaitObserved;
+        const canonicalOwner = await readFile(ownerPath, 'utf8').catch(() => {
+          throw new Error('new-live-owner displaced from the canonical publication lock');
+        });
+        expect(canonicalOwner).toBe(newLiveOwner);
+      } else {
+        releaseFirstStat();
+        await firstWaitObserved;
+        releaseSecondWait();
+        await newOwnerIsPublishing;
+        const newLiveOwner = await readFile(ownerPath, 'utf8');
+        releaseFirstWait();
+        expect(await firstOutcome).toBe('Timed out waiting for Modal image publication lock');
+        expect(await readFile(ownerPath, 'utf8')).toBe(newLiveOwner);
+      }
+
+      expect(secondRecoveryPath).toBe('waited-for-recovery-claim');
+      expect(firstCalls).toHaveLength(0);
+      releaseNewOwner();
+      expect(await secondOutcome).toBe('resolved');
+      await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      filesystemTestHooks.afterStat = undefined;
+      releaseFirstStat();
+      releaseFirstWait();
+      releaseSecondWait();
+      releaseNewOwner();
+      await Promise.all([firstOutcome, secondOutcome]);
       await rm(lockDirectory, { recursive: true, force: true });
     }
   });

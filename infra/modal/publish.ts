@@ -146,6 +146,11 @@ interface PreflightInput {
   readonly isRevisionAdvertised: (source: SourceRevision) => Promise<boolean>;
 }
 
+interface PublishLockRecoveryClaim {
+  readonly directory: string;
+  readonly owner: z.infer<typeof PublishLockOwnerSchema>;
+}
+
 export function parseModalPublishArgs(argv: readonly string[]): {
   mode: 'publish' | 'smoke';
   environments: EnvironmentKey[];
@@ -243,40 +248,92 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+async function tryAcquirePublishLockRecoveryClaim(
+  lockDirectory: string,
+): Promise<PublishLockRecoveryClaim | undefined> {
+  const directory = `${lockDirectory}.recovery-claim`;
+  const owner = PublishLockOwnerSchema.parse({
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+  });
+  try {
+    await mkdir(directory);
+  } catch (error) {
+    if (isExistingFile(error)) return undefined;
+    throw error;
+  }
+  try {
+    await writeFile(resolve(directory, 'owner.json'), JSON.stringify(owner), {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+  return { directory, owner };
+}
+
+async function releasePublishLockRecoveryClaim(claim: PublishLockRecoveryClaim): Promise<void> {
+  const ownerPath = resolve(claim.directory, 'owner.json');
+  const current = PublishLockOwnerSchema.parse(
+    JSON.parse(await readFile(ownerPath, 'utf8')) as unknown,
+  );
+  if (current.token !== claim.owner.token) {
+    throw new Error('Modal image publication recovery claim ownership changed');
+  }
+  const releasedDirectory = `${claim.directory}.released.${claim.owner.token}`;
+  await rename(claim.directory, releasedDirectory);
+  const released = PublishLockOwnerSchema.parse(
+    JSON.parse(await readFile(resolve(releasedDirectory, 'owner.json'), 'utf8')) as unknown,
+  );
+  if (released.token !== claim.owner.token) {
+    throw new Error('Modal image publication recovery claim ownership changed');
+  }
+  await rm(releasedDirectory, { recursive: true });
+}
+
 async function recoverAbandonedPublishLock(
   lockDirectory: string,
   timing: Pick<PublishLockTiming, 'beforeRecoveryStat' | 'now'>,
 ): Promise<void> {
-  const ownerPath = resolve(lockDirectory, 'owner.json');
-  let owner: z.infer<typeof PublishLockOwnerSchema> | undefined;
+  const recoveryClaim = await tryAcquirePublishLockRecoveryClaim(lockDirectory);
+  if (recoveryClaim === undefined) return;
   try {
-    owner = PublishLockOwnerSchema.parse(JSON.parse(await readFile(ownerPath, 'utf8')) as unknown);
-  } catch (error) {
-    if (!isMissingFile(error)) return;
+    const ownerPath = resolve(lockDirectory, 'owner.json');
+    let owner: z.infer<typeof PublishLockOwnerSchema> | undefined;
+    try {
+      owner = PublishLockOwnerSchema.parse(JSON.parse(await readFile(ownerPath, 'utf8')) as unknown);
+    } catch (error) {
+      if (!isMissingFile(error)) return;
+    }
+    if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
+      return;
+    }
+    await timing.beforeRecoveryStat?.();
+    let lockDirectoryModifiedAt: number;
+    try {
+      lockDirectoryModifiedAt = (await stat(lockDirectory)).mtimeMs;
+    } catch (error) {
+      if (isMissingFile(error)) return;
+      throw error;
+    }
+    const age = timing.now() - lockDirectoryModifiedAt;
+    if (age < ABANDONED_LOCK_GRACE_MS) {
+      return;
+    }
+    const quarantine = `${lockDirectory}.abandoned.${randomUUID()}`;
+    try {
+      await rename(lockDirectory, quarantine);
+    } catch (error) {
+      if (isMissingFile(error)) return;
+      throw error;
+    }
+    await rm(quarantine, { recursive: true, force: true });
+  } finally {
+    await releasePublishLockRecoveryClaim(recoveryClaim);
   }
-  if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
-    return;
-  }
-  await timing.beforeRecoveryStat?.();
-  let lockDirectoryModifiedAt: number;
-  try {
-    lockDirectoryModifiedAt = (await stat(lockDirectory)).mtimeMs;
-  } catch (error) {
-    if (isMissingFile(error)) return;
-    throw error;
-  }
-  const age = timing.now() - lockDirectoryModifiedAt;
-  if (age < ABANDONED_LOCK_GRACE_MS) {
-    return;
-  }
-  const quarantine = `${lockDirectory}.abandoned.${randomUUID()}`;
-  try {
-    await rename(lockDirectory, quarantine);
-  } catch (error) {
-    if (isMissingFile(error)) return;
-    throw error;
-  }
-  await rm(quarantine, { recursive: true, force: true });
 }
 
 async function withPublishLock<T>(
