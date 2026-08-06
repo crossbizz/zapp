@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { paths } from '../src/generated.js';
+
 type SdkModule = typeof import('../src/client.js');
 type FetchImplementation = SdkModule['createZappClient'] extends (options: infer Options) => unknown
   ? Options extends { fetch?: infer Fetch }
@@ -103,6 +105,59 @@ async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<bool
 }
 
 describe('createZappClient', () => {
+  it('sends structured run intent through the generated create-run operation', async () => {
+    // Break caught: generated path typing or runtime request serialization drops
+    // the selected app target/model even though the public API accepts both.
+    type CreateRunOperation = paths['/v1/projects/{projectId}/runs']['post'];
+    type CreateRunBody = CreateRunOperation['requestBody']['content']['application/json'];
+    const body = {
+      mode: 'build',
+      prompt: 'Build a native inventory scanner',
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    } satisfies CreateRunBody;
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7N9',
+            organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+            projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
+            branchId: null,
+            mode: 'build',
+            appType: 'mobile',
+            model: 'anthropic/claude-sonnet-5',
+            status: 'queued',
+            startedBy: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+            startedAt: '2026-08-06T12:00:00.000Z',
+            completedAt: null,
+          },
+        }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'device-token',
+      fetch,
+    });
+
+    await expect(
+      client.request('/v1/projects/{projectId}/runs', {
+        method: 'POST',
+        path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB' },
+        body,
+      }),
+    ).resolves.toMatchObject({
+      run: { appType: 'mobile', model: 'anthropic/claude-sonnet-5' },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(body));
+  });
+
   it.each([
     'https://attacker.example/collect',
     '//attacker.example/collect',

@@ -80,6 +80,57 @@ describe('generated API types', () => {
     await expect(readFile(GENERATED_OPERATIONS, 'utf8')).resolves.toBe(operations);
   });
 
+  it('documents structured run intent without exposing its durable fingerprint', async () => {
+    // Break caught: the public create-run contract drops or widens the target/model
+    // fields, makes optional input mandatory, omits persisted intent from the 201
+    // response, or leaks the repository-only request fingerprint.
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const operation = paths['/v1/projects/{projectId}/runs']?.['post'];
+    const requestSchema = operation?.requestBody?.content?.['application/json']?.schema as
+      | {
+          properties?: Record<string, Record<string, unknown>>;
+          required?: string[];
+        }
+      | undefined;
+    const responseSchema = operation?.responses?.['201']?.content?.['application/json'] as
+      | {
+          schema?: {
+            properties?: {
+              run?: {
+                properties?: Record<string, Record<string, unknown>>;
+                required?: string[];
+              };
+            };
+          };
+        }
+      | undefined;
+    const runSchema = responseSchema?.schema?.properties?.run;
+
+    expect(requestSchema?.properties?.['appType']).toMatchObject({
+      enum: ['web', 'mobile'],
+      type: 'string',
+    });
+    expect(requestSchema?.properties?.['model']).toMatchObject({
+      maxLength: 160,
+      minLength: 1,
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$',
+      type: 'string',
+    });
+    expect(requestSchema?.required).not.toContain('appType');
+    expect(requestSchema?.required).not.toContain('model');
+    expect(requestSchema?.properties).not.toHaveProperty('requestFingerprint');
+
+    expect(runSchema?.properties?.['appType']).toMatchObject({
+      enum: ['web', 'mobile'],
+      type: 'string',
+    });
+    expect(runSchema?.properties?.['model']).toMatchObject({ nullable: true, type: 'string' });
+    expect(runSchema?.required).toEqual(expect.arrayContaining(['appType', 'model']));
+    expect(runSchema?.properties).not.toHaveProperty('requestFingerprint');
+  });
+
   it('documents optional strict auth bodies and actual no-content responses', async () => {
     // Break caught: nullish body schemas turn into required unknown request
     // bodies, while five handlers return 204 under a generated 200/null contract.
