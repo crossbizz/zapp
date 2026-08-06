@@ -548,6 +548,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           startedAt: input.now,
           completedAt: null,
         };
+        await input.authorize(run);
         await input.audit(NO_TRANSACTION, run);
         data.runs.push(run);
         return run;

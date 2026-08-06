@@ -270,6 +270,8 @@ export interface NewRunInput {
   readonly budget: unknown;
   readonly startedBy: string;
   readonly now: Date;
+  /** Runs only for a row this call inserted; throwing rolls the insertion back. */
+  readonly authorize: (created: AgentRun) => Promise<void>;
   readonly audit: AuditHook<AgentRun>;
 }
 
@@ -1032,6 +1034,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .onConflictDoNothing()
               .returning();
             if (inserted !== undefined) {
+              await input.authorize(inserted);
               await input.audit(tx, inserted);
               return inserted;
             }

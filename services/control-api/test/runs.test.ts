@@ -510,37 +510,71 @@ describe('POST /v1/projects/:projectId/runs', () => {
     });
   });
 
-  it('durably records one run intent before dispatch and retries its stable workflow identity', async () => {
-    const wired = await wire();
+  it('retries a persisted explicit intent after policy changes without reauthorizing it', async () => {
+    const organizations = new ReadCountingOrganizationStore();
+    const wired = await wire({ organizations });
     const project = await createProject(wired);
+    organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: ['anthropic/claude-sonnet-5'],
+    });
     wired.orchestrator.failStarts = 1;
     const headers = { ...wired.as(wired.owner), 'idempotency-key': 'durable-run-retry-01' };
+    const payload = {
+      mode: 'build',
+      prompt: 'Retry this durable mobile run',
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    } as const;
 
     const first = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Retry this durable run' },
+      payload,
     });
 
     expect(first.statusCode, first.body).toBe(502);
     expect(wired.data.runs).toHaveLength(1);
     const runId = wired.data.runs[0]?.id;
     expect(runId).toBeDefined();
-    expect(wired.built.audit.events).toContainEqual(
-      expect.objectContaining({ action: 'run.created', targetId: runId }),
-    );
+    expect(wired.data.runs[0]).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
+
+    organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: ['openai/gpt-5'],
+    });
 
     const retry = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Retry this durable run' },
+      payload,
     });
 
     expect(retry.statusCode, retry.body).toBe(201);
     expect(wired.data.runs).toHaveLength(1);
-    expect(wired.orchestrator.starts.map((start) => start.runId)).toEqual([runId, runId]);
+    expect(
+      wired.built.audit.events.filter(
+        (event) => event.action === 'run.created' && event.targetId === runId,
+      ),
+    ).toHaveLength(1);
+    expect(wired.orchestrator.starts).toEqual([
+      expect.objectContaining({
+        runId,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+      expect.objectContaining({
+        runId,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+    ]);
+    expect(organizations.settingsReads).toBe(1);
   });
 
   it('signals each applicable lifecycle action and records its matching audit action', async () => {

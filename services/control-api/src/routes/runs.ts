@@ -103,12 +103,6 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       )
         throw branchNotFound();
       authorize(ctx, 'start_run');
-      if (request.body.model !== undefined) {
-        const settings = await deps.organizations.getSettings(ctx.organizationId);
-        if (!allowedModelsFromPolicy(settings?.defaultModelPolicy).has(request.body.model)) {
-          throw modelNotAllowed();
-        }
-      }
       const operationKey = operationOf(request);
       const runId = stableId('run', operationKey);
       const run = await ctx.db.runs.create({
@@ -122,6 +116,13 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         budget: request.body.budget ?? null,
         startedBy: actorOf(request),
         now: deps.now(),
+        authorize: async (created) => {
+          if (created.model === null) return;
+          const settings = await deps.organizations.getSettings(ctx.organizationId);
+          if (!allowedModelsFromPolicy(settings?.defaultModelPolicy).has(created.model)) {
+            throw modelNotAllowed();
+          }
+        },
         audit: async (tx, created) => {
           await request.audit(tx, {
             organizationId: ctx.organizationId,

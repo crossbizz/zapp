@@ -13,6 +13,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createDbUserStore } from '../../src/auth/users.js';
+import {
+  OrchestratorError,
+  type StartRunInput,
+} from '../../src/orchestrator/port.js';
 import { createDbOrganizationStore, type OrganizationStore } from '../../src/orgs/store.js';
 import { SERVICE_TOKEN_HEADER } from '../../src/internal/service-auth.js';
 import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
@@ -188,6 +192,8 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
   let baseUrl: string;
   let port: FakeAuthPort;
   let audit: InMemoryAuditSink;
+  const startCalls: StartRunInput[] = [];
+  let failedStarts = 0;
   let a: Tenant;
   let b: Tenant;
   /** Signed in, real session, member of nothing. */
@@ -429,7 +435,14 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       tenant: {
         tenantDb: createTenantDbFactory(database.db),
         orchestrator: {
-          startRun: () => Promise.resolve(),
+          startRun: (input) => {
+            startCalls.push(input);
+            if (failedStarts > 0) {
+              failedStarts -= 1;
+              return Promise.reject(new OrchestratorError('temporary integration failure'));
+            }
+            return Promise.resolve();
+          },
           signalRun: () => Promise.resolve({ applied: true }),
         },
       },
@@ -469,6 +482,170 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
   afterAll(async () => {
     await app.close();
     await database.close();
+  });
+
+  describe('real PostgreSQL run intent behavior', () => {
+    it('persists and reads the omitted web/null defaults', async () => {
+      const beforeAudit = audit.events.length;
+      const beforeStarts = startCalls.length;
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+        headers: {
+          ...as(a.owner, a.organizationId),
+          'idempotency-key': 'postgres-default-run-intent-01',
+        },
+        payload: { mode: 'build', prompt: 'Persist PostgreSQL defaults' },
+      });
+
+      expect(response.statusCode, response.body).toBe(201);
+      const created = response.json<{
+        run: { id: string; appType: string; model: string | null };
+      }>().run;
+      expect(created).toMatchObject({ appType: 'web', model: null });
+
+      const [row] = await database.sql<{ app_type: string; model: string | null }[]>`
+        select app_type, model from agent_runs where id = ${created.id}
+      `;
+      expect(row).toEqual({ app_type: 'web', model: null });
+
+      const read = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${created.id}`,
+        headers: as(a.owner, a.organizationId),
+      });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json<{ run: { appType: string; model: string | null } }>().run).toMatchObject({
+        appType: 'web',
+        model: null,
+      });
+      expect(
+        audit.events
+          .slice(beforeAudit)
+          .filter((event) => event.action === 'run.created' && event.targetId === created.id),
+      ).toHaveLength(1);
+      expect(startCalls.slice(beforeStarts)).toEqual([
+        expect.objectContaining({ runId: created.id, appType: 'web', model: null }),
+      ]);
+    });
+
+    it('recovers one explicit row and audit after a failed dispatch without current policy', async () => {
+      const model = 'anthropic/claude-sonnet-5';
+      await store.updateSettings({
+        organizationId: a.organizationId,
+        patch: { defaultModelPolicy: [model] },
+        operationKey: 'postgres-retry-policy-allow-01',
+        audit: noAudit,
+      });
+      const beforeRows = await database.sql<{ id: string }[]>`
+        select id from agent_runs where organization_id = ${a.organizationId}
+      `;
+      const beforeIds = new Set(beforeRows.map((row) => row.id));
+      const beforeAudit = audit.events.length;
+      const beforeStarts = startCalls.length;
+      const headers = {
+        ...as(a.owner, a.organizationId),
+        'idempotency-key': 'postgres-explicit-run-retry-01',
+      };
+      const payload = {
+        mode: 'build',
+        prompt: 'Recover PostgreSQL explicit intent',
+        appType: 'mobile',
+        model,
+      } as const;
+
+      try {
+        failedStarts = 1;
+        const first = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers,
+          payload,
+        });
+        expect(first.statusCode, first.body).toBe(502);
+
+        await store.updateSettings({
+          organizationId: a.organizationId,
+          patch: { defaultModelPolicy: ['openai/gpt-5'] },
+          operationKey: 'postgres-retry-policy-deny-01',
+          audit: noAudit,
+        });
+        const retry = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers,
+          payload,
+        });
+        expect(retry.statusCode, retry.body).toBe(201);
+        const recovered = retry.json<{
+          run: { id: string; appType: string; model: string | null };
+        }>().run;
+        expect(recovered).toMatchObject({ appType: 'mobile', model });
+
+        const rows = await database.sql<{
+          id: string;
+          app_type: string;
+          model: string | null;
+        }[]>`
+          select id, app_type, model
+          from agent_runs
+          where organization_id = ${a.organizationId}
+        `;
+        const createdRows = rows.filter((row) => !beforeIds.has(row.id));
+        expect(createdRows).toEqual([
+          { id: recovered.id, app_type: 'mobile', model },
+        ]);
+
+        const deniedNew = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(a.owner, a.organizationId),
+            'idempotency-key': 'postgres-explicit-run-denied-new-01',
+          },
+          payload: {
+            mode: 'build',
+            prompt: 'Do not persist a newly denied PostgreSQL intent',
+            appType: 'mobile',
+            model,
+          },
+        });
+        expectRefusal(deniedNew, 400, 'model_not_allowed');
+        const rowsAfterDenial = await database.sql<{ id: string }[]>`
+          select id from agent_runs where organization_id = ${a.organizationId}
+        `;
+        expect(rowsAfterDenial.filter((row) => !beforeIds.has(row.id))).toEqual([
+          { id: recovered.id },
+        ]);
+        expect(
+          audit.events
+            .slice(beforeAudit)
+            .filter((event) => event.action === 'run.created' && event.targetId === recovered.id),
+        ).toHaveLength(1);
+        expect(startCalls.slice(beforeStarts)).toEqual([
+          expect.objectContaining({ runId: recovered.id, appType: 'mobile', model }),
+          expect.objectContaining({ runId: recovered.id, appType: 'mobile', model }),
+        ]);
+
+        const read = await app.inject({
+          method: 'GET',
+          url: `/v1/runs/${recovered.id}`,
+          headers: as(a.owner, a.organizationId),
+        });
+        expect(read.statusCode, read.body).toBe(200);
+        expect(read.json<{ run: { appType: string; model: string | null } }>().run).toMatchObject({
+          appType: 'mobile',
+          model,
+        });
+      } finally {
+        failedStarts = 0;
+        await database.sql`
+          update organizations
+          set settings_json = '{}'::jsonb
+          where id = ${a.organizationId}
+        `;
+      }
+    });
   });
 
   describe('a session in A, reading B by id', () => {
