@@ -20,6 +20,26 @@ AR-1, so requiring the migration before AR-1 can complete creates a dependency
 cycle. Leaving the inherited calls undocumented would silently weaken an
 absolute master-plan constraint.
 
+Repository inspection at the immutable AR-1 parent anchor
+`df81175a82ed9cb2d7508caafd291a2c26bc4794` finds eight runtime
+provider/completion consumer paths, not only the two examples above:
+
+- `apps/desktop/src/ipc/handlers/chat_stream_handlers.ts`
+- `apps/desktop/src/ipc/handlers/compaction/compaction_handler.ts`
+- `apps/desktop/src/ipc/handlers/help_bot_handlers.ts`
+- `apps/desktop/src/ipc/services/provider_api_key_validation_service.ts`
+- `apps/desktop/src/ipc/utils/get_model_client.ts`
+- `apps/desktop/src/ipc/utils/llm_engine_provider.ts`
+- `apps/desktop/src/ipc/utils/ollama_provider.ts`
+- `apps/desktop/src/ipc/utils/stream_text_utils.ts`
+
+The same anchor also contains non-type provider SDK imports in
+`apps/desktop/src/ipc/utils/provider_options.ts`. The mechanical boundary
+therefore inventories nine exact inherited production paths: the eight
+runtime consumer paths plus that import-only path. This audit correction does
+not permit a new path or event; the baseline remains derived from the same
+commit and tree.
+
 ## Proposed decision
 
 Permit a temporary, development-only exception for the direct provider call

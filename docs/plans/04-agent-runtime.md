@@ -56,9 +56,9 @@ export const CompleteRequestSchema = z.object({
 Providers: anthropic, openai, google, openai-compatible (base-url configurable) via Vercel AI SDK; neutral tool schema converted per provider inside adapters only.
 **Effort:** L
 
-- [ ] **Step 1:** Failing tests with mocked provider SDKs: request validation; tool schema conversion produces provider-correct shape (snapshot per provider); stream passthrough preserves order; provider error surfaces as typed `provider_error` event, never a thrown 500 mid-stream.
-- [ ] **Step 2:** Implement; config `config/models.json`: `{ roles: { planner: { primary: "anthropic/claude-sonnet-5", fallbacks: ["openai/gpt-5"] }, ... }, providers: {...keys from env} }`.
-- [ ] **Step 3:** Commit: `feat(model-gateway): provider-neutral streaming completion API`
+- [x] **Step 1:** Failing tests with mocked provider SDKs: request validation; tool schema conversion produces provider-correct shape (snapshot per provider); stream passthrough preserves order; provider error surfaces as typed `provider_error` event, never a thrown 500 mid-stream.
+- [x] **Step 2:** Implement; config `config/models.json`: `{ roles: { planner: { primary: "anthropic/claude-sonnet-5", fallbacks: ["openai/gpt-5"] }, ... }, providers: {...keys from env} }`.
+- [x] **Step 3:** Commit: `feat(model-gateway): provider-neutral streaming completion API`
 
 ### Task AR-2: Routing, retry, fallback policy
 
@@ -264,4 +264,8 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 
 ## Execution log
 
-- 2026-08-04 AR-1 BLOCKED: Work on `task/AR-1` exhausted five capped review-fix rounds (`62420b9..70ace06`) with a real P1 bypass in the mandatory boundary analyzer: non-identifier mutation receivers such as `(alias = slots).unshift(require)`, conditional/logical receiver results, and getter-return receivers can resolve to an empty target set and hide a new provider load. This security gate is load-bearing for downstream AR tasks; AR-1 remains unchecked pending architectural remediation.
+- 2026-08-04 AR-1 done — Added the authenticated provider-neutral streaming gateway and four AI SDK adapters with primary-only role selection; fallback execution remains AR-2.
+- 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, with controller/human resolution tracked in external ADR-0005.
+- 2026-08-04 AR-1 architecture gate — The accepted ADR-0005 migration exception is mechanically bounded by a production-reachability, default-deny gate to nine inherited desktop inventory paths (eight runtime consumers plus one import-only module) and exact import/call/use inventory cryptographically derived from `df81175`; AR-1 and its tracker remain unchecked.
+- 2026-08-04 AR-1 BLOCKED: Five capped review-fix rounds (`62420b9..70ace06`) left a real P1 bypass in the mandatory boundary analyzer: non-identifier mutation receivers such as `(alias = slots).unshift(require)`, conditional/logical receiver results, and getter-return receivers can resolve to an empty target set and hide a new provider load. This security gate is load-bearing for downstream AR tasks; AR-1 remains unchecked pending architectural remediation.
+- 2026-08-06 AR-1 done — Closed the provider-boundary evaluator blocker with source-ordered live accessor, callback, closure, constructor, prototype, and opaque-mutation semantics; 182 architecture tests and the exact nine-path production boundary pass.

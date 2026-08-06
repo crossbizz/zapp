@@ -32,6 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          # Architecture lint re-scans ADR-0005's immutable baseline commit.
+          fetch-depth: 0
           persist-credentials: false
 
       # Must run before setup-node: `cache: pnpm` shells out to `pnpm store path`,
@@ -98,6 +100,9 @@ jobs:
       # --continue keeps going past the first failing task, so one CI round-trip
       # reports every lint AND test failure instead of a lint error masking the
       # tests behind it. Tasks whose dependencies failed are still skipped.
+      - name: Architecture lint
+        run: pnpm lint:architecture
+
       - name: Lint, typecheck, build, test
         run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
 

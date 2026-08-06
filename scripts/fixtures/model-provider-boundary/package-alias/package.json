@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "company-openai": "npm:@ai-sdk/openai@3.0.36"
+  }
+}

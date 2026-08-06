@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "company-openai": "npm:openai@4.104.0"
+  }
+}

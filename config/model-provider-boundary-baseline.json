@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 2,
+  "adr": "docs/adr/0005-desktop-provider-migration-window.md",
+  "adrSha256": "a6d53ba07e14f19d01971795c7c74ec2dec187e20bcd34fe1e9a6cd4a3bedcae",
+  "baselineCommit": "df81175a82ed9cb2d7508caafd291a2c26bc4794",
+  "baselineTree": "1b6e03ed3f396cc6597a7aea16468e1de2536699",
+  "inventorySha256": "2b9a0e97a918d2789cdc133ef89f8821e277c495ec6caa5723a9a1ab04124fdf",
+  "exceptionRemovalTask": "MAC-6",
+  "files": {
+    "apps/desktop/src/ipc/handlers/chat_stream_handlers.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai#createOpenAI": 1,
+        "call:@ai-sdk/anthropic#createAnthropic": 1,
+        "call:@ai-sdk/xai#createXai": 1,
+        "call:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "call:@ai-sdk/google-vertex#createVertex": 1,
+        "call:@ai-sdk/openai-compatible#createOpenAICompatible": 1,
+        "call:@ai-sdk/azure#createAzure": 1,
+        "call:@ai-sdk/amazon-bedrock#createAmazonBedrock": 1,
+        "call:ai#streamText": 1,
+        "call:ai#stepCountIs": 1,
+        "call:ai#hasToolCall": 1,
+        "call:ai#Output": 1
+      },
+      "providerImports": {
+        "import:ai#ModelMessage": 1,
+        "import:ai#TextPart": 1,
+        "import:ai#ImagePart": 1,
+        "import:ai#streamText": 1,
+        "import:ai#ToolSet": 1,
+        "import:ai#TextStreamPart": 1,
+        "import:ai#stepCountIs": 1,
+        "import:ai#hasToolCall": 1,
+        "import:ai#Output": 1,
+        "import:@ai-sdk/openai#createOpenAI": 1,
+        "import:@ai-sdk/anthropic#createAnthropic": 1,
+        "import:@ai-sdk/xai#createXai": 1,
+        "import:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "import:@ai-sdk/google-vertex#createVertex": 1,
+        "import:@ai-sdk/openai-compatible#createOpenAICompatible": 1,
+        "import:@ai-sdk/azure#createAzure": 1,
+        "import:@ai-sdk/amazon-bedrock#createAmazonBedrock": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai#createOpenAI": 8,
+        "use:@ai-sdk/anthropic#createAnthropic": 8,
+        "use:@ai-sdk/xai#createXai": 8,
+        "use:@ai-sdk/google#createGoogleGenerativeAI": 8,
+        "use:@ai-sdk/google-vertex#createVertex": 8,
+        "use:@ai-sdk/openai-compatible#createOpenAICompatible": 8,
+        "use:@ai-sdk/azure#createAzure": 8,
+        "use:@ai-sdk/amazon-bedrock#createAmazonBedrock": 8,
+        "use:ai#streamText": 5,
+        "use:ai#stepCountIs": 1,
+        "use:ai#hasToolCall": 1,
+        "use:ai#Output": 1
+      }
+    },
+    "apps/desktop/src/ipc/handlers/compaction/compaction_handler.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai#createOpenAI": 1,
+        "call:@ai-sdk/anthropic#createAnthropic": 1,
+        "call:@ai-sdk/xai#createXai": 1,
+        "call:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "call:@ai-sdk/google-vertex#createVertex": 1,
+        "call:@ai-sdk/openai-compatible#createOpenAICompatible": 1,
+        "call:@ai-sdk/azure#createAzure": 1,
+        "call:@ai-sdk/amazon-bedrock#createAmazonBedrock": 1,
+        "call:ai#streamText": 1,
+        "call:ai#Output": 1
+      },
+      "providerImports": {
+        "import:ai#streamText": 1,
+        "import:ai#ModelMessage": 1,
+        "import:@ai-sdk/openai#createOpenAI": 1,
+        "import:@ai-sdk/anthropic#createAnthropic": 1,
+        "import:@ai-sdk/xai#createXai": 1,
+        "import:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "import:@ai-sdk/google-vertex#createVertex": 1,
+        "import:@ai-sdk/openai-compatible#createOpenAICompatible": 1,
+        "import:@ai-sdk/azure#createAzure": 1,
+        "import:@ai-sdk/amazon-bedrock#createAmazonBedrock": 1,
+        "import:ai#Output": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai#createOpenAI": 4,
+        "use:@ai-sdk/anthropic#createAnthropic": 4,
+        "use:@ai-sdk/xai#createXai": 4,
+        "use:@ai-sdk/google#createGoogleGenerativeAI": 4,
+        "use:@ai-sdk/google-vertex#createVertex": 4,
+        "use:@ai-sdk/openai-compatible#createOpenAICompatible": 4,
+        "use:@ai-sdk/azure#createAzure": 4,
+        "use:@ai-sdk/amazon-bedrock#createAmazonBedrock": 4,
+        "use:ai#streamText": 4,
+        "use:ai#Output": 1
+      }
+    },
+    "apps/desktop/src/ipc/handlers/help_bot_handlers.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai#createOpenAI": 2,
+        "call:ai#streamText": 1,
+        "call:ai#Output": 1,
+        "call:@ai-sdk/openai#openai": 1
+      },
+      "providerImports": {
+        "import:ai#streamText": 1,
+        "import:ai#Tool": 1,
+        "import:@ai-sdk/openai#createOpenAI": 1,
+        "import:@ai-sdk/openai#openai": 1,
+        "import:@ai-sdk/openai#OpenAIResponsesProviderOptions": 1,
+        "import:ai#Output": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai#createOpenAI": 2,
+        "use:ai#streamText": 4,
+        "use:ai#Output": 1,
+        "use:@ai-sdk/openai#openai": 1
+      }
+    },
+    "apps/desktop/src/ipc/services/provider_api_key_validation_service.ts": {
+      "providerCalls": {
+        "call:ai#streamText": 1,
+        "call:ai#Output": 1,
+        "call:@ai-sdk/google#createGoogleGenerativeAI": 3,
+        "call:@ai-sdk/openai-compatible#createOpenAICompatible": 3,
+        "call:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 3
+      },
+      "providerImports": {
+        "import:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "import:@ai-sdk/openai-compatible#createOpenAICompatible": 1,
+        "import:ai#streamText": 1,
+        "import:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 1,
+        "import:ai#Output": 1
+      },
+      "providerUses": {
+        "use:ai#streamText": 2,
+        "use:ai#Output": 1,
+        "use:@ai-sdk/google#createGoogleGenerativeAI": 3,
+        "use:@ai-sdk/openai-compatible#createOpenAICompatible": 3,
+        "use:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 3
+      }
+    },
+    "apps/desktop/src/ipc/utils/get_model_client.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 1,
+        "call:@ai-sdk/openai#createOpenAI": 6,
+        "call:@ai-sdk/anthropic#createAnthropic": 6,
+        "call:@ai-sdk/xai#createXai": 6,
+        "call:@ai-sdk/google#createGoogleGenerativeAI": 6,
+        "call:@ai-sdk/google-vertex#createVertex": 6,
+        "call:@ai-sdk/openai-compatible#createOpenAICompatible": 16,
+        "call:@ai-sdk/azure#createAzure": 6,
+        "call:@ai-sdk/amazon-bedrock#createAmazonBedrock": 6
+      },
+      "providerImports": {
+        "import:@ai-sdk/openai#createOpenAI": 1,
+        "import:@ai-sdk/google#createGoogleGenerativeAI": 1,
+        "import:@ai-sdk/anthropic#createAnthropic": 1,
+        "import:@ai-sdk/xai#createXai": 1,
+        "import:@ai-sdk/google-vertex#createVertex": 1,
+        "import:@ai-sdk/azure#createAzure": 1,
+        "import:@ai-sdk/openai-compatible#createOpenAICompatible": 2,
+        "import:@ai-sdk/amazon-bedrock#createAmazonBedrock": 1,
+        "import:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 1,
+        "use:@ai-sdk/openai#createOpenAI": 6,
+        "use:@ai-sdk/anthropic#createAnthropic": 6,
+        "use:@ai-sdk/xai#createXai": 6,
+        "use:@ai-sdk/google#createGoogleGenerativeAI": 6,
+        "use:@ai-sdk/google-vertex#createVertex": 6,
+        "use:@ai-sdk/openai-compatible#createOpenAICompatible": 16,
+        "use:@ai-sdk/azure#createAzure": 6,
+        "use:@ai-sdk/amazon-bedrock#createAmazonBedrock": 6
+      }
+    },
+    "apps/desktop/src/ipc/utils/llm_engine_provider.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 3,
+        "call:@ai-sdk/openai/internal#OpenAIResponsesLanguageModel": 1,
+        "call:@ai-sdk/anthropic#createAnthropic": 7
+      },
+      "providerImports": {
+        "import:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 1,
+        "import:@ai-sdk/openai/internal#OpenAIResponsesLanguageModel": 1,
+        "import:@ai-sdk/anthropic#createAnthropic": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai-compatible#OpenAICompatibleChatLanguageModel": 10,
+        "use:@ai-sdk/openai/internal#OpenAIResponsesLanguageModel": 2,
+        "use:@ai-sdk/anthropic#createAnthropic": 14
+      }
+    },
+    "apps/desktop/src/ipc/utils/ollama_provider.ts": {
+      "providerCalls": {
+        "call:@ai-sdk/openai-compatible#createOpenAICompatible": 2
+      },
+      "providerImports": {
+        "import:@ai-sdk/openai-compatible#createOpenAICompatible": 1
+      },
+      "providerUses": {
+        "use:@ai-sdk/openai-compatible#createOpenAICompatible": 2
+      }
+    },
+    "apps/desktop/src/ipc/utils/provider_options.ts": {
+      "providerCalls": {},
+      "providerImports": {
+        "import:@ai-sdk/google#GoogleGenerativeAIProviderOptions": 1,
+        "import:@ai-sdk/openai#OpenAIResponsesProviderOptions": 1
+      },
+      "providerUses": {}
+    },
+    "apps/desktop/src/ipc/utils/stream_text_utils.ts": {
+      "providerCalls": {
+        "call:ai#Output": 1
+      },
+      "providerImports": {
+        "import:ai#Output": 1
+      },
+      "providerUses": {
+        "use:ai#Output": 2
+      }
+    }
+  }
+}
