@@ -17,6 +17,7 @@ import {
 } from '@zapp/workspace-runtime';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ToolExecutionError,
   ToolRegistry,
   type BrowserEvidencePort,
   type EnvironmentPort,
@@ -28,6 +29,16 @@ import {
   type ReleasePort,
   type ToolRegistryDependencies,
 } from '../src/registry.js';
+
+async function rejectedToolExecution(promise: Promise<unknown>): Promise<ToolExecutionError> {
+  try {
+    await promise;
+    throw new Error('Expected tool execution to reject');
+  } catch (error: unknown) {
+    expect(error).toBeInstanceOf(ToolExecutionError);
+    return error as ToolExecutionError;
+  }
+}
 
 const attribution = {
   organizationId: 'org_test',
@@ -743,10 +754,11 @@ describe('workspace-bound tools', () => {
 describe('execution truth and redaction', () => {
   it('persists redacted canonical command identity with trusted caller attribution', async () => {
     const runtime = new RecordingRuntime();
+    const registeredSecret = 'api"key\\line\nnext';
     const redactor: OutputRedactor = {
-      redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
+      redact: (value) => value.split(registeredSecret).join('[secret:API_KEY]'),
     };
-    const contractedCommand = 'pnpm build --token registered-secret';
+    const contractedCommand = `pnpm build --token ${registeredSecret}`;
     const projectData: ProjectDataPort = {
       ...defaultPorts().projectData,
       readLatestProjectContract: () =>
@@ -770,29 +782,233 @@ describe('execution truth and redaction', () => {
     );
     expect(first.context).toEqual(trustedContext);
     expect(first.auditPayload).toMatchObject({
+      organizationId: 'org_trusted',
+      projectId: 'project_trusted',
+      runId: 'run_trusted',
+      taskId: 'task_trusted',
+      step: 'step-1',
+      tool: 'run_command',
       command: 'node',
-      arguments: '["--version"]',
+      argument0: '--version',
+      argumentCount: 1,
       cwd: 'src',
+      outcome: 'succeeded',
+      code: 'ok',
+      attemptCount: 1,
     });
     expect(second.auditPayload.command).toBe('bun');
     expect(second.auditPayload.command).not.toBe(first.auditPayload.command);
 
     const secretBearing = await registry.executeWithAudit(
       'run_command',
-      { cmd: 'node', args: ['--token', 'registered-secret'] },
+      { cmd: 'node', args: ['--token', registeredSecret] },
       trustedContext,
     );
-    expect(JSON.stringify(secretBearing.auditPayload)).not.toContain('registered-secret');
-    expect(secretBearing.auditPayload.arguments).toContain('[REDACTED]');
+    expect(secretBearing.auditPayload).toMatchObject({
+      argument0: '--token',
+      argument1: '[secret:API_KEY]',
+      argumentCount: 2,
+    });
+    expect(secretBearing.auditPayload).not.toHaveProperty('arguments');
+    expect(Object.values(secretBearing.auditPayload)).not.toContain(registeredSecret);
 
     const named = await registry.executeWithAudit('run_build', {}, trustedContext);
     expect(named.context).toEqual(trustedContext);
     expect(named.auditPayload).toMatchObject({
       contractVersion: 9,
-      command: 'pnpm build --token [REDACTED]',
+      command: 'pnpm build --token [secret:API_KEY]',
       cwd: '.',
+      tool: 'run_build',
+      outcome: 'succeeded',
+      code: 'ok',
+      attemptCount: 1,
     });
-    expect(JSON.stringify(named.auditPayload)).not.toContain('registered-secret');
+    expect(Object.values(named.auditPayload)).not.toContain(registeredSecret);
+  });
+
+  it('carries redacted attempt audits for arbitrary and named command transport rejection', async () => {
+    const registeredSecret = 'transport"secret\\path\nline';
+    class RejectingRuntime extends RecordingRuntime {
+      override exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
+        this.execCalls.push(input);
+        return Promise.reject(new Error(`transport exposed ${registeredSecret}`));
+      }
+    }
+    const runtime = new RejectingRuntime();
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLatestProjectContract: () =>
+        Promise.resolve({
+          ok: true,
+          version: 11,
+          contract: {
+            ...contract,
+            build: { command: `pnpm build --token ${registeredSecret}` },
+          },
+        }),
+    };
+    const registry = registryFor(runtime, {
+      projectData,
+      redactor: {
+        redact: (value) => value.split(registeredSecret).join('[secret:TRANSPORT_KEY]'),
+      },
+    });
+
+    const arbitrary = await rejectedToolExecution(
+      registry.executeWithAudit(
+        'run_command',
+        { cmd: 'node', args: ['--token', registeredSecret], cwd: 'src' },
+        trustedContext,
+      ),
+    );
+    expect(arbitrary.message).toBe('run_command failed');
+    expect(arbitrary.context).toEqual(trustedContext);
+    expect(arbitrary.auditPayload).toMatchObject({
+      organizationId: 'org_trusted',
+      projectId: 'project_trusted',
+      runId: 'run_trusted',
+      taskId: 'task_trusted',
+      step: 'step-1',
+      tool: 'run_command',
+      command: 'node',
+      argument0: '--token',
+      argument1: '[secret:TRANSPORT_KEY]',
+      argumentCount: 2,
+      cwd: 'src',
+      outcome: 'failed',
+      code: 'tool_failed',
+      attemptCount: 1,
+    });
+    expect(Object.values(arbitrary.auditPayload)).not.toContain(registeredSecret);
+
+    const named = await rejectedToolExecution(
+      registry.executeWithAudit('run_build', {}, trustedContext),
+    );
+    expect(named.message).toBe('run_build failed');
+    expect(named.context).toEqual(trustedContext);
+    expect(named.auditPayload).toMatchObject({
+      tool: 'run_build',
+      contractVersion: 11,
+      command: 'pnpm build --token [secret:TRANSPORT_KEY]',
+      cwd: '.',
+      outcome: 'failed',
+      code: 'tool_failed',
+      attemptCount: 1,
+    });
+    expect(Object.values(named.auditPayload)).not.toContain(registeredSecret);
+    expect(runtime.execCalls).toHaveLength(2);
+  });
+
+  it('carries attempt audits when arbitrary and named commands time out', async () => {
+    vi.useFakeTimers();
+    class PendingRuntime extends RecordingRuntime {
+      override exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
+        this.execCalls.push(input);
+        return new Promise(() => undefined);
+      }
+    }
+    const runtime = new PendingRuntime();
+    const registry = registryFor(runtime);
+
+    try {
+      const arbitraryExecution = registry.executeWithAudit(
+        'run_command',
+        { cmd: 'node', args: ['slow.js'], cwd: 'src' },
+        trustedContext,
+      );
+      const arbitraryFailure = rejectedToolExecution(arbitraryExecution);
+      await vi.advanceTimersByTimeAsync(120_001);
+      const arbitrary = await arbitraryFailure;
+      expect(arbitrary.context).toEqual(trustedContext);
+      expect(arbitrary.auditPayload).toMatchObject({
+        tool: 'run_command',
+        command: 'node',
+        argument0: 'slow.js',
+        argumentCount: 1,
+        cwd: 'src',
+        outcome: 'timed_out',
+        code: 'tool_timeout',
+        attemptCount: 1,
+      });
+
+      const namedExecution = registry.executeWithAudit('run_build', {}, trustedContext);
+      const namedFailure = rejectedToolExecution(namedExecution);
+      await vi.advanceTimersByTimeAsync(120_001);
+      const named = await namedFailure;
+      expect(named.context).toEqual(trustedContext);
+      expect(named.auditPayload).toMatchObject({
+        tool: 'run_build',
+        contractVersion: 3,
+        command: 'pnpm build',
+        cwd: '.',
+        outcome: 'timed_out',
+        code: 'tool_timeout',
+        attemptCount: 1,
+      });
+      expect(runtime.execCalls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('carries attempt audits and dispatches no retry after in-flight command cancellation', async () => {
+    class PendingRuntime extends RecordingRuntime {
+      override exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
+        this.execCalls.push(input);
+        return new Promise(() => undefined);
+      }
+    }
+    const runtime = new PendingRuntime();
+    const registry = registryFor(runtime);
+
+    const arbitraryCaller = new AbortController();
+    const arbitraryExecution = registry.executeWithAudit(
+      'run_command',
+      { cmd: 'node', args: ['watch.js'], cwd: 'src' },
+      trustedContext,
+      arbitraryCaller.signal,
+    );
+    const arbitraryFailure = rejectedToolExecution(arbitraryExecution);
+    await vi.waitFor(() => {
+      expect(runtime.execCalls).toHaveLength(1);
+    });
+    arbitraryCaller.abort(new Error('stop arbitrary command'));
+    const arbitrary = await arbitraryFailure;
+    expect(arbitrary.context).toEqual(trustedContext);
+    expect(arbitrary.auditPayload).toMatchObject({
+      tool: 'run_command',
+      command: 'node',
+      argument0: 'watch.js',
+      cwd: 'src',
+      outcome: 'cancelled',
+      code: 'tool_cancelled',
+      attemptCount: 1,
+    });
+
+    const namedCaller = new AbortController();
+    const namedExecution = registry.executeWithAudit(
+      'run_build',
+      {},
+      trustedContext,
+      namedCaller.signal,
+    );
+    const namedFailure = rejectedToolExecution(namedExecution);
+    await vi.waitFor(() => {
+      expect(runtime.execCalls).toHaveLength(2);
+    });
+    namedCaller.abort(new Error('stop named command'));
+    const named = await namedFailure;
+    expect(named.context).toEqual(trustedContext);
+    expect(named.auditPayload).toMatchObject({
+      tool: 'run_build',
+      contractVersion: 3,
+      command: 'pnpm build',
+      cwd: '.',
+      outcome: 'cancelled',
+      code: 'tool_cancelled',
+      attemptCount: 1,
+    });
+    expect(runtime.execCalls).toHaveLength(2);
   });
 
   it('redacts stdout and stderr through the injected registry redactor', async () => {

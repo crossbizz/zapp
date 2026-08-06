@@ -23,7 +23,9 @@ Extend WS-1 with exactly two workspace-owned primitives:
 - `restartDevServer(contract)` stops and waits for the currently managed development
   server before starting its replacement. Readiness requires evidence that the
   contracted listener belongs to the replacement process or supervised process group;
-  an unrelated listener on the same port is not readiness.
+  an unrelated listener on the same port is not readiness. The existing
+  `startDevServer(contract)` uses the identical ownership/readiness evidence, and the
+  cloud provider/client maps start and restart one-for-one to distinct strict routes.
 - `writeFilesAtomically(files)` validates the complete workspace-relative path set,
   resolves every target before staging, rejects leaf-symlink targets, duplicate
   canonical targets, observable same-inode aliases, and initially absent names that
@@ -41,8 +43,9 @@ options to agent-tools.
 
 ## Consequences
 
-- `restart_dev_server` can report a replacement PID only after the prior managed
-  process has stopped and the replacement owns the contract port.
+- `run_dev_server` and `restart_dev_server` can report a PID only after the returned
+  supervisor proves that process/group owns the contract port; restart additionally
+  waits for the prior managed process to stop and reports a replacement PID.
 - Unified patches cross the runtime boundary as one staged batch, preventing an
   agent-tools loop from creating partial writes. Multiple patch sections cannot claim
   success while collapsing onto one target because duplicate target identity rejects

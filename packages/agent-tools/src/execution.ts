@@ -3,6 +3,7 @@ import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
 import type {
   AnyToolSpec,
+  ToolAuditPayload,
   ToolAuditRecorder,
   ToolExecutionContext,
   ToolMutationContext,
@@ -232,6 +233,18 @@ function commandSummary(label: string, output: z.infer<typeof ExecOutputSchema>)
   return output.ok ? `${label} completed` : `${label} failed (exit ${String(output.exitCode)})`;
 }
 
+function commandAuditIdentity(input: z.infer<typeof CommandInputSchema>): ToolAuditPayload {
+  const identity: ToolAuditPayload = {
+    command: input.cmd,
+    argumentCount: input.args.length,
+    cwd: input.cwd ?? '.',
+  };
+  for (const [index, argument] of input.args.entries()) {
+    identity[`argument${String(index)}`] = argument;
+  }
+  return identity;
+}
+
 export function createExecutionTools(
   runtime: WorkspaceRuntime,
   browser: BrowserEvidencePort,
@@ -295,12 +308,13 @@ export function createExecutionTools(
       outputSchema: ExecOutputSchema,
       idempotent: false,
       timeoutMs: 120_000,
-      run: (input) => runCommand(runtime, input),
+      run: (input, _context, _signal, recordAudit) => {
+        recordAudit(commandAuditIdentity(input));
+        return runCommand(runtime, input);
+      },
       userSummary: (_input, output) => commandSummary('Command', output),
       auditPayload: (input, output) => ({
-        command: input.cmd,
-        arguments: JSON.stringify(input.args),
-        cwd: input.cwd ?? '.',
+        ...commandAuditIdentity(input),
         exitCode: output.exitCode,
         ok: output.ok,
       }),

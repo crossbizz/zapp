@@ -42,12 +42,36 @@ export interface ToolMutationContext extends ToolExecutionContext {
   readonly idempotencyKey: string;
 }
 
-export type ToolAuditPayload = Record<string, string | number | boolean>;
+const ToolAuditScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+export const ToolAuditPayloadSchema = z.record(z.string().min(1), ToolAuditScalarSchema);
+export type ToolAuditPayload = z.infer<typeof ToolAuditPayloadSchema>;
+
+export const ToolAttemptAuditPayloadSchema = z
+  .object({
+    organizationId: z.string().min(1),
+    projectId: z.string().min(1),
+    runId: z.string().min(1),
+    taskId: z.string().min(1),
+    step: z.string().min(1),
+    tool: z.enum(TOOL_NAMES),
+    outcome: z.enum(['succeeded', 'failed', 'timed_out', 'cancelled']),
+    code: z.enum([
+      'ok',
+      'tool_result_failed',
+      'tool_failed',
+      'tool_timeout',
+      'tool_cancelled',
+    ]),
+    attemptCount: z.number().int().nonnegative(),
+  })
+  .catchall(ToolAuditScalarSchema);
+
+export type ToolAttemptAuditPayload = z.infer<typeof ToolAttemptAuditPayloadSchema>;
 
 export interface ToolExecutionWithAudit {
   readonly output: unknown;
   readonly context: ToolExecutionContext;
-  readonly auditPayload: ToolAuditPayload;
+  readonly auditPayload: ToolAttemptAuditPayload;
 }
 
 export type ToolAuditRecorder = (payload: ToolAuditPayload) => void;
@@ -108,8 +132,15 @@ export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, 
 
 export class ToolExecutionError extends Error {
   readonly code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled';
+  readonly context: ToolExecutionContext;
+  readonly auditPayload: ToolAttemptAuditPayload;
 
-  constructor(tool: ToolName, code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled') {
+  constructor(
+    tool: ToolName,
+    code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled',
+    context: ToolExecutionContext,
+    auditPayload: ToolAttemptAuditPayload,
+  ) {
     super(
       code === 'tool_timeout'
         ? `${tool} timed out`
@@ -119,6 +150,15 @@ export class ToolExecutionError extends Error {
     );
     this.name = 'ToolExecutionError';
     this.code = code;
+    this.context = ToolExecutionContextSchema.parse(context);
+    this.auditPayload = ToolAttemptAuditPayloadSchema.parse(auditPayload);
+  }
+}
+
+class ToolControlError extends Error {
+  constructor(readonly code: 'tool_timeout' | 'tool_cancelled') {
+    super(code);
+    this.name = 'ToolControlError';
   }
 }
 
@@ -162,14 +202,14 @@ async function withTimeout<T>(
     rejectCancellation = reject;
   });
   const onCallerAbort = (): void => {
-    const error = new ToolExecutionError(tool, 'tool_cancelled');
+    const error = new ToolControlError('tool_cancelled');
     controller.abort(error);
     rejectCancellation?.(error);
   };
   callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      const error = new ToolExecutionError(tool, 'tool_timeout');
+      const error = new ToolControlError('tool_timeout');
       controller.abort(error);
       reject(error);
     }, timeoutMs);
@@ -202,13 +242,43 @@ function redactValue(value: unknown, redactor: OutputRedactor): unknown {
 
 function redactAuditPayload(payload: ToolAuditPayload, redactor: OutputRedactor): ToolAuditPayload {
   const redacted: ToolAuditPayload = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (!['string', 'number', 'boolean'].includes(typeof value)) {
-      throw new Error(`Audit payload field ${key} must be scalar`);
-    }
+  for (const [key, value] of Object.entries(ToolAuditPayloadSchema.parse(payload))) {
     redacted[key] = typeof value === 'string' ? redactor.redact(value) : value;
   }
-  return redacted;
+  return ToolAuditPayloadSchema.parse(redacted);
+}
+
+function attemptAuditPayload(
+  context: ToolExecutionContext,
+  tool: ToolName,
+  attemptCount: number,
+  outcome: ToolAttemptAuditPayload['outcome'],
+  code: ToolAttemptAuditPayload['code'],
+  payload: ToolAuditPayload,
+  redactor: OutputRedactor,
+): ToolAttemptAuditPayload {
+  return ToolAttemptAuditPayloadSchema.parse(
+    redactAuditPayload(
+      {
+        ...payload,
+        ...context,
+        tool,
+        outcome,
+        code,
+        attemptCount,
+      },
+      redactor,
+    ),
+  );
+}
+
+function outputFailed(output: unknown): boolean {
+  return (
+    output !== null &&
+    typeof output === 'object' &&
+    'ok' in output &&
+    (output as { readonly ok?: unknown }).ok === false
+  );
 }
 
 function assertExactRegistry(specs: readonly AnyToolSpec[]): void {
@@ -287,16 +357,24 @@ export class ToolRegistry {
     ): Promise<ToolExecutionWithAudit> => {
       const input = spec.inputSchema.parse(rawInput);
       const context = ToolExecutionContextSchema.parse(rawContext);
-      let lastError: unknown;
 
       for (let attempt = 1; attempt <= spec.retryPolicy.maxAttempts; attempt += 1) {
         if (isAborted(callerSignal)) {
-          throw new ToolExecutionError(spec.name, 'tool_cancelled');
+          const auditPayload = attemptAuditPayload(
+            context,
+            spec.name,
+            attempt - 1,
+            'cancelled',
+            'tool_cancelled',
+            {},
+            redactor,
+          );
+          throw new ToolExecutionError(spec.name, 'tool_cancelled', context, auditPayload);
         }
         const controller = new AbortController();
         const recordedAudit: ToolAuditPayload = {};
         const recordAudit: ToolAuditRecorder = (payload) => {
-          Object.assign(recordedAudit, payload);
+          Object.assign(recordedAudit, ToolAuditPayloadSchema.parse(payload));
         };
         try {
           const rawOutput = await withTimeout(
@@ -309,10 +387,16 @@ export class ToolRegistry {
           const output = spec.outputSchema.parse(rawOutput);
           const visibleOutput = spec.redactOutput ? redactValue(output, redactor) : output;
           const parsedOutput = spec.outputSchema.parse(visibleOutput);
+          const failed = outputFailed(parsedOutput);
           return {
             output: parsedOutput,
             context,
-            auditPayload: redactAuditPayload(
+            auditPayload: attemptAuditPayload(
+              context,
+              spec.name,
+              attempt,
+              failed ? 'failed' : 'succeeded',
+              failed ? 'tool_result_failed' : 'ok',
               { ...spec.auditPayload(input, parsedOutput), ...recordedAudit },
               redactor,
             ),
@@ -322,26 +406,53 @@ export class ToolRegistry {
             throw error;
           }
           if (
-            (error instanceof ToolExecutionError && error.code === 'tool_cancelled') ||
+            (error instanceof ToolControlError && error.code === 'tool_cancelled') ||
             isAborted(callerSignal)
           ) {
-            throw new ToolExecutionError(spec.name, 'tool_cancelled');
+            const auditPayload = attemptAuditPayload(
+              context,
+              spec.name,
+              attempt,
+              'cancelled',
+              'tool_cancelled',
+              recordedAudit,
+              redactor,
+            );
+            throw new ToolExecutionError(spec.name, 'tool_cancelled', context, auditPayload);
           }
-          lastError = error;
           if (attempt < spec.retryPolicy.maxAttempts) {
             try {
               await sleep(spec.retryPolicy.backoffMs, callerSignal);
             } catch {
-              throw new ToolExecutionError(spec.name, 'tool_cancelled');
+              const auditPayload = attemptAuditPayload(
+                context,
+                spec.name,
+                attempt,
+                'cancelled',
+                'tool_cancelled',
+                recordedAudit,
+                redactor,
+              );
+              throw new ToolExecutionError(spec.name, 'tool_cancelled', context, auditPayload);
             }
+            continue;
           }
+          const timedOut = error instanceof ToolControlError && error.code === 'tool_timeout';
+          const code = timedOut ? 'tool_timeout' : 'tool_failed';
+          const auditPayload = attemptAuditPayload(
+            context,
+            spec.name,
+            attempt,
+            timedOut ? 'timed_out' : 'failed',
+            code,
+            recordedAudit,
+            redactor,
+          );
+          throw new ToolExecutionError(spec.name, code, context, auditPayload);
         }
       }
 
-      if (lastError instanceof ToolExecutionError && lastError.code === 'tool_timeout') {
-        throw lastError;
-      }
-      throw new ToolExecutionError(spec.name, 'tool_failed');
+      throw new Error(`Unreachable retry state for ${spec.name}`);
     };
     const execute = async (
       rawInput: unknown,
