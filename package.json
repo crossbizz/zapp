@@ -14,6 +14,8 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:integration": "turbo run test:integration",
+    "modal:publish": "pnpm --filter @zapp/modal-infra modal:publish",
+    "modal:smoke": "pnpm --filter @zapp/modal-infra modal:smoke",
     "db:generate": "pnpm --filter @zapp/db db:generate",
     "db:migrate": "pnpm --filter @zapp/db db:migrate",
     "format": "prettier --write .",

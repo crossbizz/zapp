@@ -1,0 +1,260 @@
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { describe, expect, test } from 'vitest';
+import {
+  PublishImageInputSchema,
+  type ModalImagePublisher,
+} from '@zapp/sandbox-service/provider-types';
+import {
+  ImageLockSchema,
+  collectPublishPreflightBlockers,
+  parseModalPublishArgs,
+  publishImagesTransaction,
+} from '../publish.js';
+
+const SOURCE_REVISION = {
+  repositoryUrl: 'https://github.com/crossbizz/zapp.git',
+  commitSha: 'abcdef0123456789abcdef0123456789abcdef01',
+} as const;
+
+function successfulPublisher(
+  calls: Array<{ operation: string; input: unknown }>,
+): ModalImagePublisher {
+  return {
+    publishImage(input) {
+      calls.push({ operation: 'publish', input });
+      return Promise.resolve({
+        digest:
+          input.imageName === 'forge-node-base'
+            ? `im-base-${input.environment}`
+            : `im-web-${input.environment}`,
+        publishedName: input.publishedName,
+      });
+    },
+    smokeImage(input) {
+      calls.push({ operation: 'smoke', input });
+      return Promise.resolve({
+        nodeVersion: 'v22.23.1',
+        health: { ok: true, details: 'workspace-agent ready' },
+        vmRuntime: true,
+        cgroup: { delegated: true, kill: true, emptySignal: true },
+        terminated: true,
+      });
+    },
+  };
+}
+
+async function createLockFixture(contents: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'zapp-modal-lock-'));
+  const path = join(directory, 'images.lock.json');
+  await writeFile(path, contents);
+  return path;
+}
+
+function transactionInput(
+  lockFilePath: string,
+  provider: ModalImagePublisher,
+  environments: readonly ('dev' | 'staging' | 'prod')[] = ['dev'],
+) {
+  return {
+    environments,
+    sourceRevision: SOURCE_REVISION,
+    lockFilePath,
+    provider,
+    buildDate: new Date('2026-08-05T12:00:00.000Z'),
+    createAgentToken: randomUUID,
+    telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
+  } as const;
+}
+
+describe('Modal publication CLI contract', () => {
+  test('maps scoped and all-environment arguments and rejects unknown values', () => {
+    expect(parseModalPublishArgs(['publish', '--env', 'dev'])).toEqual({
+      mode: 'publish',
+      environments: ['dev'],
+    });
+    expect(parseModalPublishArgs(['publish'])).toEqual({
+      mode: 'publish',
+      environments: ['dev', 'staging', 'prod'],
+    });
+    expect(parseModalPublishArgs(['smoke', '--env', 'prod'])).toEqual({
+      mode: 'smoke',
+      environments: ['prod'],
+    });
+    expect(() => parseModalPublishArgs(['publish', '--env', 'qa'])).toThrow(
+      'Expected dev, staging, or prod',
+    );
+    expect(() => parseModalPublishArgs(['publish', '--unknown'])).toThrow('Unknown argument');
+  });
+
+  test('rejects malformed immutable tags and provider digests at the lock boundary', () => {
+    const validEnvironment = {
+      modalEnvironment: 'zapp-dev',
+      sourceRevision: SOURCE_REVISION.commitSha,
+      tag: '2026-08-05-abcdef0',
+      images: {
+        'forge-node-base': {
+          appName: 'zapp-workspaces',
+          digest: 'im-base0123',
+          publishedName: 'forge-node-base:2026-08-05-abcdef0',
+        },
+        'forge-web-test': {
+          appName: 'zapp-browser-verify',
+          digest: 'im-web0123',
+          publishedName: 'forge-web-test:2026-08-05-abcdef0',
+        },
+      },
+    };
+
+    expect(() =>
+      ImageLockSchema.parse({
+        version: 1,
+        environments: { dev: { ...validEnvironment, tag: 'latest' } },
+      }),
+    ).toThrow();
+    expect(() =>
+      ImageLockSchema.parse({
+        version: 1,
+        environments: {
+          dev: {
+            ...validEnvironment,
+            images: {
+              ...validEnvironment.images,
+              'forge-node-base': {
+                ...validEnvironment.images['forge-node-base'],
+                digest: '',
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test('reports missing credentials and an unpublished source revision as separate blockers', async () => {
+    const blockers = await collectPublishPreflightBlockers({
+      credentials: {},
+      sourceRevision: SOURCE_REVISION,
+      isRevisionAdvertised: () => Promise.resolve(false),
+    });
+
+    expect(blockers).toEqual([
+      'Modal credentials are missing: set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET',
+      `Source revision ${SOURCE_REVISION.commitSha} is not advertised by ${SOURCE_REVISION.repositoryUrl}`,
+    ]);
+  });
+});
+
+describe('Modal image publication transaction', () => {
+  test('publishes both app targets, smoke-checks the base, and preserves unselected records', async () => {
+    const previous = JSON.stringify(
+      {
+        version: 1,
+        environments: {
+          staging: {
+            modalEnvironment: 'zapp-staging',
+            sourceRevision: '1111111111111111111111111111111111111111',
+            tag: '2026-08-04-1111111',
+            images: {
+              'forge-node-base': {
+                appName: 'zapp-workspaces',
+                digest: 'im-oldbase',
+                publishedName: 'forge-node-base:2026-08-04-1111111',
+              },
+              'forge-web-test': {
+                appName: 'zapp-browser-verify',
+                digest: 'im-oldweb',
+                publishedName: 'forge-web-test:2026-08-04-1111111',
+              },
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ).concat('\n');
+    const lockFilePath = await createLockFixture(previous);
+    const calls: Array<{ operation: string; input: unknown }> = [];
+
+    const result = await publishImagesTransaction(
+      transactionInput(lockFilePath, successfulPublisher(calls)),
+    );
+
+    expect(calls.map(({ operation }) => operation)).toEqual(['publish', 'publish', 'smoke']);
+    expect(calls[0]?.input).toEqual(
+      expect.objectContaining({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        imageName: 'forge-node-base',
+        publishedName: 'forge-node-base:2026-08-05-abcdef0',
+      }),
+    );
+    expect(calls[1]?.input).toEqual(
+      expect.objectContaining({
+        environment: 'zapp-dev',
+        appName: 'zapp-browser-verify',
+        imageName: 'forge-web-test',
+        publishedName: 'forge-web-test:2026-08-05-abcdef0',
+      }),
+    );
+    const webPublication = PublishImageInputSchema.parse(calls[1]?.input);
+    expect(webPublication.recipe.base).toEqual({
+      kind: 'publication',
+      digest: 'im-base-zapp-dev',
+    });
+    expect(calls[2]?.input).toEqual(
+      expect.objectContaining({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        publishedName: 'forge-node-base:2026-08-05-abcdef0',
+      }),
+    );
+    expect(result.environments.staging?.tag).toBe('2026-08-04-1111111');
+    expect(result.environments.dev?.images['forge-node-base'].digest).toBe('im-base-zapp-dev');
+    expect(ImageLockSchema.parse(JSON.parse(await readFile(lockFilePath, 'utf8')))).toEqual(result);
+  });
+
+  test('leaves the lock byte-for-byte unchanged when the second image fails', async () => {
+    const original = '{"version":1,"environments":{}}\n';
+    const lockFilePath = await createLockFixture(original);
+    const provider = successfulPublisher([]);
+    let invocation = 0;
+    provider.publishImage = (input) => {
+      invocation += 1;
+      if (invocation === 2) {
+        return Promise.reject(new Error('web image failed'));
+      }
+      return Promise.resolve({ digest: 'im-base-dev', publishedName: input.publishedName });
+    };
+
+    await expect(
+      publishImagesTransaction(transactionInput(lockFilePath, provider)),
+    ).rejects.toThrow('web image failed');
+    expect(await readFile(lockFilePath, 'utf8')).toBe(original);
+  });
+
+  test('leaves the lock unchanged when a later environment or smoke fails', async () => {
+    const original = '{\n  "version": 1,\n  "environments": {}\n}\n';
+    const lockFilePath = await createLockFixture(original);
+    const provider = successfulPublisher([]);
+    provider.smokeImage = (input) => {
+      if (input.environment === 'zapp-staging') {
+        return Promise.reject(new Error('staging VM smoke failed'));
+      }
+      return Promise.resolve({
+        nodeVersion: 'v22.23.1',
+        health: { ok: true, details: 'workspace-agent ready' },
+        vmRuntime: true,
+        cgroup: { delegated: true, kill: true, emptySignal: true },
+        terminated: true,
+      });
+    };
+
+    await expect(
+      publishImagesTransaction(transactionInput(lockFilePath, provider, ['dev', 'staging'])),
+    ).rejects.toThrow('staging VM smoke failed');
+    expect(await readFile(lockFilePath, 'utf8')).toBe(original);
+  });
+});

@@ -1,0 +1,30 @@
+{
+  "name": "@zapp/sandbox-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./provider/modal": {
+      "types": "./dist/modal.d.ts",
+      "default": "./dist/modal.js"
+    },
+    "./provider-types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "modal": "0.9.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "vitest": "3.2.7"
+  }
+}

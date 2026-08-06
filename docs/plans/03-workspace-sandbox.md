@@ -23,8 +23,9 @@ Master plan §Global Constraints, plus:
 
 ```text
 services/sandbox-service/
+  package.json, tsconfig.json
   src/app.ts, src/server.ts
-  src/provider/modal.ts          # CloudSandboxProvider impl (ONLY Modal SDK import site)
+  src/provider/modal.ts          # image publisher + CloudSandboxProvider impl (ONLY Modal SDK import site)
   src/provider/types.ts
   src/lifecycle/manager.ts       # state machine + reconciler
   src/lifecycle/reaper.ts        # idle + 24h replacement
@@ -39,9 +40,9 @@ sandbox/workspace-agent/         # ships INTO images
 sandbox/preview-proxy/
   src/main.ts, src/inject/zapp-client.js, src/capture.ts
 infra/modal/
-  images/forge-node-base.ts      # image builder script (Modal SDK)
+  images/forge-node-base.ts      # provider-neutral image recipe
   images/forge-web-test.ts
-  publish.ts                     # builds, tags, records digest in infra/modal/images.lock.json
+  publish.ts                     # orchestrates provider facade, records digest in images.lock.json
 packages/workspace-runtime/
   src/runtime.ts                 # WorkspaceRuntime interface (cloud/local/docker share)
 ```
@@ -85,7 +86,7 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 
 ### Task WS-2: Modal images `forge-node-base` + `forge-web-test`
 
-**Files:** Create: `infra/modal/images/forge-node-base.ts`, `forge-web-test.ts`, `publish.ts`, `images.lock.json`
+**Files:** Create: `infra/modal/images/forge-node-base.ts`, `forge-web-test.ts`, `publish.ts`, `images.lock.json`; per ADR-0010, create the minimal `services/sandbox-service` package scaffolding and `src/provider/modal.ts` as the only Modal SDK import site, plus tests for the recipes and publication transaction
 **Effort:** L
 
 - [ ] **Step 1:** `forge-node-base` per PRD §18.5: node 22 LTS, npm/pnpm/yarn (corepack), git + git-lfs, ripgrep, curl, jq, unzip, build-essential, python3 (node-gyp), dumb-init; bakes `sandbox/workspace-agent` and `sandbox/preview-proxy` builds at `/opt/zapp/{agent,proxy}` with a boot script `/opt/zapp/boot.sh` (starts agent on :8877 with one-time token from env `ZAPP_AGENT_TOKEN`, proxy on :8080); lightweight OTel exporter relaying sandbox telemetry to the sandbox-service collector endpoint (sandboxes never hold Grafana credentials — PRD §18.5 "OpenTelemetry collector or lightweight exporter").

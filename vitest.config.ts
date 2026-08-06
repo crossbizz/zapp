@@ -11,6 +11,10 @@ import { defineConfig } from 'vitest/config';
 // unchanged, so the set of projects is identical.
 export default defineConfig({
   test: {
-    projects: ['packages/*/vitest.config.ts', 'services/*/vitest.config.ts'],
+    projects: [
+      'packages/*/vitest.config.ts',
+      'services/*/vitest.config.ts',
+      'infra/*/vitest.config.ts',
+    ],
   },
 });
