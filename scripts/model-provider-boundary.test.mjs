@@ -1205,6 +1205,43 @@ test('AR-1 honors object spread overwrites and harmless defaults', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 applies constructor effects through the source-ordered evaluator', async () => {
+  const sourceEntries = [
+    {
+      relativePath: 'apps/desktop/src/ipc/utils/constructor-reattach.ts',
+      text: `
+        export {};
+        const provider = '@ai-sdk/openai';
+        const slots = [console.log];
+        let alias = [];
+        class Attach { constructor() { alias = slots; } }
+        (new Attach(), alias).unshift(require);
+        slots[0](provider);
+      `,
+    },
+    {
+      relativePath: 'apps/desktop/src/ipc/utils/constructor-detach-control.ts',
+      text: `
+        export {};
+        const provider = '@ai-sdk/openai';
+        const slots = [console.log];
+        let alias = slots;
+        class Detach { constructor() { alias = []; } }
+        (new Detach(), alias).unshift(require);
+        slots[0](provider);
+      `,
+    },
+  ];
+
+  const inventory = await analyzeProductionSources(projectRoot, sourceEntries, {
+    modules: new Map(),
+    packageImports: [],
+  });
+
+  assert.ok(inventory[sourceEntries[0].relativePath]);
+  assert.equal(inventory[sourceEntries[1].relativePath], undefined);
+});
+
 test('AR-1 keeps object-spread shape analysis bounded', async () => {
   const lines = [
     'export {};',
