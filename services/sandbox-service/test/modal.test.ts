@@ -4,10 +4,11 @@ import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import {
   createModalImagePublisher,
+  imageDockerfileCommands,
   type ModalSdkPort,
   type ModalSdkSandboxPort,
 } from '../src/provider/modal.js';
-import { ImageRecipeSchema } from '../src/provider/types.js';
+import { ImageRecipeSchema, SmokeImageInputSchema } from '../src/provider/types.js';
 
 const TAG = '2026-08-05-abcdef0';
 
@@ -23,22 +24,54 @@ function baseRecipe() {
   });
 }
 
-function successfulSandbox(commands: string[][], terminate: () => void): ModalSdkSandboxPort {
+interface StatefulSandboxOptions {
+  readonly cleanupFailure?: boolean;
+}
+
+function successfulSandbox(
+  commands: string[][],
+  terminate: () => void,
+  options: StatefulSandboxOptions = {},
+): ModalSdkSandboxPort {
+  const cleanupIds = new Set<string>();
   return {
     exec(command) {
       commands.push(command);
+      for (const match of command.join('\n').matchAll(/cleanupId=([a-f0-9-]{36})/gu)) {
+        const cleanupId = match[1];
+        if (cleanupId !== undefined) cleanupIds.add(cleanupId);
+      }
       if (command[0] === 'node') {
         return Promise.resolve({ exitCode: 0, stdout: 'v22.23.1\n', stderr: '' });
       }
-      if (command[0] === 'curl' && command.at(-1)?.endsWith('/healthz')) {
+      const url = command.at(-1) ?? '';
+      if (command[0] === 'curl' && url.endsWith('/healthz')) {
         return Promise.resolve({
           exitCode: 0,
           stdout: JSON.stringify({ ok: true, details: 'workspace-agent ready' }),
           stderr: '',
         });
       }
+      if (command[0] === 'curl' && url.includes('/exec/cleanup/')) {
+        const cleanupId = url.split('/').at(-1) ?? '';
+        if (options.cleanupFailure === true || !cleanupIds.has(cleanupId)) {
+          return Promise.resolve({
+            exitCode: 22,
+            stdout: JSON.stringify({ error: 'containment_cleanup_failed' }),
+            stderr: '',
+          });
+        }
+        cleanupIds.delete(cleanupId);
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: JSON.stringify({ cleaned: true }),
+          stderr: '',
+        });
+      }
       if (command[0] === 'curl') {
         const body = command[command.indexOf('--data') + 1] ?? '';
+        const cleanupId = new URL(url).searchParams.get('cleanupId');
+        if (cleanupId !== null) cleanupIds.add(cleanupId);
         return Promise.resolve({
           exitCode: 0,
           stdout: body.includes('setsid')
@@ -61,6 +94,15 @@ function successfulSandbox(commands: string[][], terminate: () => void): ModalSd
       }
       return Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
     },
+    waitUntilReady() {
+      return Promise.resolve();
+    },
+    tunnels() {
+      return Promise.resolve({ 8877: { url: 'https://agent-tunnel.modal.run' } });
+    },
+    snapshotFilesystem() {
+      return Promise.resolve('im-snapshot0123');
+    },
     terminate() {
       terminate();
       return Promise.resolve();
@@ -69,13 +111,68 @@ function successfulSandbox(commands: string[][], terminate: () => void): ModalSd
 }
 
 describe('Modal image provider facade', () => {
+  test('rejects telemetry endpoints that can carry credentials into a sandbox', () => {
+    const base = {
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+    } as const;
+    for (const telemetryEndpoint of [
+      'http://sandbox-service.internal/v1/telemetry',
+      'https://user:token@sandbox-service.internal/v1/telemetry',
+      'https://sandbox-service.internal/v1/telemetry?token=secret',
+      'https://sandbox-service.internal/v1/telemetry#api-key',
+    ]) {
+      expect(() => SmokeImageInputSchema.parse({ ...base, telemetryEndpoint })).toThrow();
+    }
+    expect(() =>
+      SmokeImageInputSchema.parse({
+        ...base,
+        telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
+      }),
+    ).not.toThrow();
+  });
+
+  test('materializes baked files before commands that consume them', () => {
+    const commands = imageDockerfileCommands(
+      ImageRecipeSchema.parse({
+        imageName: 'forge-node-base',
+        base: baseRecipe().base,
+        commands: ['RUN npm ci --prefix /opt/zapp/browser'],
+        files: [
+          {
+            path: '/opt/zapp/browser/package-lock.json',
+            mode: '0644',
+            contents: '{"lockfileVersion":3}\n',
+          },
+        ],
+      }),
+    );
+
+    expect(commands.findIndex((command) => command.includes('package-lock.json'))).toBeLessThan(
+      commands.indexOf('RUN npm ci --prefix /opt/zapp/browser'),
+    );
+  });
+
   test('maps project-owned publication input to an immutable SDK build result', async () => {
     const builds: unknown[] = [];
+    const publications: unknown[] = [];
+    let resolveCalls = 0;
     let closed = false;
     const sdk: ModalSdkPort = {
-      buildAndPublish(input) {
+      buildImage(input) {
         builds.push(input);
         return Promise.resolve('im-built0123');
+      },
+      resolvePublishedImage() {
+        resolveCalls += 1;
+        return Promise.resolve(resolveCalls === 1 ? undefined : 'im-built0123');
+      },
+      publishImageId(input) {
+        publications.push(input);
+        return Promise.resolve();
       },
       createVmSandbox() {
         return Promise.reject(new Error('not used'));
@@ -107,7 +204,74 @@ describe('Modal image provider facade', () => {
       digest: 'im-built0123',
       publishedName: `forge-node-base:${TAG}`,
     });
+    expect(publications).toEqual([
+      {
+        environment: 'zapp-dev',
+        publishedName: `forge-node-base:${TAG}`,
+        digest: 'im-built0123',
+      },
+    ]);
     expect(closed).toBe(true);
+  });
+
+  test('treats an existing immutable name as idempotent only for the exact built image ID', async () => {
+    let publicationCount = 0;
+    const sdk = {
+      buildImage: () => Promise.resolve('im-built0123'),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => {
+        publicationCount += 1;
+        return Promise.resolve();
+      },
+      createVmSandbox: () => Promise.reject(new Error('not used')),
+      close() {},
+    } satisfies ModalSdkPort;
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.publishImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        imageName: 'forge-node-base',
+        tag: TAG,
+        publishedName: `forge-node-base:${TAG}`,
+        recipe: baseRecipe(),
+      }),
+    ).resolves.toEqual({
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+    });
+    expect(publicationCount).toBe(0);
+  });
+
+  test('rejects immutable-name mismatches before publication and races after publication', async () => {
+    for (const resolutions of [['im-other0123'], [undefined, 'im-raced0123']] as const) {
+      let publicationCount = 0;
+      let resolveIndex = 0;
+      const sdk = {
+        buildImage: () => Promise.resolve('im-built0123'),
+        resolvePublishedImage: () => Promise.resolve(resolutions[resolveIndex++]),
+        publishImageId: () => {
+          publicationCount += 1;
+          return Promise.resolve();
+        },
+        createVmSandbox: () => Promise.reject(new Error('not used')),
+        close() {},
+      } satisfies ModalSdkPort;
+      const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+      await expect(
+        publisher.publishImage({
+          environment: 'zapp-dev',
+          appName: 'zapp-workspaces',
+          imageName: 'forge-node-base',
+          tag: TAG,
+          publishedName: `forge-node-base:${TAG}`,
+          recipe: baseRecipe(),
+        }),
+      ).rejects.toThrow('Immutable image name resolves to a different image ID');
+      expect(publicationCount).toBe(resolutions[0] === undefined ? 1 : 0);
+    }
   });
 
   test('requests the V2 VM runtime, proves agent containment, and terminates the sandbox', async () => {
@@ -115,7 +279,13 @@ describe('Modal image provider facade', () => {
     const createRequests: unknown[] = [];
     let terminationCount = 0;
     const sdk: ModalSdkPort = {
-      buildAndPublish() {
+      buildImage() {
+        return Promise.reject(new Error('not used'));
+      },
+      resolvePublishedImage() {
+        return Promise.resolve('im-built0123');
+      },
+      publishImageId() {
         return Promise.reject(new Error('not used'));
       },
       createVmSandbox(input) {
@@ -147,21 +317,124 @@ describe('Modal image provider facade', () => {
         experimentalOptions: { vm_runtime: true },
       }),
     ]);
-    expect(commands).toEqual(
-      expect.arrayContaining([
-        ['node', '--version'],
-        expect.arrayContaining(['curl', 'http://127.0.0.1:8877/healthz']),
-        expect.arrayContaining(['sh', '-lc', 'sleep 2; test ! -e /tmp/zapp-cgroup-escape']),
-      ]),
+    expect(createRequests).toEqual([
+      expect.objectContaining({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        experimentalOptions: { vm_runtime: true },
+        encryptedPorts: [8877],
+        readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
+        volumeMountPath: '/workspace-probe',
+      }),
+    ]);
+    const serializedCommands = commands.flat().join('\n');
+    for (const requiredProbe of [
+      'buffered-timeout',
+      'pty-timeout',
+      'disconnect-buffered',
+      'disconnect-pty',
+      'explicit-kill-buffered',
+      'explicit-kill-pty',
+      'agent-shutdown-buffered',
+      'agent-shutdown-pty',
+      'pid-ownership',
+      '/workspace-probe',
+      '/exec/cleanup/',
+    ]) {
+      expect(serializedCommands).toContain(requiredProbe);
+    }
+    const explicitKillScripts = commands
+      .filter((command) => command[0] === 'sh' && command.join('\n').includes('explicit-kill-'))
+      .map((command) => command.join('\n'));
+    expect(explicitKillScripts).toHaveLength(4);
+    const explicitKillRequests = explicitKillScripts.filter((value) =>
+      value.includes('Idempotency-Key'),
     );
+    expect(explicitKillRequests).toHaveLength(2);
+    for (const script of explicitKillRequests) {
+      const keys = [...script.matchAll(/Idempotency-Key: ([a-f0-9-]{36})/gu)].map(
+        (match) => match[1],
+      );
+      expect(new Set(keys).size).toBe(2);
+    }
     expect(result).toEqual({
       nodeVersion: 'v22.23.1',
       health: { ok: true, details: 'workspace-agent ready' },
       vmRuntime: true,
       cgroup: { delegated: true, kill: true, emptySignal: true },
+      lifecycle: {
+        timeout: { buffered: true, pty: true },
+        disconnect: { buffered: true, pty: true },
+        explicitKill: { buffered: true, pty: true },
+        agentShutdown: { buffered: true, pty: true },
+        pidOwnership: true,
+      },
+      capabilities: {
+        volumeReadWrite: true,
+        filesystemSnapshot: 'im-snapshot0123',
+        encryptedTunnel: true,
+        readinessProbe: true,
+      },
       terminated: true,
     });
     expect(terminationCount).toBe(1);
+  });
+
+  test('rejects a smoke when the immutable name does not resolve to the lock digest', async () => {
+    let createCount = 0;
+    const sdk = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-other0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => {
+        createCount += 1;
+        return Promise.reject(new Error('must not create'));
+      },
+      close() {},
+    } satisfies ModalSdkPort;
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).rejects.toThrow('Locked image digest does not match the published name');
+    expect(createCount).toBe(0);
+  });
+
+  test('fails closed when an exact execution cleanup acknowledgement reports failure', async () => {
+    const sdk: ModalSdkPort = {
+      buildImage() {
+        return Promise.reject(new Error('not used'));
+      },
+      resolvePublishedImage() {
+        return Promise.resolve('im-built0123');
+      },
+      publishImageId() {
+        return Promise.reject(new Error('not used'));
+      },
+      createVmSandbox() {
+        return Promise.resolve(successfulSandbox([], () => undefined, { cleanupFailure: true }));
+      },
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+        telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
+      }),
+    ).rejects.toThrow('containment cleanup acknowledgement failed');
   });
 
   test('retries the authenticated health probe while the baked agent is starting', async () => {
@@ -178,7 +451,13 @@ describe('Modal image provider facade', () => {
       return exec(command);
     };
     const sdk: ModalSdkPort = {
-      buildAndPublish() {
+      buildImage() {
+        return Promise.reject(new Error('not used'));
+      },
+      resolvePublishedImage() {
+        return Promise.resolve('im-built0123');
+      },
+      publishImageId() {
         return Promise.reject(new Error('not used'));
       },
       createVmSandbox() {
@@ -210,7 +489,13 @@ describe('Modal image provider facade', () => {
     });
     sandbox.exec = () => Promise.resolve({ exitCode: 0, stdout: 'v21.7.3\n', stderr: '' });
     const sdk: ModalSdkPort = {
-      buildAndPublish() {
+      buildImage() {
+        return Promise.reject(new Error('not used'));
+      },
+      resolvePublishedImage() {
+        return Promise.resolve('im-built0123');
+      },
+      publishImageId() {
         return Promise.reject(new Error('not used'));
       },
       createVmSandbox() {

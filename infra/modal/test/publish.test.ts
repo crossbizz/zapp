@@ -1,5 +1,5 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdir, mkdtemp, readFile, utimes, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
@@ -40,6 +40,19 @@ function successfulPublisher(
         health: { ok: true, details: 'workspace-agent ready' },
         vmRuntime: true,
         cgroup: { delegated: true, kill: true, emptySignal: true },
+        lifecycle: {
+          timeout: { buffered: true, pty: true },
+          disconnect: { buffered: true, pty: true },
+          explicitKill: { buffered: true, pty: true },
+          agentShutdown: { buffered: true, pty: true },
+          pidOwnership: true,
+        },
+        capabilities: {
+          volumeReadWrite: true,
+          filesystemSnapshot: 'im-snapshot0123',
+          encryptedTunnel: true,
+          readinessProbe: true,
+        },
         terminated: true,
       });
     },
@@ -131,6 +144,61 @@ describe('Modal publication CLI contract', () => {
         },
       }),
     ).toThrow();
+  });
+
+  test('rejects lock records whose environment, app, source, tag, or published names disagree', () => {
+    const validEnvironment = {
+      modalEnvironment: 'zapp-dev',
+      sourceRevision: SOURCE_REVISION.commitSha,
+      tag: '2026-08-05-abcdef0',
+      images: {
+        'forge-node-base': {
+          appName: 'zapp-workspaces',
+          digest: 'im-base0123',
+          publishedName: 'forge-node-base:2026-08-05-abcdef0',
+        },
+        'forge-web-test': {
+          appName: 'zapp-browser-verify',
+          digest: 'im-web0123',
+          publishedName: 'forge-web-test:2026-08-05-abcdef0',
+        },
+      },
+    } as const;
+    const invalidLocks = [
+      { dev: { ...validEnvironment, modalEnvironment: 'zapp-prod' } },
+      {
+        dev: {
+          ...validEnvironment,
+          images: {
+            'forge-node-base': {
+              ...validEnvironment.images['forge-node-base'],
+              appName: 'zapp-browser-verify',
+            },
+            'forge-web-test': {
+              ...validEnvironment.images['forge-web-test'],
+              appName: 'zapp-workspaces',
+            },
+          },
+        },
+      },
+      { dev: { ...validEnvironment, sourceRevision: `1111111${'0'.repeat(33)}` } },
+      {
+        dev: {
+          ...validEnvironment,
+          images: {
+            ...validEnvironment.images,
+            'forge-node-base': {
+              ...validEnvironment.images['forge-node-base'],
+              publishedName: 'forge-web-test:2026-08-05-abcdef0',
+            },
+          },
+        },
+      },
+    ];
+
+    for (const environments of invalidLocks) {
+      expect(() => ImageLockSchema.parse({ version: 1, environments })).toThrow();
+    }
   });
 
   test('reports missing credentials and an unpublished source revision as separate blockers', async () => {
@@ -248,6 +316,19 @@ describe('Modal image publication transaction', () => {
         health: { ok: true, details: 'workspace-agent ready' },
         vmRuntime: true,
         cgroup: { delegated: true, kill: true, emptySignal: true },
+        lifecycle: {
+          timeout: { buffered: true, pty: true },
+          disconnect: { buffered: true, pty: true },
+          explicitKill: { buffered: true, pty: true },
+          agentShutdown: { buffered: true, pty: true },
+          pidOwnership: true,
+        },
+        capabilities: {
+          volumeReadWrite: true,
+          filesystemSnapshot: 'im-snapshot0123',
+          encryptedTunnel: true,
+          readinessProbe: true,
+        },
         terminated: true,
       });
     };
@@ -256,5 +337,79 @@ describe('Modal image publication transaction', () => {
       publishImagesTransaction(transactionInput(lockFilePath, provider, ['dev', 'staging'])),
     ).rejects.toThrow('staging VM smoke failed');
     expect(await readFile(lockFilePath, 'utf8')).toBe(original);
+  });
+
+  test('serializes concurrent scoped publications without losing either environment record', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => undefined;
+    const firstPublicationStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const devPublisher = successfulPublisher([]);
+    const publishDev = devPublisher.publishImage.bind(devPublisher);
+    let devCalls = 0;
+    devPublisher.publishImage = async (input) => {
+      devCalls += 1;
+      if (devCalls === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      return publishDev(input);
+    };
+    const stagingCalls: Array<{ operation: string; input: unknown }> = [];
+
+    const dev = publishImagesTransaction(transactionInput(lockFilePath, devPublisher, ['dev']));
+    await firstPublicationStarted;
+    const staging = publishImagesTransaction(
+      transactionInput(lockFilePath, successfulPublisher(stagingCalls), ['staging']),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stagingCalls).toHaveLength(0);
+    releaseFirst();
+    await Promise.all([dev, staging]);
+
+    const locked = ImageLockSchema.parse(JSON.parse(await readFile(lockFilePath, 'utf8')));
+    expect(Object.keys(locked.environments).sort()).toEqual(['dev', 'staging']);
+  });
+
+  test('releases the adjacent writer lock when publication fails', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const failing = successfulPublisher([]);
+    failing.publishImage = () => Promise.reject(new Error('first publication failed'));
+
+    await expect(
+      publishImagesTransaction(transactionInput(lockFilePath, failing, ['dev'])),
+    ).rejects.toThrow('first publication failed');
+    const recovered = await publishImagesTransaction(
+      transactionInput(lockFilePath, successfulPublisher([]), ['staging']),
+    );
+    expect(recovered.environments.staging?.modalEnvironment).toBe('zapp-staging');
+    await expect(access(`${lockFilePath}.publish-lock`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('recovers an abandoned same-host writer lock', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    await mkdir(lockDirectory);
+    await writeFile(
+      join(lockDirectory, 'owner.json'),
+      JSON.stringify({
+        token: randomUUID(),
+        pid: 2_147_483_647,
+        hostname: hostname(),
+      }),
+    );
+    const old = new Date('2026-08-05T00:00:00.000Z');
+    await utimes(lockDirectory, old, old);
+
+    const recovered = await publishImagesTransaction(
+      transactionInput(lockFilePath, successfulPublisher([]), ['dev']),
+    );
+    expect(recovered.environments.dev?.modalEnvironment).toBe('zapp-dev');
+    await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

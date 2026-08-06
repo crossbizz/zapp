@@ -2,14 +2,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import fastify, {
-  type FastifyInstance,
-  type FastifyReply,
-  type FastifyRequest,
-} from 'fastify';
+import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z, ZodError } from 'zod';
 import { PathViolationError } from '@zapp/workspace-runtime';
 import {
+  ContainmentCleanupError,
   ContainmentUnavailableError,
   type Containment,
 } from './containment/types.js';
@@ -39,22 +36,18 @@ import {
   type MetricsSource,
 } from './health.js';
 
-const MetricsSourceSchema = z.custom<MetricsSource>(
-  (value) => {
-    if (typeof value !== 'object' || value === null) {
-      return false;
-    }
-    return typeof (value as { sample?: unknown }).sample === 'function';
-  },
-);
-const ContainmentSchema = z.custom<Containment>(
-  (value) => {
-    if (typeof value !== 'object' || value === null) {
-      return false;
-    }
-    return typeof (value as { create?: unknown }).create === 'function';
-  },
-);
+const MetricsSourceSchema = z.custom<MetricsSource>((value) => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return typeof (value as { sample?: unknown }).sample === 'function';
+});
+const ContainmentSchema = z.custom<Containment>((value) => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return typeof (value as { create?: unknown }).create === 'function';
+});
 
 const BuildOptionsSchema = z
   .object({
@@ -67,11 +60,16 @@ const BuildOptionsSchema = z
   .strict();
 export type BuildOptions = z.infer<typeof BuildOptionsSchema>;
 
-const ExecQuerySchema = z.object({ stream: z.literal('1').optional() }).strict();
+const CleanupIdSchema = z.string().uuid();
+const ExecQuerySchema = z
+  .object({ stream: z.literal('1').optional(), cleanupId: CleanupIdSchema.optional() })
+  .strict();
 const EmptyQuerySchema = z.object({}).strict();
 const EmptyBodySchema = z.undefined();
 const KillParamsSchema = z.object({ pid: z.coerce.number().int().positive() }).strict();
 const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
+const CleanupParamsSchema = z.object({ cleanupId: CleanupIdSchema }).strict();
+const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 const ErrorResponseSchema = z.object({ error: z.string() }).strict();
 const IdempotencyKeySchema = z
   .string()
@@ -313,9 +311,7 @@ async function sendCachedResponse(reply: FastifyReply, response: CachedResponse)
   if (response.contentType !== undefined) {
     reply.header('content-type', response.contentType);
   }
-  await reply.send(
-    Buffer.isBuffer(response.body) ? Buffer.from(response.body) : response.body,
-  );
+  await reply.send(Buffer.isBuffer(response.body) ? Buffer.from(response.body) : response.body);
 }
 
 function tokenDigest(value: string): Buffer {
@@ -404,10 +400,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   const idempotency = new IdempotencyStore();
   const activeStreamWriters = new Set<ActiveStreamWriter>();
   const idempotencyKeys = new WeakMap<FastifyRequest, string>();
-  const idempotencyOwners = new WeakMap<
-    FastifyRequest,
-    { key: string; entry: IdempotencyEntry }
-  >();
+  const idempotencyOwners = new WeakMap<FastifyRequest, { key: string; entry: IdempotencyEntry }>();
 
   const completeIdempotency = (
     request: FastifyRequest,
@@ -459,15 +452,11 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     }
     const started = idempotency.start(key, idempotencyFingerprint(request));
     if (started.kind === 'conflict') {
-      await reply
-        .code(409)
-        .send(ErrorResponseSchema.parse({ error: 'idempotency_conflict' }));
+      await reply.code(409).send(ErrorResponseSchema.parse({ error: 'idempotency_conflict' }));
       return;
     }
     if (started.kind === 'full') {
-      await reply
-        .code(503)
-        .send(ErrorResponseSchema.parse({ error: 'idempotency_capacity' }));
+      await reply.code(503).send(ErrorResponseSchema.parse({ error: 'idempotency_capacity' }));
       return;
     }
     if (started.kind === 'replay') {
@@ -495,6 +484,12 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     await execManager.killAll();
   });
   app.setErrorHandler(async (error, _request, reply) => {
+    if (error instanceof ContainmentCleanupError) {
+      await reply
+        .code(503)
+        .send(ErrorResponseSchema.parse({ error: 'containment_cleanup_failed' }));
+      return;
+    }
     if (error instanceof ContainmentUnavailableError) {
       await reply.code(503).send(ErrorResponseSchema.parse({ error: 'containment_unavailable' }));
       return;
@@ -515,7 +510,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     const query = ExecQuerySchema.parse(request.query);
     const input = ExecRequestSchema.parse(request.body);
     if (query.stream !== '1') {
-      return ExecResultSchema.parse(await execManager.run(input));
+      return ExecResultSchema.parse(await execManager.run(input, undefined, query.cleanupId));
     }
 
     const pendingRecords: Array<{
@@ -532,20 +527,24 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       resolveStarted = resolve;
       rejectStarted = reject;
     });
-    const completion = execManager.run(input, async (record) => {
-      streamBody.push(serializeNdjsonRecord(record));
-      if (record.type === 'started') {
-        activePid = record.pid;
-        resolveStarted();
-      }
-      if (streamReady) {
-        await writeNdjsonRecord(reply.raw, record);
-        return;
-      }
-      await new Promise<void>((resolve, reject) => {
-        pendingRecords.push({ record, resolve, reject });
-      });
-    });
+    const completion = execManager.run(
+      input,
+      async (record) => {
+        streamBody.push(serializeNdjsonRecord(record));
+        if (record.type === 'started') {
+          activePid = record.pid;
+          resolveStarted();
+        }
+        if (streamReady) {
+          await writeNdjsonRecord(reply.raw, record);
+          return;
+        }
+        await new Promise<void>((resolve, reject) => {
+          pendingRecords.push({ record, resolve, reject });
+        });
+      },
+      query.cleanupId,
+    );
     void completion.catch(rejectStarted);
     await started;
 
@@ -589,9 +588,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
           {
             statusCode: 409,
             contentType: 'application/json; charset=utf-8',
-            body: JSON.stringify(
-              ErrorResponseSchema.parse({ error: 'idempotency_ambiguous' }),
-            ),
+            body: JSON.stringify(ErrorResponseSchema.parse({ error: 'idempotency_ambiguous' })),
           },
           true,
         );
@@ -617,6 +614,17 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     EmptyBodySchema.parse(request.body);
     const { pid } = KillParamsSchema.parse(request.params);
     return KillResponseSchema.parse({ killed: execManager.kill(pid) });
+  });
+
+  app.get('/exec/cleanup/:cleanupId', async (request, reply) => {
+    EmptyQuerySchema.parse(request.query);
+    EmptyBodySchema.parse(request.body);
+    const { cleanupId } = CleanupParamsSchema.parse(request.params);
+    if (!(await execManager.acknowledgeCleanup(cleanupId))) {
+      await reply.code(404).send(ErrorResponseSchema.parse({ error: 'cleanup_not_found' }));
+      return;
+    }
+    return CleanupResponseSchema.parse({ cleaned: true });
   });
 
   app.get('/files/list', async (request) => {

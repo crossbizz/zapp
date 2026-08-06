@@ -18,3 +18,10 @@ export class ContainmentUnavailableError extends Error {
     this.name = 'ContainmentUnavailableError';
   }
 }
+
+export class ContainmentCleanupError extends Error {
+  constructor() {
+    super('Execution containment cleanup failed');
+    this.name = 'ContainmentCleanupError';
+  }
+}

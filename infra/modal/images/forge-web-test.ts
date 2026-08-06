@@ -3,6 +3,8 @@ import {
   ImageRecipeSchema,
   type ImageRecipe,
 } from '@zapp/sandbox-service/provider-types';
+import browserPackage from './browser/package.json' with { type: 'json' };
+import browserPackageLock from './browser/package-lock.json' with { type: 'json' };
 
 const BROWSER_SIDECAR = `#!/usr/bin/env bash
 set -euo pipefail
@@ -61,11 +63,21 @@ export function createForgeWebTestRecipe(untrustedBaseDigest: string): ImageReci
     base: { kind: 'publication', digest: baseDigest },
     commands: [
       'RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation fonts-noto-color-emoji fonts-noto-cjk && rm -rf /var/lib/apt/lists/*',
-      'RUN npm install --prefix /opt/zapp/browser --omit=dev --no-audit --no-fund playwright@1.62.1 @axe-core/cli@4.12.1',
+      'RUN npm ci --prefix /opt/zapp/browser --omit=dev --no-audit --no-fund',
       'RUN PLAYWRIGHT_BROWSERS_PATH=/ms-playwright /opt/zapp/browser/node_modules/.bin/playwright install --with-deps chromium',
       'ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PATH=/opt/zapp/browser/node_modules/.bin:$PATH ZAPP_BROWSER_CDP_PORT=9222',
     ],
     files: [
+      {
+        path: '/opt/zapp/browser/package.json',
+        mode: '0644',
+        contents: `${JSON.stringify(browserPackage, null, 2)}\n`,
+      },
+      {
+        path: '/opt/zapp/browser/package-lock.json',
+        mode: '0644',
+        contents: `${JSON.stringify(browserPackageLock, null, 2)}\n`,
+      },
       {
         path: '/opt/zapp/browser-sidecar.sh',
         mode: '0755',

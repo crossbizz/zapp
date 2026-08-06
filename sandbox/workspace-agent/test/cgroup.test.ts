@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { CgroupV2Containment } from '../src/containment/cgroup.js';
 import {
+  ContainmentCleanupError,
   ContainmentUnavailableError,
   type Containment,
   type ExecutionContainment,
@@ -205,7 +207,10 @@ describe('cgroup-v2 containment', () => {
       const result = await manager.run(
         {
           cmd: process.execPath,
-          args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(workspaceRoot, 'started'))}, 'yes')`],
+          args: [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(join(workspaceRoot, 'started'))}, 'yes')`,
+          ],
           timeoutMs: 2_000,
         },
         (record) => {
@@ -236,6 +241,69 @@ describe('cgroup-v2 containment', () => {
     }
   });
 
+  test('acknowledges an exact execution only after authoritative empty-state cleanup finishes', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-ack-'));
+    const containment = new ManualContainment(workspaceRoot);
+    const manager = new ExecManager(workspaceRoot, containment);
+    const cleanupId = randomUUID();
+    let acknowledged = false;
+
+    try {
+      const result = await manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'process.exit(0)'],
+          timeoutMs: 2_000,
+        },
+        undefined,
+        cleanupId,
+      );
+      const acknowledgement = manager.acknowledgeCleanup(cleanupId).then(() => {
+        acknowledged = true;
+      });
+
+      expect(result.exitCode).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(acknowledged).toBe(false);
+      expect(containment.executions[0]?.removeCalls).toBe(0);
+
+      containment.executions[0]?.markEmpty();
+      await acknowledgement;
+      expect(acknowledged).toBe(true);
+      expect(containment.executions[0]?.removeCalls).toBe(1);
+    } finally {
+      containment.executions[0]?.markEmpty();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an exact cleanup acknowledgement when the authoritative signal fails', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-ack-failure-'));
+    const containment = new CleanupRecoveryContainment(workspaceRoot, true);
+    const manager = new ExecManager(workspaceRoot, containment);
+    const cleanupId = randomUUID();
+
+    try {
+      await manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'process.exit(0)'],
+          timeoutMs: 2_000,
+        },
+        undefined,
+        cleanupId,
+      );
+
+      await expect(manager.acknowledgeCleanup(cleanupId)).rejects.toBeInstanceOf(
+        ContainmentCleanupError,
+      );
+      expect(containment.executions[0]?.removeCalls).toBe(0);
+      expect(manager.activeContainmentCount()).toBe(1);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test('joins an injected containment before PTY user code', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-pty-'));
     const containment = new ManualContainment(workspaceRoot);
@@ -246,7 +314,10 @@ describe('cgroup-v2 containment', () => {
       const result = await manager.run(
         {
           cmd: process.execPath,
-          args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(join(workspaceRoot, 'pty-started'))}, 'yes')`],
+          args: [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(join(workspaceRoot, 'pty-started'))}, 'yes')`,
+          ],
           pty: true,
           timeoutMs: 2_000,
         },
@@ -420,7 +491,7 @@ describe('cgroup-v2 containment', () => {
       expect(execution.removeCalls).toBe(0);
       expect(manager.activeContainmentCount()).toBe(1);
 
-      await manager.killAll();
+      await expect(manager.killAll()).rejects.toBeInstanceOf(ContainmentCleanupError);
       expect(execution.killCalls).toBe(2);
       expect(manager.activeContainmentCount()).toBe(1);
     } finally {

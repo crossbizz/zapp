@@ -77,13 +77,17 @@ describe('forge-web-test image policy', () => {
     const commands = recipe.commands.join('\n');
 
     expect(recipe.base).toEqual({ kind: 'publication', digest: 'im-base0123456789' });
-    expect(commands).toContain('playwright@1.62.1');
-    expect(commands).toContain('@axe-core/cli@4.12.1');
+    expect(commands).toContain('npm ci --prefix /opt/zapp/browser');
+    expect(commands).not.toContain('npm install --prefix /opt/zapp/browser');
     expect(commands).toContain('playwright install --with-deps chromium');
     expect(commands).toContain('fonts-noto-color-emoji');
     expect(commands).not.toMatch(/@latest|:latest/iu);
     const launcher = recipe.files.find((file) => file.path === '/opt/zapp/browser-sidecar.sh');
     const sidecar = recipe.files.find((file) => file.path === '/opt/zapp/browser-sidecar.mjs');
+    const packageLock = recipe.files.find(
+      (file) => file.path === '/opt/zapp/browser/package-lock.json',
+    );
+    const packageJson = recipe.files.find((file) => file.path === '/opt/zapp/browser/package.json');
     expect(launcher).toMatchObject({ mode: '0755' });
     expect(launcher?.contents).toContain('/opt/zapp/browser-sidecar.mjs');
     expect(sidecar?.contents).toContain('chromium.executablePath()');
@@ -92,6 +96,16 @@ describe('forge-web-test image policy', () => {
     expect(sidecar?.contents).toContain("process.once('SIGINT'");
     expect(sidecar?.contents).toContain("browser.once('error'");
     expect(sidecar?.contents).toContain('process.exitCode = 1');
+    expect(JSON.parse(packageJson?.contents ?? '{}')).toMatchObject({
+      dependencies: { playwright: '1.62.1', '@axe-core/cli': '4.12.1' },
+    });
+    expect(JSON.parse(packageLock?.contents ?? '{}')).toMatchObject({
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/playwright': { version: '1.62.1' },
+        'node_modules/@axe-core/cli': { version: '4.12.1' },
+      },
+    });
     expect(`${launcher?.contents ?? ''}\n${sidecar?.contents ?? ''}`).not.toContain(
       'playwright run-server',
     );

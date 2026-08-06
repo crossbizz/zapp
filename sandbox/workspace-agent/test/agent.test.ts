@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { EventEmitter, once as onceEvent } from 'node:events';
 import { createRequire } from 'node:module';
@@ -123,7 +123,10 @@ const portableMetricsSource = {
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
         extendEnv: false,
       });
-      for (const row of selectWorkspaceProcesses(parseProcessUsage(result.stdout), activeProcessGroups)) {
+      for (const row of selectWorkspaceProcesses(
+        parseProcessUsage(result.stdout),
+        activeProcessGroups,
+      )) {
         childUserMicros += row.userMicros;
         childSystemMicros += row.systemMicros;
         childRssBytes += row.rssBytes;
@@ -176,7 +179,9 @@ async function requireNativePause(
   ]);
   if (first === 'completed') {
     const response = await request;
-    throw new Error(`Native helper did not pause before the request completed (${String(response.statusCode)})`);
+    throw new Error(
+      `Native helper did not pause before the request completed (${String(response.statusCode)})`,
+    );
   }
 }
 
@@ -236,9 +241,7 @@ async function releaseDetachedSetsidFixture(fixture: DetachedSetsidFixture): Pro
   }
 }
 
-async function expectDetachedSetsidContainment(
-  fixture: DetachedSetsidFixture,
-): Promise<void> {
+async function expectDetachedSetsidContainment(fixture: DetachedSetsidFixture): Promise<void> {
   expect(await waitForFile(fixture.killMarker)).toBe('killed');
   await releaseDetachedSetsidFixture(fixture);
   await expect(access(fixture.escapeMarker)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -612,7 +615,12 @@ describe('workspace-agent RPC daemon', () => {
       return;
     }
     const nodePtyRoot = resolve(dirname(require.resolve('node-pty')), '..');
-    const helper = join(nodePtyRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
+    const helper = join(
+      nodePtyRoot,
+      'prebuilds',
+      `${process.platform}-${process.arch}`,
+      'spawn-helper',
+    );
 
     expect((await stat(helper)).mode & 0o111).not.toBe(0);
   });
@@ -664,28 +672,31 @@ describe('workspace-agent RPC daemon', () => {
     },
   );
 
-  test.each([false, true])('rejects reserved request env before spawning when pty=%s', async (pty) => {
-    const marker = join(workspaceRoot, `protected-env-${String(pty)}`);
-    const response = await requireApp().inject({
-      method: 'POST',
-      url: '/exec',
-      headers: authorization(),
-      payload: {
-        cmd: process.execPath,
-        args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
-        env: {
-          ZAPP_AGENT_TOKEN: 'request-token',
-          ZAPP_WORKSPACE_ROOT: '/request/root',
-          ZAPP_DEV_SERVER_PORT: '9999',
+  test.each([false, true])(
+    'rejects reserved request env before spawning when pty=%s',
+    async (pty) => {
+      const marker = join(workspaceRoot, `protected-env-${String(pty)}`);
+      const response = await requireApp().inject({
+        method: 'POST',
+        url: '/exec',
+        headers: authorization(),
+        payload: {
+          cmd: process.execPath,
+          args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
+          env: {
+            ZAPP_AGENT_TOKEN: 'request-token',
+            ZAPP_WORKSPACE_ROOT: '/request/root',
+            ZAPP_DEV_SERVER_PORT: '9999',
+          },
+          timeoutMs: 2_000,
+          pty,
         },
-        timeoutMs: 2_000,
-        pty,
-      },
-    });
+      });
 
-    expect(response.statusCode).toBe(400);
-    await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+      expect(response.statusCode).toBe(400);
+      await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
 
   test.each([false, true])(
     'rejects non-POSIX env names and NUL values before spawning when pty=%s',
@@ -1176,7 +1187,10 @@ describe('workspace-agent RPC daemon', () => {
 
     const serverClosed = onceEvent(serverSocket, 'close');
     client.destroy();
-    await settleWithin(serverClosed.then(() => undefined), 1_000);
+    await settleWithin(
+      serverClosed.then(() => undefined),
+      1_000,
+    );
     await waitForProcessExit(pid);
     const inactiveDeadline = Date.now() + 3_000;
     for (;;) {
@@ -1250,6 +1264,32 @@ describe('workspace-agent RPC daemon', () => {
     expect(response.json()).toMatchObject({ exitCode: 124 });
     await new Promise((resolve) => setTimeout(resolve, 550));
     await expect(access(orphanMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('requires authentication to acknowledge authoritative cleanup for an exact execution', async () => {
+    const cleanupId = randomUUID();
+    const execution = await requireApp().inject({
+      method: 'POST',
+      url: `/exec?cleanupId=${cleanupId}`,
+      headers: authorization(),
+      payload: { cmd: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 2_000 },
+    });
+
+    expect(execution.statusCode).toBe(200);
+    const unauthorized = await requireApp().inject({
+      method: 'GET',
+      url: `/exec/cleanup/${cleanupId}`,
+      headers: authorization('wrong-token'),
+    });
+    const acknowledged = await requireApp().inject({
+      method: 'GET',
+      url: `/exec/cleanup/${cleanupId}`,
+      headers: authorization(),
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(acknowledged.statusCode).toBe(200);
+    expect(acknowledged.json()).toEqual({ cleaned: true });
   });
 
   test('requests containment kill for a detached setsid descendant on buffered timeout', async () => {
@@ -1474,7 +1514,10 @@ describe('workspace-agent RPC daemon', () => {
     app = undefined;
     try {
       await settleWithin(closePromise, 1_000);
-      await settleWithin(clientClosed.then(() => undefined), 1_000);
+      await settleWithin(
+        clientClosed.then(() => undefined),
+        1_000,
+      );
       await waitForProcessExit(pid);
       await waitForNoServerConnections(activeApp.server);
       expect(serverSocket.destroyed).toBe(true);
@@ -1538,7 +1581,7 @@ describe('workspace-agent RPC daemon', () => {
 
   test('preserves a UTF-8 sequence split across streamed process chunks', async () => {
     const script =
-      "process.stdout.write(Buffer.from([0xe2])); setTimeout(() => process.stdout.write(Buffer.from([0x82, 0xac])), 50)";
+      'process.stdout.write(Buffer.from([0xe2])); setTimeout(() => process.stdout.write(Buffer.from([0x82, 0xac])), 50)';
     const buffered = await requireApp().inject({
       method: 'POST',
       url: '/exec',
@@ -1637,9 +1680,7 @@ describe('workspace-agent RPC daemon', () => {
     expect(read.statusCode).toBe(200);
     expect(read.rawPayload).toEqual(bytes);
     expect(listed.statusCode).toBe(200);
-    expect(listed.json()).toEqual([
-      { path: 'nested/visible.txt', type: 'file' },
-    ]);
+    expect(listed.json()).toEqual([{ path: 'nested/visible.txt', type: 'file' }]);
   });
 
   test('uses the native helper for read, write, and list across parent swaps', async () => {
@@ -1686,7 +1727,9 @@ describe('workspace-agent RPC daemon', () => {
       const writeResponse = await writeRequest;
       expect(writeResponse.statusCode).toBe(204);
       expect(await readFile(join(pinnedWriteParent, 'written.txt'), 'utf8')).toBe('inside');
-      await expect(access(join(outsideRoot, 'written.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(join(outsideRoot, 'written.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
 
       await rm(join(workspaceRoot, 'native-helper-ready'), { force: true });
       await rm(join(workspaceRoot, 'native-helper-continue'), { force: true });
@@ -1846,7 +1889,9 @@ describe('workspace-agent RPC daemon', () => {
 
     expect(missing.statusCode).toBe(401);
     expect(wrong.statusCode).toBe(401);
-    await expect(access(join(workspaceRoot, 'unauthorized'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(join(workspaceRoot, 'unauthorized'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   test('rejects lexical, absolute, encoded, and symlink path escapes before access or spawn', async () => {
@@ -2022,11 +2067,9 @@ describe('workspace-agent RPC daemon', () => {
       headers: authorization(),
       payload: { operation: 'add_commit', paths: [path], message },
     });
-    const { stdout: committedMessage } = await execFileAsync(
-      'git',
-      ['log', '-1', '--pretty=%s'],
-      { cwd: workspaceRoot },
-    );
+    const { stdout: committedMessage } = await execFileAsync('git', ['log', '-1', '--pretty=%s'], {
+      cwd: workspaceRoot,
+    });
 
     expect(written.statusCode).toBe(204);
     expect(executed.statusCode).toBe(200);
@@ -2091,16 +2134,17 @@ describe('workspace-agent RPC daemon', () => {
       token,
       containment,
       metricsSource: {
-        sample: (activePids: readonly number[]) => Promise.resolve({
-          cpu: { userMicros: activePids.length === 1 ? 111 : 0, systemMicros: 222 },
-          memory: {
-            rssBytes: activePids.length === 1 ? 333 : 0,
-            heapTotalBytes: 444,
-            heapUsedBytes: 555,
-            externalBytes: 666,
-            arrayBuffersBytes: 777,
-          },
-        }),
+        sample: (activePids: readonly number[]) =>
+          Promise.resolve({
+            cpu: { userMicros: activePids.length === 1 ? 111 : 0, systemMicros: 222 },
+            memory: {
+              rssBytes: activePids.length === 1 ? 333 : 0,
+              heapTotalBytes: 444,
+              heapUsedBytes: 555,
+              externalBytes: 666,
+              arrayBuffersBytes: 777,
+            },
+          }),
       },
     };
     app = await buildWorkspaceAgent(options);
@@ -2148,15 +2192,20 @@ describe('workspace-agent RPC daemon', () => {
 
   test('portable metrics include process-group descendants with separate user and system CPU', async () => {
     await requireApp().close();
-    app = await buildWorkspaceAgent({ workspaceRoot, token, containment, metricsSource: portableMetricsSource });
+    app = await buildWorkspaceAgent({
+      workspaceRoot,
+      token,
+      containment,
+      metricsSource: portableMetricsSource,
+    });
     const rootPidFile = join(workspaceRoot, 'metrics-root.pid');
     const childPidFile = join(workspaceRoot, 'metrics-child.pid');
     const childScript = [
       "const fs = require('node:fs');",
-      "const memory = Buffer.allocUnsafe(96 * 1024 * 1024);",
+      'const memory = Buffer.allocUnsafe(96 * 1024 * 1024);',
       "require('node:crypto').randomFillSync(memory);",
       "const fd = fs.openSync('/dev/null', 'w');",
-      "const block = Buffer.alloc(4096, 1);",
+      'const block = Buffer.alloc(4096, 1);',
       'const deadline = Date.now() + 750;',
       'let value = 1;',
       'while (Date.now() < deadline) { fs.writeSync(fd, block); value += Math.sqrt(value); }',
@@ -2169,10 +2218,7 @@ describe('workspace-agent RPC daemon', () => {
       headers: authorization(),
       payload: {
         cmd: '/bin/sh',
-        args: [
-          '-c',
-          'echo $$ > "$ROOT_PID_FILE"; "$NODE_BIN" -e "$CHILD_SCRIPT" & wait',
-        ],
+        args: ['-c', 'echo $$ > "$ROOT_PID_FILE"; "$NODE_BIN" -e "$CHILD_SCRIPT" & wait'],
         env: {
           ROOT_PID_FILE: rootPidFile,
           NODE_BIN: process.execPath,
@@ -2214,7 +2260,12 @@ describe('workspace-agent RPC daemon', () => {
 
   test('portable metrics retain an owned containment after its leader exits', async () => {
     await requireApp().close();
-    app = await buildWorkspaceAgent({ workspaceRoot, token, containment, metricsSource: portableMetricsSource });
+    app = await buildWorkspaceAgent({
+      workspaceRoot,
+      token,
+      containment,
+      metricsSource: portableMetricsSource,
+    });
     const activeApp = requireApp();
     const leaderPidFile = join(workspaceRoot, 'exited-metrics-leader.pid');
     const childPidFile = join(workspaceRoot, 'exited-metrics-child.pid');

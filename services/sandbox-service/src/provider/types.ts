@@ -115,7 +115,30 @@ export const SmokeImageInputSchema = z
     telemetryEndpoint: z
       .string()
       .url()
-      .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol))
+      .superRefine((value, context) => {
+        const url = new URL(value);
+        if (url.protocol !== 'https:') {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: 'Telemetry requires HTTPS' });
+        }
+        if (url.username !== '' || url.password !== '') {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Telemetry URL cannot contain userinfo',
+          });
+        }
+        if (url.search !== '') {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Telemetry URL cannot contain query parameters',
+          });
+        }
+        if (url.hash !== '') {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Telemetry URL cannot contain a fragment',
+          });
+        }
+      })
       .optional(),
   })
   .strict();
@@ -138,6 +161,23 @@ export const ImageSmokeEvidenceSchema = z
         delegated: z.literal(true),
         kill: z.literal(true),
         emptySignal: z.literal(true),
+      })
+      .strict(),
+    lifecycle: z
+      .object({
+        timeout: z.object({ buffered: z.literal(true), pty: z.literal(true) }).strict(),
+        disconnect: z.object({ buffered: z.literal(true), pty: z.literal(true) }).strict(),
+        explicitKill: z.object({ buffered: z.literal(true), pty: z.literal(true) }).strict(),
+        agentShutdown: z.object({ buffered: z.literal(true), pty: z.literal(true) }).strict(),
+        pidOwnership: z.literal(true),
+      })
+      .strict(),
+    capabilities: z
+      .object({
+        volumeReadWrite: z.literal(true),
+        filesystemSnapshot: ImageDigestSchema,
+        encryptedTunnel: z.literal(true),
+        readinessProbe: z.literal(true),
       })
       .strict(),
     terminated: z.literal(true),

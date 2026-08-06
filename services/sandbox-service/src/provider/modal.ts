@@ -2,10 +2,11 @@ import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import process from 'node:process';
 import { posix } from 'node:path';
-import { ModalClient } from 'modal';
+import { ModalClient, NotFoundError, Probe } from 'modal';
 import { z } from 'zod';
 import {
   AgentHealthSchema,
+  ImageDigestSchema,
   ImageSmokeEvidenceSchema,
   ModalCredentialsSchema,
   PublishImageInputSchema,
@@ -34,6 +35,7 @@ const AgentExecResultSchema = z
     truncated: z.boolean(),
   })
   .strict();
+const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 const HEALTH_PROBE_INTERVAL_MS = 250;
@@ -52,15 +54,37 @@ export interface ModalSdkVmSandboxInput {
   readonly publishedName: string;
   readonly environmentVariables: Readonly<Record<string, string>>;
   readonly experimentalOptions: Readonly<{ vm_runtime: true }>;
+  readonly encryptedPorts: readonly [8877];
+  readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
+  readonly volumeMountPath: '/workspace-probe';
+}
+
+export interface ModalSdkTunnel {
+  readonly url: string;
 }
 
 export interface ModalSdkSandboxPort {
   exec(command: string[]): Promise<ModalSdkRunResult>;
+  waitUntilReady(timeoutMs: number): Promise<void>;
+  tunnels(timeoutMs: number): Promise<Readonly<Record<number, ModalSdkTunnel>>>;
+  snapshotFilesystem(input: {
+    readonly timeoutMs: number;
+    readonly ttlMs: number;
+  }): Promise<string>;
   terminate(): Promise<void>;
 }
 
 export interface ModalSdkPort {
-  buildAndPublish(input: ModalSdkBuildInput): Promise<string>;
+  buildImage(input: ModalSdkBuildInput): Promise<string>;
+  resolvePublishedImage(input: {
+    readonly environment: ModalSdkBuildInput['environment'];
+    readonly publishedName: string;
+  }): Promise<string | undefined>;
+  publishImageId(input: {
+    readonly environment: ModalSdkBuildInput['environment'];
+    readonly publishedName: string;
+    readonly digest: string;
+  }): Promise<void>;
   createVmSandbox(input: ModalSdkVmSandboxInput): Promise<ModalSdkSandboxPort>;
   close(): void;
 }
@@ -81,6 +105,10 @@ function fileCommands(recipe: ImageRecipe): string[] {
   });
 }
 
+export function imageDockerfileCommands(recipe: ImageRecipe): string[] {
+  return [...fileCommands(recipe), ...recipe.commands];
+}
+
 function credentialsFromEnvironment(): ModalCredentials {
   return ModalCredentialsSchema.parse({
     tokenId: process.env.MODAL_TOKEN_ID,
@@ -96,7 +124,7 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
   });
 
   return {
-    async buildAndPublish(input) {
+    async buildImage(input) {
       const app = await client.apps.fromName(input.appName, {
         environment: input.environment,
         createIfMissing: true,
@@ -105,13 +133,27 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
         input.recipe.base.kind === 'registry'
           ? client.images.fromRegistry(input.recipe.base.ref)
           : await client.images.fromId(input.recipe.base.digest);
-      const image = base.dockerfileCommands([
-        ...input.recipe.commands,
-        ...fileCommands(input.recipe),
-      ]);
+      const image = base.dockerfileCommands(imageDockerfileCommands(input.recipe));
       const built = await image.build(app);
-      await built.publish(input.publishedName, { environment: input.environment });
       return built.imageId;
+    },
+
+    async resolvePublishedImage(input) {
+      try {
+        return (
+          await client.images.fromName(input.publishedName, { environment: input.environment })
+        ).imageId;
+      } catch (error) {
+        if (error instanceof NotFoundError) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+
+    async publishImageId(input) {
+      const image = await client.images.fromId(input.digest);
+      await image.publish(input.publishedName, { environment: input.environment });
     },
 
     async createVmSandbox(input) {
@@ -119,18 +161,28 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
         environment: input.environment,
         createIfMissing: true,
       });
-      // Resolve the named publication instead of bypassing the tag through its ID:
-      // the smoke is evidence that the exact lock-file tag is usable.
-      const image = await client.images.fromName(input.publishedName, {
-        environment: input.environment,
-      });
-      const sandbox = await client.sandboxes.experimentalCreate(app, image, {
-        command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
-        env: { ...input.environmentVariables },
-        encryptedPorts: [8877],
-        timeoutMs: 120_000,
-        experimentalOptions: { ...input.experimentalOptions },
-      });
+      // runSmoke resolves and verifies the immutable name immediately before
+      // this call. Create from the verified digest so a tag repoint cannot
+      // switch the image between verification and sandbox creation.
+      const image = await client.images.fromId(input.digest);
+      const volume = await client.volumes.ephemeral({ environment: input.environment });
+      let sandbox: Awaited<ReturnType<typeof client.sandboxes.experimentalCreate>>;
+      try {
+        sandbox = await client.sandboxes.experimentalCreate(app, image, {
+          command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
+          env: { ...input.environmentVariables },
+          volumes: { [input.volumeMountPath]: volume },
+          encryptedPorts: [...input.encryptedPorts],
+          readinessProbe: Probe.withTcp(input.readinessProbe.port, {
+            intervalMs: input.readinessProbe.intervalMs,
+          }),
+          timeoutMs: 120_000,
+          experimentalOptions: { ...input.experimentalOptions },
+        });
+      } catch (error) {
+        volume.closeEphemeral();
+        throw error;
+      }
 
       return {
         async exec(command) {
@@ -145,8 +197,25 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
           ]);
           return ModalSdkRunResultSchema.parse({ exitCode, stdout, stderr });
         },
+        async waitUntilReady(timeoutMs) {
+          await sandbox.waitUntilReady(timeoutMs);
+        },
+        async tunnels(timeoutMs) {
+          const tunnels = await sandbox.tunnels(timeoutMs);
+          return Object.fromEntries(
+            Object.entries(tunnels).map(([port, tunnel]) => [port, { url: tunnel.url }]),
+          );
+        },
+        async snapshotFilesystem(snapshotInput) {
+          const snapshot = await sandbox.snapshotFilesystem(snapshotInput);
+          return snapshot.imageId;
+        },
         async terminate() {
-          await sandbox.terminate();
+          try {
+            await sandbox.terminate();
+          } finally {
+            volume.closeEphemeral();
+          }
         },
       };
     },
@@ -204,6 +273,159 @@ function authenticatedCurl(
   return command;
 }
 
+function authenticatedAgentUrl(path: string, cleanupId?: string): string {
+  const url = new URL(`http://127.0.0.1:8877${path}`);
+  if (cleanupId !== undefined) {
+    url.searchParams.set('cleanupId', cleanupId);
+  }
+  return url.href;
+}
+
+function authenticatedCurlTo(
+  token: string,
+  url: string,
+  body?: Readonly<Record<string, unknown>>,
+): string[] {
+  const command = authenticatedCurl(token, '', body);
+  command[command.length - 1] = url;
+  return command;
+}
+
+async function acknowledgeCleanup(
+  sandbox: ModalSdkSandboxPort,
+  token: string,
+  cleanupId: string,
+): Promise<void> {
+  const response = await execOrThrow(
+    sandbox,
+    authenticatedCurlTo(token, authenticatedAgentUrl(`/exec/cleanup/${cleanupId}`)),
+    'containment cleanup acknowledgement',
+  ).catch(() => {
+    throw new Error('containment cleanup acknowledgement failed');
+  });
+  CleanupResponseSchema.parse(JSON.parse(response.stdout) as unknown);
+}
+
+function detachedChildCommand(marker: string): string {
+  return `setsid sh -c 'sleep 1; echo escaped > ${marker}' >/dev/null 2>&1 & sleep 30`;
+}
+
+async function probeTimeoutCleanup(
+  sandbox: ModalSdkSandboxPort,
+  token: string,
+  label: 'buffered-timeout' | 'pty-timeout',
+  pty: boolean,
+): Promise<void> {
+  const cleanupId = randomUUID();
+  const marker = `/tmp/zapp-${label}-escaped`;
+  await execOrThrow(sandbox, ['sh', '-lc', `rm -f ${marker}`], `${label} marker reset`);
+  const response = await execOrThrow(
+    sandbox,
+    authenticatedCurlTo(token, authenticatedAgentUrl('/exec', cleanupId), {
+      cmd: 'sh',
+      args: ['-lc', detachedChildCommand(marker)],
+      timeoutMs: 250,
+      pty,
+    }),
+    `${label} detached-child probe`,
+  );
+  const result = AgentExecResultSchema.parse(JSON.parse(response.stdout) as unknown);
+  if (result.exitCode === 0) {
+    throw new Error(`${label} did not time out`);
+  }
+  await acknowledgeCleanup(sandbox, token, cleanupId);
+  await execOrThrow(
+    sandbox,
+    ['sh', '-lc', `sleep 2; test ! -e ${marker}`],
+    `${label} cgroup.kill probe`,
+  );
+}
+
+function agentRequestScript(
+  token: string,
+  cleanupId: string,
+  label: 'disconnect' | 'explicit-kill' | 'pid-ownership',
+  pty: boolean,
+): string {
+  const scenario = `${label}-${pty ? 'pty' : 'buffered'}`;
+  const output = `/tmp/zapp-${scenario}.ndjson`;
+  const executionUrl = authenticatedAgentUrl('/exec?stream=1', cleanupId);
+  const commonHeaders = `--header ${shellQuote(`Authorization: Bearer ${token}`)} --header 'Content-Type: application/json'`;
+  const execHeaders = `${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)}`;
+  const killHeaders = `${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)}`;
+  const detachedBody = JSON.stringify({
+    cmd: 'sh',
+    args: ['-lc', detachedChildCommand(`/tmp/zapp-${scenario}-escaped`)],
+    timeoutMs: 30_000,
+    pty,
+  });
+  if (label === 'disconnect') {
+    return `set -euo pipefail; rm -f ${output}; set +e; curl --max-time 0.25 --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output}; status=$?; set -e; test "$status" -ne 0`;
+  }
+
+  const body =
+    label === 'pid-ownership'
+      ? JSON.stringify({ cmd: 'true', args: [], timeoutMs: 5_000, pty })
+      : detachedBody;
+  const expectedKilled = label === 'explicit-kill' ? 'true' : 'false';
+  const expectedExit =
+    label === 'explicit-kill' ? `test "$exit_code" -ne 0` : `test "$exit_code" -eq 0`;
+  return `set -euo pipefail; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(body)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; pid=$(jq -r 'select(.type == "started") | .pid' ${output} | head -n1); test -n "$pid"; if [ ${shellQuote(label)} = 'explicit-kill' ]; then kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST "http://127.0.0.1:8877/exec/$pid/kill"); wait "$request_pid"; else wait "$request_pid"; kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST "http://127.0.0.1:8877/exec/$pid/kill"); fi; test "$(printf %s "$kill_result" | jq -r .killed)" = ${shellQuote(expectedKilled)}; exit_code=$(jq -r 'select(.type == "exit") | .exitCode' ${output} | tail -n1); ${expectedExit}`;
+}
+
+async function probeScriptedLifecycle(
+  sandbox: ModalSdkSandboxPort,
+  token: string,
+  label: 'disconnect' | 'explicit-kill' | 'pid-ownership',
+  pty: boolean,
+): Promise<void> {
+  const cleanupId = randomUUID();
+  const scenario = `${label}-${pty ? 'pty' : 'buffered'}`;
+  await execOrThrow(
+    sandbox,
+    ['sh', '-lc', agentRequestScript(token, cleanupId, label, pty)],
+    `${scenario} cleanup probe`,
+  );
+  await acknowledgeCleanup(sandbox, token, cleanupId);
+  if (label !== 'pid-ownership') {
+    await execOrThrow(
+      sandbox,
+      ['sh', '-lc', `sleep 2; test ! -e /tmp/zapp-${scenario}-escaped`],
+      `${scenario} detached-child probe`,
+    );
+  }
+}
+
+function shutdownProbeScript(token: string, pty: boolean): string {
+  const scenario = `agent-shutdown-${pty ? 'pty' : 'buffered'}`;
+  const ready = `/tmp/zapp-${scenario}-ready`;
+  const cleaned = `/tmp/zapp-${scenario}-cleaned`;
+  const escaped = `/tmp/zapp-${scenario}-escaped`;
+  const cleanupId = randomUUID();
+  const childProgram = [
+    "import { writeFileSync } from 'node:fs';",
+    "import { buildWorkspaceAgent, closeWorkspaceAgentForSignal } from '/opt/zapp/agent/dist/main.js';",
+    `const app = await buildWorkspaceAgent({ workspaceRoot: '/workspace', token: ${JSON.stringify(token)} });`,
+    "await app.listen({ host: '127.0.0.1', port: 8878 });",
+    `writeFileSync(${JSON.stringify(ready)}, 'ready');`,
+    "process.once('SIGTERM', () => { void closeWorkspaceAgentForSignal(app, (code) => {",
+    `  if (code === 0) writeFileSync(${JSON.stringify(cleaned)}, 'cleaned');`,
+    '  process.exit(code);',
+    '}, () => undefined); });',
+    'await new Promise(() => undefined);',
+  ].join('\n');
+  const headers = `--header ${shellQuote(`Authorization: Bearer ${token}`)} --header 'Content-Type: application/json' --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)}`;
+  const body = JSON.stringify({
+    cmd: 'sh',
+    args: ['-lc', detachedChildCommand(escaped)],
+    timeoutMs: 30_000,
+    pty,
+  });
+  const url = `http://127.0.0.1:8878/exec?stream=1&cleanupId=${cleanupId}`;
+  const output = `/tmp/zapp-${scenario}.ndjson`;
+  return `set -euo pipefail; rm -f ${ready} ${cleaned} ${escaped} ${output}; node --input-type=module -e ${shellQuote(childProgram)} & agent_pid=$!; for _ in $(seq 1 200); do test -e ${ready} && break; sleep 0.025; done; test -e ${ready}; curl --silent --show-error ${headers} --request POST --data ${shellQuote(body)} ${shellQuote(url)} >${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; kill -TERM "$agent_pid"; wait "$agent_pid"; wait "$request_pid" || true; test -e ${cleaned}; sleep 2; test ! -e ${escaped}`;
+}
+
 async function waitForAgentHealth(
   sandbox: ModalSdkSandboxPort,
   token: string,
@@ -233,6 +455,13 @@ async function runSmoke(
   untrustedInput: Parameters<ModalImagePublisher['smokeImage']>[0],
 ) {
   const input = SmokeImageInputSchema.parse(untrustedInput);
+  const resolvedDigest = await sdk.resolvePublishedImage({
+    environment: input.environment,
+    publishedName: input.publishedName,
+  });
+  if (resolvedDigest !== input.digest) {
+    throw new Error('Locked image digest does not match the published name');
+  }
   const environmentVariables: Record<string, string> = {
     ZAPP_AGENT_TOKEN: input.agentToken,
     ZAPP_WORKSPACE_ROOT: '/workspace',
@@ -248,9 +477,13 @@ async function runSmoke(
     publishedName: input.publishedName,
     environmentVariables,
     experimentalOptions: { vm_runtime: true },
+    encryptedPorts: [8877],
+    readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
+    volumeMountPath: '/workspace-probe',
   });
 
   try {
+    await sandbox.waitUntilReady(HEALTH_PROBE_TIMEOUT_MS);
     const node = await execOrThrow(sandbox, ['node', '--version'], 'Node version probe');
     const nodeVersion = node.stdout.trim();
     if (!/^v22\./u.test(nodeVersion)) {
@@ -259,50 +492,35 @@ async function runSmoke(
 
     const health = await waitForAgentHealth(sandbox, input.agentToken);
 
-    await execOrThrow(
-      sandbox,
-      ['sh', '-lc', 'rm -f /tmp/zapp-cgroup-escape'],
-      'cgroup marker reset',
-    );
-    const detachedProbeResponse = await execOrThrow(
-      sandbox,
-      authenticatedCurl(input.agentToken, '/exec', {
-        cmd: 'sh',
-        args: [
-          '-lc',
-          "setsid sh -c 'sleep 1; echo escaped > /tmp/zapp-cgroup-escape' >/dev/null 2>&1 & sleep 30",
-        ],
-        timeoutMs: 250,
-      }),
-      'detached-child cgroup probe',
-    );
-    const detachedProbe = AgentExecResultSchema.parse(
-      JSON.parse(detachedProbeResponse.stdout) as unknown,
-    );
-    if (detachedProbe.exitCode === 0) {
-      throw new Error('Detached-child cgroup probe did not time out');
+    await probeTimeoutCleanup(sandbox, input.agentToken, 'buffered-timeout', false);
+    await probeTimeoutCleanup(sandbox, input.agentToken, 'pty-timeout', true);
+    for (const pty of [false, true]) {
+      await probeScriptedLifecycle(sandbox, input.agentToken, 'disconnect', pty);
+      await probeScriptedLifecycle(sandbox, input.agentToken, 'explicit-kill', pty);
+      await execOrThrow(
+        sandbox,
+        ['sh', '-lc', shutdownProbeScript(input.agentToken, pty)],
+        `agent-shutdown-${pty ? 'pty' : 'buffered'} cleanup probe`,
+      );
     }
+    await probeScriptedLifecycle(sandbox, input.agentToken, 'pid-ownership', false);
 
+    const volumeNonce = randomUUID();
     await execOrThrow(
       sandbox,
-      ['sh', '-lc', 'sleep 2; test ! -e /tmp/zapp-cgroup-escape'],
-      'cgroup.kill descendant probe',
+      [
+        'sh',
+        '-lc',
+        `printf %s ${shellQuote(volumeNonce)} > /workspace-probe/ws-2 && test "$(cat /workspace-probe/ws-2)" = ${shellQuote(volumeNonce)}`,
+      ],
+      'V2 volume read/write probe',
     );
-
-    const emptySignalResponse = await execOrThrow(
-      sandbox,
-      authenticatedCurl(input.agentToken, '/exec', {
-        cmd: 'true',
-        args: [],
-        timeoutMs: 5_000,
-      }),
-      'cgroup empty-state probe',
+    const snapshotDigest = ImageDigestSchema.parse(
+      await sandbox.snapshotFilesystem({ timeoutMs: 55_000, ttlMs: 86_400_000 }),
     );
-    const emptySignal = AgentExecResultSchema.parse(
-      JSON.parse(emptySignalResponse.stdout) as unknown,
-    );
-    if (emptySignal.exitCode !== 0) {
-      throw new Error('cgroup.events empty-state probe failed');
+    const tunnel = (await sandbox.tunnels(30_000))[8877];
+    if (tunnel === undefined || new URL(tunnel.url).protocol !== 'https:') {
+      throw new Error('V2 encrypted tunnel probe failed');
     }
 
     return ImageSmokeEvidenceSchema.parse({
@@ -310,6 +528,19 @@ async function runSmoke(
       health,
       vmRuntime: true,
       cgroup: { delegated: true, kill: true, emptySignal: true },
+      lifecycle: {
+        timeout: { buffered: true, pty: true },
+        disconnect: { buffered: true, pty: true },
+        explicitKill: { buffered: true, pty: true },
+        agentShutdown: { buffered: true, pty: true },
+        pidOwnership: true,
+      },
+      capabilities: {
+        volumeReadWrite: true,
+        filesystemSnapshot: snapshotDigest,
+        encryptedTunnel: true,
+        readinessProbe: true,
+      },
       terminated: true,
     });
   } finally {
@@ -329,12 +560,35 @@ export function createModalImagePublisher(
       const input = PublishImageInputSchema.parse(untrustedInput);
       const sdk = sdkFactory();
       try {
-        const digest = await sdk.buildAndPublish({
+        const digest = ImageDigestSchema.parse(
+          await sdk.buildImage({
+            environment: input.environment,
+            appName: input.appName,
+            publishedName: input.publishedName,
+            recipe: input.recipe,
+          }),
+        );
+        const existing = await sdk.resolvePublishedImage({
           environment: input.environment,
-          appName: input.appName,
           publishedName: input.publishedName,
-          recipe: input.recipe,
         });
+        if (existing !== undefined && existing !== digest) {
+          throw new Error('Immutable image name resolves to a different image ID');
+        }
+        if (existing === undefined) {
+          await sdk.publishImageId({
+            environment: input.environment,
+            publishedName: input.publishedName,
+            digest,
+          });
+          const published = await sdk.resolvePublishedImage({
+            environment: input.environment,
+            publishedName: input.publishedName,
+          });
+          if (published !== digest) {
+            throw new Error('Immutable image name resolves to a different image ID');
+          }
+        }
         return PublishedImageSchema.parse({ digest, publishedName: input.publishedName });
       } finally {
         sdk.close();

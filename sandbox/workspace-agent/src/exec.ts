@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { MAX_EXEC_OUTPUT_BYTES, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
 import { createProductionContainment } from './containment/cgroup.js';
 import {
+  ContainmentCleanupError,
   ContainmentUnavailableError,
   type Containment,
   type ContainmentTerminationReason,
@@ -42,9 +43,7 @@ const RESERVED_AGENT_ENV_NAMES = new Set([
 ]);
 const MAX_STREAM_RECORD_BYTES = 8 * 1_024;
 const STREAM_RECORD_FLUSH_DELAY_MS = 25;
-const NoNulStringSchema = z
-  .string()
-  .refine((value) => !value.includes('\0'), 'NUL is not allowed');
+const NoNulStringSchema = z.string().refine((value) => !value.includes('\0'), 'NUL is not allowed');
 
 const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
   for (const [name, value] of Object.entries(env)) {
@@ -62,7 +61,10 @@ const RequestEnvSchema = z.record(z.string()).superRefine((env, context) => {
 
 export const ExecRequestSchema = z
   .object({
-    cmd: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    cmd: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes('\0'), 'NUL is not allowed'),
     args: z.array(NoNulStringSchema),
     cwd: NoNulStringSchema.optional(),
     env: RequestEnvSchema.optional(),
@@ -73,7 +75,9 @@ export const ExecRequestSchema = z
 
 export type ExecRequest = z.infer<typeof ExecRequestSchema>;
 
-function buildChildEnv(requestEnv: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
+function buildChildEnv(
+  requestEnv: Readonly<Record<string, string>> | undefined,
+): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {};
   for (const name of SAFE_INHERITED_ENV_NAMES) {
     const value = process.env[name];
@@ -97,7 +101,11 @@ export const ExecResultSchema = z
 export type ExecResult = z.infer<typeof ExecResultSchema>;
 
 const StartedRecordSchema = z
-  .object({ type: z.literal('started'), pid: z.number().int().positive(), at: z.string().datetime() })
+  .object({
+    type: z.literal('started'),
+    pid: z.number().int().positive(),
+    at: z.string().datetime(),
+  })
   .strict();
 const OutputRecordSchema = z
   .object({
@@ -137,6 +145,12 @@ interface ActiveProcess {
   readonly kill: (reason: ContainmentTerminationReason) => void;
   readonly done: Promise<void>;
   finish(): void;
+}
+
+interface CleanupReceipt {
+  readonly completion: Promise<void>;
+  resolve(): void;
+  reject(error: Error): void;
 }
 
 type ExecStreamEmitter = (record: ExecStreamRecord) => Promise<void> | void;
@@ -339,6 +353,7 @@ async function assertExecutable(
 export class ExecManager {
   private readonly active = new Map<number, ActiveProcess>();
   private readonly owned = new Set<ActiveProcess>();
+  private readonly cleanupReceipts = new Map<string, CleanupReceipt>();
 
   constructor(
     private readonly workspaceRoot: string,
@@ -353,15 +368,38 @@ export class ExecManager {
     return this.owned.size;
   }
 
-  async run(input: ExecRequest, emit?: ExecStreamEmitter): Promise<ExecResult> {
-    const cwd = input.cwd ?? '.';
-    const checkedCwd = await resolveInRoot(this.workspaceRoot, cwd);
-    const environment = buildChildEnv(input.env);
-    await assertExecutable(input.cmd, checkedCwd, environment);
-    const containment = await this.containment.create();
-    return input.pty === true
-      ? this.runPty(input, cwd, environment, containment, emit)
-      : this.runProcess(input, cwd, environment, containment, emit);
+  async run(input: ExecRequest, emit?: ExecStreamEmitter, cleanupId?: string): Promise<ExecResult> {
+    const receipt = cleanupId === undefined ? undefined : this.reserveCleanup(cleanupId);
+    try {
+      const cwd = input.cwd ?? '.';
+      const checkedCwd = await resolveInRoot(this.workspaceRoot, cwd);
+      const environment = buildChildEnv(input.env);
+      await assertExecutable(input.cmd, checkedCwd, environment);
+      const containment = await this.containment.create();
+      return await (input.pty === true
+        ? this.runPty(input, cwd, environment, containment, emit, receipt)
+        : this.runProcess(input, cwd, environment, containment, emit, receipt));
+    } catch (error) {
+      receipt?.reject(error instanceof Error ? error : new Error('Execution failed'));
+      throw error;
+    }
+  }
+
+  async acknowledgeCleanup(cleanupId: string): Promise<boolean> {
+    const receipt = this.cleanupReceipts.get(cleanupId);
+    if (receipt === undefined) {
+      return false;
+    }
+    try {
+      await receipt.completion;
+      return true;
+    } catch {
+      throw new ContainmentCleanupError();
+    } finally {
+      if (this.cleanupReceipts.get(cleanupId) === receipt) {
+        this.cleanupReceipts.delete(cleanupId);
+      }
+    }
   }
 
   kill(pid: number): boolean {
@@ -378,7 +416,41 @@ export class ExecManager {
     for (const child of active) {
       child.kill('shutdown');
     }
-    await Promise.allSettled(active.map(async (child) => child.done));
+    const outcomes = await Promise.allSettled(active.map(async (child) => child.done));
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      throw new ContainmentCleanupError();
+    }
+  }
+
+  private reserveCleanup(cleanupId: string): CleanupReceipt {
+    if (this.cleanupReceipts.has(cleanupId) || this.cleanupReceipts.size >= 256) {
+      throw new ExecPreflightError();
+    }
+    let resolveCompletion: () => void = () => undefined;
+    let rejectCompletion: (error: Error) => void = () => undefined;
+    let settled = false;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    void completion.catch(() => undefined);
+    const receipt: CleanupReceipt = {
+      completion,
+      resolve() {
+        if (!settled) {
+          settled = true;
+          resolveCompletion();
+        }
+      },
+      reject(error) {
+        if (!settled) {
+          settled = true;
+          rejectCompletion(error);
+        }
+      },
+    };
+    this.cleanupReceipts.set(cleanupId, receipt);
+    return receipt;
   }
 
   private beginActive(
@@ -455,6 +527,7 @@ export class ExecManager {
     environment: NodeJS.ProcessEnv,
     containment: ExecutionContainment,
     emit?: ExecStreamEmitter,
+    cleanupReceipt?: CleanupReceipt,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
@@ -462,15 +535,15 @@ export class ExecManager {
       EXEC_LAUNCHER,
       launcherArgs(this.workspaceRoot, cwd, containment, input),
       {
-      env: environment,
-      extendEnv: false,
-      reject: false,
-      buffer: false,
-      cleanup: false,
-      detached: process.platform !== 'win32',
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
+        env: environment,
+        extendEnv: false,
+        reject: false,
+        buffer: false,
+        cleanup: false,
+        detached: process.platform !== 'win32',
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
       },
     );
     const pid = subprocess.pid;
@@ -486,6 +559,18 @@ export class ExecManager {
       throw new ExecPreflightError();
     }
     const { active, state } = this.beginActive(pid, containment);
+    if (cleanupReceipt !== undefined) {
+      void active.done.then(
+        () => {
+          cleanupReceipt.resolve();
+        },
+        (error: unknown) => {
+          cleanupReceipt.reject(
+            error instanceof Error ? error : new Error('Containment cleanup failed'),
+          );
+        },
+      );
+    }
     // The PID route owns only the launcher process.  Its numeric identity must
     // disappear as soon as that process exits, even when HTTP output delivery
     // remains backpressured.  The separate containment ownership stays alive
@@ -552,6 +637,7 @@ export class ExecManager {
     environment: NodeJS.ProcessEnv,
     containment: ExecutionContainment,
     emit?: ExecStreamEmitter,
+    cleanupReceipt?: CleanupReceipt,
   ): Promise<ExecResult> {
     const startedAt = performance.now();
     const output = createOutputCollector(emit);
@@ -561,9 +647,9 @@ export class ExecManager {
         EXEC_LAUNCHER,
         launcherArgs(this.workspaceRoot, cwd, containment, input),
         {
-        env: environment,
-        cols: 80,
-        rows: 24,
+          env: environment,
+          cols: 80,
+          rows: 24,
         },
       );
     } catch {
@@ -573,6 +659,18 @@ export class ExecManager {
     const pid = terminal.pid;
     terminal.pause();
     const { active, state } = this.beginActive(pid, containment);
+    if (cleanupReceipt !== undefined) {
+      void active.done.then(
+        () => {
+          cleanupReceipt.resolve();
+        },
+        (error: unknown) => {
+          cleanupReceipt.reject(
+            error instanceof Error ? error : new Error('Containment cleanup failed'),
+          );
+        },
+      );
+    }
     const timeout = setTimeout(() => {
       active.kill('timeout');
     }, input.timeoutMs);

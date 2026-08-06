@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
@@ -35,6 +36,16 @@ const MODAL_ENVIRONMENTS = {
   staging: 'zapp-staging',
   prod: 'zapp-prod',
 } as const;
+const PUBLISH_LOCK_TIMEOUT_MS = 30 * 60_000;
+const PUBLISH_LOCK_RETRY_MS = 25;
+const ABANDONED_LOCK_GRACE_MS = 30_000;
+const PublishLockOwnerSchema = z
+  .object({
+    token: z.string().uuid(),
+    pid: z.number().int().positive(),
+    hostname: z.string().min(1),
+  })
+  .strict();
 
 const LockedImageSchema = z
   .object({
@@ -43,6 +54,12 @@ const LockedImageSchema = z
     publishedName: PublishedImageNameSchema,
   })
   .strict();
+const LockedBaseImageSchema = LockedImageSchema.extend({
+  appName: z.literal('zapp-workspaces'),
+});
+const LockedWebImageSchema = LockedImageSchema.extend({
+  appName: z.literal('zapp-browser-verify'),
+});
 
 const LockedEnvironmentSchema = z
   .object({
@@ -51,13 +68,20 @@ const LockedEnvironmentSchema = z
     tag: ImmutableImageTagSchema,
     images: z
       .object({
-        'forge-node-base': LockedImageSchema,
-        'forge-web-test': LockedImageSchema,
+        'forge-node-base': LockedBaseImageSchema,
+        'forge-web-test': LockedWebImageSchema,
       })
       .strict(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (!value.tag.endsWith(`-${value.sourceRevision.slice(0, 7)}`)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tag'],
+        message: 'Tag suffix must match source revision',
+      });
+    }
     for (const [imageName, image] of Object.entries(value.images)) {
       if (image.publishedName !== `${imageName}:${value.tag}`) {
         context.addIssue({
@@ -80,7 +104,19 @@ export const ImageLockSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    for (const environmentKey of ALL_ENVIRONMENTS) {
+      const locked = value.environments[environmentKey];
+      if (locked !== undefined && locked.modalEnvironment !== MODAL_ENVIRONMENTS[environmentKey]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['environments', environmentKey, 'modalEnvironment'],
+          message: 'Modal environment must match lock key',
+        });
+      }
+    }
+  });
 export type ImageLock = z.infer<typeof ImageLockSchema>;
 
 export interface PublishTransactionInput {
@@ -174,6 +210,100 @@ async function writeLockAtomically(lockFilePath: string, lock: ImageLock): Promi
   }
 }
 
+function isMissingFile(error: unknown): boolean {
+  return (
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
+  );
+}
+
+function isExistingFile(error: unknown): boolean {
+  return (
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'EEXIST'
+  );
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(
+      error instanceof Error &&
+      'code' in error &&
+      (error as NodeJS.ErrnoException).code === 'ESRCH'
+    );
+  }
+}
+
+async function recoverAbandonedPublishLock(lockDirectory: string): Promise<void> {
+  const ownerPath = resolve(lockDirectory, 'owner.json');
+  let owner: z.infer<typeof PublishLockOwnerSchema> | undefined;
+  try {
+    owner = PublishLockOwnerSchema.parse(JSON.parse(await readFile(ownerPath, 'utf8')) as unknown);
+  } catch (error) {
+    if (!isMissingFile(error)) return;
+  }
+  if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
+    return;
+  }
+  const age = Date.now() - (await stat(lockDirectory)).mtimeMs;
+  if (age < ABANDONED_LOCK_GRACE_MS) {
+    return;
+  }
+  const quarantine = `${lockDirectory}.abandoned.${randomUUID()}`;
+  try {
+    await rename(lockDirectory, quarantine);
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  await rm(quarantine, { recursive: true, force: true });
+}
+
+async function withPublishLock<T>(lockFilePath: string, action: () => Promise<T>): Promise<T> {
+  const lockDirectory = `${lockFilePath}.publish-lock`;
+  const owner = PublishLockOwnerSchema.parse({
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+  });
+  const deadline = Date.now() + PUBLISH_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await mkdir(lockDirectory);
+      try {
+        await writeFile(resolve(lockDirectory, 'owner.json'), JSON.stringify(owner), {
+          encoding: 'utf8',
+          flag: 'wx',
+        });
+      } catch (error) {
+        await rm(lockDirectory, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      if (!isExistingFile(error)) throw error;
+      await recoverAbandonedPublishLock(lockDirectory);
+      if (Date.now() >= deadline) {
+        throw new Error('Timed out waiting for Modal image publication lock');
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, PUBLISH_LOCK_RETRY_MS));
+    }
+  }
+
+  try {
+    return await action();
+  } finally {
+    const current = PublishLockOwnerSchema.parse(
+      JSON.parse(await readFile(resolve(lockDirectory, 'owner.json'), 'utf8')) as unknown,
+    );
+    if (current.token !== owner.token) {
+      throw new Error('Modal image publication lock ownership changed');
+    }
+    await rm(lockDirectory, { recursive: true });
+  }
+}
+
 function immutableTag(buildDate: Date, sourceRevision: SourceRevision): string {
   if (Number.isNaN(buildDate.valueOf())) {
     throw new Error('Invalid build date');
@@ -194,64 +324,66 @@ export async function publishImagesTransaction(
     .parse(untrustedInput.environments);
   const sourceRevision = SourceRevisionSchema.parse(untrustedInput.sourceRevision);
   const tag = immutableTag(untrustedInput.buildDate, sourceRevision);
-  const current = await readLock(untrustedInput.lockFilePath);
-  const next = structuredClone(current);
+  return withPublishLock(untrustedInput.lockFilePath, async () => {
+    const current = await readLock(untrustedInput.lockFilePath);
+    const next = structuredClone(current);
 
-  for (const environmentKey of environments) {
-    const environment = MODAL_ENVIRONMENTS[environmentKey];
-    const basePublishedName = `forge-node-base:${tag}`;
-    const webPublishedName = `forge-web-test:${tag}`;
-    const base = await untrustedInput.provider.publishImage({
-      environment,
-      appName: 'zapp-workspaces',
-      imageName: 'forge-node-base',
-      tag,
-      publishedName: basePublishedName,
-      recipe: createForgeNodeBaseRecipe(sourceRevision),
-    });
-    const web = await untrustedInput.provider.publishImage({
-      environment,
-      appName: 'zapp-browser-verify',
-      imageName: 'forge-web-test',
-      tag,
-      publishedName: webPublishedName,
-      recipe: createForgeWebTestRecipe(base.digest),
-    });
-    ImageSmokeEvidenceSchema.parse(
-      await untrustedInput.provider.smokeImage({
+    for (const environmentKey of environments) {
+      const environment = MODAL_ENVIRONMENTS[environmentKey];
+      const basePublishedName = `forge-node-base:${tag}`;
+      const webPublishedName = `forge-web-test:${tag}`;
+      const base = await untrustedInput.provider.publishImage({
         environment,
         appName: 'zapp-workspaces',
-        digest: base.digest,
-        publishedName: base.publishedName,
-        agentToken: untrustedInput.createAgentToken(),
-        ...(untrustedInput.telemetryEndpoint === undefined
-          ? {}
-          : { telemetryEndpoint: untrustedInput.telemetryEndpoint }),
-      }),
-    );
-
-    next.environments[environmentKey] = LockedEnvironmentSchema.parse({
-      modalEnvironment: environment,
-      sourceRevision: sourceRevision.commitSha,
-      tag,
-      images: {
-        'forge-node-base': {
+        imageName: 'forge-node-base',
+        tag,
+        publishedName: basePublishedName,
+        recipe: createForgeNodeBaseRecipe(sourceRevision),
+      });
+      const web = await untrustedInput.provider.publishImage({
+        environment,
+        appName: 'zapp-browser-verify',
+        imageName: 'forge-web-test',
+        tag,
+        publishedName: webPublishedName,
+        recipe: createForgeWebTestRecipe(base.digest),
+      });
+      ImageSmokeEvidenceSchema.parse(
+        await untrustedInput.provider.smokeImage({
+          environment,
           appName: 'zapp-workspaces',
           digest: base.digest,
           publishedName: base.publishedName,
-        },
-        'forge-web-test': {
-          appName: 'zapp-browser-verify',
-          digest: web.digest,
-          publishedName: web.publishedName,
-        },
-      },
-    });
-  }
+          agentToken: untrustedInput.createAgentToken(),
+          ...(untrustedInput.telemetryEndpoint === undefined
+            ? {}
+            : { telemetryEndpoint: untrustedInput.telemetryEndpoint }),
+        }),
+      );
 
-  const validated = ImageLockSchema.parse(next);
-  await writeLockAtomically(untrustedInput.lockFilePath, validated);
-  return validated;
+      next.environments[environmentKey] = LockedEnvironmentSchema.parse({
+        modalEnvironment: environment,
+        sourceRevision: sourceRevision.commitSha,
+        tag,
+        images: {
+          'forge-node-base': {
+            appName: 'zapp-workspaces',
+            digest: base.digest,
+            publishedName: base.publishedName,
+          },
+          'forge-web-test': {
+            appName: 'zapp-browser-verify',
+            digest: web.digest,
+            publishedName: web.publishedName,
+          },
+        },
+      });
+    }
+
+    const validated = ImageLockSchema.parse(next);
+    await writeLockAtomically(untrustedInput.lockFilePath, validated);
+    return validated;
+  });
 }
 
 async function smokeLockedImages(
