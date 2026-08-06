@@ -22,6 +22,8 @@ const MAY_BE_TRUTHY = 1;
 const MAY_BE_FALSY = 2;
 const MAY_BE_NULLISH = 1;
 const MAY_BE_NON_NULLISH = 2;
+const MAY_BE_UNDEFINED = 1;
+const MAY_BE_DEFINED = 2;
 
 function increment(counts, key) {
   counts[key] = (counts[key] ?? 0) + 1;
@@ -369,6 +371,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const runtimeSymbolUsageBySourceFile = new Map();
   const readOnlyLiteralContainerSymbols = new Map();
   let collectLoaderContexts = false;
+  let sourceOrderedEvaluatorReady = false;
 
   function originsForSymbol(symbol) {
     if (!symbol) return new Set();
@@ -1114,8 +1117,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       ...value,
       arrayIdentities: unknownArrayIdentities(),
       arrayLike: true,
+      dataAlternative: true,
       nullish: MAY_BE_NULLISH | MAY_BE_NON_NULLISH,
       truthiness: MAY_BE_TRUTHY | MAY_BE_FALSY,
+      undefinedness: MAY_BE_UNDEFINED | MAY_BE_DEFINED,
     };
   }
 
@@ -1161,6 +1166,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
     }
     normalized.accessors ??= [];
+    normalized.setters ??= [];
+    normalized.dataAlternative ??= false;
+    normalized.definitelyArray ??= false;
+    normalized.definitelyObject ??= false;
+    normalized.knownHarmlessCall ??= false;
+    normalized.nonEnumerableMembers ??= new Set();
+    normalized.undefinedReadAlternative ??= false;
+    normalized.undefinedness ??= MAY_BE_UNDEFINED | MAY_BE_DEFINED;
     normalized.arrayLike =
       normalized.arrayLike === true ||
       normalized.arrayIdentities.kind === 'unknown' ||
@@ -1177,8 +1190,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       arrayLike:
         identities.kind === 'unknown' ||
         (identities.kind === 'known' && identities.values.size > 0),
+      definitelyArray: definitelyArray || normalized.definitelyArray,
+      definitelyObject: definitelyArray || normalized.definitelyObject,
       nullish: definitelyArray ? MAY_BE_NON_NULLISH : normalized.nullish,
       truthiness: definitelyArray ? MAY_BE_TRUTHY : normalized.truthiness,
+      undefinedness: definitelyArray ? MAY_BE_DEFINED : normalized.undefinedness,
     };
   }
 
@@ -1186,30 +1202,44 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return {
       accessors: [],
       arrayIdentities: knownArrayIdentities(),
+      arrayLength: undefined,
       arrayLike: false,
       constructors: [],
+      dataAlternative: false,
+      definitelyArray: false,
+      definitelyObject: false,
       functions: [],
       knownDefinedMembers: new Set(),
+      knownHarmlessCall: false,
       kinds: 0,
       members: new Map(),
       nullish: MAY_BE_NULLISH | MAY_BE_NON_NULLISH,
+      nonEnumerableMembers: new Set(),
       references: new Set(),
       runtimeInstance: false,
+      setters: [],
+      scalars: undefined,
       strings: undefined,
       truthiness: MAY_BE_TRUTHY | MAY_BE_FALSY,
+      undefinedness: MAY_BE_UNDEFINED | MAY_BE_DEFINED,
+      undefinedReadAlternative: false,
     };
   }
 
   function callableValueHasData(value) {
     return (
       value.arrayLike ||
+      value.dataAlternative ||
       (value.accessors?.length ?? 0) > 0 ||
+      (value.setters?.length ?? 0) > 0 ||
       value.kinds !== 0 ||
       value.functions.length > 0 ||
+      value.knownHarmlessCall ||
       (value.constructors?.length ?? 0) > 0 ||
       (value.knownDefinedMembers?.size ?? 0) > 0 ||
       value.members.size > 0 ||
       (value.references?.size ?? 0) > 0 ||
+      value.scalars !== undefined ||
       value.strings !== undefined
     );
   }
@@ -1223,8 +1253,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (values.length === 1 && values[0].runtimeInstance) return values[0];
     const merged = emptyCallableValue();
     merged.arrayIdentities = mergeArrayIdentities(values);
+    merged.arrayLength = values.every((value) => value.arrayLength === values[0].arrayLength)
+      ? values[0].arrayLength
+      : undefined;
     merged.kinds = values.reduce((kinds, value) => kinds | value.kinds, 0);
     merged.arrayLike = values.some((value) => value.arrayLike);
+    merged.dataAlternative = values.some((value) => value.dataAlternative);
+    merged.definitelyArray = values.every((value) => value.definitelyArray);
+    merged.definitelyObject = values.every((value) => value.definitelyObject);
+    merged.knownHarmlessCall = values.every((value) => value.knownHarmlessCall);
+    merged.undefinedReadAlternative = values.some((value) => value.undefinedReadAlternative);
     merged.knownDefinedMembers = union(
       ...values.map((value) => value.knownDefinedMembers ?? new Set()),
     );
@@ -1236,8 +1274,25 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       (facts, value) => facts | (value.nullish ?? MAY_BE_NULLISH | MAY_BE_NON_NULLISH),
       0,
     );
+    merged.undefinedness = values.reduce(
+      (facts, value) => facts | (value.undefinedness ?? MAY_BE_UNDEFINED | MAY_BE_DEFINED),
+      0,
+    );
     merged.references = union(...values.map((value) => value.references ?? new Set()));
+    merged.nonEnumerableMembers = new Set(
+      [...union(...values.map((value) => value.nonEnumerableMembers ?? new Set()))].filter(
+        (memberName) =>
+          values.every(
+            (value) =>
+              value.nonEnumerableMembers?.has(memberName) ||
+              (!value.members.has(memberName) && !value.knownDefinedMembers.has(memberName)),
+          ),
+      ),
+    );
     merged.runtimeInstance = values.some((value) => value.runtimeInstance);
+    if (values.every((value) => value.scalars !== undefined)) {
+      merged.scalars = union(...values.map((value) => value.scalars));
+    }
     if (values.every((value) => value.strings !== undefined)) {
       merged.strings = union(...values.map((value) => value.strings));
     }
@@ -1264,6 +1319,18 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           )
         ) {
           merged.functions.push(record);
+        }
+      }
+      for (const record of value.setters ?? []) {
+        if (
+          !merged.setters.some(
+            (existing) =>
+              existing.functionLike === record.functionLike &&
+              existing.environment === record.environment &&
+              existing.thisValue === record.thisValue,
+          )
+        ) {
+          merged.setters.push(record);
         }
       }
       for (const record of value.constructors ?? []) {
@@ -1297,6 +1364,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
     if (values.length === 0 || values.some((value) => value.strings === undefined)) {
       merged.strings = undefined;
+    }
+    if (values.length === 0 || values.some((value) => value.scalars === undefined)) {
+      merged.scalars = undefined;
     }
     return merged;
   }
@@ -1424,7 +1494,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   }
 
   function materializedMembers(value) {
-    const members = new Map(value.members);
+    const members = new Map(
+      [...value.members].filter(([memberName]) => !value.nonEnumerableMembers?.has(memberName)),
+    );
     for (const reference of value.references ?? []) {
       const memberKinds = memberMapForSymbol(callableMembersBySymbol, reference);
       const memberFunctions = memberSetMapForSymbol(functionMembersBySymbol, reference);
@@ -1434,6 +1506,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         new Set(memberFunctions.keys()),
         new Set(memberReferences.keys()),
       )) {
+        if (value.nonEnumerableMembers?.has(memberName)) continue;
         members.set(
           memberName,
           mergeCallableValues(members.get(memberName), {
@@ -1449,7 +1522,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         );
       }
     }
-    return members;
+    return new Map(orderedPropertyEntries(members));
   }
 
   function restCallableValue(value, pattern, restIndex) {
@@ -1550,6 +1623,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function classCallableValue(classLike, environment, state) {
     const value = {
       constructors: [{ classLike, environment: capturedEnvironment(environment) }],
+      definitelyObject: true,
       functions: [],
       kinds: 0,
       members: new Map(),
@@ -2000,6 +2074,61 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
+  function expressionContainsLoaderSyntax(expression) {
+    let containsLoader = false;
+    function visit(node) {
+      if (containsLoader) return;
+      if (
+        (ts.isIdentifier(node) &&
+          (isUnshadowedIdentifier(node, 'require') ||
+            callableKindsForSymbol(symbolAt(checker, node)) !== 0)) ||
+        isModuleRequire(node)
+      ) {
+        containsLoader = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(expression);
+    return containsLoader;
+  }
+
+  function isKnownHarmlessConsoleAccess(expression) {
+    const current = unwrapExpression(expression);
+    if (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) {
+      return false;
+    }
+    const owner = unwrapExpression(current.expression);
+    const memberNames = accessMemberNames(current);
+    return (
+      ts.isIdentifier(owner) &&
+      isUnshadowedIdentifier(owner, 'console') &&
+      !!memberNames &&
+      [...memberNames].every((memberName) =>
+        ['debug', 'dir', 'error', 'info', 'log', 'warn'].includes(memberName),
+      )
+    );
+  }
+
+  const sourceFileGlobalRequireCache = new Map();
+  function sourceFileContainsGlobalRequire(sourceFile) {
+    if (sourceFileGlobalRequireCache.has(sourceFile)) {
+      return sourceFileGlobalRequireCache.get(sourceFile);
+    }
+    let containsRequire = false;
+    function visit(node) {
+      if (containsRequire) return;
+      if (ts.isIdentifier(node) && isUnshadowedIdentifier(node, 'require')) {
+        containsRequire = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+    sourceFileGlobalRequireCache.set(sourceFile, containsRequire);
+    return containsRequire;
+  }
+
   function functionBodyCreatesInstance(functionLike) {
     if (functionBodiesCreatingInstance.has(functionLike)) {
       return functionBodiesCreatingInstance.get(functionLike);
@@ -2144,6 +2273,31 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const returns = [];
     const inspectBodyCalls = [...environment.values()].some((value) => containsCallableKind(value));
     const inspectRuntimeInstanceCalls = functionBodyCreatesInstance(functionLike);
+    const conditionallyCalledInstanceSymbols = new Set();
+    if (inspectRuntimeInstanceCalls) {
+      function collectConditionalInstanceCalls(node, insideConditional = false) {
+        if (node !== functionLike.body && ts.isFunctionLike(node)) return;
+        if (ts.isIfStatement(node)) {
+          collectConditionalInstanceCalls(node.expression, insideConditional);
+          collectConditionalInstanceCalls(node.thenStatement, true);
+          if (node.elseStatement) collectConditionalInstanceCalls(node.elseStatement, true);
+          return;
+        }
+        if (insideConditional && ts.isCallExpression(node)) {
+          const callee = unwrapExpression(node.expression);
+          if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+            const receiver = unwrapExpression(callee.expression);
+            if (ts.isIdentifier(receiver)) {
+              const receiverSymbol = symbolAt(checker, receiver);
+              const identity = aliasedSymbol(checker, receiverSymbol) ?? receiverSymbol;
+              if (identity) conditionallyCalledInstanceSymbols.add(identity);
+            }
+          }
+        }
+        ts.forEachChild(node, (child) => collectConditionalInstanceCalls(child, insideConditional));
+      }
+      collectConditionalInstanceCalls(functionLike.body);
+    }
     function visit(node, visitState = nextState) {
       if (node !== functionLike && ts.isFunctionLike(node)) return;
       if (ts.isIfStatement(node)) {
@@ -2171,7 +2325,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       if (ts.isVariableDeclaration(node) && node.initializer) {
         const alias = thisAliasValue(node.initializer, environment, visitState);
-        if (alias) bindCallablePattern(node.name, alias, environment);
+        if (alias) {
+          bindCallablePattern(node.name, alias, environment);
+        } else if (
+          inspectRuntimeInstanceCalls &&
+          ts.isIdentifier(node.name) &&
+          ts.isNewExpression(unwrapExpression(node.initializer)) &&
+          conditionallyCalledInstanceSymbols.has(
+            aliasedSymbol(checker, symbolAt(checker, node.name)) ?? symbolAt(checker, node.name),
+          )
+        ) {
+          const initialValue = callableValue(node.initializer, environment, visitState);
+          if (initialValue.runtimeInstance) {
+            bindCallablePattern(node.name, initialValue, environment);
+          }
+        }
       }
       if (ts.isReturnStatement(node) && node.expression) {
         returns.push(callableValue(node.expression, environment, visitState));
@@ -2259,16 +2427,17 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (constructor && ts.isConstructorDeclaration(constructor)) {
       constructor.parameters.forEach((parameter, index) => {
         if (!ts.isIdentifier(parameter.name) || !parameter.modifiers?.length) return;
+        let argumentValue = argumentValues[index] ?? emptyCallableValue();
+        if (!callableValueHasData(argumentValue) && parameter.initializer) {
+          argumentValue = callableValue(parameter.initializer, environment, state);
+        }
         instance.members.set(
           parameter.name.text,
-          mergeCallableValues(
-            instance.members.get(parameter.name.text),
-            argumentValues[index] ?? emptyCallableValue(),
-          ),
+          mergeCallableValues(instance.members.get(parameter.name.text), argumentValue),
         );
         instance.knownDefinedMembers.add(parameter.name.text);
       });
-      functionResult(
+      const returned = functionResult(
         {
           environment: capturedEnvironment(environment),
           functionLike: constructor,
@@ -2277,6 +2446,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         argumentValues,
         state,
       );
+      if (
+        returned.arrayLike ||
+        returned.kinds !== 0 ||
+        returned.functions.length > 0 ||
+        (returned.constructors?.length ?? 0) > 0 ||
+        returned.members.size > 0 ||
+        (returned.references?.size ?? 0) > 0
+      ) {
+        return mergeCallableValues(instance, returned);
+      }
     }
     return instance;
   }
@@ -2853,6 +3032,15 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       : undefined;
   }
 
+  function orderedPropertyEntries(entries) {
+    const values = [...entries];
+    const indexes = values
+      .filter(([memberName]) => exactArrayIndex(memberName) !== undefined)
+      .sort(([left], [right]) => Number(left) - Number(right));
+    const otherKeys = values.filter(([memberName]) => exactArrayIndex(memberName) === undefined);
+    return [...indexes, ...otherKeys];
+  }
+
   function assignmentIncludesTrackedSymbol(pattern, trackedSymbols) {
     const symbols = new Set();
     collectAssignmentSymbols(pattern, symbols);
@@ -2861,27 +3049,101 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
   }
 
-  function exactTopLevelContainerMemberValue(access, memberNames) {
-    if (!collectLoaderContexts || !memberNames || memberNames.size !== 1) return undefined;
-    const owner = unwrapExpression(access.expression);
-    if (!ts.isIdentifier(owner)) return undefined;
-    const symbol = symbolAt(checker, owner);
+  function symbolMembersCarryCallable(symbol, seen = new Set()) {
     const identity = aliasedSymbol(checker, symbol) ?? symbol;
-    if (!identity) return undefined;
+    if (!identity || seen.has(identity)) return false;
+    seen.add(identity);
     if (
-      arrayIdentitiesForSymbol(identity).size === 0 &&
-      !containerSymbols.has(identity) &&
-      !typeMayBeArray(owner)
+      [...memberMapForSymbol(callableMembersBySymbol, identity).values()].some(
+        (kinds) => kinds !== 0,
+      ) ||
+      [...memberSetMapForSymbol(functionMembersBySymbol, identity).values()].some(
+        (targets) => targets.size > 0,
+      )
+    ) {
+      return true;
+    }
+    for (const references of memberSetMapForSymbol(memberReferencesBySymbol, identity).values()) {
+      for (const reference of references) {
+        if (symbolMembersCarryCallable(reference, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  function exactTopLevelContainerMemberValue(access, memberNames, environment, state) {
+    if (
+      !collectLoaderContexts ||
+      sourceOrderedEvaluationStack.size > 0 ||
+      !memberNames ||
+      memberNames.size !== 1
     ) {
       return undefined;
     }
+    const owner = unwrapExpression(access.expression);
+    let root = owner;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root)) {
+      root = unwrapExpression(root.expression);
+    }
+    if (!ts.isIdentifier(root)) return undefined;
+    const symbol = symbolAt(checker, root);
+    const identity = aliasedSymbol(checker, symbol) ?? symbol;
+    if (!identity) return undefined;
+    const symbolMayCarryLoader = symbolMembersCarryCallable(identity);
+    if (!symbolMayCarryLoader && !sourceFileContainsGlobalRequire(access.getSourceFile())) {
+      return undefined;
+    }
+    const factoryInitializedContainer = [...(identity.declarations ?? [])].some((declaration) => {
+      if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) return false;
+      const initializer = unwrapExpression(declaration.initializer);
+      return ts.isCallExpression(initializer) || ts.isNewExpression(initializer);
+    });
+    const restInitializedContainer = [...(identity.declarations ?? [])].some(
+      (declaration) => ts.isBindingElement(declaration) && !!declaration.dotDotDotToken,
+    );
+    if (
+      arrayIdentitiesForSymbol(identity).size === 0 &&
+      !containerSymbols.has(identity) &&
+      !typeMayBeArray(owner) &&
+      !factoryInitializedContainer &&
+      !restInitializedContainer
+    ) {
+      return undefined;
+    }
+    const contextual = environment.get(symbol) ?? environment.get(identity);
+    if (contextual?.runtimeInstance) return undefined;
     const value = sourceOrderedArrayMutationValue(access, owner);
-    if (value.arrayIdentities.kind === 'unknown') return undefined;
+    const valueCarriesCallable = symbolMayCarryLoader || containsCallableKind(value);
+    const materializeAccessorRead = (selected) =>
+      selected.accessors.length > 0
+        ? mergeCallableValues(
+            selected,
+            ...selected.accessors.map((record) =>
+              functionResult(record, [], stateForInvocation(state, access)),
+            ),
+          )
+        : selected;
+    if (value.reachable === false) return emptyCallableValue();
+    if (value.arrayIdentities.kind === 'unknown') {
+      if (valueCarriesCallable) {
+        unresolvedLoaderExpressions.set(access, access.getSourceFile());
+      }
+      return undefined;
+    }
     if ([...memberNames].every((memberName) => value.knownDefinedMembers.has(memberName))) {
       const members = [...memberNames].map((memberName) => value.members.get(memberName));
-      return members.length === 1 ? members[0] : mergeCallableAlternatives(...members);
+      return materializeAccessorRead(
+        members.length === 1 ? members[0] : mergeCallableAlternatives(...members),
+      );
     }
-    return selectCallableMembers(value, memberNames);
+    if (valueCarriesCallable) {
+      unresolvedLoaderExpressions.set(access, access.getSourceFile());
+    }
+    const selected = selectCallableMembers(value, memberNames);
+    if (selected.arrayIdentities.kind === 'unknown' && valueCarriesCallable) {
+      unresolvedLoaderExpressions.set(access, access.getSourceFile());
+    }
+    return materializeAccessorRead(selected);
   }
 
   function assignObjectMembers(target, sources) {
@@ -3354,6 +3616,45 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     if (ts.isCallExpression(current)) {
       if (isBindCall(current)) return callableValue(bindOwner(current), environment, state);
+      const callbackCallee = unwrapExpression(current.expression);
+      const callbackMemberNames =
+        ts.isPropertyAccessExpression(callbackCallee) ||
+        ts.isElementAccessExpression(callbackCallee)
+          ? accessMemberNames(callbackCallee)
+          : undefined;
+      const callbackOwner =
+        ts.isPropertyAccessExpression(callbackCallee) ||
+        ts.isElementAccessExpression(callbackCallee)
+          ? unwrapExpression(callbackCallee.expression)
+          : undefined;
+      let callbackOwnerRoot = callbackOwner;
+      while (
+        callbackOwnerRoot &&
+        (ts.isPropertyAccessExpression(callbackOwnerRoot) ||
+          ts.isElementAccessExpression(callbackOwnerRoot))
+      ) {
+        callbackOwnerRoot = unwrapExpression(callbackOwnerRoot.expression);
+      }
+      const callbackOwnerSymbol =
+        callbackOwnerRoot && ts.isIdentifier(callbackOwnerRoot)
+          ? symbolAt(checker, callbackOwnerRoot)
+          : undefined;
+      const callbackMayCarryLoader =
+        (callbackOwnerSymbol ? symbolMembersCarryCallable(callbackOwnerSymbol) : false) ||
+        (callbackOwner ? expressionContainsLoaderSyntax(callbackOwner) : false) ||
+        current.arguments.some((argument) => expressionContainsLoaderSyntax(argument));
+      if (
+        sourceOrderedEvaluatorReady &&
+        collectLoaderContexts &&
+        sourceOrderedEvaluationStack.size === 0 &&
+        callbackMayCarryLoader &&
+        callbackMemberNames?.size === 1 &&
+        ['map', 'flatMap', 'filter', 'find', 'some', 'every', 'forEach', 'reduce'].includes(
+          [...callbackMemberNames][0],
+        )
+      ) {
+        return sourceOrderedArrayMutationValue(current, current);
+      }
       const arrayMutation = arrayMutationForCall(current);
       if (arrayMutation) {
         const owner = callableValue(arrayMutation.owner, environment, state);
@@ -3589,13 +3890,51 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             strings: undefined,
           };
           memberIsDefinitelyDefined = true;
+        } else if (ts.isSetAccessorDeclaration(property)) {
+          memberValue = {
+            functions: [],
+            kinds: 0,
+            members: new Map(),
+            setters: [
+              {
+                environment: capturedEnvironment(environment),
+                functionLike: property,
+              },
+            ],
+            strings: undefined,
+            undefinedReadAlternative: true,
+          };
+          memberIsDefinitelyDefined = true;
         }
         for (const memberName of memberNames ?? ['*']) {
           if (memberName === '*') {
             members.set(memberName, mergeCallableValues(members.get(memberName), memberValue));
             knownDefinedMembers.clear();
           } else {
-            members.set(memberName, memberValue);
+            const previous = normalizeAbstractValue(members.get(memberName));
+            if (ts.isGetAccessorDeclaration(property)) {
+              members.set(
+                memberName,
+                mergeCallableValues(
+                  { ...emptyCallableValue(), setters: [...previous.setters] },
+                  memberValue,
+                ),
+              );
+            } else if (ts.isSetAccessorDeclaration(property)) {
+              members.set(
+                memberName,
+                mergeCallableValues(
+                  { ...emptyCallableValue(), accessors: [...previous.accessors] },
+                  memberValue,
+                ),
+              );
+            } else {
+              members.set(memberName, memberValue);
+            }
+            if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+              const descriptor = members.get(memberName);
+              descriptor.undefinedReadAlternative = descriptor.accessors.length === 0;
+            }
             knownDefinedMembers.delete(memberName);
           }
           if (memberName !== '*' && memberIsDefinitelyDefined) {
@@ -3607,6 +3946,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     }
     if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
       return {
+        definitelyObject: true,
         functions: [{ environment: capturedEnvironment(environment), functionLike: current }],
         kinds: 0,
         members: new Map(),
@@ -4161,8 +4501,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   }
 
   const sourceOrderedEvaluationCache = new Map();
+  const sourceOrderedExpressionValueCache = new Map();
+  const sourceOrderedPreludeCursorCache = new Map();
   const sourceOrderedPreludeStateCache = new Map();
   const sourceOrderedEvaluationStack = new Set();
+  sourceOrderedEvaluatorReady = true;
 
   function sourceOrderedArrayMutationValue(contextNode, expression) {
     const scope = containingArrayMutationScopeStatement(contextNode);
@@ -4175,49 +4518,135 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
     try {
       const targetExpression = unwrapExpression(expression);
+      if (sourceOrderedExpressionValueCache.has(targetExpression)) {
+        const result = sourceOrderedExpressionValueCache.get(targetExpression);
+        sourceOrderedEvaluationCache.set(contextNode, result);
+        return result;
+      }
       const targetValues = [];
+      const evaluatedReceiverValues = new Map();
+      const globalArrayPrototypeIdentity = { global: 'Array.prototype' };
+      const globalConsoleIdentity = { global: 'console' };
 
       const createState = () => ({
+        arrayPrototypeMethods: new Map(),
+        bindingContainers: new Map(),
         bindings: new Map(),
         callStack: new Set(),
+        capturedScope: undefined,
+        containerBindings: new Map(),
+        currentClosureScope: undefined,
         dataOnly: new Map(),
         environment: new Map(),
+        overriddenConsoleMethods: new Set(),
+        reassignableBindings: new Set(),
         thisValue: undefined,
       });
-      const cloneValue = (value, seen = new Map()) => {
+      const cloneScope = (scope, seen, scopeClones) => {
+        if (!scope) return undefined;
+        if (scopeClones.has(scope)) return scopeClones.get(scope);
+        const cloned = { environment: new Map(), origin: scope.origin };
+        scopeClones.set(scope, cloned);
+        cloned.environment = new Map(
+          [...scope.environment].map(([identity, value]) => [
+            identity,
+            cloneValue(value, seen, scopeClones),
+          ]),
+        );
+        return cloned;
+      };
+      const cloneRecord = (record, seen, scopeClones) => ({
+        ...record,
+        closureScope: cloneScope(record.closureScope, seen, scopeClones),
+        environment: record.environment,
+      });
+      const cloneValue = (value, seen = new Map(), scopeClones = new Map()) => {
         if (!value || typeof value !== 'object') return value;
         if (seen.has(value)) return seen.get(value);
         const cloned = { ...value };
         seen.set(value, cloned);
-        cloned.accessors = [...(value.accessors ?? [])];
+        cloned.accessors = (value.accessors ?? []).map((record) =>
+          cloneRecord(record, seen, scopeClones),
+        );
         cloned.arrayIdentities = cloneArrayIdentities(value.arrayIdentities);
-        cloned.constructors = [...(value.constructors ?? [])];
-        cloned.functions = [...(value.functions ?? [])];
+        cloned.constructors = (value.constructors ?? []).map((record) =>
+          cloneRecord(record, seen, scopeClones),
+        );
+        cloned.functions = (value.functions ?? []).map((record) =>
+          cloneRecord(record, seen, scopeClones),
+        );
         cloned.knownDefinedMembers = new Set(value.knownDefinedMembers ?? []);
         cloned.knownPresentMembers = value.knownPresentMembers
           ? new Set(value.knownPresentMembers)
           : undefined;
         cloned.members = new Map(
-          [...(value.members ?? [])].map(([name, member]) => [name, cloneValue(member, seen)]),
+          [...(value.members ?? [])].map(([name, member]) => [
+            name,
+            cloneValue(member, seen, scopeClones),
+          ]),
         );
         cloned.references = new Set(value.references ?? []);
+        cloned.nonEnumerableMembers = new Set(value.nonEnumerableMembers ?? []);
+        cloned.receiverValue = value.receiverValue
+          ? cloneValue(value.receiverValue, seen, scopeClones)
+          : undefined;
+        cloned.scalars = value.scalars ? new Set(value.scalars) : undefined;
+        cloned.setters = (value.setters ?? []).map((record) =>
+          cloneRecord(record, seen, scopeClones),
+        );
         cloned.strings = value.strings ? new Set(value.strings) : undefined;
         return cloned;
       };
-      const cloneState = (state) => ({
-        bindings: new Map(
-          [...state.bindings].map(([identity, value]) => [identity, cloneValue(value)]),
-        ),
-        callStack: new Set(state.callStack),
-        dataOnly: new Map(
-          [...state.dataOnly].map(([identity, container]) => [
-            identity,
-            { members: new Set(container.members) },
-          ]),
-        ),
-        environment: new Map(state.environment),
-        thisValue: state.thisValue ? cloneValue(state.thisValue) : undefined,
-      });
+      const cloneState = (state) => {
+        const seenValues = new Map();
+        const scopeClones = new Map();
+        return {
+          arrayPrototypeMethods: new Map(
+            [...state.arrayPrototypeMethods].map(([memberName, value]) => [
+              memberName,
+              cloneValue(value, seenValues, scopeClones),
+            ]),
+          ),
+          bindingContainers: new Map(
+            [...state.bindingContainers].map(([identity, containers]) => [
+              identity,
+              new Set(containers),
+            ]),
+          ),
+          bindings: new Map(
+            [...state.bindings].map(([identity, value]) => [
+              identity,
+              cloneValue(value, seenValues, scopeClones),
+            ]),
+          ),
+          callStack: new Set(state.callStack),
+          capturedScope: cloneScope(state.capturedScope, seenValues, scopeClones),
+          containerBindings: new Map(
+            [...state.containerBindings].map(([container, identities]) => [
+              container,
+              new Set(identities),
+            ]),
+          ),
+          currentClosureScope: cloneScope(state.currentClosureScope, seenValues, scopeClones),
+          dataOnly: new Map(
+            [...state.dataOnly].map(([identity, container]) => [
+              identity,
+              { members: new Set(container.members) },
+            ]),
+          ),
+          environment: new Map(
+            [...state.environment].map(([identity, value]) => [
+              identity,
+              cloneValue(value, seenValues, scopeClones),
+            ]),
+          ),
+          overriddenConsoleMethods: new Set(state.overriddenConsoleMethods),
+          reassignableBindings: new Set(state.reassignableBindings),
+          thisValue: state.thisValue
+            ? cloneValue(state.thisValue, seenValues, scopeClones)
+            : undefined,
+        };
+      };
       const mergeRuntimeValues = (...candidates) => {
         const values = candidates.filter(Boolean).map((value) => normalizeAbstractValue(value));
         if (values.length === 0) return unknownCallableValue();
@@ -4231,6 +4660,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         );
         merged.truthiness = values.reduce(
           (facts, value) => facts | (value.truthiness ?? MAY_BE_TRUTHY | MAY_BE_FALSY),
+          0,
+        );
+        merged.undefinedness = values.reduce(
+          (facts, value) => facts | (value.undefinedness ?? MAY_BE_UNDEFINED | MAY_BE_DEFINED),
           0,
         );
         return merged;
@@ -4251,9 +4684,40 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
         return merged;
       };
+      const mergeScopes = (scopes) => {
+        const candidates = scopes.filter(Boolean);
+        if (candidates.length === 0) return undefined;
+        const identities = union(...candidates.map((scope) => new Set(scope.environment.keys())));
+        return {
+          environment: new Map(
+            [...identities].map((identity) => [
+              identity,
+              mergeRuntimeValues(
+                ...candidates.map(
+                  (scope) => scope.environment.get(identity) ?? unknownCallableValue(),
+                ),
+              ),
+            ]),
+          ),
+          origin: candidates[0].origin,
+        };
+      };
       const mergeStates = (states) => {
         if (states.length === 1) return cloneState(states[0]);
         const merged = createState();
+        const prototypeMemberNames = union(
+          ...states.map((state) => new Set(state.arrayPrototypeMethods.keys())),
+        );
+        for (const memberName of prototypeMemberNames) {
+          merged.arrayPrototypeMethods.set(
+            memberName,
+            mergeRuntimeValues(
+              ...states.map(
+                (state) => state.arrayPrototypeMethods.get(memberName) ?? unknownCallableValue(),
+              ),
+            ),
+          );
+        }
         const identities = union(...states.map((state) => new Set(state.bindings.keys())));
         for (const identity of identities) {
           merged.bindings.set(
@@ -4264,39 +4728,87 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           );
         }
         merged.callStack = new Set(states[0]?.callStack ?? []);
+        merged.capturedScope = mergeScopes(states.map((state) => state.capturedScope));
+        merged.currentClosureScope = mergeScopes(states.map((state) => state.currentClosureScope));
         merged.dataOnly = mergeDataOnly(states);
         merged.environment = new Map(states[0]?.environment ?? []);
+        merged.overriddenConsoleMethods = union(
+          ...states.map((state) => state.overriddenConsoleMethods),
+        );
         merged.thisValue = states.some((state) => state.thisValue)
           ? mergeRuntimeValues(...states.map((state) => state.thisValue ?? unknownCallableValue()))
           : undefined;
+        rebuildStateIndexes(merged);
         return merged;
       };
       const replaceState = (target, source) => {
+        target.arrayPrototypeMethods = source.arrayPrototypeMethods;
+        target.bindingContainers = source.bindingContainers;
         target.bindings = source.bindings;
         target.callStack = source.callStack;
+        target.capturedScope = source.capturedScope;
+        target.containerBindings = source.containerBindings;
+        target.currentClosureScope = source.currentClosureScope;
         target.dataOnly = source.dataOnly;
         target.environment = source.environment;
+        target.overriddenConsoleMethods = source.overriddenConsoleMethods;
+        target.reassignableBindings = source.reassignableBindings;
         target.thisValue = source.thisValue;
       };
       const runtimeEnvironment = (state) => {
         const environment = new Map(state.environment);
+        for (const [identity, value] of state.capturedScope?.environment ?? []) {
+          environment.set(identity, value);
+        }
         for (const [identity, value] of state.bindings) environment.set(identity, value);
         return environment;
+      };
+      const captureRuntimeClosure = (state) => {
+        state.currentClosureScope ??= { environment: new Map(), origin: {} };
+        const environment = runtimeEnvironment(state);
+        for (const [identity, value] of environment) {
+          state.currentClosureScope.environment.set(identity, cloneValue(value));
+        }
+        return {
+          closureScope: state.currentClosureScope,
+          environment: new Map(environment),
+        };
       };
       const staticState = (state) => ({
         callStack: state.callStack,
         seenSymbols: new Set(),
         thisValue: state.thisValue,
       });
-      const knownNonArrayValue = (value = emptyCallableValue(), facts = {}) => ({
-        ...withArrayIdentities(value, knownArrayIdentities()),
-        ...facts,
-        arrayLike: false,
+      const knownNonArrayValue = (value = emptyCallableValue(), facts = {}) => {
+        const normalized = withArrayIdentities(value, knownArrayIdentities());
+        return {
+          ...normalized,
+          dataAlternative:
+            normalized.dataAlternative ||
+            (normalized.accessors.length === 0 && normalized.setters.length === 0),
+          undefinedness: MAY_BE_DEFINED,
+          ...facts,
+          arrayLike: false,
+        };
+      };
+      const unreachableValue = () => ({
+        ...knownNonArrayValue(emptyCallableValue(), {
+          nullish: MAY_BE_NON_NULLISH,
+          truthiness: MAY_BE_FALSY,
+        }),
+        reachable: false,
       });
       const undefinedValue = () =>
         knownNonArrayValue(emptyCallableValue(), {
           nullish: MAY_BE_NULLISH,
           truthiness: MAY_BE_FALSY,
+          undefinedness: MAY_BE_UNDEFINED,
+        });
+      const nullValue = () =>
+        knownNonArrayValue(emptyCallableValue(), {
+          nullish: MAY_BE_NULLISH,
+          truthiness: MAY_BE_FALSY,
+          undefinedness: MAY_BE_DEFINED,
         });
       const booleanValue = (truthiness) =>
         knownNonArrayValue(emptyCallableValue(), {
@@ -4325,9 +4837,53 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           )
         );
       };
-      const invalidateReassignableBindings = (state) => {
+      const containerIdentitiesForRuntimeValue = (value, seen = new Set(), result = new Set()) => {
+        if (!value || seen.has(value)) return result;
+        seen.add(value);
+        if (value.arrayIdentities.kind === 'known') {
+          for (const identity of value.arrayIdentities.values) result.add(identity);
+        }
+        for (const reference of value.references ?? []) result.add(reference);
+        for (const member of value.members?.values() ?? []) {
+          containerIdentitiesForRuntimeValue(member, seen, result);
+        }
+        return result;
+      };
+      const indexRuntimeBinding = (state, identity, value) => {
+        for (const container of state.bindingContainers.get(identity) ?? []) {
+          const bindings = state.containerBindings.get(container);
+          bindings?.delete(identity);
+          if (bindings?.size === 0) state.containerBindings.delete(container);
+        }
+        const containers = containerIdentitiesForRuntimeValue(value);
+        state.bindingContainers.set(identity, containers);
+        for (const container of containers) {
+          const bindings = state.containerBindings.get(container) ?? new Set();
+          bindings.add(identity);
+          state.containerBindings.set(container, bindings);
+        }
+        if (isStableBinding(identity)) state.reassignableBindings.delete(identity);
+        else state.reassignableBindings.add(identity);
+      };
+      const rebuildStateIndexes = (state) => {
+        state.bindingContainers = new Map();
+        state.containerBindings = new Map();
+        state.reassignableBindings = new Set();
         for (const [identity, value] of state.bindings) {
-          if (!isStableBinding(identity)) state.bindings.set(identity, unknownCallableValue(value));
+          indexRuntimeBinding(state, identity, value);
+        }
+      };
+      const invalidateReassignableBindings = (state) => {
+        for (const identity of state.reassignableBindings) {
+          const value = state.bindings.get(identity);
+          if (value) state.bindings.set(identity, unknownCallableValue(value));
+        }
+        for (const scope of [state.capturedScope, state.currentClosureScope]) {
+          for (const [identity, value] of scope?.environment ?? []) {
+            if (!isStableBinding(identity)) {
+              scope.environment.set(identity, unknownCallableValue(value));
+            }
+          }
         }
         state.dataOnly.clear();
       };
@@ -4415,15 +4971,28 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         const boundValue = cloneValue(value);
         const source = sourceExpression ? unwrapExpression(sourceExpression) : undefined;
         if (
-          (boundValue.references?.size ?? 0) > 0 ||
-          boundValue.arrayIdentities.kind === 'unknown' ||
-          boundValue.arrayIdentities.values.size > 0 ||
-          (source && (ts.isObjectLiteralExpression(source) || ts.isArrayLiteralExpression(source)))
+          (boundValue.references?.size ?? 0) === 0 &&
+          (boundValue.arrayIdentities.kind === 'unknown' ||
+            boundValue.arrayIdentities.values.size > 0 ||
+            (source &&
+              (ts.isObjectLiteralExpression(source) || ts.isArrayLiteralExpression(source))))
         ) {
           boundValue.references ??= new Set();
           boundValue.references.add(identity);
         }
+        if (!state.bindings.has(identity) && state.capturedScope?.environment.has(identity)) {
+          state.capturedScope.environment.set(identity, boundValue);
+          state.environment.set(identity, boundValue);
+          if (state.currentClosureScope?.environment.has(identity)) {
+            state.currentClosureScope.environment.set(identity, cloneValue(boundValue));
+          }
+          return;
+        }
         state.bindings.set(identity, boundValue);
+        if (state.currentClosureScope?.environment.has(identity)) {
+          state.currentClosureScope.environment.set(identity, cloneValue(boundValue));
+        }
+        indexRuntimeBinding(state, identity, boundValue);
         const dataOnly = sourceExpression
           ? dataOnlyContainerForExpression(sourceExpression, state)
           : undefined;
@@ -4440,7 +5009,192 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           for (const member of value.members?.values() ?? []) visit(member);
         };
         for (const value of state.bindings.values()) visit(value);
+        for (const [identity, value] of state.environment ?? []) {
+          if (!state.bindings.has(identity)) visit(value);
+        }
+        for (const [identity, value] of state.capturedScope?.environment ?? []) {
+          if (!state.bindings.has(identity)) visit(value);
+        }
+        for (const [identity, value] of state.currentClosureScope?.environment ?? []) {
+          if (!state.bindings.has(identity)) visit(value);
+        }
         for (const value of values) visitor(value);
+      };
+      const runtimeValuesShareContainer = (left, right) => {
+        const sharesArrayIdentity =
+          left.arrayIdentities.kind === 'known' &&
+          right.arrayIdentities.kind === 'known' &&
+          [...left.arrayIdentities.values].some((identity) =>
+            right.arrayIdentities.values.has(identity),
+          );
+        const sharesObjectIdentity = [...(left.references ?? [])].some((identity) =>
+          right.references?.has(identity),
+        );
+        return sharesArrayIdentity || sharesObjectIdentity;
+      };
+      const refreshRuntimeValue = (value, state) => {
+        const matches = [];
+        visitRuntimeValues(state, (candidate) => {
+          if (runtimeValuesShareContainer(value, candidate)) matches.push(candidate);
+        });
+        return matches.length > 0 ? mergeRuntimeValues(...matches) : value;
+      };
+      const invalidateMutableArgumentContents = (
+        state,
+        argumentValues,
+        traverseAccessors = true,
+      ) => {
+        const taintedArrayIdentities = new Set();
+        const taintedReferences = new Set();
+        let taintIsUnknown = false;
+        const invokedAccessorOwners = new Map();
+        const accessorOwnerVisitCounts = new Map();
+        const maxAccessorOwnerVisits = 32;
+        const accessorOwnerKeys = (owner) => {
+          const keys = new Set(owner.references ?? []);
+          if (owner.arrayIdentities.kind === 'known') {
+            for (const identity of owner.arrayIdentities.values) keys.add(identity);
+          }
+          return keys.size > 0 ? keys : new Set([owner]);
+        };
+        const unseenAccessors = (member, owner) =>
+          (member.accessors ?? []).filter((record) => {
+            const owners = invokedAccessorOwners.get(record.functionLike) ?? new Set();
+            const keys = accessorOwnerKeys(owner);
+            if ([...keys].some((key) => owners.has(key))) {
+              taintIsUnknown = true;
+              return false;
+            }
+            const visits = accessorOwnerVisitCounts.get(record.functionLike) ?? 0;
+            if (visits >= maxAccessorOwnerVisits) {
+              taintIsUnknown = true;
+              return false;
+            }
+            accessorOwnerVisitCounts.set(record.functionLike, visits + 1);
+            for (const key of keys) owners.add(key);
+            invokedAccessorOwners.set(record.functionLike, owners);
+            return true;
+          });
+        const readAccessorsForInvalidation = (owner, member, state) => {
+          const records = unseenAccessors(member, owner);
+          const branches = records.map((record) => {
+            const branchState = cloneState(state);
+            return {
+              state: branchState,
+              value: invokeFunction(record, [], branchState, owner),
+            };
+          });
+          if (member.dataAlternative) {
+            branches.push({
+              state: cloneState(state),
+              value: { ...cloneValue(member), accessors: [], setters: [] },
+            });
+          }
+          if (branches.length === 0) return undefined;
+          replaceState(state, mergeStates(branches.map((branch) => branch.state)));
+          return mergeRuntimeValues(...branches.map((branch) => branch.value));
+        };
+        const collectIdentities = (value, seen = new Set(), root = false) => {
+          if (!value || seen.has(value)) return;
+          seen.add(value);
+          if (value.arrayIdentities.kind === 'known') {
+            for (const identity of value.arrayIdentities.values) {
+              taintedArrayIdentities.add(identity);
+            }
+          } else if (root) {
+            taintIsUnknown = true;
+          }
+          for (const reference of value.references ?? []) taintedReferences.add(reference);
+          for (const member of value.members?.values() ?? []) {
+            let exposed = member;
+            if (member.accessors?.length) {
+              if (!traverseAccessors) {
+                taintIsUnknown = true;
+                exposed = member.dataAlternative
+                  ? { ...cloneValue(member), accessors: [], setters: [] }
+                  : undefined;
+              } else {
+                exposed = readAccessorsForInvalidation(value, member, state);
+              }
+            }
+            if (!exposed) continue;
+            collectIdentities(exposed, seen);
+          }
+        };
+        for (const argumentValue of argumentValues) {
+          collectIdentities(argumentValue, new Set(), true);
+        }
+        if (!taintIsUnknown && taintedArrayIdentities.size === 0 && taintedReferences.size === 0) {
+          return;
+        }
+        const sharesTaintedIdentity = (value) =>
+          taintIsUnknown ||
+          (value.arrayIdentities.kind === 'known' &&
+            [...value.arrayIdentities.values].some((identity) =>
+              taintedArrayIdentities.has(identity),
+            )) ||
+          [...(value.references ?? [])].some((reference) => taintedReferences.has(reference));
+        const invalidatedBindings = new Set();
+        const examinedBindings = new Set();
+        let expanded = true;
+        while (expanded) {
+          expanded = false;
+          if (taintIsUnknown) {
+            for (const identity of state.bindings.keys()) {
+              if (invalidatedBindings.has(identity)) continue;
+              invalidatedBindings.add(identity);
+              expanded = true;
+            }
+          } else {
+            for (const container of union(taintedArrayIdentities, taintedReferences)) {
+              for (const identity of state.containerBindings.get(container) ?? []) {
+                if (invalidatedBindings.has(identity)) continue;
+                invalidatedBindings.add(identity);
+                expanded = true;
+              }
+            }
+          }
+          for (const identity of invalidatedBindings) {
+            if (examinedBindings.has(identity)) continue;
+            examinedBindings.add(identity);
+            const candidate = state.bindings.get(identity);
+            if (!candidate) continue;
+            const arraySize = taintedArrayIdentities.size;
+            const referenceSize = taintedReferences.size;
+            const wasUnknown = taintIsUnknown;
+            collectIdentities(candidate);
+            expanded =
+              taintedArrayIdentities.size !== arraySize ||
+              taintedReferences.size !== referenceSize ||
+              taintIsUnknown !== wasUnknown ||
+              expanded;
+          }
+        }
+        const invalidateValue = (boundValue) => {
+          let invalidatedBinding = false;
+          visitRuntimeValues({ bindings: new Map([[boundValue, boundValue]]) }, (candidate) => {
+            if (!sharesTaintedIdentity(candidate)) return;
+            candidate.members = new Map([
+              ['*', mergeRuntimeValues(unknownCallableValue(), ...candidate.members.values())],
+            ]);
+            candidate.knownDefinedMembers.clear();
+            candidate.knownPresentMembers = undefined;
+            invalidatedBinding = true;
+          });
+          return invalidatedBinding;
+        };
+        for (const identity of invalidatedBindings) {
+          const boundValue = state.bindings.get(identity);
+          if (!boundValue) continue;
+          const invalidatedBinding = invalidateValue(boundValue);
+          if (invalidatedBinding) state.dataOnly.delete(identity);
+        }
+        const seenScopes = new Set();
+        for (const scope of [state.capturedScope, state.currentClosureScope]) {
+          if (!scope || seenScopes.has(scope)) continue;
+          seenScopes.add(scope);
+          for (const boundValue of scope.environment.values()) invalidateValue(boundValue);
+        }
       };
       const selectedRuntimeMember = (value, memberNames) => {
         if (
@@ -4450,9 +5204,214 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           const members = [...memberNames].map((memberName) => value.members.get(memberName));
           return members.length === 1 ? members[0] : mergeRuntimeValues(...members);
         }
-        const selected = selectCallableMembers(value, memberNames);
-        if (selected.accessors.length === 0) return selected;
-        return { ...selected, accessors: [] };
+        return selectCallableMembers(value, memberNames);
+      };
+      const readRuntimeMember = (value, memberNames, state) => {
+        const selected = selectedRuntimeMember(value, memberNames);
+        const mayReadUndefined =
+          selected.undefinedReadAlternative ||
+          !selectedMemberIsDefinitelyDefined(value, memberNames);
+        if ((selected.accessors?.length ?? 0) === 0) {
+          const readable = { ...selected, setters: [] };
+          if (!mayReadUndefined) return readable;
+          return callableValueHasData(readable)
+            ? mergeRuntimeValues(readable, undefinedValue())
+            : undefinedValue();
+        }
+        const branches = selected.accessors.map((record) => {
+          const branchState = cloneState(state);
+          return {
+            state: branchState,
+            value: invokeFunction(record, [], branchState, value),
+          };
+        });
+        if (selected.dataAlternative) {
+          branches.push({
+            state: cloneState(state),
+            value: { ...cloneValue(selected), accessors: [], setters: [] },
+          });
+        }
+        if (mayReadUndefined) {
+          branches.push({ state: cloneState(state), value: undefinedValue() });
+        }
+        replaceState(state, mergeStates(branches.map((branch) => branch.state)));
+        return mergeRuntimeValues(...branches.map((branch) => branch.value));
+      };
+      const evaluateDestructuringDefault = (value, initializer, state) => {
+        if (!initializer) return { sourceExpression: undefined, value };
+        const branches = [];
+        if ((value.undefinedness & MAY_BE_DEFINED) !== 0) {
+          const definedValue = cloneValue(value);
+          definedValue.undefinedness = MAY_BE_DEFINED;
+          branches.push({ state: cloneState(state), value: definedValue });
+        }
+        if ((value.undefinedness & MAY_BE_UNDEFINED) !== 0) {
+          const defaultState = cloneState(state);
+          branches.push({
+            state: defaultState,
+            value: evaluateExpression(initializer, defaultState),
+          });
+        }
+        return {
+          sourceExpression:
+            branches.length === 1 && value.undefinedness === MAY_BE_UNDEFINED
+              ? initializer
+              : undefined,
+          value:
+            branches.length > 0
+              ? mergeExpressionBranches(state, branches)
+              : unknownCallableValue(value),
+        };
+      };
+      const writeRuntimeDataMember = (owner, memberNames, value, state) => {
+        let updatedBinding = false;
+        for (const memberName of memberNames ?? ['*']) {
+          visitRuntimeValues(state, (boundValue) => {
+            if (!runtimeValuesShareContainer(owner, boundValue)) return;
+            boundValue.members.set(memberName, cloneValue(value));
+            if (memberName !== '*') {
+              boundValue.knownDefinedMembers.add(memberName);
+              boundValue.nonEnumerableMembers.delete(memberName);
+            }
+            updatedBinding = true;
+          });
+          if (updatedBinding) continue;
+          owner.members.set(memberName, cloneValue(value));
+          if (memberName !== '*') {
+            owner.knownDefinedMembers.add(memberName);
+            owner.nonEnumerableMembers.delete(memberName);
+          }
+        }
+        rebuildStateIndexes(state);
+      };
+      const writeRuntimeMember = (owner, memberNames, value, state) => {
+        const selected = selectedRuntimeMember(owner, memberNames);
+        if ((selected.setters?.length ?? 0) === 0) {
+          if ((selected.accessors?.length ?? 0) === 0) {
+            writeRuntimeDataMember(owner, memberNames, value, state);
+          } else if (selected.dataAlternative) {
+            const dataState = cloneState(state);
+            writeRuntimeDataMember(owner, memberNames, value, dataState);
+            replaceState(state, mergeStates([state, dataState]));
+          }
+          return;
+        }
+        const branches = selected.setters.map((record) => {
+          const branchState = cloneState(state);
+          invokeFunction(record, [value], branchState, owner);
+          return branchState;
+        });
+        if (selected.dataAlternative) {
+          const dataState = cloneState(state);
+          writeRuntimeDataMember(owner, memberNames, value, dataState);
+          branches.push(dataState);
+        }
+        replaceState(state, mergeStates(branches));
+      };
+      const resolveAssignmentReference = (pattern, state) => {
+        const current = unwrapExpression(pattern);
+        if (ts.isIdentifier(current)) {
+          return {
+            read: (targetState = state) => evaluateExpression(current, targetState),
+            write: (value, sourceExpression, targetState = state) =>
+              bindIdentity(current, value, targetState, sourceExpression),
+          };
+        }
+        if (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) {
+          return undefined;
+        }
+        const owner = evaluateExpression(current.expression, state);
+        if (ts.isElementAccessExpression(current)) {
+          evaluateExpression(current.argumentExpression, state);
+        }
+        const memberNames =
+          accessMemberNames(current, runtimeEnvironment(state), staticState(state)) ??
+          new Set(['*']);
+        const assignmentOwner = unwrapExpression(current.expression);
+        const assignmentOwnerMemberNames =
+          ts.isPropertyAccessExpression(assignmentOwner) ||
+          ts.isElementAccessExpression(assignmentOwner)
+            ? accessMemberNames(assignmentOwner)
+            : undefined;
+        const assignmentOwnerRoot =
+          ts.isPropertyAccessExpression(assignmentOwner) ||
+          ts.isElementAccessExpression(assignmentOwner)
+            ? unwrapExpression(assignmentOwner.expression)
+            : undefined;
+        const assignmentTargetsArrayPrototype =
+          (!!assignmentOwnerRoot &&
+            ts.isIdentifier(assignmentOwnerRoot) &&
+            isUnshadowedIdentifier(assignmentOwnerRoot, 'Array') &&
+            assignmentOwnerMemberNames?.has('prototype')) ||
+          owner.references.has(globalArrayPrototypeIdentity);
+        const assignmentTargetsGlobalConsole =
+          !!assignmentOwnerRoot &&
+          ts.isIdentifier(assignmentOwnerRoot) &&
+          isUnshadowedIdentifier(assignmentOwnerRoot, 'globalThis') &&
+          assignmentOwnerMemberNames?.has('console');
+        const assignmentTargetsConsole =
+          (ts.isIdentifier(unwrapExpression(current.expression)) &&
+            isUnshadowedIdentifier(unwrapExpression(current.expression), 'console')) ||
+          assignmentTargetsGlobalConsole ||
+          owner.references.has(globalConsoleIdentity);
+        return {
+          read: (targetState = state) => readRuntimeMember(owner, memberNames, targetState),
+          write: (value, _sourceExpression, targetState = state) => {
+            if (assignmentTargetsConsole) {
+              for (const memberName of memberNames) {
+                targetState.overriddenConsoleMethods.add(memberName);
+              }
+            }
+            if (assignmentTargetsArrayPrototype) {
+              for (const memberName of memberNames) {
+                targetState.arrayPrototypeMethods.set(memberName, cloneValue(value));
+              }
+            }
+            writeRuntimeMember(owner, memberNames, value, targetState);
+          },
+        };
+      };
+      const bindingMemberNames = (name, state) => {
+        if (!name) return undefined;
+        if (!ts.isComputedPropertyName(name)) return declarationMemberNames(name);
+        const key = evaluateExpression(name.expression, state);
+        return key.strings ?? staticPropertyNames(name.expression);
+      };
+      const readRuntimeRest = (value, pattern, restIndex, consumed, state) => {
+        const objectRest =
+          ts.isObjectBindingPattern(pattern) || ts.isObjectLiteralExpression(pattern);
+        const rest = objectRest
+          ? knownNonArrayValue({
+              ...emptyCallableValue(),
+              dataAlternative: true,
+              knownDefinedMembers: new Set(
+                [...value.knownDefinedMembers].filter(
+                  (memberName) =>
+                    !consumed.has(memberName) && !value.nonEnumerableMembers.has(memberName),
+                ),
+              ),
+              members: new Map(
+                orderedPropertyEntries(value.members).filter(
+                  ([memberName]) =>
+                    !consumed.has(memberName) && !value.nonEnumerableMembers.has(memberName),
+                ),
+              ),
+              references: new Set([
+                (pattern.elements ?? pattern.properties)?.[restIndex] ?? pattern,
+              ]),
+            })
+          : normalizeAbstractValue(restCallableValue(value, pattern, restIndex));
+        let liveValue = value;
+        for (const [memberName] of rest.members) {
+          liveValue = refreshRuntimeValue(liveValue, state);
+          rest.members.set(memberName, {
+            ...readRuntimeMember(liveValue, new Set([memberName]), state),
+            accessors: [],
+            setters: [],
+            undefinedReadAlternative: false,
+          });
+        }
+        return rest;
       };
       function bindPattern(pattern, value, state, sourceExpression) {
         const current = unwrapExpression(pattern);
@@ -4464,38 +5423,54 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           ts.isBinaryExpression(current) &&
           current.operatorToken.kind === ts.SyntaxKind.EqualsToken
         ) {
-          const selected =
-            value.nullish === MAY_BE_NULLISH ? evaluateExpression(current.right, state) : value;
-          bindPattern(current.left, selected, state, current.right);
+          const selected = evaluateDestructuringDefault(value, current.right, state);
+          bindPattern(current.left, selected.value, state, selected.sourceExpression);
           return;
         }
         if (ts.isObjectBindingPattern(current) || ts.isObjectLiteralExpression(current)) {
           const properties = ts.isObjectBindingPattern(current)
             ? current.elements
             : current.properties;
+          const consumedMemberNames = new Set();
+          let sourceValue = value;
           for (const [index, property] of properties.entries()) {
             if (ts.isBindingElement(property)) {
-              const memberNames = property.propertyName
-                ? declarationMemberNames(property.propertyName)
-                : ts.isIdentifier(property.name)
-                  ? new Set([property.name.text])
-                  : undefined;
+              const memberNames = property.dotDotDotToken
+                ? undefined
+                : property.propertyName
+                  ? bindingMemberNames(property.propertyName, state)
+                  : ts.isIdentifier(property.name)
+                    ? new Set([property.name.text])
+                    : undefined;
+              sourceValue = refreshRuntimeValue(sourceValue, state);
+              for (const memberName of memberNames ?? []) consumedMemberNames.add(memberName);
               const selected = property.dotDotDotToken
-                ? restCallableValue(value, current, index)
-                : selectedRuntimeMember(value, memberNames);
-              bindPattern(property.name, selected, state);
+                ? readRuntimeRest(sourceValue, current, index, consumedMemberNames, state)
+                : readRuntimeMember(sourceValue, memberNames, state);
+              const defaulted = evaluateDestructuringDefault(selected, property.initializer, state);
+              bindPattern(property.name, defaulted.value, state, defaulted.sourceExpression);
             } else if (ts.isSpreadAssignment(property)) {
-              bindPattern(property.expression, restCallableValue(value, current, index), state);
+              sourceValue = refreshRuntimeValue(sourceValue, state);
+              bindPattern(
+                property.expression,
+                readRuntimeRest(sourceValue, current, index, consumedMemberNames, state),
+                state,
+              );
             } else if (ts.isPropertyAssignment(property)) {
+              const memberNames = bindingMemberNames(property.name, state);
+              sourceValue = refreshRuntimeValue(sourceValue, state);
+              for (const memberName of memberNames ?? []) consumedMemberNames.add(memberName);
               bindPattern(
                 property.initializer,
-                selectedRuntimeMember(value, declarationMemberNames(property.name)),
+                readRuntimeMember(sourceValue, memberNames, state),
                 state,
               );
             } else if (ts.isShorthandPropertyAssignment(property)) {
+              sourceValue = refreshRuntimeValue(sourceValue, state);
+              consumedMemberNames.add(property.name.text);
               bindPattern(
                 property.name,
-                selectedRuntimeMember(value, new Set([property.name.text])),
+                readRuntimeMember(sourceValue, new Set([property.name.text]), state),
                 state,
               );
             }
@@ -4508,39 +5483,24 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             if (ts.isBindingElement(element)) {
               const selected = element.dotDotDotToken
                 ? restCallableValue(value, current, index)
-                : selectedRuntimeMember(value, new Set([String(index)]));
-              bindPattern(element.name, selected, state);
+                : readRuntimeMember(value, new Set([String(index)]), state);
+              const defaulted = evaluateDestructuringDefault(selected, element.initializer, state);
+              bindPattern(element.name, defaulted.value, state, defaulted.sourceExpression);
             } else if (ts.isSpreadElement(element)) {
               bindPattern(element.expression, restCallableValue(value, current, index), state);
             } else {
-              bindPattern(element, selectedRuntimeMember(value, new Set([String(index)])), state);
+              bindPattern(
+                element,
+                readRuntimeMember(value, new Set([String(index)]), state),
+                state,
+              );
             }
           }
           return;
         }
         if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
-          const owner = evaluateExpression(current.expression, state);
-          if (ts.isElementAccessExpression(current)) {
-            evaluateExpression(current.argumentExpression, state);
-          }
-          for (const memberName of accessMemberNames(current, runtimeEnvironment(state)) ?? ['*']) {
-            owner.members.set(memberName, cloneValue(value));
-            if (memberName !== '*') owner.knownDefinedMembers.add(memberName);
-            visitRuntimeValues(state, (boundValue) => {
-              const sharesArrayIdentity =
-                owner.arrayIdentities.kind === 'known' &&
-                boundValue.arrayIdentities.kind === 'known' &&
-                [...owner.arrayIdentities.values].some((identity) =>
-                  boundValue.arrayIdentities.values.has(identity),
-                );
-              const sharesObjectIdentity = [...(owner.references ?? [])].some((identity) =>
-                boundValue.references?.has(identity),
-              );
-              if (!sharesArrayIdentity && !sharesObjectIdentity) return;
-              boundValue.members.set(memberName, cloneValue(value));
-              if (memberName !== '*') boundValue.knownDefinedMembers.add(memberName);
-            });
-          }
+          const reference = resolveAssignmentReference(current, state);
+          reference?.write(value);
         }
       }
       const logicalReachability = (value, kind) => ({
@@ -4561,6 +5521,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         return mergeRuntimeValues(...branches.map((branch) => branch.value));
       };
       function evaluateArrayLiteral(current, state) {
+        const allocationIdentity = { expression: current, state };
         const members = new Map();
         const knownDefinedMembers = new Set();
         let index = 0;
@@ -4590,20 +5551,25 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         return withArrayIdentities(
           {
             ...emptyCallableValue(),
+            dataAlternative: true,
+            definitelyObject: true,
             knownDefinedMembers,
             members,
             nullish: MAY_BE_NON_NULLISH,
-            references: new Set([current]),
+            references: new Set([allocationIdentity]),
             truthiness: MAY_BE_TRUTHY,
+            arrayLength: index,
           },
-          knownArrayIdentities([current]),
+          knownArrayIdentities([allocationIdentity]),
           current,
         );
       }
       function evaluateObjectLiteral(current, state) {
+        const allocationIdentity = { expression: current, state };
         const value = knownNonArrayValue(emptyCallableValue(), {
+          definitelyObject: true,
           nullish: MAY_BE_NON_NULLISH,
-          references: new Set([current]),
+          references: new Set([allocationIdentity]),
           truthiness: MAY_BE_TRUTHY,
         });
         for (const property of current.properties) {
@@ -4611,14 +5577,19 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             evaluateExpression(property.name.expression, state);
           }
           if (ts.isSpreadAssignment(property)) {
-            const spread = evaluateExpression(property.expression, state);
-            for (const [memberName, member] of spread.members) {
-              let spreadMember = member;
-              if (member.accessors?.length) {
-                spreadMember = mergeRuntimeValues(
-                  ...member.accessors.map((record) => invokeFunction(record, [], state, spread)),
-                );
-              }
+            let spread = evaluateExpression(property.expression, state);
+            const memberNames = orderedPropertyEntries(spread.members).map(
+              ([memberName]) => memberName,
+            );
+            for (const memberName of memberNames) {
+              spread = refreshRuntimeValue(spread, state);
+              if (spread.nonEnumerableMembers.has(memberName)) continue;
+              const spreadMember = {
+                ...readRuntimeMember(spread, new Set([memberName]), state),
+                accessors: [],
+                setters: [],
+                undefinedReadAlternative: false,
+              };
               value.members.set(memberName, spreadMember);
               if (memberName !== '*') value.knownDefinedMembers.add(memberName);
             }
@@ -4629,13 +5600,26 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           if (ts.isPropertyAssignment(property)) {
             memberValue = evaluateExpression(property.initializer, state);
           } else if (ts.isShorthandPropertyAssignment(property)) {
-            memberValue = evaluateExpression(property.name, state);
+            const shorthandSymbol = checker.getShorthandAssignmentValueSymbol(property);
+            const shorthandIdentity = aliasedSymbol(checker, shorthandSymbol) ?? shorthandSymbol;
+            memberValue =
+              shorthandIdentity && state.bindings.has(shorthandIdentity)
+                ? cloneValue(state.bindings.get(shorthandIdentity))
+                : withRuntimeFacts(
+                    callableValueForSymbol(
+                      shorthandSymbol,
+                      runtimeEnvironment(state),
+                      staticState(state),
+                    ),
+                    property.name,
+                    state,
+                  );
           } else if (ts.isMethodDeclaration(property)) {
             memberValue = knownNonArrayValue({
               ...emptyCallableValue(),
               functions: [
                 {
-                  environment: new Map(runtimeEnvironment(state)),
+                  ...captureRuntimeClosure(state),
                   functionLike: property,
                   thisValue: value,
                 },
@@ -4646,15 +5630,50 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               ...emptyCallableValue(),
               accessors: [
                 {
-                  environment: new Map(runtimeEnvironment(state)),
+                  ...captureRuntimeClosure(state),
                   functionLike: property,
                   thisValue: value,
                 },
               ],
             });
+          } else if (ts.isSetAccessorDeclaration(property)) {
+            memberValue = knownNonArrayValue({
+              ...emptyCallableValue(),
+              setters: [
+                {
+                  ...captureRuntimeClosure(state),
+                  functionLike: property,
+                  thisValue: value,
+                },
+              ],
+              undefinedReadAlternative: true,
+            });
           }
           for (const memberName of memberNames) {
-            value.members.set(memberName, memberValue);
+            const previous = normalizeAbstractValue(value.members.get(memberName));
+            if (ts.isGetAccessorDeclaration(property)) {
+              value.members.set(
+                memberName,
+                mergeRuntimeValues(
+                  { ...emptyCallableValue(), setters: [...previous.setters] },
+                  memberValue,
+                ),
+              );
+            } else if (ts.isSetAccessorDeclaration(property)) {
+              value.members.set(
+                memberName,
+                mergeRuntimeValues(
+                  { ...emptyCallableValue(), accessors: [...previous.accessors] },
+                  memberValue,
+                ),
+              );
+            } else {
+              value.members.set(memberName, memberValue);
+            }
+            if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+              const descriptor = value.members.get(memberName);
+              descriptor.undefinedReadAlternative = descriptor.accessors.length === 0;
+            }
             if (memberName !== '*') value.knownDefinedMembers.add(memberName);
           }
         }
@@ -4662,6 +5681,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       }
       function evaluatePropertyAccess(current, state) {
         const owner = evaluateExpression(current.expression, state);
+        evaluatedReceiverValues.set(current, owner);
         if (ts.isElementAccessExpression(current)) {
           evaluateExpression(current.argumentExpression, state);
         }
@@ -4670,29 +5690,132 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           runtimeEnvironment(state),
           staticState(state),
         );
-        const selected = selectedRuntimeMember(owner, memberNames);
-        if (selected.accessors.length > 0) {
-          return mergeRuntimeValues(
-            ...selected.accessors.map((record) => invokeFunction(record, [], state, owner)),
-          );
+        const ownerExpression = unwrapExpression(current.expression);
+        const globalObjectIdentity =
+          ts.isIdentifier(ownerExpression) &&
+          isUnshadowedIdentifier(ownerExpression, 'Array') &&
+          memberNames?.has('prototype')
+            ? globalArrayPrototypeIdentity
+            : ts.isIdentifier(ownerExpression) &&
+                isUnshadowedIdentifier(ownerExpression, 'globalThis') &&
+                memberNames?.has('console')
+              ? globalConsoleIdentity
+              : undefined;
+        if (globalObjectIdentity) {
+          return {
+            ...knownNonArrayValue({
+              ...emptyCallableValue(),
+              definitelyObject: true,
+              references: new Set([globalObjectIdentity]),
+            }),
+            receiverValue: owner,
+          };
         }
+        const pristineConsoleMethod =
+          isKnownHarmlessConsoleAccess(current) &&
+          !owner.members.has('*') &&
+          [...(memberNames ?? [])].every(
+            (memberName) =>
+              !owner.members.has(memberName) && !state.overriddenConsoleMethods.has(memberName),
+          );
+        if (pristineConsoleMethod) {
+          return {
+            ...knownNonArrayValue({
+              ...emptyCallableValue(),
+              knownHarmlessCall: true,
+            }),
+            receiverValue: owner,
+          };
+        }
+        const selected = readRuntimeMember(owner, memberNames, state);
         const selectedWithOwner = {
           ...selected,
+          receiverValue: owner,
           functions: selected.functions.map((record) => ({
             ...record,
-            thisValue: record.thisValue ?? owner,
+            thisValue: owner,
           })),
         };
         if (callableValueHasData(selectedWithOwner)) return selectedWithOwner;
-        if (dataOnlyMemberRead(current, state)) return undefinedValue();
+        if (dataOnlyMemberRead(current, state)) {
+          return { ...undefinedValue(), receiverValue: owner };
+        }
         const staticValue = storedCallableValue(symbolForValue(current));
-        if (callableValueHasData(staticValue)) return staticValue;
+        if (callableValueHasData(staticValue)) {
+          return {
+            ...staticValue,
+            receiverValue: owner,
+            functions: staticValue.functions.map((record) => ({
+              ...record,
+              thisValue: owner,
+            })),
+          };
+        }
         invalidateReassignableBindings(state);
-        return unknownCallableValue();
+        return { ...unknownCallableValue(), receiverValue: owner };
       }
-      function invokeFunction(record, argumentValues, state, thisValue) {
+      const invocationLocalBindingIdentities = (functionLike) => {
+        const identities = new Set();
+        const collectBindingName = (name) => {
+          if (ts.isIdentifier(name)) {
+            const identity = valueSymbolIdentity(name);
+            if (identity) identities.add(identity);
+            return;
+          }
+          ts.forEachChild(name, collectBindingName);
+        };
+        for (const parameter of functionLike.parameters) collectBindingName(parameter.name);
+        const visit = (node) => {
+          if (node !== functionLike.body && ts.isFunctionLike(node)) return;
+          if (ts.isVariableDeclaration(node)) collectBindingName(node.name);
+          if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
+            collectBindingName(node.name);
+          }
+          if (ts.isCatchClause(node) && node.variableDeclaration) {
+            collectBindingName(node.variableDeclaration.name);
+          }
+          ts.forEachChild(node, visit);
+        };
+        if (functionLike.body) visit(functionLike.body);
+        return identities;
+      };
+      const synchronizeClosureScope = (state, sourceScope) => {
+        if (!sourceScope) return;
+        const synchronizedScopes = new Set();
+        const syncScope = (scope) => {
+          if (!scope || synchronizedScopes.has(scope) || scope.origin !== sourceScope.origin) {
+            return;
+          }
+          synchronizedScopes.add(scope);
+          scope.environment = new Map(sourceScope.environment);
+        };
+        const seenValues = new Set();
+        const visit = (value) => {
+          if (!value || seenValues.has(value)) return;
+          seenValues.add(value);
+          for (const record of [
+            ...value.accessors,
+            ...value.constructors,
+            ...value.functions,
+            ...value.setters,
+          ]) {
+            syncScope(record.closureScope);
+          }
+          for (const member of value.members.values()) visit(member);
+        };
+        syncScope(state.capturedScope);
+        syncScope(state.currentClosureScope);
+        for (const value of state.bindings.values()) visit(value);
+        for (const value of state.environment.values()) visit(value);
+      };
+      function invokeFunction(record, argumentValues, state, thisValue, invocationResult) {
         const functionLike = record.functionLike;
         if (!functionLike?.body || state.callStack.has(functionLike)) {
+          invalidateMutableArgumentContents(
+            state,
+            [...argumentValues, thisValue ?? record.thisValue].filter(Boolean),
+            !state.callStack.has(functionLike),
+          );
           invalidateReassignableBindings(state);
           return unknownCallableValue();
         }
@@ -4702,11 +5825,70 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           ...invocationState.environment,
           ...(record.environment ?? []),
         ]);
-        invocationState.thisValue = record.thisValue ?? thisValue ?? invocationState.thisValue;
-        functionLike.parameters.forEach((parameter, index) => {
-          const argumentValue = argumentValues[index] ?? undefinedValue();
-          bindPattern(parameter.name, argumentValue, invocationState);
-        });
+        invocationState.capturedScope = record.closureScope;
+        invocationState.currentClosureScope = { environment: new Map(), origin: {} };
+        invocationState.thisValue = ts.isArrowFunction(functionLike)
+          ? record.thisValue
+          : (thisValue ?? record.thisValue ?? invocationState.thisValue);
+        for (const [index, parameter] of functionLike.parameters.entries()) {
+          if (parameter.dotDotDotToken) {
+            const restArguments = argumentValues.slice(index);
+            const restIdentity = { functionLike, parameter, state: invocationState };
+            const restValue = withArrayIdentities(
+              {
+                ...emptyCallableValue(),
+                dataAlternative: true,
+                definitelyObject: true,
+                arrayLength: restArguments.length,
+                knownDefinedMembers: new Set(
+                  restArguments.map((_argument, argumentIndex) => String(argumentIndex)),
+                ),
+                members: new Map(
+                  restArguments.map((argument, argumentIndex) => [
+                    String(argumentIndex),
+                    cloneValue(argument),
+                  ]),
+                ),
+                references: new Set([restIdentity]),
+              },
+              knownArrayIdentities([restIdentity]),
+            );
+            bindPattern(parameter.name, restValue, invocationState);
+            break;
+          }
+          let argumentValue = argumentValues[index] ?? undefinedValue();
+          let sourceExpression;
+          if (parameter.initializer) {
+            const defaulted = evaluateDestructuringDefault(
+              argumentValue,
+              parameter.initializer,
+              invocationState,
+            );
+            argumentValue = defaulted.value;
+            sourceExpression = defaulted.sourceExpression;
+          }
+          bindPattern(parameter.name, argumentValue, invocationState, sourceExpression);
+          if (
+            invocationState.thisValue &&
+            ts.isConstructorDeclaration(functionLike) &&
+            ts.isIdentifier(parameter.name) &&
+            parameter.modifiers?.some((modifier) =>
+              [
+                ts.SyntaxKind.PublicKeyword,
+                ts.SyntaxKind.PrivateKeyword,
+                ts.SyntaxKind.ProtectedKeyword,
+                ts.SyntaxKind.ReadonlyKeyword,
+              ].includes(modifier.kind),
+            )
+          ) {
+            writeRuntimeDataMember(
+              invocationState.thisValue,
+              new Set([parameter.name.text]),
+              argumentValue,
+              invocationState,
+            );
+          }
+        }
         let outcomes;
         if (ts.isBlock(functionLike.body)) {
           outcomes = evaluateStatementList(functionLike.body.statements, [
@@ -4726,15 +5908,34 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           return unknownCallableValue();
         }
         const mergedState = mergeStates(outcomes.map((outcome) => outcome.state));
+        const returnedValues = outcomes.map((outcome) =>
+          outcome.completion === 'return' ? outcome.value : undefinedValue(),
+        );
+        if (mergedState.currentClosureScope) {
+          synchronizeClosureScope(mergedState, mergedState.currentClosureScope);
+          const returnedState = createState();
+          for (const [index, value] of returnedValues.entries()) {
+            returnedState.bindings.set(index, value);
+          }
+          synchronizeClosureScope(returnedState, mergedState.currentClosureScope);
+        }
+        if (invocationResult) invocationResult.thisValue = mergedState.thisValue;
+        if (record.closureScope && mergedState.capturedScope) {
+          record.closureScope.environment = new Map(mergedState.capturedScope.environment);
+          synchronizeClosureScope(mergedState, record.closureScope);
+        }
+        for (const identity of invocationLocalBindingIdentities(functionLike)) {
+          mergedState.bindings.delete(identity);
+          mergedState.reassignableBindings.delete(identity);
+        }
+        rebuildStateIndexes(mergedState);
         mergedState.callStack = new Set(state.callStack);
+        mergedState.capturedScope = state.capturedScope;
+        mergedState.currentClosureScope = state.currentClosureScope;
         mergedState.environment = new Map(state.environment);
         mergedState.thisValue = state.thisValue;
         replaceState(state, mergedState);
-        return mergeRuntimeValues(
-          ...outcomes.map((outcome) =>
-            outcome.completion === 'return' ? outcome.value : undefinedValue(),
-          ),
-        );
+        return mergeRuntimeValues(...returnedValues);
       }
       function constructRuntimeValue(record, argumentValues, state, newExpression) {
         const classLike = record.classLike;
@@ -4742,10 +5943,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           invalidateReassignableBindings(state);
           return unknownCallableValue();
         }
+        const instanceIdentity = { newExpression, state };
         const instance = knownNonArrayValue(
           {
             ...emptyCallableValue(),
-            references: new Set([newExpression]),
+            definitelyObject: true,
+            references: new Set([instanceIdentity]),
             runtimeInstance: true,
           },
           { nullish: MAY_BE_NON_NULLISH, truthiness: MAY_BE_TRUTHY },
@@ -4774,7 +5977,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               ...emptyCallableValue(),
               functions: [
                 {
-                  environment: new Map(runtimeEnvironment(classState)),
+                  ...captureRuntimeClosure(classState),
                   functionLike: member,
                   thisValue: instance,
                 },
@@ -4785,59 +5988,92 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               ...emptyCallableValue(),
               accessors: [
                 {
-                  environment: new Map(runtimeEnvironment(classState)),
+                  ...captureRuntimeClosure(classState),
                   functionLike: member,
                   thisValue: instance,
                 },
               ],
             });
+          } else if (ts.isSetAccessorDeclaration(member)) {
+            memberValue = knownNonArrayValue({
+              ...emptyCallableValue(),
+              setters: [
+                {
+                  ...captureRuntimeClosure(classState),
+                  functionLike: member,
+                  thisValue: instance,
+                },
+              ],
+              undefinedReadAlternative: true,
+            });
           } else {
             continue;
           }
           for (const memberName of memberNames) {
-            instance.members.set(memberName, memberValue);
+            const previous = normalizeAbstractValue(instance.members.get(memberName));
+            if (ts.isPropertyDeclaration(member)) {
+              instance.members.set(memberName, memberValue);
+              instance.nonEnumerableMembers.delete(memberName);
+            } else if (ts.isGetAccessorDeclaration(member)) {
+              instance.members.set(
+                memberName,
+                mergeRuntimeValues(
+                  { ...emptyCallableValue(), setters: [...previous.setters] },
+                  memberValue,
+                ),
+              );
+              instance.nonEnumerableMembers.add(memberName);
+            } else if (ts.isSetAccessorDeclaration(member)) {
+              instance.members.set(
+                memberName,
+                mergeRuntimeValues(
+                  { ...emptyCallableValue(), accessors: [...previous.accessors] },
+                  memberValue,
+                ),
+              );
+              instance.nonEnumerableMembers.add(memberName);
+            } else {
+              instance.members.set(memberName, memberValue);
+              instance.nonEnumerableMembers.add(memberName);
+            }
+            if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+              const descriptor = instance.members.get(memberName);
+              descriptor.undefinedReadAlternative = descriptor.accessors.length === 0;
+            }
             if (memberName !== '*') instance.knownDefinedMembers.add(memberName);
           }
         }
-        if (constructor) {
-          for (const [index, parameter] of constructor.parameters.entries()) {
-            if (
-              !ts.isIdentifier(parameter.name) ||
-              !parameter.modifiers?.some((modifier) =>
-                [
-                  ts.SyntaxKind.PublicKeyword,
-                  ts.SyntaxKind.PrivateKeyword,
-                  ts.SyntaxKind.ProtectedKeyword,
-                  ts.SyntaxKind.ReadonlyKeyword,
-                ].includes(modifier.kind),
-              )
-            ) {
-              continue;
-            }
-            instance.members.set(
-              parameter.name.text,
-              cloneValue(argumentValues[index] ?? undefinedValue()),
-            );
-            instance.knownDefinedMembers.add(parameter.name.text);
-          }
-        }
+        const invocationResult = {};
         const returned = constructor
           ? invokeFunction(
               {
-                environment: new Map(runtimeEnvironment(classState)),
+                ...captureRuntimeClosure(classState),
                 functionLike: constructor,
                 thisValue: instance,
               },
               argumentValues,
               classState,
               instance,
+              invocationResult,
             )
           : undefinedValue();
+        const constructedInstance = invocationResult.thisValue ?? instance;
         classState.callStack = new Set(state.callStack);
         classState.environment = new Map(state.environment);
         classState.thisValue = state.thisValue;
         replaceState(state, classState);
-        return mergeRuntimeValues(instance, returned);
+        const mayReturnObject =
+          returned.arrayIdentities.kind === 'unknown' ||
+          returned.arrayIdentities.values.size > 0 ||
+          (returned.references?.size ?? 0) > 0 ||
+          returned.runtimeInstance ||
+          returned.kinds !== 0 ||
+          returned.functions.length > 0 ||
+          (returned.constructors?.length ?? 0) > 0;
+        if (!constructor || !mayReturnObject) return constructedInstance;
+        return returned.definitelyObject
+          ? returned
+          : mergeRuntimeValues(constructedInstance, returned);
       }
       const arrayValuesShareIdentity = (left, right) =>
         left.arrayIdentities.kind === 'known' &&
@@ -4850,6 +6086,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           .filter(([memberName]) => exactArrayIndex(memberName) !== undefined)
           .sort(([left], [right]) => Number(left) - Number(right));
         if (methodName === 'unshift') {
+          if (value.arrayLength !== undefined) value.arrayLength += argumentValues.length;
           for (const [memberName] of [...numericEntries].reverse()) {
             const memberValue = value.members.get(memberName);
             value.members.delete(memberName);
@@ -4876,6 +6113,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           value.knownDefinedMembers.add(String(nextIndex));
           nextIndex += 1;
         }
+        value.arrayLength = value.arrayLength === undefined ? undefined : nextIndex;
       };
       const applyArrayMutation = (owner, argumentValues, methodName, state) => {
         if (owner.arrayIdentities.kind === 'unknown') {
@@ -4889,68 +6127,128 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           updatedBinding = true;
         });
         if (!updatedBinding) mutateArrayMembers(owner, argumentValues, methodName);
+        rebuildStateIndexes(state);
       };
-      const objectValuesShareIdentity = (left, right) =>
-        [...(left.references ?? [])].some((identity) => right.references?.has(identity));
-      const overwriteObjectMembers = (target, sources) => {
-        for (const source of sources) {
+      const overwriteObjectMembers = (target, sources, state) => {
+        for (let source of sources) {
           const sourceMembers = materializedMembers(source);
           if (sourceMembers.size === 0 && (source.references?.size ?? 0) === 0) {
-            target.members.set('*', unknownCallableValue());
-            target.knownDefinedMembers.clear();
+            writeRuntimeDataMember(target, new Set(['*']), unknownCallableValue(), state);
             continue;
           }
-          for (const [memberName, memberValue] of sourceMembers) {
-            target.members.set(memberName, cloneValue(memberValue));
-            if (memberName === '*') target.knownDefinedMembers.clear();
-            else target.knownDefinedMembers.add(memberName);
+          for (const [memberName] of sourceMembers) {
+            source = refreshRuntimeValue(source, state);
+            if (source.nonEnumerableMembers.has(memberName)) continue;
+            const memberValue = readRuntimeMember(source, new Set([memberName]), state);
+            writeRuntimeMember(target, new Set([memberName]), memberValue, state);
           }
         }
-        return target;
+        return refreshRuntimeValue(target, state);
       };
       const applyObjectAssign = (target, sources, state) => {
-        let updatedBinding = false;
-        visitRuntimeValues(state, (value) => {
-          if (!objectValuesShareIdentity(target, value)) return;
-          overwriteObjectMembers(value, sources);
-          updatedBinding = true;
-        });
-        if (!updatedBinding) overwriteObjectMembers(target, sources);
-        return target;
+        const result = overwriteObjectMembers(target, sources, state);
+        rebuildStateIndexes(state);
+        return result;
       };
-      function evaluateCall(current, state) {
-        const mutation = arrayMutationForCall(current);
-        if (mutation) {
-          const owner = evaluateExpression(mutation.owner, state);
-          const argumentValues = current.arguments.map((argument) =>
-            evaluateExpression(argument, state),
-          );
-          applyArrayMutation(owner, argumentValues, mutation.methodName, state);
-          return knownNonArrayValue(emptyCallableValue(), {
-            nullish: MAY_BE_NON_NULLISH,
-            truthiness: MAY_BE_TRUTHY | MAY_BE_FALSY,
-          });
+      const runtimeCallbackMethod = (callExpression) => {
+        const callee = unwrapExpression(callExpression.expression);
+        if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+          return undefined;
         }
-        const callee = evaluateExpression(current.expression, state);
-        const argumentValues = current.arguments.map((argument) =>
-          evaluateExpression(argument, state),
+        const memberNames = accessMemberNames(callee);
+        if (!memberNames || memberNames.size !== 1) return undefined;
+        const methodName = [...memberNames][0];
+        return ['map', 'flatMap', 'filter', 'find', 'some', 'every', 'forEach', 'reduce'].includes(
+          methodName,
+        )
+          ? { callee, methodName }
+          : undefined;
+      };
+      const callbackIndexValue = (index) =>
+        knownNonArrayValue(
+          {
+            ...emptyCallableValue(),
+            scalars: new Set([`number:${index}`]),
+            strings: new Set([String(index)]),
+          },
+          {
+            nullish: MAY_BE_NON_NULLISH,
+            truthiness: Number(index) === 0 ? MAY_BE_FALSY : MAY_BE_TRUTHY,
+          },
         );
+      const invokeRuntimeCallback = (
+        callback,
+        argumentValues,
+        state,
+        callExpression,
+        thisValue,
+      ) => {
+        const results = [];
+        if ((callback.kinds & CALLABLE_LOADER) !== 0) {
+          recordContextualLoader(
+            callExpression,
+            undefined,
+            argumentValues[0],
+            runtimeEnvironment(state),
+            staticState(state),
+          );
+          results.push(unknownCallableValue());
+        }
+        if (callback.functions.length > 0) {
+          const branches = callback.functions.map((record) => {
+            const branchState = cloneState(state);
+            return {
+              state: branchState,
+              value: invokeFunction(record, argumentValues, branchState, thisValue),
+            };
+          });
+          replaceState(state, mergeStates(branches.map((branch) => branch.state)));
+          results.push(...branches.map((branch) => branch.value));
+        }
+        if (results.length > 0) return mergeRuntimeValues(...results);
+        invalidateMutableArgumentContents(state, argumentValues);
+        invalidateReassignableBindings(state);
+        return unknownCallableValue();
+      };
+      const runtimeArrayResult = (
+        callExpression,
+        state,
+        members,
+        knownDefinedMembers,
+        arrayLength,
+      ) => {
+        const allocationIdentity = { expression: callExpression, state };
+        return withArrayIdentities(
+          {
+            ...emptyCallableValue(),
+            arrayLength,
+            dataAlternative: true,
+            definitelyObject: true,
+            knownDefinedMembers,
+            members,
+            references: new Set([allocationIdentity]),
+          },
+          knownArrayIdentities([allocationIdentity]),
+          callExpression,
+        );
+      };
+      const invokeEvaluatedCall = (
+        callExpression,
+        callee,
+        receiverValue,
+        argumentValues,
+        state,
+      ) => {
         if ((callee.kinds & CALLABLE_LOADER) !== 0) {
           recordContextualLoader(
-            current,
-            current.arguments[0],
+            callExpression,
+            callExpression.arguments[0],
             argumentValues[0],
             runtimeEnvironment(state),
             staticState(state),
           );
         }
-        if (isObjectAssignCall(current)) {
-          return applyObjectAssign(
-            argumentValues[0] ?? undefinedValue(),
-            argumentValues.slice(1),
-            state,
-          );
-        }
+        if (callee.knownHarmlessCall) return undefinedValue();
         const results = [];
         if ((callee.kinds & CALLABLE_CREATE_REQUIRE) !== 0) {
           results.push(
@@ -4965,15 +6263,437 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             const branchState = cloneState(state);
             return {
               state: branchState,
-              value: invokeFunction(record, argumentValues, branchState, record.thisValue),
+              value: invokeFunction(
+                record,
+                argumentValues,
+                branchState,
+                receiverValue ?? record.thisValue,
+              ),
             };
           });
           replaceState(state, mergeStates(branches.map((branch) => branch.state)));
           results.push(...branches.map((branch) => branch.value));
         }
         if (results.length > 0) return mergeRuntimeValues(...results);
+        invalidateMutableArgumentContents(
+          state,
+          [...argumentValues, receiverValue].filter(Boolean),
+        );
         invalidateReassignableBindings(state);
         return unknownCallableValue();
+      };
+      const evaluateCallArguments = (argumentsList, state) => {
+        const values = [];
+        for (const argument of argumentsList) {
+          if (!ts.isSpreadElement(argument)) {
+            values.push(evaluateExpression(argument, state));
+            continue;
+          }
+          const spread = evaluateExpression(argument.expression, state);
+          const entries = orderedPropertyEntries(spread.members).filter(
+            ([memberName]) => exactArrayIndex(memberName) !== undefined,
+          );
+          if (entries.length === 0 && spread.members.has('*')) {
+            values.push(readRuntimeMember(spread, new Set(['*']), state));
+            continue;
+          }
+          for (const [memberName] of entries) {
+            values.push(readRuntimeMember(spread, new Set([memberName]), state));
+          }
+        }
+        return values;
+      };
+      function evaluateRuntimeCallbackPipeline(current, state) {
+        const callbackMethod = runtimeCallbackMethod(current);
+        if (!callbackMethod) return undefined;
+        const owner = evaluateExpression(callbackMethod.callee.expression, state);
+        if (!owner.arrayLike) return undefined;
+        if (ts.isElementAccessExpression(callbackMethod.callee)) {
+          evaluateExpression(callbackMethod.callee.argumentExpression, state);
+        }
+        const argumentValues = evaluateCallArguments(current.arguments, state);
+        const prototypeOverride = state.arrayPrototypeMethods.get(callbackMethod.methodName);
+        if (prototypeOverride) {
+          return invokeEvaluatedCall(current, prototypeOverride, owner, argumentValues, state);
+        }
+        if (owner.members.has(callbackMethod.methodName) || owner.members.has('*')) {
+          const callee = readRuntimeMember(owner, new Set([callbackMethod.methodName]), state);
+          return invokeEvaluatedCall(current, callee, owner, argumentValues, state);
+        }
+        const callback = argumentValues[0] ?? unknownCallableValue();
+        const callbackThisValue =
+          callbackMethod.methodName === 'reduce' ? undefined : argumentValues[1];
+        const numericIndexes = orderedPropertyEntries(owner.members)
+          .map(([memberName]) => exactArrayIndex(memberName))
+          .filter((index) => index !== undefined);
+        if (owner.arrayLength === undefined && numericIndexes.length === 0) {
+          const zeroIterationState = cloneState(state);
+          const firstIterationState = cloneState(state);
+          const firstElement = unknownCallableValue();
+          const firstArguments = [
+            firstElement,
+            callbackIndexValue(0),
+            refreshRuntimeValue(owner, firstIterationState),
+          ];
+          if (callbackMethod.methodName === 'reduce') {
+            firstArguments.unshift(argumentValues[1] ?? unknownCallableValue());
+          }
+          const firstResult = invokeRuntimeCallback(
+            callback,
+            firstArguments,
+            firstIterationState,
+            current,
+            callbackThisValue,
+          );
+          const laterIndex = knownNonArrayValue(emptyCallableValue(), {
+            nullish: MAY_BE_NON_NULLISH,
+            truthiness: MAY_BE_TRUTHY,
+          });
+          const canContinue = (result) => {
+            if (callbackMethod.methodName === 'some' || callbackMethod.methodName === 'find') {
+              return (result.truthiness & MAY_BE_FALSY) !== 0;
+            }
+            if (callbackMethod.methodName === 'every') {
+              return (result.truthiness & MAY_BE_TRUTHY) !== 0;
+            }
+            return true;
+          };
+          const iterationStates = [zeroIterationState, firstIterationState];
+          const callbackResults = [firstResult];
+          if (canContinue(firstResult)) {
+            const laterIterationState = cloneState(firstIterationState);
+            const laterArguments = [
+              unknownCallableValue(),
+              laterIndex,
+              refreshRuntimeValue(owner, laterIterationState),
+            ];
+            if (callbackMethod.methodName === 'reduce') laterArguments.unshift(firstResult);
+            const laterResult = invokeRuntimeCallback(
+              callback,
+              laterArguments,
+              laterIterationState,
+              current,
+              callbackThisValue,
+            );
+            iterationStates.push(laterIterationState);
+            callbackResults.push(laterResult);
+            if (canContinue(laterResult)) {
+              const widenedIterationState = cloneState(laterIterationState);
+              invalidateReassignableBindings(widenedIterationState);
+              invalidateMutableArgumentContents(widenedIterationState, [unknownCallableValue()]);
+              const widenedArguments = [
+                unknownCallableValue(),
+                laterIndex,
+                refreshRuntimeValue(owner, widenedIterationState),
+              ];
+              if (callbackMethod.methodName === 'reduce') {
+                widenedArguments.unshift(laterResult);
+              }
+              callbackResults.push(
+                invokeRuntimeCallback(
+                  callback,
+                  widenedArguments,
+                  widenedIterationState,
+                  current,
+                  callbackThisValue,
+                ),
+              );
+              iterationStates.push(widenedIterationState);
+            }
+          }
+          const callbackResult = mergeRuntimeValues(...callbackResults);
+          replaceState(state, mergeStates(iterationStates));
+          if (callbackMethod.methodName === 'forEach') return undefinedValue();
+          if (callbackMethod.methodName === 'some' || callbackMethod.methodName === 'every') {
+            return booleanValue(MAY_BE_TRUTHY | MAY_BE_FALSY);
+          }
+          if (callbackMethod.methodName === 'find') {
+            return mergeRuntimeValues(undefinedValue(), unknownCallableValue());
+          }
+          if (callbackMethod.methodName === 'reduce') {
+            return mergeRuntimeValues(callbackResult, argumentValues[1] ?? unknownCallableValue());
+          }
+          return runtimeArrayResult(
+            current,
+            state,
+            new Map([['*', callbackResult]]),
+            new Set(),
+            undefined,
+          );
+        }
+        const snapshotLength =
+          owner.arrayLength ??
+          (numericIndexes.length > 0
+            ? Math.max(...numericIndexes) + 1
+            : owner.members.has('*')
+              ? 1
+              : 0);
+        const liveElement = (index, targetState, visitHole = false) => {
+          const liveOwner = refreshRuntimeValue(owner, targetState);
+          const memberName = String(index);
+          const present = liveOwner.members.has(memberName) || liveOwner.members.has('*');
+          return {
+            liveOwner,
+            present,
+            value: present
+              ? readRuntimeMember(liveOwner, new Set([memberName]), targetState)
+              : visitHole
+                ? undefinedValue()
+                : undefined,
+          };
+        };
+        const callbackArguments = (index, element, liveOwner, leading = []) => [
+          ...leading,
+          element,
+          callbackIndexValue(index),
+          liveOwner,
+        ];
+        if (callbackMethod.methodName === 'map' || callbackMethod.methodName === 'flatMap') {
+          const members = new Map();
+          const knownDefinedMembers = new Set();
+          let flatIndex = 0;
+          for (let index = 0; index < snapshotLength; index += 1) {
+            const currentElement = liveElement(index, state);
+            if (!currentElement.present) continue;
+            const result = invokeRuntimeCallback(
+              callback,
+              callbackArguments(index, currentElement.value, currentElement.liveOwner),
+              state,
+              current,
+              callbackThisValue,
+            );
+            if (callbackMethod.methodName === 'flatMap' && result.definitelyArray) {
+              for (const [, nested] of orderedPropertyEntries(result.members).filter(
+                ([name]) => exactArrayIndex(name) !== undefined,
+              )) {
+                members.set(String(flatIndex), cloneValue(nested));
+                knownDefinedMembers.add(String(flatIndex));
+                flatIndex += 1;
+              }
+            } else {
+              const resultIndex =
+                callbackMethod.methodName === 'map' ? String(index) : String(flatIndex++);
+              const alternatives =
+                callbackMethod.methodName === 'flatMap' && result.arrayLike
+                  ? [
+                      result,
+                      ...orderedPropertyEntries(result.members)
+                        .filter(([name]) => exactArrayIndex(name) !== undefined)
+                        .map(([, nested]) => nested),
+                    ]
+                  : [result];
+              members.set(resultIndex, cloneValue(mergeRuntimeValues(...alternatives)));
+              knownDefinedMembers.add(resultIndex);
+            }
+          }
+          return runtimeArrayResult(
+            current,
+            state,
+            members,
+            knownDefinedMembers,
+            callbackMethod.methodName === 'map' ? snapshotLength : flatIndex,
+          );
+        }
+        if (callbackMethod.methodName === 'forEach') {
+          for (let index = 0; index < snapshotLength; index += 1) {
+            const currentElement = liveElement(index, state);
+            if (!currentElement.present) continue;
+            invokeRuntimeCallback(
+              callback,
+              callbackArguments(index, currentElement.value, currentElement.liveOwner),
+              state,
+              current,
+              callbackThisValue,
+            );
+          }
+          return undefinedValue();
+        }
+        if (callbackMethod.methodName === 'filter') {
+          const members = new Map();
+          let collapsedPositions = false;
+          let possibleResultIndexes = new Set([0]);
+          let wildcardSaturated = false;
+          const saturateWildcard = (value) => {
+            const callableRecordCount =
+              value.functions.length +
+              value.constructors.length +
+              value.accessors.length +
+              value.setters.length;
+            if (callableRecordCount <= 64) return value;
+            wildcardSaturated = true;
+            return unknownCallableValue({ kinds: CALLABLE_LOADER });
+          };
+          for (let index = 0; index < snapshotLength; index += 1) {
+            const currentElement = liveElement(index, state);
+            if (!currentElement.present) continue;
+            const predicate = invokeRuntimeCallback(
+              callback,
+              callbackArguments(index, currentElement.value, currentElement.liveOwner),
+              state,
+              current,
+              callbackThisValue,
+            );
+            if (collapsedPositions) {
+              if ((predicate.truthiness & MAY_BE_TRUTHY) !== 0 && !wildcardSaturated) {
+                members.set(
+                  '*',
+                  saturateWildcard(
+                    members.has('*')
+                      ? mergeRuntimeValues(members.get('*'), currentElement.value)
+                      : cloneValue(currentElement.value),
+                  ),
+                );
+              }
+              continue;
+            }
+            const nextResultIndexes = new Set();
+            for (const resultIndex of possibleResultIndexes) {
+              if ((predicate.truthiness & MAY_BE_TRUTHY) !== 0) {
+                const memberName = String(resultIndex);
+                members.set(
+                  memberName,
+                  members.has(memberName)
+                    ? mergeRuntimeValues(members.get(memberName), currentElement.value)
+                    : cloneValue(currentElement.value),
+                );
+                nextResultIndexes.add(resultIndex + 1);
+              }
+              if ((predicate.truthiness & MAY_BE_FALSY) !== 0) {
+                nextResultIndexes.add(resultIndex);
+              }
+            }
+            possibleResultIndexes = nextResultIndexes;
+            if (possibleResultIndexes.size > 64) {
+              members.set('*', saturateWildcard(mergeRuntimeValues(...members.values())));
+              for (const memberName of [...members.keys()]) {
+                if (memberName !== '*') members.delete(memberName);
+              }
+              collapsedPositions = true;
+            }
+          }
+          if (collapsedPositions) {
+            return runtimeArrayResult(current, state, members, new Set(), undefined);
+          }
+          const minimumLength = Math.min(...possibleResultIndexes);
+          const knownDefinedMembers = new Set(
+            [...members.keys()].filter((memberName) => Number(memberName) < minimumLength),
+          );
+          return runtimeArrayResult(
+            current,
+            state,
+            members,
+            knownDefinedMembers,
+            possibleResultIndexes.size === 1 ? [...possibleResultIndexes][0] : undefined,
+          );
+        }
+        if (callbackMethod.methodName === 'find') {
+          const exits = [];
+          let activeState = cloneState(state);
+          for (let index = 0; index < snapshotLength && activeState; index += 1) {
+            const currentElement = liveElement(index, activeState, true);
+            const predicate = invokeRuntimeCallback(
+              callback,
+              callbackArguments(index, currentElement.value, currentElement.liveOwner),
+              activeState,
+              current,
+              callbackThisValue,
+            );
+            if ((predicate.truthiness & MAY_BE_TRUTHY) !== 0) {
+              exits.push({ state: cloneState(activeState), value: currentElement.value });
+            }
+            if ((predicate.truthiness & MAY_BE_FALSY) === 0) activeState = undefined;
+          }
+          if (activeState) exits.push({ state: activeState, value: undefinedValue() });
+          replaceState(state, mergeStates(exits.map((exit) => exit.state)));
+          return mergeRuntimeValues(...exits.map((exit) => exit.value));
+        }
+        if (callbackMethod.methodName === 'some' || callbackMethod.methodName === 'every') {
+          const exits = [];
+          let activeState = cloneState(state);
+          for (let index = 0; index < snapshotLength && activeState; index += 1) {
+            const currentElement = liveElement(index, activeState);
+            if (!currentElement.present) continue;
+            const predicate = invokeRuntimeCallback(
+              callback,
+              callbackArguments(index, currentElement.value, currentElement.liveOwner),
+              activeState,
+              current,
+              callbackThisValue,
+            );
+            if (callbackMethod.methodName === 'some') {
+              if ((predicate.truthiness & MAY_BE_TRUTHY) !== 0) {
+                exits.push({ state: cloneState(activeState), truthiness: MAY_BE_TRUTHY });
+              }
+              if ((predicate.truthiness & MAY_BE_FALSY) === 0) activeState = undefined;
+            } else {
+              if ((predicate.truthiness & MAY_BE_FALSY) !== 0) {
+                exits.push({ state: cloneState(activeState), truthiness: MAY_BE_FALSY });
+              }
+              if ((predicate.truthiness & MAY_BE_TRUTHY) === 0) activeState = undefined;
+            }
+          }
+          if (activeState) {
+            exits.push({
+              state: activeState,
+              truthiness: callbackMethod.methodName === 'some' ? MAY_BE_FALSY : MAY_BE_TRUTHY,
+            });
+          }
+          replaceState(state, mergeStates(exits.map((exit) => exit.state)));
+          return booleanValue(exits.reduce((truthiness, exit) => truthiness | exit.truthiness, 0));
+        }
+        let accumulator;
+        let nextIndex = 0;
+        if (argumentValues.length > 1) {
+          accumulator = argumentValues[1];
+        } else {
+          while (nextIndex < snapshotLength && !accumulator) {
+            const currentElement = liveElement(nextIndex, state);
+            nextIndex += 1;
+            if (currentElement.present) accumulator = currentElement.value;
+          }
+        }
+        if (!accumulator) {
+          invalidateReassignableBindings(state);
+          return unknownCallableValue();
+        }
+        for (let index = nextIndex; index < snapshotLength; index += 1) {
+          const currentElement = liveElement(index, state);
+          if (!currentElement.present) continue;
+          accumulator = invokeRuntimeCallback(
+            callback,
+            callbackArguments(index, currentElement.value, currentElement.liveOwner, [accumulator]),
+            state,
+            current,
+            callbackThisValue,
+          );
+        }
+        return accumulator;
+      }
+      function evaluateCall(current, state) {
+        const mutation = arrayMutationForCall(current);
+        if (mutation) {
+          const owner = evaluateExpression(mutation.owner, state);
+          const argumentValues = evaluateCallArguments(current.arguments, state);
+          applyArrayMutation(owner, argumentValues, mutation.methodName, state);
+          return knownNonArrayValue(emptyCallableValue(), {
+            nullish: MAY_BE_NON_NULLISH,
+            truthiness: MAY_BE_TRUTHY | MAY_BE_FALSY,
+          });
+        }
+        const callbackResult = evaluateRuntimeCallbackPipeline(current, state);
+        if (callbackResult) return callbackResult;
+        const callee = evaluateExpression(current.expression, state);
+        const receiverValue =
+          evaluatedReceiverValues.get(unwrapExpression(current.expression)) ?? callee.receiverValue;
+        const argumentValues = evaluateCallArguments(current.arguments, state);
+        if (isObjectAssignCall(current)) {
+          return applyObjectAssign(
+            argumentValues[0] ?? undefinedValue(),
+            argumentValues.slice(1),
+            state,
+          );
+        }
+        return invokeEvaluatedCall(current, callee, receiverValue, argumentValues, state);
       }
       function evaluateLogicalAssignment(current, state) {
         const token = current.operatorToken.kind;
@@ -4983,14 +6703,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             : token === ts.SyntaxKind.BarBarEqualsToken
               ? ts.SyntaxKind.BarBarToken
               : ts.SyntaxKind.QuestionQuestionToken;
-        const left = evaluateExpression(current.left, state);
+        const reference = resolveAssignmentReference(current.left, state);
+        const left = reference?.read() ?? evaluateExpression(current.left, state);
         const reachability = logicalReachability(left, logicalKind);
         const branches = [];
         if (reachability.left) branches.push({ state: cloneState(state), value: left });
         if (reachability.right) {
           const rightState = cloneState(state);
           const right = evaluateExpression(current.right, rightState);
-          bindPattern(current.left, right, rightState, current.right);
+          if (reference) reference.write(right, current.right, rightState);
+          else bindPattern(current.left, right, rightState, current.right);
           branches.push({ state: rightState, value: right });
         }
         return branches.length > 0
@@ -5000,18 +6722,92 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       function evaluateExpression(valueExpression, state) {
         const current = unwrapExpression(valueExpression);
         const value = evaluateExpressionValue(current, state);
-        if (current === targetExpression) targetValues.push(cloneValue(value));
+        const snapshot = current === targetExpression ? cloneValue(value) : undefined;
+        let wrappedCurrent = current;
+        while (
+          wrappedCurrent.parent &&
+          ts.isExpression(wrappedCurrent.parent) &&
+          unwrapExpression(wrappedCurrent.parent) === current
+        ) {
+          wrappedCurrent = wrappedCurrent.parent;
+        }
+        const parent = wrappedCurrent.parent;
+        const mayBeQueriedLater =
+          (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+          unwrapExpression(parent.expression) === current;
+        if (mayBeQueriedLater) {
+          const cached = sourceOrderedExpressionValueCache.get(current);
+          const cachedValue = snapshot ?? cloneValue(value);
+          sourceOrderedExpressionValueCache.set(
+            current,
+            cached ? mergeRuntimeValues(cached, cachedValue) : cachedValue,
+          );
+        }
+        if (snapshot) targetValues.push(snapshot);
         return value;
       }
+      const scalarComparisonTruthiness = (left, right, token) => {
+        if (!left.scalars || !right.scalars) return undefined;
+        const outcomes = new Set();
+        const decode = (encoded) => {
+          const separator = encoded.indexOf(':');
+          const kind = encoded.slice(0, separator);
+          const raw = encoded.slice(separator + 1);
+          if (kind === 'number') return { kind, value: Number(raw) };
+          if (kind === 'boolean') return { kind, value: raw === 'true' };
+          if (kind === 'string') return { kind, value: JSON.parse(raw) };
+          return undefined;
+        };
+        for (const leftScalar of left.scalars) {
+          for (const rightScalar of right.scalars) {
+            const leftValue = decode(leftScalar);
+            const rightValue = decode(rightScalar);
+            if (!leftValue || !rightValue) return undefined;
+            let result;
+            if (
+              token === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+              token === ts.SyntaxKind.ExclamationEqualsEqualsToken
+            ) {
+              result = leftValue.kind === rightValue.kind && leftValue.value === rightValue.value;
+              if (token === ts.SyntaxKind.ExclamationEqualsEqualsToken) result = !result;
+            } else if (
+              leftValue.kind === rightValue.kind &&
+              (leftValue.kind === 'number' || leftValue.kind === 'string')
+            ) {
+              if (token === ts.SyntaxKind.LessThanToken)
+                result = leftValue.value < rightValue.value;
+              else if (token === ts.SyntaxKind.LessThanEqualsToken)
+                result = leftValue.value <= rightValue.value;
+              else if (token === ts.SyntaxKind.GreaterThanToken)
+                result = leftValue.value > rightValue.value;
+              else if (token === ts.SyntaxKind.GreaterThanEqualsToken)
+                result = leftValue.value >= rightValue.value;
+              else return undefined;
+            } else {
+              return undefined;
+            }
+            outcomes.add(result);
+          }
+        }
+        return [...outcomes].reduce(
+          (truthiness, outcome) => truthiness | (outcome ? MAY_BE_TRUTHY : MAY_BE_FALSY),
+          0,
+        );
+      };
       function evaluateExpressionValue(valueExpression, state) {
         const current = unwrapExpression(valueExpression);
-        if (current.kind === ts.SyntaxKind.NullKeyword) return undefinedValue();
-        if (current.kind === ts.SyntaxKind.TrueKeyword) return booleanValue(MAY_BE_TRUTHY);
-        if (current.kind === ts.SyntaxKind.FalseKeyword) return booleanValue(MAY_BE_FALSY);
+        if (current.kind === ts.SyntaxKind.NullKeyword) return nullValue();
+        if (current.kind === ts.SyntaxKind.TrueKeyword) {
+          return { ...booleanValue(MAY_BE_TRUTHY), scalars: new Set(['boolean:true']) };
+        }
+        if (current.kind === ts.SyntaxKind.FalseKeyword) {
+          return { ...booleanValue(MAY_BE_FALSY), scalars: new Set(['boolean:false']) };
+        }
         if (ts.isStringLiteralLike(current) || ts.isNoSubstitutionTemplateLiteral(current)) {
           return knownNonArrayValue(
             {
               ...emptyCallableValue(),
+              scalars: new Set([`string:${JSON.stringify(current.text)}`]),
               strings: new Set([current.text]),
             },
             {
@@ -5024,6 +6820,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           return knownNonArrayValue(
             {
               ...emptyCallableValue(),
+              scalars: new Set([`number:${current.text}`]),
               strings: new Set([current.text]),
             },
             {
@@ -5039,6 +6836,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           if (isUnshadowedIdentifier(current, 'require')) {
             return knownNonArrayValue({
               ...emptyCallableValue(),
+              definitelyObject: true,
               kinds: CALLABLE_LOADER,
               nullish: MAY_BE_NON_NULLISH,
               truthiness: MAY_BE_TRUTHY,
@@ -5047,6 +6845,21 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           const identity = valueSymbolIdentity(current);
           if (identity && state.bindings.has(identity))
             return cloneValue(state.bindings.get(identity));
+          if (identity && isUnshadowedIdentifier(current, 'console')) {
+            const consoleValue = withRuntimeFacts(
+              callableValueForSymbol(
+                symbolAt(checker, current),
+                runtimeEnvironment(state),
+                staticState(state),
+              ),
+              current,
+              state,
+            );
+            consoleValue.references.add(globalConsoleIdentity);
+            state.bindings.set(identity, consoleValue);
+            rebuildStateIndexes(state);
+            return cloneValue(consoleValue);
+          }
           return withRuntimeFacts(
             callableValueForSymbol(
               symbolAt(checker, current),
@@ -5063,6 +6876,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         if (isModuleRequire(current)) {
           return knownNonArrayValue({
             ...emptyCallableValue(),
+            definitelyObject: true,
             kinds: CALLABLE_LOADER,
             nullish: MAY_BE_NON_NULLISH,
             truthiness: MAY_BE_TRUTHY,
@@ -5118,8 +6932,16 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               : unknownCallableValue();
           }
           if (token === ts.SyntaxKind.EqualsToken) {
+            const left = unwrapExpression(current.left);
+            const reference =
+              ts.isIdentifier(left) ||
+              ts.isPropertyAccessExpression(left) ||
+              ts.isElementAccessExpression(left)
+                ? resolveAssignmentReference(left, state)
+                : undefined;
             const right = evaluateExpression(current.right, state);
-            bindPattern(current.left, right, state, current.right);
+            if (reference) reference.write(right, current.right);
+            else bindPattern(current.left, right, state, current.right);
             return right;
           }
           if (
@@ -5129,8 +6951,15 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
           ) {
             return evaluateLogicalAssignment(current, state);
           }
-          evaluateExpression(current.left, state);
-          evaluateExpression(current.right, state);
+          const leftValue = evaluateExpression(current.left, state);
+          const rightValue = evaluateExpression(current.right, state);
+          const comparisonTruthiness = scalarComparisonTruthiness(leftValue, rightValue, token);
+          if (comparisonTruthiness !== undefined) {
+            const scalars = new Set();
+            if ((comparisonTruthiness & MAY_BE_TRUTHY) !== 0) scalars.add('boolean:true');
+            if ((comparisonTruthiness & MAY_BE_FALSY) !== 0) scalars.add('boolean:false');
+            return { ...booleanValue(comparisonTruthiness), scalars };
+          }
           return withRuntimeFacts(
             callableValue(current, runtimeEnvironment(state), staticState(state)),
             current,
@@ -5144,7 +6973,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
             let truthiness = 0;
             if ((operand.truthiness & MAY_BE_TRUTHY) !== 0) truthiness |= MAY_BE_FALSY;
             if ((operand.truthiness & MAY_BE_FALSY) !== 0) truthiness |= MAY_BE_TRUTHY;
-            return booleanValue(truthiness);
+            const scalars = new Set();
+            if ((truthiness & MAY_BE_TRUTHY) !== 0) scalars.add('boolean:true');
+            if ((truthiness & MAY_BE_FALSY) !== 0) scalars.add('boolean:false');
+            return { ...booleanValue(truthiness), scalars };
           }
           return knownNonArrayValue(emptyCallableValue(), {
             nullish: MAY_BE_NON_NULLISH,
@@ -5154,10 +6986,12 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
           return knownNonArrayValue({
             ...emptyCallableValue(),
+            definitelyObject: true,
             functions: [
               {
-                environment: new Map(runtimeEnvironment(state)),
+                ...captureRuntimeClosure(state),
                 functionLike: current,
+                thisValue: ts.isArrowFunction(current) ? cloneValue(state.thisValue) : undefined,
               },
             ],
             nullish: MAY_BE_NON_NULLISH,
@@ -5166,7 +7000,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
         if (ts.isClassExpression(current)) {
           return knownNonArrayValue(
-            classCallableValue(current, runtimeEnvironment(state), staticState(state)),
+            {
+              ...classCallableValue(current, runtimeEnvironment(state), staticState(state)),
+              definitelyObject: true,
+            },
             { nullish: MAY_BE_NON_NULLISH, truthiness: MAY_BE_TRUTHY },
           );
         }
@@ -5380,15 +7217,37 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       const cachePrelude = collectLoaderContexts && ts.isSourceFile(scope.statement.parent);
       let startIndex = 0;
       let initialState = createState();
+      let advancesPreludeCursor = false;
       if (cachePrelude) {
-        for (let index = targetStatementIndex; index >= 0; index -= 1) {
-          const cachedState = sourceOrderedPreludeStateCache.get(statements[index]);
-          if (!cachedState) continue;
-          initialState = cloneState(cachedState);
-          startIndex = index;
-          break;
+        const cursorKey = scope.statement.parent;
+        const cursor = sourceOrderedPreludeCursorCache.get(cursorKey);
+        if (
+          cursor?.unreachableFrom !== undefined &&
+          targetStatementIndex >= cursor.unreachableFrom
+        ) {
+          const result = unreachableValue();
+          sourceOrderedEvaluationCache.set(contextNode, result);
+          return result;
         }
-        if (targetStatementIndex >= 0 && !sourceOrderedPreludeStateCache.has(statements[0])) {
+        if (cursor?.state && cursor.nextIndex <= targetStatementIndex) {
+          initialState = cursor.state;
+          startIndex = cursor.nextIndex;
+          advancesPreludeCursor = true;
+        } else {
+          for (let index = targetStatementIndex; index >= 0; index -= 1) {
+            const cachedState = sourceOrderedPreludeStateCache.get(statements[index]);
+            if (!cachedState) continue;
+            initialState = cloneState(cachedState);
+            startIndex = index;
+            break;
+          }
+          advancesPreludeCursor = !cursor || targetStatementIndex >= cursor.nextIndex;
+        }
+        if (
+          targetStatementIndex >= 0 &&
+          statements[0] &&
+          !sourceOrderedPreludeStateCache.has(statements[0])
+        ) {
           sourceOrderedPreludeStateCache.set(statements[0], cloneState(initialState));
         }
       }
@@ -5398,24 +7257,41 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         outcomes = evaluateStatementList([statement], outcomes);
         const continuing = outcomes.filter((outcome) => outcome.completion === 'normal');
         if (continuing.length === 0) {
-          const result = unknownCallableValue();
+          const result = unreachableValue();
+          if (cachePrelude && advancesPreludeCursor) {
+            sourceOrderedPreludeCursorCache.set(scope.statement.parent, {
+              nextIndex: index + 1,
+              state: undefined,
+              unreachableFrom: index,
+            });
+          }
           sourceOrderedEvaluationCache.set(contextNode, result);
           return result;
         }
         outcomes = [
-          { completion: 'normal', state: mergeStates(continuing.map((item) => item.state)) },
+          {
+            completion: 'normal',
+            state:
+              continuing.length === 1
+                ? continuing[0].state
+                : mergeStates(continuing.map((item) => item.state)),
+          },
         ];
-        if (cachePrelude) {
-          sourceOrderedPreludeStateCache.set(statements[index + 1], cloneState(outcomes[0].state));
-        }
       }
       const targetOutcomes = evaluateStatement(scope.statement, outcomes[0].state);
       const continuing = targetOutcomes.filter((outcome) => outcome.completion === 'normal');
-      if (cachePrelude && continuing.length > 0 && statements[targetStatementIndex + 1]) {
-        sourceOrderedPreludeStateCache.set(
-          statements[targetStatementIndex + 1],
-          mergeStates(continuing.map((outcome) => outcome.state)),
-        );
+      const continuingState =
+        continuing.length === 0
+          ? undefined
+          : continuing.length === 1
+            ? continuing[0].state
+            : mergeStates(continuing.map((outcome) => outcome.state));
+      if (cachePrelude && advancesPreludeCursor) {
+        sourceOrderedPreludeCursorCache.set(scope.statement.parent, {
+          nextIndex: targetStatementIndex + 1,
+          state: continuingState,
+          unreachableFrom: continuingState ? undefined : targetStatementIndex + 1,
+        });
       }
       const result =
         targetValues.length > 0
@@ -5433,7 +7309,9 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
 
   function sourceOrderedArrayMutationTargets(contextNode, expression) {
     const value = sourceOrderedArrayMutationValue(contextNode, expression);
-    return value?.arrayIdentities.kind === 'known' && value.arrayIdentities.values.size > 0
+    return value?.reachable !== false &&
+      value?.arrayIdentities.kind === 'known' &&
+      value.arrayIdentities.values.size > 0
       ? new Set(value.arrayIdentities.values)
       : undefined;
   }
@@ -5475,6 +7353,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     );
     if (!carriesCallable) return false;
     const receiver = sourceOrderedArrayMutationValue(callExpression, mutation.owner);
+    if (receiver.reachable === false) return false;
     if (!receiver.arrayLike) return false;
     if (receiver.arrayIdentities.kind === 'unknown') {
       unresolvedLoaderExpressions.set(callExpression, callExpression.getSourceFile());

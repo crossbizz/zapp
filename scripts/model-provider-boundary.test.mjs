@@ -919,7 +919,31 @@ test('AR-1 uses one source-ordered mutation evaluator for unsafe receiver result
 
   assert.equal(result.status, 1);
   const fileNames = [
+    'assignment-lhs-order-unsafe',
+    'alternative-accessor-side-effect-unsafe',
     'array-destructure-assignment-unsafe',
+    'array-map-alias-mutation-unsafe',
+    'array-prototype-callback-override-unsafe',
+    'array-prototype-alias-override-unsafe',
+    'arrow-lexical-this-unsafe',
+    'callback-this-arg-unsafe',
+    'closure-cell-isolation-unsafe',
+    'closure-conditional-cell-unsafe',
+    'closure-opaque-argument-unsafe',
+    'closure-post-capture-reassignment-unsafe',
+    'constructor-parameter-default-unsafe',
+    'constructor-returns-loader-unsafe',
+    'constructor-own-overwrite-enumerable-unsafe',
+    'computed-destructuring-key-side-effect-unsafe',
+    'destructuring-accessor-side-effect-unsafe',
+    'destructuring-maybe-default-unsafe',
+    'getter-setter-default-unsafe',
+    'global-console-alias-unsafe',
+    'global-console-object-alias-unsafe',
+    'getter-mutates-later-object-assign-unsafe',
+    'getter-mutates-later-rest-unsafe',
+    'getter-mutates-later-spread-unsafe',
+    'object-rest-accessor-side-effect-unsafe',
     'object-destructure-assignment-unsafe',
     'logical-and-assignment-unsafe',
     'logical-or-assignment-unsafe',
@@ -927,6 +951,43 @@ test('AR-1 uses one source-ordered mutation evaluator for unsafe receiver result
     'call-condition-side-effect-unsafe',
     'call-logical-side-effect-unsafe',
     'method-logical-side-effect-unsafe',
+    'mixed-getter-data-alternative-unsafe',
+    'mixed-getter-data-rest-unsafe',
+    'mixed-setter-data-alternative-unsafe',
+    'missing-property-default-unsafe',
+    'factory-returned-array-mutation-unsafe',
+    'find-short-circuit-unsafe',
+    'flat-map-array-or-loader-unsafe',
+    'foreach-filled-hole-unsafe',
+    'foreach-live-element-unsafe',
+    'map-live-overwrite-unsafe',
+    'nested-opaque-member-read-unsafe',
+    'numeric-key-order-rest-unsafe',
+    'numeric-key-order-spread-unsafe',
+    'object-assign-source-getter-side-effect-unsafe',
+    'object-assign-target-setter-side-effect-unsafe',
+    'object-factory-isolation-unsafe',
+    'opaque-accessor-cycle-unsafe',
+    'opaque-const-array-mutation-unsafe',
+    'opaque-getter-exposed-mutation-unsafe',
+    'opaque-receiver-mutation-unsafe',
+    'pushed-member-index-unsafe',
+    'rest-parameter-alias-mutation-unsafe',
+    'parameter-default-alias-unsafe',
+    'reduce-live-element-unsafe',
+    'some-short-circuit-unsafe',
+    'spread-call-rest-unsafe',
+    'every-short-circuit-unsafe',
+    'factory-closure-isolation-unsafe',
+    'filter-uncertain-shift-unsafe',
+    'overridden-callback-method-unsafe',
+    'reassigned-console-method-unsafe',
+    'unknown-length-callback-unsafe',
+    'unknown-length-later-index-unsafe',
+    'unknown-length-third-iteration-unsafe',
+    'unknown-length-stable-fourth-unsafe',
+    'setter-side-effect-unsafe',
+    'written-member-index-unsafe',
   ];
   const missingFileNames = fileNames.filter(
     (fileName) => !new RegExp(`new-provider path: .*${fileName}\\.ts`).test(result.stderr),
@@ -946,6 +1007,80 @@ test('AR-1 fails closed on an opaque source-ordered mutation receiver', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /opaque-call-unknown\.ts/);
   assert.match(result.stderr, /unresolved-loader/);
+});
+
+test('AR-1 keeps source-ordered prelude evaluation bounded', () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'provider-boundary-prelude-'));
+  try {
+    const sourceDirectory = path.join(temporaryRoot, 'apps/desktop/src/ipc/utils');
+    mkdirSync(sourceDirectory, { recursive: true });
+    const lines = [
+      'export {};',
+      'const marker = require;',
+      "const provider = '@example/not-forbidden';",
+    ];
+    for (let index = 0; index < 2_000; index += 1) {
+      lines.push(`const base${index} = { load: console.log };`);
+      lines.push(`const out${index} = { ...base${index} };`);
+      lines.push(`out${index}.load(provider);`);
+    }
+    writeFileSync(path.join(sourceDirectory, 'prelude-performance.ts'), `${lines.join('\n')}\n`);
+    const performanceBaseline = path.join(temporaryRoot, 'baseline.json');
+    writeFileSync(
+      performanceBaseline,
+      `${JSON.stringify({ schemaVersion: 1, fixture: true, files: {} }, null, 2)}\n`,
+    );
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: temporaryRoot }).status, 0);
+    assert.equal(spawnSync('git', ['add', '.'], { cwd: temporaryRoot }).status, 0);
+
+    const result = runRoot(temporaryRoot, performanceBaseline, { timeout: 6_000 });
+
+    assert.equal(
+      result.status,
+      0,
+      [result.error?.message, result.stderr].filter(Boolean).join('\n'),
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('AR-1 keeps uncertain filter position evaluation bounded', () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'provider-boundary-filter-'));
+  try {
+    const sourceDirectory = path.join(temporaryRoot, 'apps/desktop/src/ipc/utils');
+    mkdirSync(sourceDirectory, { recursive: true });
+    const elements = Array.from({ length: 2_000 }, (_value, index) => `() => ${index}`);
+    elements[elements.length - 1] = 'require';
+    writeFileSync(
+      path.join(sourceDirectory, 'filter-performance.ts'),
+      [
+        'export {};',
+        'declare const keep: boolean;',
+        `const loads = [${elements.join(',')}].filter(() => keep);`,
+        "loads[0]('@ai-sdk/openai');",
+        '',
+      ].join('\n'),
+    );
+    const performanceBaseline = path.join(temporaryRoot, 'baseline.json');
+    writeFileSync(
+      performanceBaseline,
+      `${JSON.stringify({ schemaVersion: 1, fixture: true, files: {} }, null, 2)}\n`,
+    );
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: temporaryRoot }).status, 0);
+    assert.equal(spawnSync('git', ['add', '.'], { cwd: temporaryRoot }).status, 0);
+
+    const result = runRoot(temporaryRoot, performanceBaseline, { timeout: 6_000 });
+
+    assert.equal(
+      result.status,
+      1,
+      [result.error?.message, result.stderr].filter(Boolean).join('\n'),
+    );
+    assert.match(result.stderr, /filter-performance\.ts/);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('AR-1 respects Object.assign source order for final loader values', () => {
