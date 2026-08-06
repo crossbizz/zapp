@@ -357,7 +357,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   const memberReferencesBySymbol = new Map();
   const destructuringAssignmentsBySymbol = new Map();
   const nodeModuleNamespaceSymbols = new Set();
-  const unresolvedNodeModuleMembers = new Map();
+  const unresolvedLoaderExpressions = new Map();
   const loaderOrigins = new Map();
   const staticLoaderTargetsByCall = new Map();
   const trustedLoaderCounts = new Map();
@@ -1100,8 +1100,78 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return !!bindOwner(callExpression);
   }
 
+  function knownArrayIdentities(values = []) {
+    return { kind: 'known', values: new Set(values) };
+  }
+
+  function unknownArrayIdentities() {
+    return { kind: 'unknown' };
+  }
+
+  function cloneArrayIdentities(identities) {
+    return identities?.kind === 'known'
+      ? knownArrayIdentities(identities.values)
+      : unknownArrayIdentities();
+  }
+
+  function mergeArrayIdentities(values) {
+    const identities = values.map((value) => value.arrayIdentities);
+    if (identities.some((value) => !value || value.kind === 'unknown')) {
+      return unknownArrayIdentities();
+    }
+    return knownArrayIdentities(union(...identities.map((value) => value.values)));
+  }
+
+  function typeMayBeArray(node) {
+    if (!node || typeof node.kind !== 'number') return false;
+    try {
+      const type = checker.getTypeAtLocation(node);
+      if (type.isUnion?.()) return type.types.some((member) => typeMayBeArrayType(member));
+      return typeMayBeArrayType(type);
+    } catch {
+      return false;
+    }
+  }
+
+  function typeMayBeArrayType(type) {
+    return checker.isArrayType(type) || checker.isTupleType(type);
+  }
+
+  function normalizeAbstractValue(value, expression) {
+    const normalized = value ?? {};
+    if (!normalized.arrayIdentities) {
+      if (expression && ts.isArrayLiteralExpression(unwrapExpression(expression))) {
+        normalized.arrayIdentities = knownArrayIdentities([unwrapExpression(expression)]);
+      } else if (normalized.arrayLike || typeMayBeArray(expression)) {
+        normalized.arrayIdentities = unknownArrayIdentities();
+      } else {
+        normalized.arrayIdentities = knownArrayIdentities();
+      }
+    }
+    normalized.accessors ??= [];
+    normalized.arrayLike =
+      normalized.arrayLike === true ||
+      normalized.arrayIdentities.kind === 'unknown' ||
+      normalized.arrayIdentities.values.size > 0;
+    return normalized;
+  }
+
+  function withArrayIdentities(value, identities, expression) {
+    const normalized = normalizeAbstractValue(value, expression);
+    return {
+      ...normalized,
+      arrayIdentities: cloneArrayIdentities(identities),
+      arrayLike:
+        normalized.arrayLike ||
+        identities.kind === 'unknown' ||
+        (identities.kind === 'known' && identities.values.size > 0),
+    };
+  }
+
   function emptyCallableValue() {
     return {
+      accessors: [],
+      arrayIdentities: knownArrayIdentities(),
       arrayLike: false,
       constructors: [],
       functions: [],
@@ -1119,6 +1189,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function callableValueHasData(value) {
     return (
       value.arrayLike ||
+      (value.accessors?.length ?? 0) > 0 ||
       value.kinds !== 0 ||
       value.functions.length > 0 ||
       (value.constructors?.length ?? 0) > 0 ||
@@ -1130,10 +1201,14 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   }
 
   function mergeCallableValues(...candidates) {
-    const values = candidates.filter((value) => value && callableValueHasData(value));
+    const values = candidates
+      .filter(Boolean)
+      .map((value) => normalizeAbstractValue(value))
+      .filter((value) => callableValueHasData(value));
     if (values.length === 0) return emptyCallableValue();
     if (values.length === 1 && values[0].runtimeInstance) return values[0];
     const merged = emptyCallableValue();
+    merged.arrayIdentities = mergeArrayIdentities(values);
     merged.kinds = values.reduce((kinds, value) => kinds | value.kinds, 0);
     merged.arrayLike = values.some((value) => value.arrayLike);
     merged.knownDefinedMembers = union(
@@ -1153,6 +1228,18 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       merged.strings = union(...values.map((value) => value.strings));
     }
     for (const value of values) {
+      for (const record of value.accessors) {
+        if (
+          !merged.accessors.some(
+            (existing) =>
+              existing.functionLike === record.functionLike &&
+              existing.environment === record.environment &&
+              existing.thisValue === record.thisValue,
+          )
+        ) {
+          merged.accessors.push(record);
+        }
+      }
       for (const record of value.functions) {
         if (
           !merged.functions.some(
@@ -1205,8 +1292,18 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const target = aliasedSymbol(checker, symbol);
     const identity = target ?? symbol;
     const targets = functionTargetsForSymbol(symbol);
+    const inheritedArrayIdentities = arrayIdentitiesForSymbol(identity);
     const value = {
-      arrayLike: arrayIdentitiesForSymbol(identity).size > 0,
+      accessors: [],
+      arrayIdentities:
+        inheritedArrayIdentities.size > 0
+          ? knownArrayIdentities(inheritedArrayIdentities)
+          : typeMayBeArray(identity.valueDeclaration ?? identity.declarations?.[0])
+            ? unknownArrayIdentities()
+            : knownArrayIdentities(),
+      arrayLike:
+        inheritedArrayIdentities.size > 0 ||
+        typeMayBeArray(identity.valueDeclaration ?? identity.declarations?.[0]),
       functions: [...targets].map((functionLike) => ({
         environment: undefined,
         functionLike,
@@ -3255,7 +3352,10 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     if (cacheable && contextualValueCache.has(expression)) {
       return contextualValueCache.get(expression);
     }
-    const value = evaluateCallableValue(expression, environment, state);
+    const value = normalizeAbstractValue(
+      evaluateCallableValue(expression, environment, state),
+      expression,
+    );
     if (cacheable) contextualValueCache.set(expression, value);
     return value;
   }
@@ -3323,15 +3423,24 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (exactMemberValue) return exactMemberValue;
       const ownerValue = callableValue(current.expression, environment, state);
       const selectedValue = selectCallableMembers(ownerValue, memberNames);
+      const accessorValue =
+        selectedValue.accessors.length > 0
+          ? mergeCallableValues(
+              selectedValue,
+              ...selectedValue.accessors.map((record) =>
+                functionResult(record, [], stateForInvocation(state, current)),
+              ),
+            )
+          : selectedValue;
       let value =
         (ownerValue.runtimeInstance &&
           selectedMemberIsDefinitelyDefined(ownerValue, memberNames)) ||
         isDeclaredThisAlias(current.expression)
-          ? selectedValue
-          : mergeCallableValues(storedCallableValue(symbolForValue(current)), selectedValue);
+          ? accessorValue
+          : mergeCallableValues(storedCallableValue(symbolForValue(current)), accessorValue);
       if (isNodeModuleNamespaceValue(current.expression)) {
         if (!memberNames) {
-          unresolvedNodeModuleMembers.set(current, current.getSourceFile());
+          unresolvedLoaderExpressions.set(current, current.getSourceFile());
         } else if (memberNames.has('createRequire')) {
           value = mergeCallableValues(value, {
             functions: [],
@@ -3507,6 +3616,8 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
       }
       return {
+        accessors: [],
+        arrayIdentities: knownArrayIdentities([current]),
         arrayLike: true,
         functions: [],
         knownDefinedMembers,
@@ -3559,6 +3670,20 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         } else if (ts.isMethodDeclaration(property)) {
           memberValue = {
             functions: [{ environment: capturedEnvironment(environment), functionLike: property }],
+            kinds: 0,
+            members: new Map(),
+            strings: undefined,
+          };
+          memberIsDefinitelyDefined = true;
+        } else if (ts.isGetAccessorDeclaration(property)) {
+          memberValue = {
+            accessors: [
+              {
+                environment: capturedEnvironment(environment),
+                functionLike: property,
+              },
+            ],
+            functions: [],
             kinds: 0,
             members: new Map(),
             strings: undefined,
@@ -3622,7 +3747,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       if (intrinsicMethod === 'apply') kinds |= CALLABLE_INTRINSIC_APPLY;
       if (isNodeModuleNamespaceValue(current.expression)) {
         if (!memberNames) {
-          unresolvedNodeModuleMembers.set(current, current.getSourceFile());
+          unresolvedLoaderExpressions.set(current, current.getSourceFile());
         } else if (memberNames.has('createRequire')) {
           kinds |= CALLABLE_CREATE_REQUIRE;
         }
@@ -4064,7 +4189,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return false;
   }
 
-  function mutationTargetSymbols(expression) {
+  function objectMutationTargetSymbols(expression) {
     const symbol = symbolForValue(expression);
     return union(referenceSymbolsForExpression(expression), symbol ? new Set([symbol]) : new Set());
   }
@@ -4194,9 +4319,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     return undefined;
   }
 
-  function straightLineArrayMutationTargets(callExpression, owner) {
-    const currentOwner = unwrapExpression(owner);
-    if (!ts.isIdentifier(currentOwner)) return undefined;
+  function straightLineArrayMutationValue(callExpression, owner) {
     const scope = containingArrayMutationScopeStatement(callExpression);
     if (!scope) return undefined;
 
@@ -4204,30 +4327,38 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
     const dataOnlyContainersBySymbol = new Map();
     const identitiesForExpression = (expression, state = identitiesBySymbol) => {
       const current = unwrapExpression(expression);
-      if (ts.isArrayLiteralExpression(current)) return new Set([current]);
-      if (!ts.isIdentifier(current)) return undefined;
+      if (ts.isArrayLiteralExpression(current)) return knownArrayIdentities([current]);
+      if (!ts.isIdentifier(current)) {
+        return typeMayBeArray(current) ? unknownArrayIdentities() : knownArrayIdentities();
+      }
       const identity = valueSymbolIdentity(current);
-      if (!identity) return undefined;
-      if (state.has(identity)) return state.get(identity);
+      if (!identity) {
+        return typeMayBeArray(current) ? unknownArrayIdentities() : knownArrayIdentities();
+      }
+      if (state.has(identity)) return cloneArrayIdentities(state.get(identity));
       const inheritedIdentities = arrayIdentitiesForSymbol(identity);
-      return inheritedIdentities.size > 0 ? new Set(inheritedIdentities) : undefined;
+      if (inheritedIdentities.size > 0) return knownArrayIdentities(inheritedIdentities);
+      return typeMayBeArray(current) ? unknownArrayIdentities() : knownArrayIdentities();
     };
 
     const cloneIdentities = (state) =>
       new Map(
-        [...state].map(([identity, identities]) => [
-          identity,
-          identities ? new Set(identities) : undefined,
-        ]),
+        [...state].map(([identity, identities]) => [identity, cloneArrayIdentities(identities)]),
       );
     const mergeIdentities = (...states) => {
       const merged = new Map();
       const symbols = union(...states.map((state) => new Set(state.keys())));
       for (const symbol of symbols) {
-        const alternatives = states.map((state) => state.get(symbol));
+        const alternatives = states.map((state) =>
+          state.has(symbol) ? state.get(symbol) : unknownArrayIdentities(),
+        );
         merged.set(
           symbol,
-          alternatives.some((identities) => !identities) ? undefined : union(...alternatives),
+          mergeArrayIdentities(
+            alternatives.map((arrayIdentities) => ({
+              arrayIdentities,
+            })),
+          ),
         );
       }
       return merged;
@@ -4389,12 +4520,213 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       return mayChangeIdentity;
     };
     const expressionEvaluationMayInvalidateState = (expression, state, dataOnlyState) =>
-      [...state.values()].some((identities) => identities && identities.size > 0) &&
-      expressionEvaluationMayChangeIdentity(expression, dataOnlyState);
-    const mutationEvaluationMayChangeIdentity = (mutationCall, mutation, dataOnlyState) =>
-      [mutation.owner, ...mutationCall.arguments].some((expression) =>
-        expressionEvaluationMayChangeIdentity(expression, dataOnlyState),
+      [...state.values()].some(
+        (identities) => identities.kind === 'unknown' || identities.values.size > 0,
+      ) && expressionEvaluationMayChangeIdentity(expression, dataOnlyState);
+    const replaceMap = (target, source) => {
+      target.clear();
+      for (const [key, value] of source) target.set(key, value);
+    };
+    const pointEnvironment = (state) => {
+      const environment = new Map();
+      for (const [identity, identities] of state) {
+        const declaration = identity.valueDeclaration ?? identity.declarations?.[0];
+        const inheritedIdentities = arrayIdentitiesForSymbol(identity);
+        if (
+          identities.kind === 'unknown' ||
+          identities.values.size > 0 ||
+          inheritedIdentities.size > 0 ||
+          typeMayBeArray(declaration)
+        ) {
+          environment.set(
+            identity,
+            withArrayIdentities(storedCallableValue(identity), identities, declaration),
+          );
+        }
+      }
+      return environment;
+    };
+    const valueWithRuntimeFacts = (value, expression, environment) => ({
+      ...normalizeAbstractValue(value, expression),
+      ...runtimePossibilities(expression, environment),
+    });
+    const mergePointBranches = (state, dataOnlyState, branches) => {
+      replaceMap(state, mergeIdentities(...branches.map((branch) => branch.identities)));
+      replaceMap(
+        dataOnlyState,
+        mergeDataOnlyContainers(...branches.map((branch) => branch.dataOnly)),
       );
+      return mergeCallableAlternatives(...branches.map((branch) => branch.value));
+    };
+    const assignPointValue = (target, value, state, dataOnlyState, expression) => {
+      const current = unwrapExpression(target);
+      if (!ts.isIdentifier(current)) return;
+      const identity = valueSymbolIdentity(current);
+      if (!identity) return;
+      state.set(identity, cloneArrayIdentities(value.arrayIdentities));
+      const dataOnlyContainer = dataOnlyContainerForExpression(expression, dataOnlyState);
+      if (dataOnlyContainer) dataOnlyState.set(identity, dataOnlyContainer);
+      else dataOnlyState.delete(identity);
+    };
+    function pointExpressionValue(expression, state, dataOnlyState) {
+      const current = unwrapExpression(expression);
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const value = pointExpressionValue(current.right, state, dataOnlyState);
+        assignPointValue(current.left, value, state, dataOnlyState, current.right);
+        return value;
+      }
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.CommaToken
+      ) {
+        pointExpressionValue(current.left, state, dataOnlyState);
+        return pointExpressionValue(current.right, state, dataOnlyState);
+      }
+      if (ts.isConditionalExpression(current)) {
+        const condition = pointExpressionValue(current.condition, state, dataOnlyState);
+        const branches = [];
+        if ((condition.truthiness & MAY_BE_TRUTHY) !== 0) {
+          const identities = cloneIdentities(state);
+          const dataOnly = cloneDataOnlyContainers(dataOnlyState);
+          branches.push({
+            dataOnly,
+            identities,
+            value: pointExpressionValue(current.whenTrue, identities, dataOnly),
+          });
+        }
+        if ((condition.truthiness & MAY_BE_FALSY) !== 0) {
+          const identities = cloneIdentities(state);
+          const dataOnly = cloneDataOnlyContainers(dataOnlyState);
+          branches.push({
+            dataOnly,
+            identities,
+            value: pointExpressionValue(current.whenFalse, identities, dataOnly),
+          });
+        }
+        return branches.length > 0
+          ? mergePointBranches(state, dataOnlyState, branches)
+          : emptyCallableValue();
+      }
+      if (ts.isBinaryExpression(current) && isLogicalOperator(current.operatorToken.kind)) {
+        const left = pointExpressionValue(current.left, state, dataOnlyState);
+        const kind = current.operatorToken.kind;
+        const leftReachable =
+          (kind === ts.SyntaxKind.BarBarToken && (left.truthiness & MAY_BE_TRUTHY) !== 0) ||
+          (kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+            (left.truthiness & MAY_BE_FALSY) !== 0) ||
+          (kind === ts.SyntaxKind.QuestionQuestionToken &&
+            (left.nullish & MAY_BE_NON_NULLISH) !== 0);
+        const rightReachable =
+          (kind === ts.SyntaxKind.BarBarToken && (left.truthiness & MAY_BE_FALSY) !== 0) ||
+          (kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+            (left.truthiness & MAY_BE_TRUTHY) !== 0) ||
+          (kind === ts.SyntaxKind.QuestionQuestionToken && (left.nullish & MAY_BE_NULLISH) !== 0);
+        const branches = [];
+        if (leftReachable) {
+          branches.push({
+            dataOnly: cloneDataOnlyContainers(dataOnlyState),
+            identities: cloneIdentities(state),
+            value: left,
+          });
+        }
+        if (rightReachable) {
+          const identities = cloneIdentities(state);
+          const dataOnly = cloneDataOnlyContainers(dataOnlyState);
+          branches.push({
+            dataOnly,
+            identities,
+            value: pointExpressionValue(current.right, identities, dataOnly),
+          });
+        }
+        return branches.length > 0
+          ? mergePointBranches(state, dataOnlyState, branches)
+          : emptyCallableValue();
+      }
+
+      if (ts.isObjectLiteralExpression(current)) {
+        for (const property of current.properties) {
+          if (property.name && ts.isComputedPropertyName(property.name)) {
+            pointExpressionValue(property.name.expression, state, dataOnlyState);
+          }
+          if (ts.isSpreadAssignment(property)) {
+            const spread = pointExpressionValue(property.expression, state, dataOnlyState);
+            applyAccessorIdentityEffects(spread, state, dataOnlyState);
+          } else if (ts.isPropertyAssignment(property)) {
+            pointExpressionValue(property.initializer, state, dataOnlyState);
+          } else if (ts.isShorthandPropertyAssignment(property)) {
+            pointExpressionValue(property.name, state, dataOnlyState);
+          }
+        }
+      } else if (ts.isArrayLiteralExpression(current)) {
+        for (const element of current.elements) {
+          if (ts.isOmittedExpression(element)) continue;
+          pointExpressionValue(
+            ts.isSpreadElement(element) ? element.expression : element,
+            state,
+            dataOnlyState,
+          );
+        }
+      }
+
+      if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+        const environment = pointEnvironment(state);
+        const ownerValue = callableValue(current.expression, environment);
+        const selectedValue = selectCallableMembers(
+          ownerValue,
+          accessMemberNames(current, environment),
+        );
+        for (const accessor of selectedValue.accessors) {
+          applyFunctionIdentityEffects(accessor, state, dataOnlyState);
+        }
+      }
+
+      const environment = pointEnvironment(state);
+      const value = valueWithRuntimeFacts(
+        callableValue(current, environment),
+        current,
+        environment,
+      );
+      if (ts.isIdentifier(current)) {
+        const identity = valueSymbolIdentity(current);
+        if (identity && state.has(identity)) {
+          return withArrayIdentities(value, state.get(identity), current);
+        }
+      }
+      return value;
+    }
+
+    function applyAccessorIdentityEffects(value, state, dataOnlyState) {
+      for (const memberValue of materializedMembers(value).values()) {
+        for (const accessor of memberValue.accessors ?? []) {
+          applyFunctionIdentityEffects(accessor, state, dataOnlyState);
+        }
+      }
+    }
+
+    function applyFunctionIdentityEffects(record, state, dataOnlyState) {
+      const body = record.functionLike.body;
+      if (!body) return;
+      if (!ts.isBlock(body)) {
+        pointExpressionValue(body, state, dataOnlyState);
+        return;
+      }
+      for (const statement of body.statements) {
+        if (ts.isReturnStatement(statement)) {
+          if (statement.expression) {
+            pointExpressionValue(statement.expression, state, dataOnlyState);
+          }
+          return;
+        }
+        if (!applyStatement(statement, state, dataOnlyState)) {
+          invalidateReassignableIdentities(state, dataOnlyState);
+          bindStatementResultsAfterInvalidation(statement, state, dataOnlyState);
+        }
+      }
+    }
+
     const applyStatement = (statement, state, dataOnlyState) => {
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
@@ -4411,7 +4743,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
               identity,
               declaration.initializer
                 ? identitiesForExpression(declaration.initializer, state)
-                : undefined,
+                : unknownArrayIdentities(),
             );
             const dataOnlyContainer = declaration.initializer
               ? dataOnlyContainerForExpression(declaration.initializer, dataOnlyState)
@@ -4446,10 +4778,11 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
         }
         if (ts.isCallExpression(expression)) {
           const mutation = arrayMutationForCall(expression);
-          if (
-            mutation &&
-            !mutationEvaluationMayChangeIdentity(expression, mutation, dataOnlyState)
-          ) {
+          if (mutation) {
+            pointExpressionValue(mutation.owner, state, dataOnlyState);
+            for (const argument of expression.arguments) {
+              pointExpressionValue(argument, state, dataOnlyState);
+            }
             return true;
           }
         }
@@ -4508,46 +4841,90 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
       );
     };
 
+    const invalidateReassignableIdentities = (state, dataOnlyState) => {
+      for (const identity of state.keys()) {
+        const declarations = identity.declarations ?? [];
+        const isStableBinding =
+          declarations.length > 0 &&
+          declarations.every(
+            (declaration) =>
+              ts.isVariableDeclaration(declaration) &&
+              (ts.getCombinedNodeFlags(declaration.parent) & ts.NodeFlags.Const) !== 0,
+          );
+        if (!isStableBinding) state.set(identity, unknownArrayIdentities());
+      }
+      dataOnlyState.clear();
+    };
+    const bindStatementResultsAfterInvalidation = (statement, state, dataOnlyState) => {
+      if (!ts.isVariableStatement(statement)) return;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        const identity = valueSymbolIdentity(declaration.name);
+        if (!identity) continue;
+        state.set(
+          identity,
+          declaration.initializer
+            ? identitiesForExpression(declaration.initializer, state)
+            : unknownArrayIdentities(),
+        );
+        const dataOnlyContainer = declaration.initializer
+          ? dataOnlyContainerForExpression(declaration.initializer, dataOnlyState)
+          : undefined;
+        if (dataOnlyContainer) dataOnlyState.set(identity, dataOnlyContainer);
+        else dataOnlyState.delete(identity);
+      }
+    };
+
     for (const statement of scope.statements) {
       if (statement === scope.statement) break;
       if (!applyStatement(statement, identitiesBySymbol, dataOnlyContainersBySymbol)) {
-        return undefined;
+        invalidateReassignableIdentities(identitiesBySymbol, dataOnlyContainersBySymbol);
+        bindStatementResultsAfterInvalidation(
+          statement,
+          identitiesBySymbol,
+          dataOnlyContainersBySymbol,
+        );
       }
     }
 
-    const ownerIdentity = valueSymbolIdentity(currentOwner);
-    const arrayIdentities = ownerIdentity ? identitiesBySymbol.get(ownerIdentity) : undefined;
-    return ownerIdentity && arrayIdentities ? new Set(arrayIdentities) : undefined;
+    return pointExpressionValue(owner, identitiesBySymbol, dataOnlyContainersBySymbol);
+  }
+
+  function straightLineArrayMutationTargets(callExpression, owner) {
+    const value = straightLineArrayMutationValue(callExpression, owner);
+    return value?.arrayIdentities.kind === 'known' && value.arrayIdentities.values.size > 0
+      ? new Set(value.arrayIdentities.values)
+      : undefined;
   }
 
   function addArrayMutationProvenance(callExpression) {
     const mutation = arrayMutationForCall(callExpression);
-    if (
-      !mutation ||
-      !mutationMayExecute(callExpression) ||
-      (!callableValue(mutation.owner).arrayLike &&
-        ![...referenceSymbolsForExpression(mutation.owner)].some((reference) =>
-          ts.isArrayLiteralExpression(reference),
-        ))
-    ) {
+    if (!mutation || !mutationMayExecute(callExpression)) {
+      return false;
+    }
+    const pointReceiver = straightLineArrayMutationValue(callExpression, mutation.owner);
+    const receiver = pointReceiver ?? callableValue(mutation.owner);
+    if (!receiver.arrayLike) return false;
+    const argumentProvenance = callExpression.arguments.map((argument) => ({
+      functionTargets: functionTargetsForExpression(argument),
+      kinds: callableKinds(argument),
+      references: referenceSymbolsForExpression(argument),
+    }));
+    const carriesTrackedValue = argumentProvenance.some(
+      (value) => value.kinds !== 0 || value.functionTargets.size > 0 || value.references.size > 0,
+    );
+    if (!carriesTrackedValue) return false;
+    if (receiver.arrayIdentities.kind === 'unknown') {
+      unresolvedLoaderExpressions.set(callExpression, callExpression.getSourceFile());
       return false;
     }
     let changed = false;
-    const targets =
-      straightLineArrayMutationTargets(callExpression, mutation.owner) ??
-      mutationTargetSymbols(mutation.owner);
-    for (const target of targets) {
-      for (const argument of callExpression.arguments) {
-        changed = addMemberKinds(target, new Set(['*']), callableKinds(argument)) || changed;
+    for (const target of receiver.arrayIdentities.values) {
+      for (const argument of argumentProvenance) {
+        changed = addMemberKinds(target, new Set(['*']), argument.kinds) || changed;
         changed =
-          addMemberFunctionTargets(
-            target,
-            new Set(['*']),
-            functionTargetsForExpression(argument),
-          ) || changed;
-        changed =
-          addMemberReferences(target, new Set(['*']), referenceSymbolsForExpression(argument)) ||
-          changed;
+          addMemberFunctionTargets(target, new Set(['*']), argument.functionTargets) || changed;
+        changed = addMemberReferences(target, new Set(['*']), argument.references) || changed;
       }
     }
     return changed;
@@ -4556,7 +4933,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   function addObjectAssignProvenance(callExpression) {
     if (!isObjectAssignCall(callExpression) || callExpression.arguments.length === 0) return false;
     let changed = false;
-    for (const target of mutationTargetSymbols(callExpression.arguments[0])) {
+    for (const target of objectMutationTargetSymbols(callExpression.arguments[0])) {
       for (const source of callExpression.arguments.slice(1)) {
         changed = addContainerProvenance(target, source) || changed;
       }
@@ -4752,7 +5129,7 @@ export async function analyzeProductionSources(rootDirectory, sourceEntries, for
   });
   collectLoaderContexts = false;
 
-  for (const [node, sourceFile] of unresolvedNodeModuleMembers) {
+  for (const [node, sourceFile] of unresolvedLoaderExpressions) {
     addImport(sourceFile, `unresolved-loader:${lineAndColumn(sourceFile, node)}`);
   }
 

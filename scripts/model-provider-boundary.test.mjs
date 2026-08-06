@@ -878,6 +878,42 @@ test('AR-1 keeps current and earlier snapshot indexes clean across later array m
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('AR-1 carries array identities through every mutation receiver expression result', () => {
+  const result = runFixture('loader-mutation-receiver-abstract-values');
+
+  assert.equal(result.status, 1);
+  const fileNames = [
+    'direct-identifier-unsafe',
+    'assignment-result-unsafe',
+    'conditional-result-unsafe',
+    'logical-and-result-unsafe',
+    'logical-or-result-unsafe',
+    'logical-nullish-result-unsafe',
+    'function-return-result-unsafe',
+    'method-return-result-unsafe',
+    'accessor-return-result-unsafe',
+    'current-after-snapshot-unsafe',
+  ];
+  const missingFileNames = fileNames.filter(
+    (fileName) => !new RegExp(`new-provider path: .*${fileName}\\.ts`).test(result.stderr),
+  );
+  assert.deepEqual(missingFileNames, []);
+});
+
+test('AR-1 keeps detached receiver identities and earlier snapshots clean', () => {
+  const result = runFixture('loader-mutation-receiver-abstract-values-control');
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('AR-1 fails closed when an array mutation receiver identity is unknown', () => {
+  const result = runFixture('loader-mutation-receiver-abstract-values-unknown');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unknown-array-receiver\.ts/);
+  assert.match(result.stderr, /unresolved-loader/);
+});
+
 test('AR-1 respects Object.assign source order for final loader values', () => {
   const result = runFixture('loader-object-assign-overwrite-semantics');
 
