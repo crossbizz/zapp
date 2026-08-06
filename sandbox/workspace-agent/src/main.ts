@@ -67,6 +67,7 @@ const ExecQuerySchema = z
 const EmptyQuerySchema = z.object({}).strict();
 const EmptyBodySchema = z.undefined();
 const KillParamsSchema = z.object({ pid: z.coerce.number().int().positive() }).strict();
+const KillBodySchema = z.object({ executionId: z.string().uuid() }).strict();
 const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const CleanupParamsSchema = z.object({ cleanupId: CleanupIdSchema }).strict();
 const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
@@ -521,6 +522,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     const streamBody: string[] = [];
     let streamReady = false;
     let activePid: number | undefined;
+    let activeExecutionId: string | undefined;
     let resolveStarted: () => void = () => undefined;
     let rejectStarted: (error: unknown) => void = () => undefined;
     const started = new Promise<void>((resolve, reject) => {
@@ -533,6 +535,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
         streamBody.push(serializeNdjsonRecord(record));
         if (record.type === 'started') {
           activePid = record.pid;
+          activeExecutionId = record.executionId;
           resolveStarted();
         }
         if (streamReady) {
@@ -553,8 +556,12 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     reply.raw.statusCode = 200;
     reply.raw.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
     const onClose = (): void => {
-      if (!reply.raw.writableEnded && activePid !== undefined) {
-        execManager.kill(activePid);
+      if (
+        !reply.raw.writableEnded &&
+        activePid !== undefined &&
+        activeExecutionId !== undefined
+      ) {
+        execManager.kill(activePid, activeExecutionId);
       }
     };
     reply.raw.once('close', onClose);
@@ -596,8 +603,8 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       for (const pending of pendingRecords.splice(0)) {
         pending.reject(error);
       }
-      if (activePid !== undefined) {
-        execManager.kill(activePid);
+      if (activePid !== undefined && activeExecutionId !== undefined) {
+        execManager.kill(activePid, activeExecutionId);
       }
       await completion.catch(() => undefined);
       if (!reply.raw.destroyed) {
@@ -611,9 +618,9 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
 
   app.post('/exec/:pid/kill', (request) => {
     EmptyQuerySchema.parse(request.query);
-    EmptyBodySchema.parse(request.body);
     const { pid } = KillParamsSchema.parse(request.params);
-    return KillResponseSchema.parse({ killed: execManager.kill(pid) });
+    const { executionId } = KillBodySchema.parse(request.body);
+    return KillResponseSchema.parse({ killed: execManager.kill(pid, executionId) });
   });
 
   app.get('/exec/cleanup/:cleanupId', async (request, reply) => {

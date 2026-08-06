@@ -12,6 +12,7 @@ import {
   PublishImageInputSchema,
   PublishedImageSchema,
   SmokeImageInputSchema,
+  VerifyPublishedImageInputSchema,
   type ImageRecipe,
   type ModalCredentials,
   type ModalImagePublisher,
@@ -344,7 +345,7 @@ async function probeTimeoutCleanup(
 function agentRequestScript(
   token: string,
   cleanupId: string,
-  label: 'disconnect' | 'explicit-kill' | 'pid-ownership',
+  label: 'disconnect' | 'explicit-kill',
   pty: boolean,
 ): string {
   const scenario = `${label}-${pty ? 'pty' : 'buffered'}`;
@@ -363,20 +364,13 @@ function agentRequestScript(
     return `set -euo pipefail; rm -f ${output}; set +e; curl --max-time 0.25 --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output}; status=$?; set -e; test "$status" -ne 0`;
   }
 
-  const body =
-    label === 'pid-ownership'
-      ? JSON.stringify({ cmd: 'true', args: [], timeoutMs: 5_000, pty })
-      : detachedBody;
-  const expectedKilled = label === 'explicit-kill' ? 'true' : 'false';
-  const expectedExit =
-    label === 'explicit-kill' ? `test "$exit_code" -ne 0` : `test "$exit_code" -eq 0`;
-  return `set -euo pipefail; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(body)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; pid=$(jq -r 'select(.type == "started") | .pid' ${output} | head -n1); test -n "$pid"; if [ ${shellQuote(label)} = 'explicit-kill' ]; then kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST "http://127.0.0.1:8877/exec/$pid/kill"); wait "$request_pid"; else wait "$request_pid"; kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST "http://127.0.0.1:8877/exec/$pid/kill"); fi; test "$(printf %s "$kill_result" | jq -r .killed)" = ${shellQuote(expectedKilled)}; exit_code=$(jq -r 'select(.type == "exit") | .exitCode' ${output} | tail -n1); ${expectedExit}`;
+  return `set -euo pipefail; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; pid=$(jq -r 'select(.type == "started") | .pid' ${output} | head -n1); generation=$(jq -r 'select(.type == "started") | .executionId' ${output} | head -n1); test -n "$pid"; test -n "$generation"; kill_body=$(printf '{"executionId":"%s"}' "$generation"); kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST --data "$kill_body" "http://127.0.0.1:8877/exec/$pid/kill"); wait "$request_pid"; test "$(printf %s "$kill_result" | jq -r .killed)" = 'true'; exit_code=$(jq -r 'select(.type == "exit") | .exitCode' ${output} | tail -n1); test "$exit_code" -ne 0`;
 }
 
 async function probeScriptedLifecycle(
   sandbox: ModalSdkSandboxPort,
   token: string,
-  label: 'disconnect' | 'explicit-kill' | 'pid-ownership',
+  label: 'disconnect' | 'explicit-kill',
   pty: boolean,
 ): Promise<void> {
   const cleanupId = randomUUID();
@@ -387,13 +381,35 @@ async function probeScriptedLifecycle(
     `${scenario} cleanup probe`,
   );
   await acknowledgeCleanup(sandbox, token, cleanupId);
-  if (label !== 'pid-ownership') {
-    await execOrThrow(
-      sandbox,
-      ['sh', '-lc', `sleep 2; test ! -e /tmp/zapp-${scenario}-escaped`],
-      `${scenario} detached-child probe`,
-    );
-  }
+  await execOrThrow(
+    sandbox,
+    ['sh', '-lc', `sleep 2; test ! -e /tmp/zapp-${scenario}-escaped`],
+    `${scenario} detached-child probe`,
+  );
+}
+
+async function probePidOwnership(sandbox: ModalSdkSandboxPort, token: string): Promise<void> {
+  const cleanupA = randomUUID();
+  const cleanupB = randomUUID();
+  const outputA = '/tmp/zapp-pid-ownership-a.ndjson';
+  const outputB = '/tmp/zapp-pid-ownership-b.ndjson';
+  const commonHeaders = `--header ${shellQuote(`Authorization: Bearer ${token}`)} --header 'Content-Type: application/json'`;
+  const bodyA = JSON.stringify({ cmd: 'true', args: [], timeoutMs: 5_000, pty: false });
+  const bodyB = JSON.stringify({
+    cmd: 'sh',
+    args: ['-lc', detachedChildCommand('/tmp/zapp-pid-ownership-escaped')],
+    timeoutMs: 30_000,
+    pty: false,
+  });
+  const script = `set -euo pipefail; rm -f ${outputA} ${outputB}; curl --silent --show-error ${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)} --request POST --data ${shellQuote(bodyA)} ${shellQuote(authenticatedAgentUrl('/exec?stream=1', cleanupA))} > ${outputA}; generation_a=$(jq -r 'select(.type == "started") | .executionId' ${outputA} | head -n1); test -n "$generation_a"; curl --silent --show-error ${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)} --request POST --data ${shellQuote(bodyB)} ${shellQuote(authenticatedAgentUrl('/exec?stream=1', cleanupB))} > ${outputB} & request_b_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${outputB} && break; sleep 0.025; done; pid_b=$(jq -r 'select(.type == "started") | .pid' ${outputB} | head -n1); generation_b=$(jq -r 'select(.type == "started") | .executionId' ${outputB} | head -n1); test -n "$pid_b"; test -n "$generation_b"; kill -0 "$request_b_pid"; stale_body=$(printf '{"executionId":"%s"}' "$generation_a"); stale_result=$(curl --fail-with-body --silent --show-error ${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)} --request POST --data "$stale_body" "http://127.0.0.1:8877/exec/$pid_b/kill"); test "$(printf %s "$stale_result" | jq -r .killed)" = 'false'; kill -0 "$request_b_pid"; current_body=$(printf '{"executionId":"%s"}' "$generation_b"); current_result=$(curl --fail-with-body --silent --show-error ${commonHeaders} --header ${shellQuote(`Idempotency-Key: ${randomUUID()}`)} --request POST --data "$current_body" "http://127.0.0.1:8877/exec/$pid_b/kill"); test "$(printf %s "$current_result" | jq -r .killed)" = 'true'; wait "$request_b_pid"; exit_code=$(jq -r 'select(.type == "exit") | .exitCode' ${outputB} | tail -n1); test "$exit_code" -ne 0`;
+  await execOrThrow(sandbox, ['sh', '-lc', script], 'pid-ownership cleanup probe');
+  await acknowledgeCleanup(sandbox, token, cleanupA);
+  await acknowledgeCleanup(sandbox, token, cleanupB);
+  await execOrThrow(
+    sandbox,
+    ['sh', '-lc', 'sleep 2; test ! -e /tmp/zapp-pid-ownership-escaped'],
+    'pid-ownership detached-child probe',
+  );
 }
 
 function shutdownProbeScript(token: string, pty: boolean): string {
@@ -423,7 +439,7 @@ function shutdownProbeScript(token: string, pty: boolean): string {
   });
   const url = `http://127.0.0.1:8878/exec?stream=1&cleanupId=${cleanupId}`;
   const output = `/tmp/zapp-${scenario}.ndjson`;
-  return `set -euo pipefail; rm -f ${ready} ${cleaned} ${escaped} ${output}; node --input-type=module -e ${shellQuote(childProgram)} & agent_pid=$!; for _ in $(seq 1 200); do test -e ${ready} && break; sleep 0.025; done; test -e ${ready}; curl --silent --show-error ${headers} --request POST --data ${shellQuote(body)} ${shellQuote(url)} >${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; kill -TERM "$agent_pid"; wait "$agent_pid"; wait "$request_pid" || true; test -e ${cleaned}; sleep 2; test ! -e ${escaped}`;
+  return `set -euo pipefail; rm -f ${ready} ${cleaned} ${escaped} ${output}; node --input-type=module -e ${shellQuote(childProgram)} & agent_pid=$!; for _ in $(seq 1 200); do test -e ${ready} && break; sleep 0.025; done; test -e ${ready}; curl --silent --show-error ${headers} --request POST --data ${shellQuote(body)} ${shellQuote(url)} >${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; pid=$(jq -er 'select(.type == "started") | .pid' ${output} | head -n1); generation=$(jq -er 'select(.type == "started") | .executionId' ${output} | head -n1); test -n "$pid"; test -n "$generation"; printf %s "$pid" | grep -Eq '^[1-9][0-9]*$'; printf %s "$generation" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; kill -0 "$request_pid"; kill -TERM "$agent_pid"; wait "$agent_pid"; wait "$request_pid" || true; test -e ${cleaned}; sleep 2; test ! -e ${escaped}`;
 }
 
 async function waitForAgentHealth(
@@ -503,7 +519,7 @@ async function runSmoke(
         `agent-shutdown-${pty ? 'pty' : 'buffered'} cleanup probe`,
       );
     }
-    await probeScriptedLifecycle(sandbox, input.agentToken, 'pid-ownership', false);
+    await probePidOwnership(sandbox, input.agentToken);
 
     const volumeNonce = randomUUID();
     await execOrThrow(
@@ -599,6 +615,22 @@ export function createModalImagePublisher(
       const sdk = sdkFactory();
       try {
         return await runSmoke(sdk, untrustedInput);
+      } finally {
+        sdk.close();
+      }
+    },
+
+    async verifyPublishedImage(untrustedInput) {
+      const input = VerifyPublishedImageInputSchema.parse(untrustedInput);
+      const sdk = sdkFactory();
+      try {
+        const resolved = await sdk.resolvePublishedImage({
+          environment: input.environment,
+          publishedName: input.publishedName,
+        });
+        if (resolved !== input.digest) {
+          throw new Error('Published image name no longer resolves to the expected digest');
+        }
       } finally {
         sdk.close();
       }

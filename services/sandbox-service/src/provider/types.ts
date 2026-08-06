@@ -185,6 +185,15 @@ export const ImageSmokeEvidenceSchema = z
   .strict();
 export type ImageSmokeEvidence = z.infer<typeof ImageSmokeEvidenceSchema>;
 
+export const VerifyPublishedImageInputSchema = z
+  .object({
+    environment: ModalEnvironmentSchema,
+    digest: ImageDigestSchema,
+    publishedName: PublishedImageNameSchema,
+  })
+  .strict();
+export type VerifyPublishedImageInput = z.infer<typeof VerifyPublishedImageInputSchema>;
+
 export const ModalCredentialsSchema = z
   .object({
     tokenId: z.string().min(1),
@@ -196,4 +205,5 @@ export type ModalCredentials = z.infer<typeof ModalCredentialsSchema>;
 export interface ModalImagePublisher {
   publishImage(input: PublishImageInput): Promise<PublishedImage>;
   smokeImage(input: SmokeImageInput): Promise<ImageSmokeEvidence>;
+  verifyPublishedImage(input: VerifyPublishedImageInput): Promise<void>;
 }

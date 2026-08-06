@@ -274,6 +274,29 @@ describe('Modal image provider facade', () => {
     }
   });
 
+  test('fails closed when the provider boundary resolves a published name to another digest', async () => {
+    let closed = false;
+    const sdk = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-raced0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.reject(new Error('not used')),
+      close() {
+        closed = true;
+      },
+    } satisfies ModalSdkPort;
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.verifyPublishedImage({
+        environment: 'zapp-dev',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+      }),
+    ).rejects.toThrow('Published image name no longer resolves to the expected digest');
+    expect(closed).toBe(true);
+  });
+
   test('requests the V2 VM runtime, proves agent containment, and terminates the sandbox', async () => {
     const commands: string[][] = [];
     const createRequests: unknown[] = [];
@@ -358,6 +381,26 @@ describe('Modal image provider facade', () => {
       );
       expect(new Set(keys).size).toBe(2);
     }
+    const shutdownScripts = commands
+      .filter((command) => command[0] === 'sh' && command.join('\n').includes('agent-shutdown-'))
+      .map((command) => command.join('\n'));
+    expect(shutdownScripts).toHaveLength(2);
+    for (const script of shutdownScripts) {
+      const startedAssertion = script.indexOf('test -n "$pid"');
+      const activeAssertion = script.indexOf('kill -0 "$request_pid"');
+      const shutdownSignal = script.indexOf('kill -TERM "$agent_pid"');
+      expect(startedAssertion).toBeGreaterThan(-1);
+      expect(script.match(/jq -er/gu)?.length).toBeGreaterThanOrEqual(2);
+      expect(activeAssertion).toBeGreaterThan(startedAssertion);
+      expect(shutdownSignal).toBeGreaterThan(activeAssertion);
+    }
+    const ownershipScript = commands
+      .find((command) => command[0] === 'sh' && command.join('\n').includes('pid-ownership'))
+      ?.join('\n');
+    expect(ownershipScript).toContain('generation_a');
+    expect(ownershipScript).toContain('generation_b');
+    expect(ownershipScript).toContain('pid_b');
+    expect(ownershipScript?.match(/executionId/gu)?.length).toBeGreaterThanOrEqual(2);
     expect(result).toEqual({
       nodeVersion: 'v22.23.1',
       health: { ok: true, details: 'workspace-agent ready' },

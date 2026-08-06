@@ -10,7 +10,7 @@ import {
   type Containment,
   type ExecutionContainment,
 } from '../src/containment/types.js';
-import { ExecManager } from '../src/exec.js';
+import { ExecManager, ExecPreflightError } from '../src/exec.js';
 
 async function waitFor(check: () => boolean, description: string): Promise<void> {
   const deadline = Date.now() + 2_000;
@@ -229,7 +229,7 @@ describe('cgroup-v2 containment', () => {
       expect(await readFile(execution.procsPath, 'utf8')).toContain(`${String(startedPid)}\n`);
       expect(execution.waitCalls).toBe(1);
       expect(execution.removeCalls).toBe(0);
-      expect(manager.kill(startedPid)).toBe(false);
+      expect(manager.kill(startedPid, randomUUID())).toBe(false);
 
       execution.markEmpty();
       await execution.removed;
@@ -271,6 +271,7 @@ describe('cgroup-v2 containment', () => {
       await acknowledgement;
       expect(acknowledged).toBe(true);
       expect(containment.executions[0]?.removeCalls).toBe(1);
+      await expect(manager.acknowledgeCleanup(cleanupId)).resolves.toBe(true);
     } finally {
       containment.executions[0]?.markEmpty();
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -297,9 +298,101 @@ describe('cgroup-v2 containment', () => {
       await expect(manager.acknowledgeCleanup(cleanupId)).rejects.toBeInstanceOf(
         ContainmentCleanupError,
       );
+      await expect(manager.acknowledgeCleanup(cleanupId)).rejects.toBeInstanceOf(
+        ContainmentCleanupError,
+      );
       expect(containment.executions[0]?.removeCalls).toBe(0);
       expect(manager.activeContainmentCount()).toBe(1);
     } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('evicts terminal preflight cleanup receipts without exhausting pending receipt capacity', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-ack-capacity-'));
+    const manager = new ExecManager(workspaceRoot, new ManualContainment(workspaceRoot));
+    let newestCleanupId = '';
+
+    try {
+      for (let index = 0; index < 257; index += 1) {
+        newestCleanupId = randomUUID();
+        await expect(
+          manager.run(
+            {
+              cmd: 'zapp-command-that-does-not-exist',
+              args: [],
+              timeoutMs: 2_000,
+            },
+            undefined,
+            newestCleanupId,
+          ),
+        ).rejects.toBeInstanceOf(ExecPreflightError);
+      }
+
+      await expect(manager.acknowledgeCleanup(newestCleanupId)).rejects.toBeInstanceOf(
+        ContainmentCleanupError,
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('requires the started execution generation before killing a reused active PID', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-generation-'));
+    const containment = new ManualContainment(workspaceRoot);
+    const manager = new ExecManager(workspaceRoot, containment);
+    let generationA: string | undefined;
+    let generationB: string | undefined;
+    let pidB: number | undefined;
+    let runB: Promise<unknown> | undefined;
+
+    try {
+      await manager.run(
+        { cmd: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 2_000 },
+        (record) => {
+          if (record.type === 'started') generationA = record.executionId;
+        },
+      );
+      containment.executions[0]?.markEmpty();
+      await containment.executions[0]?.removed;
+
+      runB = manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'setInterval(() => {}, 1_000)'],
+          timeoutMs: 10_000,
+        },
+        (record) => {
+          if (record.type === 'started') {
+            pidB = record.pid;
+            generationB = record.executionId;
+          }
+        },
+      );
+      await waitFor(
+        () => pidB !== undefined && generationB !== undefined,
+        'second execution identity',
+      );
+      if (pidB === undefined || generationA === undefined || generationB === undefined) {
+        throw new Error('Expected two execution generations and an active PID');
+      }
+
+      expect(manager.kill(pidB, generationA)).toBe(false);
+      expect(manager.kill(pidB, generationB)).toBe(true);
+      process.kill(-pidB, 'SIGKILL');
+      await runB;
+      containment.executions[1]?.markEmpty();
+      await containment.executions[1]?.removed;
+    } finally {
+      if (pidB !== undefined) {
+        try {
+          process.kill(-pidB, 'SIGKILL');
+        } catch {
+          // The process group already exited.
+        }
+      }
+      for (const execution of containment.executions) execution.markEmpty();
+      await runB?.catch(() => undefined);
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
@@ -417,7 +510,7 @@ describe('cgroup-v2 containment', () => {
       }
 
       await waitFor(() => execution.waitCalls === 1, 'cgroup empty wait after launcher exit');
-      expect(manager.kill(startedPid)).toBe(false);
+      expect(manager.kill(startedPid, randomUUID())).toBe(false);
       expect(manager.activeContainmentCount()).toBe(1);
       expect(execution.removeCalls).toBe(0);
 

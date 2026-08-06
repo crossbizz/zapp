@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -55,6 +55,10 @@ function successfulPublisher(
         },
         terminated: true,
       });
+    },
+    verifyPublishedImage(input) {
+      calls.push({ operation: 'verify', input });
+      return Promise.resolve();
     },
   };
 }
@@ -250,7 +254,13 @@ describe('Modal image publication transaction', () => {
       transactionInput(lockFilePath, successfulPublisher(calls)),
     );
 
-    expect(calls.map(({ operation }) => operation)).toEqual(['publish', 'publish', 'smoke']);
+    expect(calls.map(({ operation }) => operation)).toEqual([
+      'publish',
+      'publish',
+      'smoke',
+      'verify',
+      'verify',
+    ]);
     expect(calls[0]?.input).toEqual(
       expect.objectContaining({
         environment: 'zapp-dev',
@@ -282,6 +292,26 @@ describe('Modal image publication transaction', () => {
     expect(result.environments.staging?.tag).toBe('2026-08-04-1111111');
     expect(result.environments.dev?.images['forge-node-base'].digest).toBe('im-base-zapp-dev');
     expect(ImageLockSchema.parse(JSON.parse(await readFile(lockFilePath, 'utf8')))).toEqual(result);
+  });
+
+  test('leaves the lock unchanged when either published name changes after smoke', async () => {
+    const original = '{"version":1,"environments":{}}\n';
+    const lockFilePath = await createLockFixture(original);
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const provider = successfulPublisher(calls);
+    provider.verifyPublishedImage = (input) => {
+      if (input.publishedName.startsWith('forge-web-test:')) {
+        return Promise.reject(
+          new Error('Published image name no longer resolves to the expected digest'),
+        );
+      }
+      return Promise.resolve();
+    };
+
+    await expect(
+      publishImagesTransaction(transactionInput(lockFilePath, provider)),
+    ).rejects.toThrow('Published image name no longer resolves to the expected digest');
+    expect(await readFile(lockFilePath, 'utf8')).toBe(original);
   });
 
   test('leaves the lock byte-for-byte unchanged when the second image fails', async () => {
@@ -411,5 +441,49 @@ describe('Modal image publication transaction', () => {
     );
     expect(recovered.environments.dev?.modalEnvironment).toBe('zapp-dev');
     await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('bounds writer-lock waiting with the injected clock and timeout', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    await mkdir(lockDirectory);
+    await writeFile(
+      join(lockDirectory, 'owner.json'),
+      JSON.stringify({ token: randomUUID(), pid: process.pid, hostname: hostname() }),
+    );
+    let now = Date.now();
+    const waits: number[] = [];
+    const transaction = publishImagesTransaction({
+      ...transactionInput(lockFilePath, successfulPublisher([]), ['dev']),
+      lockTiming: {
+        now: () => now,
+        wait(milliseconds: number) {
+          waits.push(milliseconds);
+          now += milliseconds;
+          return Promise.resolve();
+        },
+        timeoutMs: 50,
+      },
+    });
+    const outcome = await Promise.race([
+      transaction.then(
+        () => 'resolved',
+        (error: unknown) => {
+          return error instanceof Error ? error.message : String(error);
+        },
+      ),
+      new Promise<string>((resolveOutcome) => {
+        setTimeout(() => {
+          resolveOutcome('still waiting after injected timeout');
+        }, 100);
+      }),
+    ]);
+
+    if (outcome === 'still waiting after injected timeout') {
+      await rm(lockDirectory, { recursive: true, force: true });
+      await transaction.catch(() => undefined);
+    }
+    expect(outcome).toBe('Timed out waiting for Modal image publication lock');
+    expect(waits).toEqual([25, 25]);
   });
 });

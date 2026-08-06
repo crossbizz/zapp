@@ -151,6 +151,7 @@ const portableMetricsSource = {
 interface StreamRecord {
   readonly type: 'started' | 'stdout' | 'stderr' | 'exit';
   readonly pid?: number;
+  readonly executionId?: string;
   readonly data?: string;
   readonly at: string;
   readonly exitCode?: number;
@@ -423,6 +424,66 @@ function parseNdjson(body: string): StreamRecord[] {
     .map((line) => JSON.parse(line) as StreamRecord);
 }
 
+interface LiveExecStream {
+  readonly started: { readonly pid: number; readonly executionId: string };
+  finish(): Promise<StreamRecord[]>;
+}
+
+async function startLiveExecStream(
+  app: FastifyInstance,
+  token: string,
+  idempotencyKey: string,
+  payload: {
+    readonly cmd: string;
+    readonly args: readonly string[];
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly timeoutMs: number;
+    readonly pty?: boolean;
+  },
+): Promise<LiveExecStream> {
+  const address = await app.listen({ host: '127.0.0.1', port: 0 });
+  const response = await fetch(`${address}/exec?stream=1`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'idempotency-key': idempotencyKey,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || response.body === null) {
+    throw new Error(`Expected a live execution stream, received ${String(response.status)}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = '';
+  while (!body.includes('\n')) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      throw new Error('Execution stream ended before the started record');
+    }
+    body += decoder.decode(chunk.value, { stream: true });
+  }
+  const first = parseNdjson(body.slice(0, body.indexOf('\n') + 1))[0];
+  if (first?.type !== 'started' || first.pid === undefined || first.executionId === undefined) {
+    throw new Error('Execution stream returned an invalid started record');
+  }
+
+  return {
+    started: { pid: first.pid, executionId: first.executionId },
+    async finish() {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+      body += decoder.decode();
+      return parseNdjson(body);
+    },
+  };
+}
+
 describe('workspace-agent RPC daemon', () => {
   let workspaceRoot: string;
   let containmentRoot: string;
@@ -484,6 +545,9 @@ describe('workspace-agent RPC daemon', () => {
     const records = parseNdjson(response.body);
     expect(records[0]?.type).toBe('started');
     expect(typeof records[0]?.pid).toBe('number');
+    expect(records[0]?.executionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
     expect(records.some((record) => record.type === 'stdout' && record.data === 'hi\n')).toBe(true);
     expect(records.at(-1)).toMatchObject({ type: 'exit', exitCode: 0, truncated: false });
     expect(records.filter((record) => record.type === 'exit')).toHaveLength(1);
@@ -1020,11 +1084,11 @@ describe('workspace-agent RPC daemon', () => {
 
   test('replays kill, file-write, and git responses without repeating side effects', async () => {
     const pidFile = join(workspaceRoot, 'idempotent-kill.pid');
-    const activeRequest = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(token, 'active-for-idempotent-kill'),
-      payload: {
+    const activeStream = await startLiveExecStream(
+      requireApp(),
+      token,
+      'active-for-idempotent-kill',
+      {
         cmd: process.execPath,
         args: [
           '-e',
@@ -1032,19 +1096,23 @@ describe('workspace-agent RPC daemon', () => {
         ],
         timeoutMs: 10_000,
       },
-    });
+    );
     const pid = Number(await waitForFile(pidFile));
+    expect(activeStream.started.pid).toBe(pid);
     const killHeaders = authorization(token, 'kill-replay');
+    const killPayload = { executionId: activeStream.started.executionId };
     const firstKill = await requireApp().inject({
       method: 'POST',
       url: `/exec/${String(pid)}/kill`,
       headers: killHeaders,
+      payload: killPayload,
     });
-    await activeRequest;
+    await activeStream.finish();
     const replayedKill = await requireApp().inject({
       method: 'POST',
       url: `/exec/${String(pid)}/kill`,
       headers: killHeaders,
+      payload: killPayload,
     });
 
     const fileHeaders = {
@@ -1228,6 +1296,7 @@ describe('workspace-agent RPC daemon', () => {
         method: 'POST',
         url: '/exec/999999/kill',
         headers: authorization(token, `ambiguity-pressure-${String(index)}`),
+        payload: { executionId: randomUUID() },
       });
       expect(pressure.statusCode).toBe(200);
     }
@@ -1314,11 +1383,10 @@ describe('workspace-agent RPC daemon', () => {
   test('requests containment kill for a detached setsid descendant on explicit kill', async () => {
     const fixture = createDetachedSetsidFixture(workspaceRoot, 'explicit-setsid');
     containment.setKillMarker(fixture.killMarker);
-    const request = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(),
-      payload: { cmd: process.execPath, args: ['-e', fixture.script], timeoutMs: 10_000 },
+    const stream = await startLiveExecStream(requireApp(), token, 'explicit-setsid-stream', {
+      cmd: process.execPath,
+      args: ['-e', fixture.script],
+      timeoutMs: 10_000,
     });
 
     try {
@@ -1328,9 +1396,10 @@ describe('workspace-agent RPC daemon', () => {
         method: 'POST',
         url: `/exec/${String(parentPid)}/kill`,
         headers: authorization(),
+        payload: { executionId: stream.started.executionId },
       });
       expect(killed.json()).toEqual({ killed: true });
-      await request;
+      await stream.finish();
       await expectDetachedSetsidContainment(fixture);
     } finally {
       await releaseDetachedSetsidFixture(fixture);
@@ -1397,31 +1466,28 @@ describe('workspace-agent RPC daemon', () => {
 
   test('kills an active streamed command by its real PID and reaps it', async () => {
     const pidFile = join(workspaceRoot, 'active.pid');
-    const request = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(),
-      payload: {
+    const stream = await startLiveExecStream(requireApp(), token, 'active-stream-kill', {
         cmd: process.execPath,
         args: [
           '-e',
           `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
         ],
         timeoutMs: 10_000,
-      },
     });
     const pid = Number(await waitForFile(pidFile));
+    expect(stream.started.pid).toBe(pid);
 
     const killed = await requireApp().inject({
       method: 'POST',
       url: `/exec/${String(pid)}/kill`,
       headers: authorization(),
+      payload: { executionId: stream.started.executionId },
     });
-    const streamed = await request;
+    const streamed = await stream.finish();
 
     expect(killed.statusCode).toBe(200);
     expect(killed.json()).toEqual({ killed: true });
-    expect(parseNdjson(streamed.body).at(-1)).toMatchObject({ type: 'exit' });
+    expect(streamed.at(-1)).toMatchObject({ type: 'exit' });
     await waitForProcessExit(pid);
   });
 
@@ -1531,11 +1597,7 @@ describe('workspace-agent RPC daemon', () => {
 
   test('reports a non-zero exit when the kill route terminates a PTY command', async () => {
     const pidFile = join(workspaceRoot, 'active-pty.pid');
-    const request = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(),
-      payload: {
+    const stream = await startLiveExecStream(requireApp(), token, 'active-pty-kill', {
         cmd: process.execPath,
         args: [
           '-e',
@@ -1543,17 +1605,17 @@ describe('workspace-agent RPC daemon', () => {
         ],
         timeoutMs: 10_000,
         pty: true,
-      },
     });
     const pid = Number(await waitForFile(pidFile));
+    expect(stream.started.pid).toBe(pid);
 
     const killed = await requireApp().inject({
       method: 'POST',
       url: `/exec/${String(pid)}/kill`,
       headers: authorization(),
+      payload: { executionId: stream.started.executionId },
     });
-    const streamed = await request;
-    const exitRecord = parseNdjson(streamed.body).at(-1);
+    const exitRecord = (await stream.finish()).at(-1);
 
     expect(killed.json()).toEqual({ killed: true });
     expect(exitRecord?.type).toBe('exit');
@@ -2149,20 +2211,16 @@ describe('workspace-agent RPC daemon', () => {
     };
     app = await buildWorkspaceAgent(options);
     const pidFile = join(workspaceRoot, 'metrics.pid');
-    const request = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(),
-      payload: {
+    const stream = await startLiveExecStream(requireApp(), token, 'metrics-active-stream', {
         cmd: process.execPath,
         args: [
           '-e',
           `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
         ],
         timeoutMs: 10_000,
-      },
     });
     const pid = Number(await waitForFile(pidFile));
+    expect(stream.started.pid).toBe(pid);
 
     const metrics = await requireApp().inject({
       method: 'GET',
@@ -2173,8 +2231,9 @@ describe('workspace-agent RPC daemon', () => {
       method: 'POST',
       url: `/exec/${String(pid)}/kill`,
       headers: authorization(),
+      payload: { executionId: stream.started.executionId },
     });
-    await request;
+    await stream.finish();
 
     expect(killed.json()).toEqual({ killed: true });
     expect(metrics.json()).toMatchObject({
@@ -2212,11 +2271,11 @@ describe('workspace-agent RPC daemon', () => {
       `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
       'setInterval(() => { value += memory[0]; }, 1000);',
     ].join('');
-    const activeRequest = requireApp().inject({
-      method: 'POST',
-      url: '/exec?stream=1',
-      headers: authorization(),
-      payload: {
+    const activeStream = await startLiveExecStream(
+      requireApp(),
+      token,
+      'portable-metrics-active-stream',
+      {
         cmd: '/bin/sh',
         args: ['-c', 'echo $$ > "$ROOT_PID_FILE"; "$NODE_BIN" -e "$CHILD_SCRIPT" & wait'],
         env: {
@@ -2226,9 +2285,10 @@ describe('workspace-agent RPC daemon', () => {
         },
         timeoutMs: 10_000,
       },
-    });
+    );
     const rootPid = Number(await waitForFile(rootPidFile));
     const childPid = Number(await waitForFile(childPidFile));
+    expect(activeStream.started.pid).toBe(rootPid);
 
     const activeResponse = await requireApp().inject({
       method: 'GET',
@@ -2247,8 +2307,9 @@ describe('workspace-agent RPC daemon', () => {
       method: 'POST',
       url: `/exec/${String(rootPid)}/kill`,
       headers: authorization(),
+      payload: { executionId: activeStream.started.executionId },
     });
-    await activeRequest;
+    await activeStream.finish();
 
     expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
     expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
@@ -2322,6 +2383,7 @@ describe('workspace-agent RPC daemon', () => {
         method: 'POST',
         url: `/exec/${String(leaderPid)}/kill`,
         headers: authorization(),
+        payload: { executionId: randomUUID() },
       });
 
       expect(staleKill.json()).toEqual({ killed: false });

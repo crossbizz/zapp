@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -104,6 +105,7 @@ const StartedRecordSchema = z
   .object({
     type: z.literal('started'),
     pid: z.number().int().positive(),
+    executionId: z.string().uuid(),
     at: z.string().datetime(),
   })
   .strict();
@@ -141,6 +143,7 @@ export class ExecPreflightError extends Error {
 
 interface ActiveProcess {
   readonly processGroupId: number;
+  readonly executionId: string;
   readonly containment: ExecutionContainment;
   readonly kill: (reason: ContainmentTerminationReason) => void;
   readonly done: Promise<void>;
@@ -149,9 +152,12 @@ interface ActiveProcess {
 
 interface CleanupReceipt {
   readonly completion: Promise<void>;
+  readonly terminal: () => boolean;
   resolve(): void;
   reject(error: Error): void;
 }
+
+const MAX_CLEANUP_RECEIPTS = 256;
 
 type ExecStreamEmitter = (record: ExecStreamRecord) => Promise<void> | void;
 
@@ -395,16 +401,12 @@ export class ExecManager {
       return true;
     } catch {
       throw new ContainmentCleanupError();
-    } finally {
-      if (this.cleanupReceipts.get(cleanupId) === receipt) {
-        this.cleanupReceipts.delete(cleanupId);
-      }
     }
   }
 
-  kill(pid: number): boolean {
+  kill(pid: number, executionId: string): boolean {
     const active = this.active.get(pid);
-    if (active === undefined) {
+    if (active === undefined || active.executionId !== executionId) {
       return false;
     }
     active.kill('explicit');
@@ -423,8 +425,15 @@ export class ExecManager {
   }
 
   private reserveCleanup(cleanupId: string): CleanupReceipt {
-    if (this.cleanupReceipts.has(cleanupId) || this.cleanupReceipts.size >= 256) {
+    if (this.cleanupReceipts.has(cleanupId)) {
       throw new ExecPreflightError();
+    }
+    if (this.cleanupReceipts.size >= MAX_CLEANUP_RECEIPTS) {
+      const terminal = [...this.cleanupReceipts].find(([, receipt]) => receipt.terminal());
+      if (terminal === undefined) {
+        throw new ExecPreflightError();
+      }
+      this.cleanupReceipts.delete(terminal[0]);
     }
     let resolveCompletion: () => void = () => undefined;
     let rejectCompletion: (error: Error) => void = () => undefined;
@@ -436,6 +445,7 @@ export class ExecManager {
     void completion.catch(() => undefined);
     const receipt: CleanupReceipt = {
       completion,
+      terminal: () => settled,
       resolve() {
         if (!settled) {
           settled = true;
@@ -495,6 +505,7 @@ export class ExecManager {
     };
     const active: ActiveProcess = {
       processGroupId: pid,
+      executionId: randomUUID(),
       containment,
       kill(reason) {
         if (state.termination !== undefined) {
@@ -584,7 +595,12 @@ export class ExecManager {
 
     try {
       await emit?.(
-        ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
+        ExecStreamRecordSchema.parse({
+          type: 'started',
+          pid,
+          executionId: active.executionId,
+          at: new Date().toISOString(),
+        }),
       );
       const [completed] = await Promise.all([
         processCompletion,
@@ -730,7 +746,12 @@ export class ExecManager {
 
     try {
       await emit?.(
-        ExecStreamRecordSchema.parse({ type: 'started', pid, at: new Date().toISOString() }),
+        ExecStreamRecordSchema.parse({
+          type: 'started',
+          pid,
+          executionId: active.executionId,
+          at: new Date().toISOString(),
+        }),
       );
       terminal.resume();
       return await completion;

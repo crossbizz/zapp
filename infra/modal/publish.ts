@@ -127,6 +127,13 @@ export interface PublishTransactionInput {
   readonly buildDate: Date;
   readonly createAgentToken: () => string;
   readonly telemetryEndpoint?: string;
+  readonly lockTiming?: PublishLockTiming;
+}
+
+export interface PublishLockTiming {
+  readonly now: () => number;
+  readonly wait: (milliseconds: number) => Promise<void>;
+  readonly timeoutMs: number;
 }
 
 interface PreflightInput {
@@ -235,7 +242,10 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-async function recoverAbandonedPublishLock(lockDirectory: string): Promise<void> {
+async function recoverAbandonedPublishLock(
+  lockDirectory: string,
+  now: () => number,
+): Promise<void> {
   const ownerPath = resolve(lockDirectory, 'owner.json');
   let owner: z.infer<typeof PublishLockOwnerSchema> | undefined;
   try {
@@ -246,7 +256,7 @@ async function recoverAbandonedPublishLock(lockDirectory: string): Promise<void>
   if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
     return;
   }
-  const age = Date.now() - (await stat(lockDirectory)).mtimeMs;
+  const age = now() - (await stat(lockDirectory)).mtimeMs;
   if (age < ABANDONED_LOCK_GRACE_MS) {
     return;
   }
@@ -260,14 +270,23 @@ async function recoverAbandonedPublishLock(lockDirectory: string): Promise<void>
   await rm(quarantine, { recursive: true, force: true });
 }
 
-async function withPublishLock<T>(lockFilePath: string, action: () => Promise<T>): Promise<T> {
+async function withPublishLock<T>(
+  lockFilePath: string,
+  action: () => Promise<T>,
+  timing: PublishLockTiming = {
+    now: Date.now,
+    wait: async (milliseconds) =>
+      new Promise((resolveWait) => setTimeout(resolveWait, milliseconds)),
+    timeoutMs: PUBLISH_LOCK_TIMEOUT_MS,
+  },
+): Promise<T> {
   const lockDirectory = `${lockFilePath}.publish-lock`;
   const owner = PublishLockOwnerSchema.parse({
     token: randomUUID(),
     pid: process.pid,
     hostname: hostname(),
   });
-  const deadline = Date.now() + PUBLISH_LOCK_TIMEOUT_MS;
+  const deadline = timing.now() + timing.timeoutMs;
   for (;;) {
     try {
       await mkdir(lockDirectory);
@@ -283,11 +302,11 @@ async function withPublishLock<T>(lockFilePath: string, action: () => Promise<T>
       break;
     } catch (error) {
       if (!isExistingFile(error)) throw error;
-      await recoverAbandonedPublishLock(lockDirectory);
-      if (Date.now() >= deadline) {
+      await recoverAbandonedPublishLock(lockDirectory, timing.now);
+      if (timing.now() >= deadline) {
         throw new Error('Timed out waiting for Modal image publication lock');
       }
-      await new Promise((resolveWait) => setTimeout(resolveWait, PUBLISH_LOCK_RETRY_MS));
+      await timing.wait(PUBLISH_LOCK_RETRY_MS);
     }
   }
 
@@ -380,10 +399,27 @@ export async function publishImagesTransaction(
       });
     }
 
+    for (const environmentKey of environments) {
+      const locked = next.environments[environmentKey];
+      if (locked === undefined) {
+        throw new Error(`No newly published images are available for ${environmentKey}`);
+      }
+      await untrustedInput.provider.verifyPublishedImage({
+        environment: locked.modalEnvironment,
+        digest: locked.images['forge-node-base'].digest,
+        publishedName: locked.images['forge-node-base'].publishedName,
+      });
+      await untrustedInput.provider.verifyPublishedImage({
+        environment: locked.modalEnvironment,
+        digest: locked.images['forge-web-test'].digest,
+        publishedName: locked.images['forge-web-test'].publishedName,
+      });
+    }
+
     const validated = ImageLockSchema.parse(next);
     await writeLockAtomically(untrustedInput.lockFilePath, validated);
     return validated;
-  });
+  }, untrustedInput.lockTiming);
 }
 
 async function smokeLockedImages(
