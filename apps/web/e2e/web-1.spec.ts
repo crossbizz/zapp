@@ -82,6 +82,13 @@ test('loads the authenticated user from /v1/me with the session cookie', async (
   })).toBe(true);
 });
 
+test('consumes the UI card without nesting main landmarks', async ({ page }) => {
+  await signIn(page);
+
+  await expect(page.locator('.zapp-card')).toHaveCount(1);
+  await expect(page.getByRole('main')).toHaveCount(1);
+});
+
 test('middleware forwards only the zapp session cookie to CP-2', async ({ page }) => {
   await signIn(page);
   await page.context().addCookies([

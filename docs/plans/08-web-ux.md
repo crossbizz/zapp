@@ -58,8 +58,8 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `packages/ui/src/{tokens.css,components/*}`, Storybook, dual-bundler proof `apps/web` + a Vite smoke app in `packages/ui/examples/vite`
 **Effort:** L
 
-- [ ] Binding behavior: components (each with story + a11y test via storybook axe): `Button, IconButton, Chip, Tabs, Card, StatusPill, EnvBadge, SupportLevelBadge, Drawer, Dialog, Tooltip, Avatar, CreditsPill, ProgressBar, Spinner, Timeline, TimelineStage, EmptyState, ErrorState(actions), Kbd, CodeBlock, Markdown, Toast`. Token CSS vars per Design system section; **Vite smoke build must pass in CI** (desktop reuse risk, master risk table).
-- [ ] Commit: `feat(ui): design system tokens + core components (Next+Vite)`
+- [x] Binding behavior: components (each with story + a11y test via storybook axe): `Button, IconButton, Chip, Tabs, Card, StatusPill, EnvBadge, SupportLevelBadge, Drawer, Dialog, Tooltip, Avatar, CreditsPill, ProgressBar, Spinner, Timeline, TimelineStage, EmptyState, ErrorState(actions), Kbd, CodeBlock, Markdown, Toast`. Token CSS vars per Design system section; **Vite smoke build must pass in CI** (desktop reuse risk, master risk table).
+- [x] Commit: `feat(ui): design system tokens + core components (Next+Vite)`
 
 ### Task WEB-3: Home screen (Emergent-modeled)
 
@@ -217,3 +217,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 ## Execution log
 
 - 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
+- 2026-08-05 WEB-2 done — shipped semantic Tailwind v4 tokens and 23 React components with CI-wired Storybook axe (23/23), Next+Vite package-boundary proofs, independent review clean after three rounds, UI 16/16, web 19/19, and the uncached repository gate passed 38/38.
