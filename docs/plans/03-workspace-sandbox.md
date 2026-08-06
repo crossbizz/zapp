@@ -61,7 +61,7 @@ export interface WorkspaceRuntime {
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;              // { stream: "stdout"|"stderr", data, at }
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
-  writeFilesAtomically(files: readonly { path: string; data: Uint8Array }[]): Promise<void>; // canonical/same-inode duplicates reject before staging
+  writeFilesAtomically(files: readonly { path: string; data: Uint8Array }[]): Promise<void>; // leaf symlinks and canonical/same-inode/filesystem-name aliases reject before staging
   search(input: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
@@ -95,18 +95,37 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 ### Task WS-3: workspace-agent daemon
 
 **Files:** Create: `sandbox/workspace-agent/src/{main,exec,fs,git,health}.ts`, `test/agent.test.ts`
-**Interfaces produced:** HTTP API on :8877 (bearer = `ZAPP_AGENT_TOKEN`, constant-time compare): `POST /exec` (+ `?stream=1` chunked NDJSON), `POST /exec/:pid/kill`, `GET/PUT /files?path=`, `GET /files/list`, `POST /git`, `GET /healthz` (also reports dev-server port probe), `GET /metrics` (cpu/mem snapshot for cost sampling). Implements the WS-1 semantics server-side (path guard at agent level too — defense in depth).
+**Interfaces produced:** HTTP API on :8877 (bearer = `ZAPP_AGENT_TOKEN`, constant-time compare): `POST /exec` (+ `?stream=1` chunked NDJSON), `POST /exec/:pid/kill`, `GET/PUT /files?path=`, `GET /files/list`, `POST /git`, `GET /healthz` (also reports dev-server ownership evidence), `GET /metrics` (cpu/mem snapshot for cost sampling). The WS-1 additions use these exact authenticated, Zod-strict protocol shapes:
+
+```ts
+POST /files/atomic-write
+  body: { files: Array<{ path: string; dataBase64: string }> }
+  200:  { ok: true }
+POST /search
+  body: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }
+  200:  ExecResult
+DELETE /files?path=<percent-encoded workspace-relative path>
+  200:  { ok: true; alreadyAbsent: boolean }
+POST /files/rename
+  body: { source: string; destination: string; overwrite: "replace" }
+  200:  { ok: true }
+```
+
+Every filesystem operation is descriptor-relative under the pinned workspace-root descriptor per ADR-0006/ADR-0013: walk parents without following links, reject leaf symlinks for atomic writes, stage/commit/rollback through pinned parent descriptors, run allowlisted `rg` against an inherited pinned target descriptor, delete with nonrecursive `unlinkat` semantics (`ENOENT` succeeds; directories reject), and rename with descriptor-relative atomic replace. Atomic-write preflight rejects lexical/canonical/same-inode duplicates plus initially absent names that the canonical parent filesystem treats as case-folding or Unicode-normalization aliases; capability probing/reservation occurs only in a hidden per-parent directory, creates none of the requested targets, and is cleaned before staging. Implements the WS-1 semantics server-side (the agent-level path guard remains defense in depth).
 **Effort:** L
 
-- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
+- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for `writeFilesAtomically`, `search`, `deleteFile`, and `renameFile` against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
 
 **Files:** Create: `services/sandbox-service/src/provider/modal.ts`, `src/app.ts`, `src/routes/workspaces.ts`, `test/integration/modal-provider.test.ts` (env-gated `MODAL_TOKEN_ID`)
-**Interfaces produced:** `ModalSandboxProvider implements CloudSandboxProvider` (FND-4): `createWorkspace` (image from lock file, resources from profile, tags, env allowlist, boot cmd, readiness = agent healthz poll ≤ 30 s p95 warm), `attachWorkspace` (by provider id — reattach after service restart), `terminateWorkspace`, `exec`/`readFile`/`writeFile` proxied through workspace-agent client, `getStatus`. Service routes `/internal/workspaces*` map CP-9 calls onto provider + `workspaces` table rows.
+**Interfaces produced:** `ModalSandboxProvider implements CloudSandboxProvider` (FND-4): `createWorkspace` (image from lock file, resources from profile, tags, env allowlist, boot cmd, readiness = agent healthz poll ≤ 30 s p95 warm), `attachWorkspace` (by provider id — reattach after service restart), `terminateWorkspace`, `exec`/`readFile`/`writeFile`/`writeFilesAtomically`/`search`/`deleteFile`/`renameFile` proxied through the exact WS-3 workspace-agent routes, `getStatus`. The provider client accepts only the WS-1 typed inputs, base64-encodes atomic bytes, validates every strict response before returning, and never exposes a generic agent URL, host path, filesystem flag, or arbitrary git/process escape hatch. Service routes `/internal/workspaces*` map CP-9 calls onto provider + `workspaces` table rows.
+
+The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and preserve its strict bodies/responses: `POST /internal/workspaces/:workspaceId/files/atomic-write`, `POST /internal/workspaces/:workspaceId/search`, `DELETE /internal/workspaces/:workspaceId/files?path=`, and `POST /internal/workspaces/:workspaceId/files/rename`. The service resolves `workspaceId` to an attached provider sandbox; callers cannot supply provider IDs or agent origins.
 **Effort:** XL → split at execution into 4a (create/terminate/status + DB rows), 4b (agent client proxying), 4c (attach/reattach recovery). **[expand-at-execution]** for 4b/4c.
 
 - [ ] **Step (4a) failing integration test:** create workspace (dev env, small profile) → row status walks `requested→provisioning→started→ready`; `getStatus` matches Modal; terminate → `terminated`, Modal sandbox gone. Idempotent create by `(runId, taskId, purpose)` key returns existing.
+- [ ] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared env-gated Modal conformance suite for atomic write (including alias, leaf-symlink, rollback, cleanup, and mode guarantees), search confinement/zero matches, repeated file-only deletion, and rename replace/same-object rejection.
 - [ ] Commit(s): `feat(sandbox-service): Modal workspace create/status/terminate`, `... agent proxy exec/files`, `... reattach recovery`
 
 ### Task WS-5: Git in sandbox
@@ -185,7 +204,17 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 **Files:** Create: `src/routes/exec.ts` additions, workspace-agent `src/devserver.ts`
 **Effort:** M. **[expand-at-execution]**
 
-Binding behavior: `startDevServer(contract)` runs `develop.command` under supervisor (restart on crash ≤ 3×/5 min then `preview.failed` event), readiness = TCP+HTTP probe on contract port, wires proxy target; `restart_dev_server` tool support; log ring buffer (10 MiB) + `read_logs` since-cursor API; emits `preview.starting/ready/failed` events via CP-13.
+Binding behavior: `startDevServer(contract)` runs `develop.command` under supervisor (restart on crash ≤ 3×/5 min then `preview.failed` event), wires proxy target; `restart_dev_server` tool support; log ring buffer (10 MiB) + `read_logs` since-cursor API; emits `preview.starting/ready/failed` events via CP-13. The authenticated workspace-agent routes are exactly:
+
+```ts
+POST /dev-server/start   body: { contract: ExecutionContract }
+POST /dev-server/restart body: { contract: ExecutionContract }
+200 response for either: { port: number; pid: number; supervisorId: string; ownership: "process" | "process_group" }
+GET /healthz
+  200: { ok: true; details: string; devServer: null | { port: number; pid: number; supervisorId: string; owned: boolean; httpReady: boolean } }
+```
+
+Sandbox-service exposes the same strict request/response as `POST /internal/workspaces/:workspaceId/dev-server/restart`, resolving the attributed workspace to its attached provider sandbox without accepting a provider ID or agent origin. The supervisor stops and waits for the currently managed process group before restart, starts a replacement with a distinct PID, and returns readiness only when the same `supervisorId` proves that the replacement process/group owns the contracted listener and the HTTP probe succeeds. A bare port listener is insufficient. The shared `WorkspaceRuntime` restart conformance suite runs against `MemoryWorkspaceRuntime`, the local HTTP workspace-agent adapter, and the env-gated Modal provider, including the unrelated-port-contender failure case.
 
 ### Task WS-14 [M2]: Modal integration test suite (real dev env)
 
@@ -222,6 +251,7 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added managed dev-server restart and atomic workspace batch writes required by AR-4 review fixes; ADR-0011 records the deviation.
 - 2026-08-06 WS-1 interface extension approved — ADR-0013 adds typed search, nonrecursive file deletion, atomic replace rename, and process-owned readiness; production/cloud adapters bind path operations to ADR-0006 descriptor-relative enforcement.
 - 2026-08-06 WS-1 alias/idempotency guarantees clarified — Atomic batches reject canonical and observable same-inode duplicates before staging, repeated absent-file deletion succeeds, and rename rejects normalized, canonical, and same-inode self-aliases.
+- 2026-08-06 WS-1/WS-3/WS-4/WS-13 binding clarified — Atomic writes reject leaf symlinks and parent-filesystem case/Unicode aliases before staging; exact descriptor-relative workspace-agent/cloud routes and shared memory/local-agent/Modal conformance suites are binding, with no AR-4 cloud placeholder.
 - 2026-08-04 WS-2 BLOCKED — Step 1 requires baking the real `sandbox/workspace-agent` and `sandbox/preview-proxy` builds, but those source trees are produced by WS-3 and WS-10 and do not exist yet. No placeholder image content is permitted; complete WS-3 and WS-10, then resume WS-2. Modal dev credentials are available and are not the blocker.
 - 2026-08-05 WS-3 review fixes verified / smoke pending — isolated branch `task/WS-3` at `e8f08bb` passed independent spec and quality review, workspace-agent current Node and Node 22.23.1 suites 74/74, and uncached repository test/lint/typecheck/build 17/17, 14/14, 13/13, 8/8. WS-3 remains unchecked and off `main` until WS-2's real Modal dev VM capability smoke passes.
 - 2026-08-05 WS-10 BLOCKED — five independent review-fix rounds exhausted on isolated branch `task/WS-10`; final package suite is 55/55 on current Node and Node 22.23.1 with uncached repository test/lint/typecheck/build at 17/17, 13/13, 12/12, and 8/8, but two real load-bearing parser findings remain: unquoted client-script `src` recognition and `<style>` raw-text scanning. The task stays unchecked and uncommitted; WS-2 remains blocked on it.

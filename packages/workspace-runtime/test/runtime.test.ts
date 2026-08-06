@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readlink,
   readdir,
   rename,
   rm,
@@ -40,6 +41,26 @@ const nodeAtomicFileOperations: TestAtomicFileOperations = {
   setMode: chmod,
   remove: (path) => rm(path, { force: true }),
 };
+
+async function namesAliasOnFilesystem(
+  parent: string,
+  first: string,
+  second: string,
+): Promise<boolean> {
+  const probe = await mkdtemp(join(parent, '.zapp-name-capability-'));
+  try {
+    await writeFile(join(probe, first), '', { flag: 'wx' });
+    try {
+      await writeFile(join(probe, second), '', { flag: 'wx' });
+      return false;
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return true;
+      throw error;
+    }
+  } finally {
+    await rm(probe, { recursive: true, force: true });
+  }
+}
 
 async function withWorkspace(
   run: (root: string, runtime: MemoryWorkspaceRuntime) => Promise<void>,
@@ -310,6 +331,110 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       await expect(runtime.readFile('hard-alias.txt')).resolves.toEqual(
         new TextEncoder().encode('hard linked\n'),
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a leaf symlink anywhere in an atomic batch before staging or changing topology', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-leaf-symlink-'));
+    let stagingWrites = 0;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        write: async (path, data, mode) => {
+          stagingWrites += 1;
+          await writeFile(path, data, mode === undefined ? undefined : { mode });
+        },
+      },
+    });
+
+    try {
+      await runtime.writeFile('ordinary.txt', new TextEncoder().encode('ordinary before\n'));
+      await runtime.writeFile('referent.txt', new TextEncoder().encode('referent before\n'));
+      await symlink('referent.txt', join(root, 'leaf.txt'), 'file');
+
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'ordinary.txt', data: new TextEncoder().encode('ordinary after\n') },
+          { path: 'leaf.txt', data: new TextEncoder().encode('referent after\n') },
+        ]),
+      ).rejects.toThrow('symbolic link');
+
+      expect(stagingWrites).toBe(0);
+      expect((await lstat(join(root, 'leaf.txt'))).isSymbolicLink()).toBe(true);
+      expect(await readlink(join(root, 'leaf.txt'))).toBe('referent.txt');
+      await expect(runtime.readFile('ordinary.txt')).resolves.toEqual(
+        new TextEncoder().encode('ordinary before\n'),
+      );
+      await expect(runtime.readFile('referent.txt')).resolves.toEqual(
+        new TextEncoder().encode('referent before\n'),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses parent-filesystem name semantics to reject absent atomic target aliases', async () => {
+    const pairs = [
+      ['CaseFold.txt', 'casefold.txt'],
+      ['caf\u00e9.txt', 'cafe\u0301.txt'],
+    ] as const;
+
+    await withWorkspace(async (root, runtime) => {
+      for (const [index, [first, second]] of pairs.entries()) {
+        const directory = `names-${String(index)}`;
+        const parent = join(root, directory);
+        await mkdir(parent);
+        const aliases = await namesAliasOnFilesystem(parent, first, second);
+        expect(await readdir(parent)).toEqual([]);
+
+        const operation = runtime.writeFilesAtomically([
+          { path: `${directory}/${first}`, data: new TextEncoder().encode('first\n') },
+          { path: `${directory}/${second}`, data: new TextEncoder().encode('second\n') },
+        ]);
+        if (aliases) {
+          await expect(operation).rejects.toThrow('duplicate targets');
+          expect(await readdir(parent)).toEqual([]);
+        } else {
+          await expect(operation).resolves.toBeUndefined();
+          await expect(runtime.readFile(`${directory}/${first}`)).resolves.toEqual(
+            new TextEncoder().encode('first\n'),
+          );
+          await expect(runtime.readFile(`${directory}/${second}`)).resolves.toEqual(
+            new TextEncoder().encode('second\n'),
+          );
+        }
+      }
+    });
+  });
+
+  it('removes absent-name probes before the first atomic staging write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-name-probe-cleanup-'));
+    await mkdir(join(root, 'parent'));
+    let stagingWrites = 0;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        write: async (path, data, mode) => {
+          expect(
+            (await readdir(join(root, 'parent'))).filter((name) =>
+              name.startsWith('.zapp-name-probe-'),
+            ),
+          ).toEqual([]);
+          stagingWrites += 1;
+          await writeFile(path, data, mode === undefined ? undefined : { mode });
+        },
+      },
+    });
+
+    try {
+      await runtime.writeFilesAtomically([
+        { path: 'parent/alpha.txt', data: new TextEncoder().encode('alpha\n') },
+        { path: 'parent/beta.txt', data: new TextEncoder().encode('beta\n') },
+      ]);
+      expect(stagingWrites).toBe(2);
+      expect((await readdir(join(root, 'parent'))).sort()).toEqual(['alpha.txt', 'beta.txt']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

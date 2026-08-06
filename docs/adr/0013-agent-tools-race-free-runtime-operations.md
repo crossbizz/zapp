@@ -46,6 +46,9 @@ evidence is not readiness.
 - WS-3's workspace-agent protocol must expose corresponding typed operations backed
   by its descriptor-relative helper; no generic filesystem or arbitrary-ripgrep
   escape hatch is permitted.
+- WS-3, WS-4, and WS-13 bind exact strict HTTP shapes and a shared conformance suite
+  across the memory runtime, local workspace-agent adapter, and env-gated Modal
+  provider; an adapter cannot claim WS-1 compatibility from interface shape alone.
 - Search and grep retain ripgrep's exit-1 meaning of a successful zero-match result.
 - File deletion no longer supplies recursive behavior to agent-tools and replay after
   an already-completed deletion remains successful. Rename overwrite and same-object

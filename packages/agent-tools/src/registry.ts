@@ -42,6 +42,16 @@ export interface ToolMutationContext extends ToolExecutionContext {
   readonly idempotencyKey: string;
 }
 
+export type ToolAuditPayload = Record<string, string | number | boolean>;
+
+export interface ToolExecutionWithAudit {
+  readonly output: unknown;
+  readonly context: ToolExecutionContext;
+  readonly auditPayload: ToolAuditPayload;
+}
+
+export type ToolAuditRecorder = (payload: ToolAuditPayload) => void;
+
 export function mutationContext(
   context: ToolExecutionContext,
   tool: ToolName,
@@ -72,17 +82,28 @@ export interface ToolSpec<I extends z.ZodTypeAny, O extends z.ZodTypeAny> extend
     input: z.infer<I>,
     context: ToolExecutionContext,
     signal: AbortSignal,
+    recordAudit: ToolAuditRecorder,
   ): Promise<unknown>;
 }
 
 type UnknownSchema = z.ZodType<unknown, z.ZodTypeDef, unknown>;
 
 export interface AnyToolSpec extends ToolDefinition<UnknownSchema, UnknownSchema> {
-  run(input: unknown, context: ToolExecutionContext, signal: AbortSignal): Promise<unknown>;
+  run(
+    input: unknown,
+    context: ToolExecutionContext,
+    signal: AbortSignal,
+    recordAudit: ToolAuditRecorder,
+  ): Promise<unknown>;
 }
 
 export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, UnknownSchema> {
   execute(rawInput: unknown, rawContext: unknown, callerSignal?: AbortSignal): Promise<unknown>;
+  executeWithAudit(
+    rawInput: unknown,
+    rawContext: unknown,
+    callerSignal?: AbortSignal,
+  ): Promise<ToolExecutionWithAudit>;
 }
 
 export class ToolExecutionError extends Error {
@@ -179,6 +200,17 @@ function redactValue(value: unknown, redactor: OutputRedactor): unknown {
   return value;
 }
 
+function redactAuditPayload(payload: ToolAuditPayload, redactor: OutputRedactor): ToolAuditPayload {
+  const redacted: ToolAuditPayload = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (!['string', 'number', 'boolean'].includes(typeof value)) {
+      throw new Error(`Audit payload field ${key} must be scalar`);
+    }
+    redacted[key] = typeof value === 'string' ? redactor.redact(value) : value;
+  }
+  return redacted;
+}
+
 function assertExactRegistry(specs: readonly AnyToolSpec[]): void {
   if (
     specs.length !== TOOL_NAMES.length ||
@@ -238,12 +270,21 @@ export class ToolRegistry {
     return this.get(name).execute(rawInput, rawContext, callerSignal);
   }
 
+  executeWithAudit(
+    name: ToolName,
+    rawInput: unknown,
+    rawContext: unknown,
+    callerSignal?: AbortSignal,
+  ): Promise<ToolExecutionWithAudit> {
+    return this.get(name).executeWithAudit(rawInput, rawContext, callerSignal);
+  }
+
   private makeExecutable(spec: AnyToolSpec, redactor: OutputRedactor): ExecutableToolDefinition {
-    const execute = async (
+    const executeWithAudit = async (
       rawInput: unknown,
       rawContext: unknown,
       callerSignal?: AbortSignal,
-    ): Promise<unknown> => {
+    ): Promise<ToolExecutionWithAudit> => {
       const input = spec.inputSchema.parse(rawInput);
       const context = ToolExecutionContextSchema.parse(rawContext);
       let lastError: unknown;
@@ -253,9 +294,13 @@ export class ToolRegistry {
           throw new ToolExecutionError(spec.name, 'tool_cancelled');
         }
         const controller = new AbortController();
+        const recordedAudit: ToolAuditPayload = {};
+        const recordAudit: ToolAuditRecorder = (payload) => {
+          Object.assign(recordedAudit, payload);
+        };
         try {
           const rawOutput = await withTimeout(
-            spec.run(input, context, controller.signal),
+            spec.run(input, context, controller.signal, recordAudit),
             spec.timeoutMs,
             spec.name,
             controller,
@@ -263,7 +308,15 @@ export class ToolRegistry {
           );
           const output = spec.outputSchema.parse(rawOutput);
           const visibleOutput = spec.redactOutput ? redactValue(output, redactor) : output;
-          return spec.outputSchema.parse(visibleOutput);
+          const parsedOutput = spec.outputSchema.parse(visibleOutput);
+          return {
+            output: parsedOutput,
+            context,
+            auditPayload: redactAuditPayload(
+              { ...spec.auditPayload(input, parsedOutput), ...recordedAudit },
+              redactor,
+            ),
+          };
         } catch (error: unknown) {
           if (error instanceof PathViolationError) {
             throw error;
@@ -290,6 +343,12 @@ export class ToolRegistry {
       }
       throw new ToolExecutionError(spec.name, 'tool_failed');
     };
+    const execute = async (
+      rawInput: unknown,
+      rawContext: unknown,
+      callerSignal?: AbortSignal,
+    ): Promise<unknown> =>
+      (await executeWithAudit(rawInput, rawContext, callerSignal)).output;
 
     return {
       name: spec.name,
@@ -304,8 +363,10 @@ export class ToolRegistry {
       retryPolicy: spec.retryPolicy,
       redactOutput: spec.redactOutput,
       userSummary: (input, output) => spec.userSummary(input, output),
-      auditPayload: (input, output) => spec.auditPayload(input, output),
+      auditPayload: (input, output) =>
+        redactAuditPayload(spec.auditPayload(input, output), redactor),
       execute,
+      executeWithAudit,
     };
   }
 }

@@ -3,6 +3,7 @@ import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
 import type {
   AnyToolSpec,
+  ToolAuditRecorder,
   ToolExecutionContext,
   ToolMutationContext,
   ToolSpec,
@@ -185,6 +186,16 @@ async function latestContract(
   return result.contract;
 }
 
+async function latestContractWithVersion(
+  projectData: ProjectDataPort,
+  context: ToolExecutionContext,
+  signal: AbortSignal,
+): Promise<z.infer<typeof LatestContractPortOutputSchema>> {
+  return LatestContractPortOutputSchema.parse(
+    await projectData.readLatestProjectContract(context, signal),
+  );
+}
+
 function commandFor(
   contract: ExecutionContract,
   kind: 'build' | 'typecheck' | 'lint' | 'unit' | 'integration',
@@ -245,9 +256,15 @@ export function createExecutionTools(
       outputSchema: ExecOutputSchema,
       idempotent: false,
       timeoutMs: 120_000,
-      run: async (_input, context, signal) => {
-        const contract = await latestContract(projectData, context, signal);
+      run: async (_input, context, signal, recordAudit: ToolAuditRecorder) => {
+        const current = await latestContractWithVersion(projectData, context, signal);
+        const contract = current.contract;
         const configured = commandFor(contract, kind);
+        recordAudit({
+          contractVersion: current.version,
+          command: configured?.command ?? `[not configured: ${kind}]`,
+          cwd: contract.workspace_root,
+        });
         return configured === undefined
           ? notConfigured(kind)
           : execOutput(
@@ -282,7 +299,8 @@ export function createExecutionTools(
       userSummary: (_input, output) => commandSummary('Command', output),
       auditPayload: (input, output) => ({
         command: input.cmd,
-        argumentCount: input.args.length,
+        arguments: JSON.stringify(input.args),
+        cwd: input.cwd ?? '.',
         exitCode: output.exitCode,
         ok: output.ok,
       }),

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TOOL_GROUPS, TOOL_NAMES, type ExecutionContract, type ToolName } from '@zapp/contracts';
@@ -368,6 +368,7 @@ describe('ToolRegistry contract', () => {
       expect(definition.retryPolicy.maxAttempts).toBeGreaterThan(0);
       expect(definition.retryPolicy.backoffMs).toBeGreaterThanOrEqual(0);
       expect(typeof definition.execute).toBe('function');
+      expect(typeof definition.executeWithAudit).toBe('function');
 
       const input = toolInputs[name];
       expect(definition.inputSchema.safeParse(input).success).toBe(true);
@@ -518,6 +519,33 @@ describe('workspace-bound tools', () => {
         new TextEncoder().encode('one\ntwo\n'),
       );
     });
+  });
+
+  it('rejects apply_patch to a leaf symlink without replacing it or changing its referent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-leaf-symlink-'));
+    const referent = join(root, 'referent.txt');
+    const leaf = join(root, 'leaf.txt');
+    await writeFile(referent, 'before\n');
+    await symlink('referent.txt', leaf, 'file');
+    const registry = registryFor(new MemoryWorkspaceRuntime(root));
+
+    try {
+      await expect(
+        registry.execute(
+          'apply_patch',
+          {
+            patch:
+              '--- a/leaf.txt\n+++ b/leaf.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n',
+          },
+          trustedContext,
+        ),
+      ).rejects.toMatchObject({ code: 'tool_failed' });
+      expect((await lstat(leaf)).isSymbolicLink()).toBe(true);
+      expect(await readlink(leaf)).toBe('referent.txt');
+      expect(await readFile(referent, 'utf8')).toBe('before\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('runs search_code through one typed WorkspaceRuntime search call', async () => {
@@ -713,6 +741,60 @@ describe('workspace-bound tools', () => {
 });
 
 describe('execution truth and redaction', () => {
+  it('persists redacted canonical command identity with trusted caller attribution', async () => {
+    const runtime = new RecordingRuntime();
+    const redactor: OutputRedactor = {
+      redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
+    };
+    const contractedCommand = 'pnpm build --token registered-secret';
+    const projectData: ProjectDataPort = {
+      ...defaultPorts().projectData,
+      readLatestProjectContract: () =>
+        Promise.resolve({
+          ok: true,
+          version: 9,
+          contract: { ...contract, build: { command: contractedCommand } },
+        }),
+    };
+    const registry = registryFor(runtime, { redactor, projectData });
+
+    const first = await registry.executeWithAudit(
+      'run_command',
+      { cmd: 'node', args: ['--version'], cwd: 'src' },
+      trustedContext,
+    );
+    const second = await registry.executeWithAudit(
+      'run_command',
+      { cmd: 'bun', args: ['--version'], cwd: 'src' },
+      trustedContext,
+    );
+    expect(first.context).toEqual(trustedContext);
+    expect(first.auditPayload).toMatchObject({
+      command: 'node',
+      arguments: '["--version"]',
+      cwd: 'src',
+    });
+    expect(second.auditPayload.command).toBe('bun');
+    expect(second.auditPayload.command).not.toBe(first.auditPayload.command);
+
+    const secretBearing = await registry.executeWithAudit(
+      'run_command',
+      { cmd: 'node', args: ['--token', 'registered-secret'] },
+      trustedContext,
+    );
+    expect(JSON.stringify(secretBearing.auditPayload)).not.toContain('registered-secret');
+    expect(secretBearing.auditPayload.arguments).toContain('[REDACTED]');
+
+    const named = await registry.executeWithAudit('run_build', {}, trustedContext);
+    expect(named.context).toEqual(trustedContext);
+    expect(named.auditPayload).toMatchObject({
+      contractVersion: 9,
+      command: 'pnpm build --token [REDACTED]',
+      cwd: '.',
+    });
+    expect(JSON.stringify(named.auditPayload)).not.toContain('registered-secret');
+  });
+
   it('redacts stdout and stderr through the injected registry redactor', async () => {
     const runtime = new RecordingRuntime();
     runtime.execResult = {

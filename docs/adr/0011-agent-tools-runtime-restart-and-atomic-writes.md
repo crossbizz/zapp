@@ -25,10 +25,14 @@ Extend WS-1 with exactly two workspace-owned primitives:
   contracted listener belongs to the replacement process or supervised process group;
   an unrelated listener on the same port is not readiness.
 - `writeFilesAtomically(files)` validates the complete workspace-relative path set,
-  resolves every target before staging, rejects duplicate canonical targets and
-  observable same-inode aliases, stages all bytes before changing targets, and rolls
-  back committed targets if a later commit fails. Staging and rollback preserve each
-  existing target's file mode.
+  resolves every target before staging, rejects leaf-symlink targets, duplicate
+  canonical targets, observable same-inode aliases, and initially absent names that
+  the canonical parent filesystem treats as case-folding or Unicode-normalization
+  aliases. Absent-name detection uses exact-basename exclusive reservations in a
+  hidden per-parent probe directory, creates none of the requested target paths, and
+  removes every probe before staging. The operation stages all bytes before changing
+  targets and rolls back committed targets if a later commit fails. Staging and
+  rollback preserve each existing target's file mode.
 
 Both primitives preserve `resolveInRoot` lexical and symlink checks. The batch API
 accepts only `{ path, data }` records and the restart API accepts only the validated
@@ -42,7 +46,8 @@ options to agent-tools.
 - Unified patches cross the runtime boundary as one staged batch, preventing an
   agent-tools loop from creating partial writes. Multiple patch sections cannot claim
   success while collapsing onto one target because duplicate target identity rejects
-  before the first staging write.
+  before the first staging write. An existing leaf symlink cannot be replaced while
+  its former referent remains separately mutated or unchanged under a false success.
 - Runtime fault-injection tests fail after the first, middle, and final real rename,
   then verify byte and mode restoration, temporary-file cleanup, and distinct truthful
   rollback or cleanup failure codes.

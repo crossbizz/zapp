@@ -1,6 +1,7 @@
 import {
   chmod,
   lstat,
+  mkdtemp,
   readdir,
   readFile,
   readlink,
@@ -202,6 +203,41 @@ export async function resolveInRoot(root: string, path: string): Promise<string>
   }
 
   return resolved;
+}
+
+function isFileSystemError(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
+}
+
+async function assertDistinctAbsentNames(
+  files: readonly { canonicalTarget: string; metadata: undefined }[],
+): Promise<void> {
+  const namesByParent = new Map<string, string[]>();
+  for (const file of files) {
+    const parent = dirname(file.canonicalTarget);
+    const names = namesByParent.get(parent) ?? [];
+    names.push(basename(file.canonicalTarget));
+    namesByParent.set(parent, names);
+  }
+
+  for (const [parent, names] of namesByParent) {
+    if (names.length < 2) continue;
+    const probe = await mkdtemp(resolve(parent, '.zapp-name-probe-'));
+    try {
+      for (const name of names) {
+        try {
+          await writeFile(resolve(probe, name), new Uint8Array(), { flag: 'wx', mode: 0o600 });
+        } catch (error: unknown) {
+          if (isFileSystemError(error, 'EEXIST')) {
+            throw new Error('Atomic file batch contains duplicate targets');
+          }
+          throw error;
+        }
+      }
+    } finally {
+      await rm(probe, { recursive: true, force: true });
+    }
+  }
 }
 
 const SAFE_GIT_FLAGS: Readonly<
@@ -604,12 +640,16 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         let canonicalTarget: string;
         let metadata: { mode: number; dev: number; ino: number } | undefined;
         try {
+          const leaf = await lstat(target);
+          if (leaf.isSymbolicLink()) {
+            throw new Error(`Atomic file target must not be a symbolic link: ${file.path}`);
+          }
           [canonicalTarget, metadata] = await Promise.all([
             realpath(target),
             this.atomicFileOperations.metadata(target),
           ]);
         } catch (error: unknown) {
-          if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
+          if (!isFileSystemError(error, 'ENOENT')) {
             throw error;
           }
           canonicalTarget = resolve(await realpath(dirname(target)), basename(target));
@@ -634,6 +674,12 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       canonicalTargets.add(file.canonicalTarget);
       if (objectIdentity !== undefined) existingObjects.add(objectIdentity);
     }
+
+    await assertDistinctAbsentNames(
+      resolvedFiles.filter(
+        (file): file is typeof file & { metadata: undefined } => file.metadata === undefined,
+      ),
+    );
 
     const staged = await Promise.all(
       resolvedFiles.map(async (file) => {
