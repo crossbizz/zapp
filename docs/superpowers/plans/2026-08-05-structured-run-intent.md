@@ -88,6 +88,7 @@ git commit -m "docs(architecture): accept structured run intent"
 - Modify: `services/control-api/src/routes/runs.ts`
 - Modify: `services/control-api/src/app.ts`
 - Modify: `services/control-api/test/support/tenant-db.ts`
+- Modify: `services/control-api/test/support/harness.ts`
 - Test: `services/control-api/test/runs.test.ts`
 - Test: `services/control-api/test/env.test.ts`
 - Test: `services/control-api/test/compose.test.ts`
@@ -105,6 +106,8 @@ git commit -m "docs(architecture): accept structured run intent"
 - Produces: `RunCreateResult` with exact `created | recovered | conflict` outcomes. Only `created` authorizes and audits; exact recovery reuses the row without either callback, while a changed request conflicts.
 - Produces: durable `requestFingerprint` as `HMAC-SHA-256(RUN_INTENT_HMAC_SECRET, idempotencyPluginFingerprint)`. The raw body-derived SHA-256 remains only in the existing Redis idempotency record and must never reach PostgreSQL.
 - Produces: `loadRunIntentHmacKey`, which accepts exactly 64 hexadecimal characters and returns 32 key bytes. `ServiceRuntime` requires that key; `buildApp` may invent one only behind its existing development/test guard.
+- Produces: one deterministic run-intent HMAC key in the control-api test harness, so HTTP/store assertions and cross-instance probes exercise the shipping keyed-fingerprint path.
+- Operational invariant: `RUN_INTENT_HMAC_SECRET` remains stable while durable run rows may be retried. Rotation requires dual-key/versioned migration support or deliberate cleanup; a rolling value replacement is not supported.
 - Consumes: `OrganizationStore.getSettings(organizationId)` and `defaultModelPolicy` shaped as either `string[]` or `{ allowedModels: string[] }`.
 
 - [ ] **Step 1: Write shared-contract RED tests**

@@ -137,6 +137,15 @@ that invented a key would encrypt secrets nothing else could read, and one that
 shared a committed default would encrypt them so that everybody could.
 `dev-up.sh` generates all four, so do this by hand only if you are not using it.
 
+`RUN_INTENT_HMAC_SECRET` is a durable data-compatibility key, not a freely
+rotatable session secret. Every control-api replica in an environment must use
+the same value, and that value must remain stable for as long as an existing
+`agent_runs` row may be retried. Changing it makes the same request fingerprint
+differ and correctly returns `idempotency_conflict`. Production rotation
+therefore requires a dual-key/versioned fingerprint migration or deliberate
+cleanup of all rows whose create requests can no longer be retried; simply
+replacing the variable in a rolling deploy is unsupported.
+
 `SECRETS_MASTER_KEY_VERSION` (defaults to 1) and `SECRETS_PREVIOUS_MASTER_KEY`
 (empty) are the master-key rotation pair — leave both as shipped locally. They
 exist so that rotating in staging/prod is a value change rather than a schema
