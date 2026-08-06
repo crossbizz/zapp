@@ -500,6 +500,26 @@ describe('workspace-bound tools', () => {
     });
   });
 
+  it('rejects two patch sections that resolve to one file without losing either edit', async () => {
+    await withMemoryRegistry(async (runtime, registry) => {
+      await runtime.writeFile('file.txt', new TextEncoder().encode('one\ntwo\n'));
+
+      await expect(
+        registry.execute(
+          'apply_patch',
+          {
+            patch:
+              '--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n--- a/./file.txt\n+++ b/./file.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n',
+          },
+          trustedContext,
+        ),
+      ).rejects.toThrow();
+      await expect(runtime.readFile('file.txt')).resolves.toEqual(
+        new TextEncoder().encode('one\ntwo\n'),
+      );
+    });
+  });
+
   it('runs search_code through one typed WorkspaceRuntime search call', async () => {
     const runtime = new RecordingRuntime();
     runtime.execResult = {
@@ -642,6 +662,19 @@ describe('workspace-bound tools', () => {
     ).rejects.toThrow();
     expect(runtime.deleteFileCalls).toEqual(['victim']);
     expect(runtime.directoryDeleted).toBe(false);
+  });
+
+  it('returns success when delete_file is repeated after an already-completed deletion', async () => {
+    await withMemoryRegistry(async (runtime, registry) => {
+      await runtime.writeFile('repeat-delete.txt', new TextEncoder().encode('delete me'));
+
+      await expect(
+        registry.execute('delete_file', { path: 'repeat-delete.txt' }, trustedContext),
+      ).resolves.toEqual({ ok: true, path: 'repeat-delete.txt' });
+      await expect(
+        registry.execute('delete_file', { path: 'repeat-delete.txt' }, trustedContext),
+      ).resolves.toEqual({ ok: true, path: 'repeat-delete.txt' });
+    });
   });
 
   it('rejects a resolved self-rename without deleting the source file', async () => {

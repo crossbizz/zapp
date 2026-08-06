@@ -12,7 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ExecutionContract, ExecInput } from '@zapp/contracts';
 
@@ -64,7 +64,7 @@ export interface WorkspaceRenameInput {
 
 export interface AtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
-  metadata(path: string): Promise<{ mode: number }>;
+  metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
   move(source: string, destination: string): Promise<void>;
   setMode(path: string, mode: number): Promise<void>;
@@ -473,7 +473,10 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   ) {
     this.atomicFileOperations = options.atomicFileOperations ?? {
       read: async (path) => new Uint8Array(await readFile(path)),
-      metadata: async (path) => ({ mode: (await stat(path)).mode }),
+      metadata: async (path) => {
+        const metadata = await stat(path);
+        return { mode: metadata.mode, dev: metadata.dev, ino: metadata.ino };
+      },
       write: async (path, data, mode) => {
         await writeFile(path, data, mode === undefined ? undefined : { mode });
       },
@@ -595,28 +598,54 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void> {
-    const paths = files.map((file) => file.path);
-    if (new Set(paths).size !== paths.length) {
-      throw new Error('Atomic file batch contains duplicate paths');
-    }
-
-    const staged = await Promise.all(
+    const resolvedFiles = await Promise.all(
       files.map(async (file) => {
         const target = await resolveInRoot(this.root, file.path);
-        const temporary = resolve(dirname(target), `.zapp-atomic-${randomUUID()}`);
-        let original: { data: Uint8Array; mode: number } | undefined;
+        let canonicalTarget: string;
+        let metadata: { mode: number; dev: number; ino: number } | undefined;
         try {
-          const metadata = await this.atomicFileOperations.metadata(target);
-          original = {
-            data: await this.atomicFileOperations.read(target),
-            mode: metadata.mode & 0o7777,
-          };
+          [canonicalTarget, metadata] = await Promise.all([
+            realpath(target),
+            this.atomicFileOperations.metadata(target),
+          ]);
         } catch (error: unknown) {
           if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
             throw error;
           }
+          canonicalTarget = resolve(await realpath(dirname(target)), basename(target));
         }
-        return { target, temporary, data: file.data, original };
+        return { ...file, target, canonicalTarget, metadata };
+      }),
+    );
+
+    const canonicalTargets = new Set<string>();
+    const existingObjects = new Set<string>();
+    for (const file of resolvedFiles) {
+      const objectIdentity =
+        file.metadata !== undefined && file.metadata.ino !== 0
+          ? `${String(file.metadata.dev)}:${String(file.metadata.ino)}`
+          : undefined;
+      if (
+        canonicalTargets.has(file.canonicalTarget) ||
+        (objectIdentity !== undefined && existingObjects.has(objectIdentity))
+      ) {
+        throw new Error('Atomic file batch contains duplicate targets');
+      }
+      canonicalTargets.add(file.canonicalTarget);
+      if (objectIdentity !== undefined) existingObjects.add(objectIdentity);
+    }
+
+    const staged = await Promise.all(
+      resolvedFiles.map(async (file) => {
+        const temporary = resolve(dirname(file.target), `.zapp-atomic-${randomUUID()}`);
+        const original =
+          file.metadata === undefined
+            ? undefined
+            : {
+                data: await this.atomicFileOperations.read(file.target),
+                mode: file.metadata.mode & 0o7777,
+              };
+        return { target: file.target, temporary, data: file.data, original };
       }),
     );
 
@@ -741,7 +770,13 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async deleteFile(path: string): Promise<void> {
-    await unlink(await resolveInRoot(this.root, path));
+    const target = await resolveInRoot(this.root, path);
+    try {
+      await unlink(target);
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+      throw error;
+    }
   }
 
   async renameFile(input: WorkspaceRenameInput): Promise<void> {
@@ -751,6 +786,25 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     validateRenameOverwrite(input.overwrite);
     const sourceMetadata = await lstat(source);
     if (!sourceMetadata.isFile()) throw new Error('renameFile only accepts regular files');
+    let destinationMetadata: Awaited<ReturnType<typeof lstat>> | undefined;
+    let destinationCanonical: string | undefined;
+    try {
+      [destinationMetadata, destinationCanonical] = await Promise.all([
+        lstat(destination),
+        realpath(destination),
+      ]);
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+    if (
+      destinationCanonical === (await realpath(source)) ||
+      (destinationMetadata !== undefined &&
+        sourceMetadata.ino !== 0 &&
+        sourceMetadata.dev === destinationMetadata.dev &&
+        sourceMetadata.ino === destinationMetadata.ino)
+    ) {
+      throw new Error('source and destination must differ');
+    }
     await rename(source, destination);
   }
 

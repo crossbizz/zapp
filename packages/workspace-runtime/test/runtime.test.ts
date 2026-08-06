@@ -1,7 +1,9 @@
 import {
   chmod,
+  link,
   lstat,
   mkdtemp,
+  mkdir,
   readFile,
   readdir,
   rename,
@@ -19,7 +21,7 @@ import { MemoryWorkspaceRuntime, PathViolationError } from '../src/runtime.js';
 
 interface TestAtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
-  metadata(path: string): Promise<{ mode: number }>;
+  metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
   move(source: string, destination: string): Promise<void>;
   setMode(path: string, mode: number): Promise<void>;
@@ -28,7 +30,10 @@ interface TestAtomicFileOperations {
 
 const nodeAtomicFileOperations: TestAtomicFileOperations = {
   read: async (path) => new Uint8Array(await readFile(path)),
-  metadata: async (path) => ({ mode: (await stat(path)).mode }),
+  metadata: async (path) => {
+    const metadata = await stat(path);
+    return { mode: metadata.mode, dev: metadata.dev, ino: metadata.ino };
+  },
   write: async (path, data, mode) =>
     writeFile(path, data, mode === undefined ? undefined : { mode }),
   move: rename,
@@ -231,6 +236,85 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     });
   });
 
+  it('rejects duplicate lexical targets before staging any atomic write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-duplicate-'));
+    let stagingWrites = 0;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        write: async (path, data, mode) => {
+          stagingWrites += 1;
+          await writeFile(path, data, mode === undefined ? undefined : { mode });
+        },
+      },
+    });
+
+    try {
+      await runtime.writeFile('file.txt', new TextEncoder().encode('original\n'));
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'file.txt', data: new TextEncoder().encode('first edit\n') },
+          { path: './file.txt', data: new TextEncoder().encode('second edit\n') },
+        ]),
+      ).rejects.toThrow('duplicate targets');
+      expect(stagingWrites).toBe(0);
+      await expect(runtime.readFile('file.txt')).resolves.toEqual(
+        new TextEncoder().encode('original\n'),
+      );
+      expect((await readdir(root)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects existing canonical and same-inode atomic-write aliases before staging', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-inode-alias-'));
+    let stagingWrites = 0;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        write: async (path, data, mode) => {
+          stagingWrites += 1;
+          await writeFile(path, data, mode === undefined ? undefined : { mode });
+        },
+      },
+    });
+
+    try {
+      await mkdir(join(root, 'real'));
+      await runtime.writeFile('real/file.txt', new TextEncoder().encode('canonical\n'));
+      await symlink('real', join(root, 'alias'), 'dir');
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'real/file.txt', data: new TextEncoder().encode('first\n') },
+          { path: 'alias/file.txt', data: new TextEncoder().encode('second\n') },
+        ]),
+      ).rejects.toThrow('duplicate targets');
+
+      await runtime.writeFile('hard-source.txt', new TextEncoder().encode('hard linked\n'));
+      await link(join(root, 'hard-source.txt'), join(root, 'hard-alias.txt'));
+      await expect(
+        runtime.writeFilesAtomically([
+          { path: 'hard-source.txt', data: new TextEncoder().encode('first\n') },
+          { path: 'hard-alias.txt', data: new TextEncoder().encode('second\n') },
+        ]),
+      ).rejects.toThrow('duplicate targets');
+
+      expect(stagingWrites).toBe(0);
+      await expect(runtime.readFile('real/file.txt')).resolves.toEqual(
+        new TextEncoder().encode('canonical\n'),
+      );
+      await expect(runtime.readFile('hard-source.txt')).resolves.toEqual(
+        new TextEncoder().encode('hard linked\n'),
+      );
+      await expect(runtime.readFile('hard-alias.txt')).resolves.toEqual(
+        new TextEncoder().encode('hard linked\n'),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('owns ripgrep path validation and execution in one typed search operation', async () => {
     await withWorkspace(async (_root, runtime) => {
       await runtime.writeFile('inside.txt', new TextEncoder().encode('inside marker\n'));
@@ -273,6 +357,16 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     });
   });
 
+  it('treats a repeated nonrecursive file deletion as already complete', async () => {
+    await withWorkspace(async (root, runtime) => {
+      await runtime.writeFile('repeat.txt', new TextEncoder().encode('delete once'));
+
+      await expect(runtime.deleteFile('repeat.txt')).resolves.toBeUndefined();
+      await expect(runtime.deleteFile('repeat.txt')).resolves.toBeUndefined();
+      await expect(readFile(join(root, 'repeat.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
   it('atomically renames with replace semantics and rejects self-renames before mutation', async () => {
     await withWorkspace(async (root, runtime) => {
       await runtime.writeFile('source.txt', new TextEncoder().encode('source'));
@@ -299,6 +393,45 @@ describe('MemoryWorkspaceRuntime path safety', () => {
         }),
       ).rejects.toThrow('source and destination must differ');
       await expect(runtime.readFile('same.txt')).resolves.toEqual(new TextEncoder().encode('same'));
+    });
+  });
+
+  it('rejects normalized, parent-symlink, and hard-link aliases of one rename object', async () => {
+    await withWorkspace(async (root, runtime) => {
+      await runtime.writeFile('normalized.txt', new TextEncoder().encode('normalized'));
+
+      await mkdir(join(root, 'real'));
+      await runtime.writeFile('real/parent.txt', new TextEncoder().encode('parent alias'));
+      await symlink('real', join(root, 'alias'), 'dir');
+
+      await runtime.writeFile('hard-source.txt', new TextEncoder().encode('hard alias'));
+      await link(join(root, 'hard-source.txt'), join(root, 'hard-alias.txt'));
+
+      for (const [source, destination] of [
+        ['normalized.txt', './normalized.txt'],
+        ['alias/parent.txt', 'real/parent.txt'],
+        ['hard-source.txt', 'hard-alias.txt'],
+      ] as const) {
+        await expect(
+          runtime.renameFile({ source, destination, overwrite: 'replace' }),
+        ).rejects.toThrow('source and destination must differ');
+      }
+
+      await expect(runtime.readFile('normalized.txt')).resolves.toEqual(
+        new TextEncoder().encode('normalized'),
+      );
+      await expect(runtime.readFile('real/parent.txt')).resolves.toEqual(
+        new TextEncoder().encode('parent alias'),
+      );
+      await expect(runtime.readFile('alias/parent.txt')).resolves.toEqual(
+        new TextEncoder().encode('parent alias'),
+      );
+      await expect(runtime.readFile('hard-source.txt')).resolves.toEqual(
+        new TextEncoder().encode('hard alias'),
+      );
+      await expect(runtime.readFile('hard-alias.txt')).resolves.toEqual(
+        new TextEncoder().encode('hard alias'),
+      );
     });
   });
 

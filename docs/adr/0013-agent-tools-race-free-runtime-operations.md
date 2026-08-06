@@ -25,10 +25,11 @@ Extend WS-1 with three narrow typed operations:
 - `search({ pattern, path, glob?, fixedStrings?, ignoreCase? })` runs ripgrep against
   a runtime-confined target and returns the normal structured execution result;
 - `deleteFile(path)` performs a nonrecursive unlink, so a directory or a path swapped
-  to a directory is rejected rather than recursively removed;
+  to a directory is rejected rather than recursively removed; `ENOENT` is an
+  already-complete success so the operation matches its idempotent tool metadata;
 - `renameFile({ source, destination, overwrite: "replace" })` provides atomic replace
-  semantics, rejects a resolved self-rename before mutation, and accepts no arbitrary
-  rename flags.
+  semantics, rejects normalized, canonical parent-symlink, and observable same-inode
+  aliases before mutation, and accepts no arbitrary rename flags.
 
 Agent-tools makes exactly one runtime call for each operation. Cloud and production
 runtime adapters must implement all three through ADR-0006's descriptor-relative
@@ -46,7 +47,8 @@ evidence is not readiness.
   by its descriptor-relative helper; no generic filesystem or arbitrary-ripgrep
   escape hatch is permitted.
 - Search and grep retain ripgrep's exit-1 meaning of a successful zero-match result.
-- File deletion no longer supplies recursive behavior to agent-tools. Rename
-  overwrite behavior is explicit and cross-runtime conformance-testable.
+- File deletion no longer supplies recursive behavior to agent-tools and replay after
+  an already-completed deletion remains successful. Rename overwrite and same-object
+  rejection behavior are explicit and cross-runtime conformance-testable.
 - Restart can wait until timeout when an unrelated listener wins the port race, but
   it cannot report that contender as the replacement server.
