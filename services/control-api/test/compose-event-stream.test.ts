@@ -38,12 +38,14 @@ describe('control-api event stream composition', () => {
     const eventWakeups: EventWakeupSource = {
       subscribe: () => Promise.reject(new Error('subscription reached')),
     };
+    const runIntentHmacKey = Buffer.alloc(32, 0x44);
 
     const app = composeApp({
       logger: false,
       database: {} as Database,
       redis: unusedRedis,
       eventWakeups,
+      runIntentHmacKey,
       auth: {
         databaseUrl: 'postgres://127.0.0.1:1/unused',
         config: TEST_AUTH_CONFIG,
@@ -62,5 +64,6 @@ describe('control-api event stream composition', () => {
     expect(appCapture.buildApp).toHaveBeenCalledOnce();
     const dependencies = appCapture.buildApp.mock.calls[0]?.[0];
     expect(dependencies?.tenant?.eventStream?.wakeups).toBe(eventWakeups);
+    expect(dependencies?.tenant?.runIntentHmacKey).toBe(runIntentHmacKey);
   });
 });

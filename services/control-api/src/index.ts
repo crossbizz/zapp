@@ -129,7 +129,7 @@ export {
   type StoredResponse,
 } from './plugins/idempotency.js';
 export { composeApp, type ServiceRuntime } from './compose.js';
-export { loadRedisUrl } from './env.js';
+export { loadRedisUrl, loadRunIntentHmacKey } from './env.js';
 
 // CP-4 — tenant context. `forOrg` never leaves this boundary: a caller builds
 // the factory once and hands it to `buildApp`, and every route reads through

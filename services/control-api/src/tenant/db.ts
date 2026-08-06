@@ -262,6 +262,7 @@ export interface TenantSpecificationRepository {
 export interface NewRunInput {
   readonly id: string;
   readonly workflowId: string;
+  /** HMAC of the request digest; the raw body-derived digest must never reach storage. */
   readonly requestFingerprint: string;
   readonly projectId: string;
   readonly branchId: string | null;

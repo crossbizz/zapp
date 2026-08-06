@@ -40,6 +40,8 @@ import { createTenantDbFactory } from './tenant/db.js';
 export interface ServiceRuntime {
   readonly database: Database;
   readonly redis: RedisCommands;
+  /** Shared 32-byte key returned by `loadRunIntentHmacKey`. */
+  readonly runIntentHmacKey: Buffer;
   /** CP-15 pub/sub port. Omission is refused outside development by buildApp. */
   readonly eventWakeups?: EventWakeupSource;
   readonly auth: AuthEnv;
@@ -103,6 +105,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // absent.
     tenant: {
       tenantDb: createTenantDbFactory(database),
+      runIntentHmacKey: runtime.runIntentHmacKey,
       ...(runtime.eventWakeups === undefined
         ? {}
         : { eventStream: { wakeups: runtime.eventWakeups } }),

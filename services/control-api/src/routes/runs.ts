@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 import { AppTypeSchema, idSchema, ModelIdentifierSchema } from '@zapp/contracts';
 import { z } from 'zod';
@@ -74,6 +74,8 @@ const SIGNALS = {
 
 export interface RunRoutesDeps {
   readonly now: () => Date;
+  /** Cross-instance key; never logged, returned, or handed to a repository. */
+  readonly runIntentHmacKey: Buffer;
   readonly orchestrator: OrchestratorPort;
   readonly organizations: OrganizationStore;
   readonly eventStream: EventStreamDependencies;
@@ -104,10 +106,15 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         throw branchNotFound();
       authorize(ctx, 'start_run');
       const idempotency = idempotencyOf(request);
+      // The plugin's raw digest remains suitable for its short-lived Redis
+      // record. PostgreSQL gets only this keyed, cross-instance derivative.
+      const requestFingerprint = createHmac('sha256', deps.runIntentHmacKey)
+        .update(idempotency.fingerprint)
+        .digest('hex');
       const operationKey = creationOperationOf(request);
       const runId = stableId('run', operationKey);
       let run = await ctx.db.runs.getById(runId);
-      if (run !== undefined && run.requestFingerprint !== idempotency.fingerprint) {
+      if (run !== undefined && run.requestFingerprint !== requestFingerprint) {
         throw idempotencyConflict();
       }
       if (run === undefined) {
@@ -121,7 +128,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         const created = await ctx.db.runs.create({
           id: runId,
           workflowId: runId,
-          requestFingerprint: idempotency.fingerprint,
+          requestFingerprint,
           projectId: project.id,
           branchId: request.body.branchId ?? null,
           mode: request.body.mode,

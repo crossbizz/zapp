@@ -61,6 +61,7 @@ const production = vi.hoisted(() => {
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
     loadRateLimitSettings: vi.fn(() => ({ kind: 'production-rate-limits' })),
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
+    loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
     loadServiceTokenConfig: vi.fn(() => ({ kind: 'production-service-tokens' })),
     loggerOptions: vi
       .fn<(input: unknown) => { level: string }>()
@@ -78,6 +79,7 @@ vi.mock('../src/env.js', () => ({
   loadEnv: production.loadEnv,
   loadMasterKey: production.loadMasterKey,
   loadRedisUrl: production.loadRedisUrl,
+  loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
 }));
 vi.mock('../src/events/lifecycle.js', () => ({
@@ -122,6 +124,7 @@ describe('control-api production entrypoint', () => {
       expect.objectContaining({
         redis: production.redis,
         eventWakeups: production.redis,
+        runIntentHmacKey: Buffer.alloc(32, 0x33),
       }),
     );
     expect(production.app.listen).not.toHaveBeenCalled();

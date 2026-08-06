@@ -1,3 +1,5 @@
+import { createHash, createHmac } from 'node:crypto';
+
 import { ApiErrorSchema, newId } from '@zapp/contracts';
 import {
   agentEvents,
@@ -70,6 +72,8 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
  * August 2027 for reasons that have nothing to do with tenancy.
  */
 const EVENT_TIME = new Date('2026-08-15T12:00:00.000Z');
+/** Fixed only so the PostgreSQL fingerprint assertion has a hand-derived value. */
+const RUN_INTENT_HMAC_KEY = Buffer.alloc(32, 0x7b);
 
 /**
  * The value each tenant's secret holds, prefixed with the tenant's slug so a
@@ -519,6 +523,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       orgs: { organizations: store, audit },
       tenant: {
         tenantDb: createTenantDbFactory(database.db),
+        runIntentHmacKey: RUN_INTENT_HMAC_KEY,
         orchestrator: {
           startRun: (input) => {
             startCalls.push(input);
@@ -648,6 +653,22 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
           payload,
         });
         expect(first.statusCode, first.body).toBe(502);
+
+        const canonicalBody =
+          '{"appType":"mobile","mode":"build","model":"anthropic/claude-sonnet-5","prompt":"Recover PostgreSQL explicit intent"}';
+        const rawFingerprint = createHash('sha256')
+          .update(`POST\n/v1/projects/${a.projectIds[0] ?? ''}/runs\n${canonicalBody}`)
+          .digest('hex');
+        const expectedDurableFingerprint = createHmac('sha256', RUN_INTENT_HMAC_KEY)
+          .update(rawFingerprint)
+          .digest('hex');
+        const [fingerprintRow] = await database.sql<{ request_fingerprint: string }[]>`
+          select request_fingerprint from agent_runs
+          where organization_id = ${a.organizationId}
+            and request_fingerprint = ${expectedDurableFingerprint}
+        `;
+        expect(fingerprintRow?.request_fingerprint).not.toBe(rawFingerprint);
+        expect(fingerprintRow?.request_fingerprint).toBe(expectedDurableFingerprint);
 
         const changed = await app.inject({
           method: 'POST',

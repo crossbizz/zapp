@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { loadAuthEnv } from '../src/auth/config.js';
-import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from '../src/env.js';
+import {
+  loadEnv,
+  loadMasterKey,
+  loadRedisUrl,
+  loadRunIntentHmacKey,
+  loadServiceTokenConfig,
+} from '../src/env.js';
 
 /**
  * Whether the environment this repository *ships* actually boots this service.
@@ -43,13 +49,14 @@ function readTemplate(): Record<string, string> {
 }
 
 /**
- * What `openssl` would produce, standing in for the three placeholders the
+ * What `openssl` would produce, standing in for the four placeholders the
  * template documents as "generate this". Everything else in the file is used
  * exactly as shipped.
  */
 const GENERATED: Record<string, string> = {
   SESSION_JWT_SECRET: 'a'.repeat(64),
   SERVICE_TOKEN_SECRET: 'b'.repeat(64),
+  RUN_INTENT_HMAC_SECRET: 'c'.repeat(64),
   SECRETS_MASTER_KEY: Buffer.alloc(32, 0x2a).toString('base64'),
 };
 
@@ -58,12 +65,13 @@ describe('the shipped .env.example', () => {
   const environment = { ...template, ...GENERATED };
 
   it('boots every loader this service calls at startup', () => {
-    // `server.ts` calls these five, in this order, before it listens.
+    // `server.ts` calls these six before it listens.
     expect(() => loadEnv(environment)).not.toThrow();
     expect(() => loadAuthEnv(environment)).not.toThrow();
     expect(() => loadRedisUrl(environment)).not.toThrow();
     expect(() => loadMasterKey(environment)).not.toThrow();
     expect(() => loadServiceTokenConfig(environment)).not.toThrow();
+    expect(() => loadRunIntentHmacKey(environment)).not.toThrow();
   });
 
   it('leaves every rotation variable empty, and empty is accepted', () => {
@@ -111,6 +119,7 @@ describe('the shipped .env.example', () => {
       'API_BASE_URL',
       'SESSION_JWT_SECRET',
       'SERVICE_TOKEN_SECRET',
+      'RUN_INTENT_HMAC_SECRET',
       'SECRETS_MASTER_KEY',
       'STYTCH_PROJECT_ID',
       'STYTCH_SECRET',
@@ -143,9 +152,9 @@ describe('the rotation variables', () => {
     ).toEqual({ secret: GENERATED.SERVICE_TOKEN_SECRET, previousSecret: 'c'.repeat(64) });
     // Not "anything non-empty": a short previous secret is a typo, and a typo
     // that verifies tokens is worse than one that refuses to boot.
-    expect(() => loadServiceTokenConfig({ ...base, SERVICE_TOKEN_SECRET_PREVIOUS: 'short' })).toThrow(
-      /SERVICE_TOKEN_SECRET_PREVIOUS/,
-    );
+    expect(() =>
+      loadServiceTokenConfig({ ...base, SERVICE_TOKEN_SECRET_PREVIOUS: 'short' }),
+    ).toThrow(/SERVICE_TOKEN_SECRET_PREVIOUS/);
   });
 
   it('refuses to start without a service-token secret, naming it and not its value', () => {
@@ -156,6 +165,29 @@ describe('the rotation variables', () => {
     );
     expect(() => loadServiceTokenConfig({ ...base, SERVICE_TOKEN_SECRET: 'replace-me' })).toThrow(
       new Error('Invalid environment: SERVICE_TOKEN_SECRET'),
+    );
+  });
+});
+
+describe('the durable run-intent fingerprint key', () => {
+  const base = { ...readTemplate(), ...GENERATED };
+
+  it('decodes exactly 64 hexadecimal characters into 32 key bytes', () => {
+    expect(loadRunIntentHmacKey(base)).toEqual(Buffer.alloc(32, 0xcc));
+
+    for (const value of ['c'.repeat(63), 'c'.repeat(65), 'g'.repeat(64), 'replace-me']) {
+      expect(() => loadRunIntentHmacKey({ ...base, RUN_INTENT_HMAC_SECRET: value })).toThrow(
+        new Error('Invalid environment: RUN_INTENT_HMAC_SECRET'),
+      );
+    }
+  });
+
+  it('has no production default and names only the missing variable', () => {
+    const without = { ...base };
+    delete without['RUN_INTENT_HMAC_SECRET'];
+
+    expect(() => loadRunIntentHmacKey(without)).toThrow(
+      new Error('Invalid environment: RUN_INTENT_HMAC_SECRET'),
     );
   });
 });

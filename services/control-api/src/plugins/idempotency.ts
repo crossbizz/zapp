@@ -62,13 +62,15 @@ import type { RedisCommands } from '../redis/client.js';
  * is in PostgreSQL and the 201 response carries metadata only (CP-7) — so this
  * is the only path from a Redis read to a plaintext.
  *
- * Stated rather than closed, because closing it means keying the hash with a
+ * Stated rather than closed for the Redis record, because closing it means keying the hash with a
  * deployment secret (an HMAC under, say, a label derived from
  * `SESSION_JWT_SECRET`), and that secret has to be identical on every instance
  * or two replicas compute two fingerprints for one request and answer 422 to
  * each other's retries. Worth doing when the threat model admits a Redis read;
  * not worth a cross-instance failure mode before it does. The residual is
- * bounded by the record's 24-hour life and by the value's own entropy.
+ * bounded by the record's 24-hour life and by the value's own entropy. The run
+ * route does not persist this raw digest in PostgreSQL: it first derives an
+ * HMAC with `RUN_INTENT_HMAC_SECRET`, whose lifetime matches the durable row.
  */
 
 /** Set on a replayed response, and only on one. Absence means the handler ran. */
@@ -288,7 +290,7 @@ function canonical(value: unknown): string {
     .join(',')}}`;
 }
 
-/** Method, path and body — everything that decides what a request *does*. */
+/** Method, path and body for the Redis replay record; durable consumers key it first. */
 function fingerprintOf(request: FastifyRequest): string {
   return createHash('sha256')
     .update(`${request.method}\n${request.url}\n${canonical(request.body)}`)

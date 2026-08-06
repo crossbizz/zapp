@@ -30,6 +30,8 @@ import { TestServiceTokens } from './service-tokens.js';
 /** 32 bytes of nothing, in the shape the config demands. Never a real key. */
 export const TEST_SECRET = 'a'.repeat(64);
 export const TEST_PREVIOUS_SECRET = 'b'.repeat(64);
+/** Fixed only for deterministic fingerprint assertions. Never a deployed key. */
+export const TEST_RUN_INTENT_HMAC_KEY = Buffer.alloc(32, 0x5a);
 
 /**
  * The vault's master key for tests: a fixed byte pattern, and the *shipping*
@@ -142,6 +144,8 @@ export interface HarnessOptions {
    * (`test/integration/tenant-isolation.test.ts`).
    */
   readonly tenantDb?: TenantDbFactory;
+  /** Overrides the deterministic test key for a run-intent fingerprint assertion. */
+  readonly runIntentHmacKey?: Buffer;
   /**
    * Substitutes the git service the project-creation transaction calls. The
    * suites that assert the rollback bind one that refuses; everything else gets
@@ -204,6 +208,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       : {
           tenant: {
             tenantDb: options.tenantDb,
+            runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),

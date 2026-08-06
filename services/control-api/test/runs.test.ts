@@ -1,3 +1,5 @@
+import { createHash, createHmac } from 'node:crypto';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
@@ -8,6 +10,7 @@ import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import {
   buildHarness,
   signIn,
+  TEST_RUN_INTENT_HMAC_KEY,
   type Harness,
   type TestSession,
 } from './support/harness.js';
@@ -151,6 +154,22 @@ interface Wired {
   readonly organizationId: string;
   readonly orchestrator: FakeOrchestratorPort;
   readonly as: (session: TestSession) => Record<string, string>;
+}
+
+function newRunInput(id: string) {
+  return {
+    id,
+    workflowId: id,
+    requestFingerprint: 'a'.repeat(64),
+    projectId: newId('proj'),
+    branchId: null,
+    mode: 'build' as const,
+    appType: 'web' as const,
+    model: null,
+    budget: null,
+    startedBy: newId('user'),
+    now: new Date('2026-08-15T12:00:00.000Z'),
+  };
 }
 
 async function wire(
@@ -543,7 +562,16 @@ describe('POST /v1/projects/:projectId/runs', () => {
       appType: 'mobile',
       model: 'anthropic/claude-sonnet-5',
     });
-    expect(wired.data.runs[0]?.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const canonicalBody =
+      '{"appType":"mobile","mode":"build","model":"anthropic/claude-sonnet-5","prompt":"Retry this durable mobile run"}';
+    const rawFingerprint = createHash('sha256')
+      .update(`POST\n/v1/projects/${project.id}/runs\n${canonicalBody}`)
+      .digest('hex');
+    const expectedDurableFingerprint = createHmac('sha256', TEST_RUN_INTENT_HMAC_KEY)
+      .update(rawFingerprint)
+      .digest('hex');
+    expect(wired.data.runs[0]?.requestFingerprint).not.toBe(rawFingerprint);
+    expect(wired.data.runs[0]?.requestFingerprint).toBe(expectedDurableFingerprint);
 
     const changed = await wired.built.app.inject({
       method: 'POST',
@@ -822,6 +850,79 @@ describe('POST /v1/projects/:projectId/runs', () => {
     expect(response.statusCode, response.body).toBe(400);
     expect(wired.data.runs).toEqual([]);
     expect(wired.orchestrator.starts).toEqual([]);
+  });
+});
+
+describe('the in-memory run-create queue', () => {
+  it('releases an authorize rejection so the next caller creates and the third recovers', async () => {
+    const data = new InMemoryTenantData();
+    const id = newId('run');
+    const repository = data.factory(newId('org')).runs;
+    let authorizationAttempts = 0;
+    let audits = 0;
+    const create = () =>
+      repository.create({
+        ...newRunInput(id),
+        authorize: () => {
+          authorizationAttempts += 1;
+          if (authorizationAttempts === 1) throw new Error('authorize rejected');
+        },
+        audit: () => {
+          audits += 1;
+          return Promise.resolve();
+        },
+      });
+
+    const settled = await Promise.allSettled([create(), create(), create()]);
+
+    expect(settled.map((result) => result.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(
+      settled.slice(1).map((result) =>
+        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
+      ),
+    ).toEqual(['created', 'recovered']);
+    expect(data.runs).toHaveLength(1);
+    expect(audits).toBe(1);
+    expect(data.runCreateLocks.size).toBe(0);
+  });
+
+  it('releases an audit rejection so the next caller creates and the third recovers', async () => {
+    const data = new InMemoryTenantData();
+    const id = newId('run');
+    const repository = data.factory(newId('org')).runs;
+    let auditAttempts = 0;
+    let completedAudits = 0;
+    const create = () =>
+      repository.create({
+        ...newRunInput(id),
+        authorize: () => undefined,
+        audit: () => {
+          auditAttempts += 1;
+          if (auditAttempts === 1) return Promise.reject(new Error('audit rejected'));
+          completedAudits += 1;
+          return Promise.resolve();
+        },
+      });
+
+    const settled = await Promise.allSettled([create(), create(), create()]);
+
+    expect(settled.map((result) => result.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(
+      settled.slice(1).map((result) =>
+        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
+      ),
+    ).toEqual(['created', 'recovered']);
+    expect(data.runs).toHaveLength(1);
+    expect(completedAudits).toBe(1);
+    expect(data.runCreateLocks.size).toBe(0);
   });
 });
 

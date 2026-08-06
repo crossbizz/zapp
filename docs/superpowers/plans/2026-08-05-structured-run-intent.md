@@ -65,10 +65,21 @@ git commit -m "docs(architecture): accept structured run intent"
 - Test: `packages/contracts/test/run-intent.test.ts`
 - Modify: `packages/db/src/schema/planning.ts`
 - Create: `packages/db/drizzle/0011_structured_run_intent.sql`
+- Create: `packages/db/drizzle/0012_run_request_fingerprint.sql`
 - Modify: `packages/db/drizzle/meta/_journal.json`
 - Modify: `docs/zapp-build-prd.md`
 - Test: `packages/db/test/schema-planning.test.ts`
 - Test: `packages/db/test/prd-schema-conformance.test.ts`
+- Modify: `packages/db/test/integration/fixtures.ts`
+- Test: `packages/db/test/integration/tenant.test.ts`
+- Modify: `.env.example`
+- Modify: `scripts/dev-up.sh`
+- Modify: `docs/dev-setup.md`
+- Modify: `services/control-api/src/env.ts`
+- Modify: `services/control-api/src/compose.ts`
+- Modify: `services/control-api/src/server.ts`
+- Modify: `services/control-api/src/index.ts`
+- Modify: `services/control-api/src/plugins/idempotency.ts` (security-boundary comments only; keep its Redis digest unchanged)
 - Create: `services/control-api/src/orgs/model-policy.ts`
 - Test: `services/control-api/test/model-policy.test.ts`
 - Modify: `services/control-api/src/orchestrator/port.ts`
@@ -78,12 +89,22 @@ git commit -m "docs(architecture): accept structured run intent"
 - Modify: `services/control-api/src/app.ts`
 - Modify: `services/control-api/test/support/tenant-db.ts`
 - Test: `services/control-api/test/runs.test.ts`
+- Test: `services/control-api/test/env.test.ts`
+- Test: `services/control-api/test/compose.test.ts`
+- Test: `services/control-api/test/compose-event-stream.test.ts`
+- Test: `services/control-api/test/server-entrypoint.test.ts`
+- Modify fixtures: `services/control-api/test/integration/events-ingest.test.ts`
+- Modify fixtures: `services/control-api/test/integration/publisher.test.ts`
+- Modify fixtures: `services/control-api/test/integration/sse.test.ts`
 - Test: `services/control-api/test/integration/tenant-isolation.test.ts`
 
 **Interfaces:**
 - Produces: `APP_TYPES`, `AppTypeSchema`, and `ModelIdentifierSchema` from `@zapp/contracts`.
 - Produces: public create-run body `{ mode, prompt, branchId?, budget?, appType?, model? }` and run view `{ ..., appType, model }`.
 - Produces: `StartRunInputSchema` fields `appType: AppTypeSchema` and `model: ModelIdentifierSchema.nullable()`.
+- Produces: `RunCreateResult` with exact `created | recovered | conflict` outcomes. Only `created` authorizes and audits; exact recovery reuses the row without either callback, while a changed request conflicts.
+- Produces: durable `requestFingerprint` as `HMAC-SHA-256(RUN_INTENT_HMAC_SECRET, idempotencyPluginFingerprint)`. The raw body-derived SHA-256 remains only in the existing Redis idempotency record and must never reach PostgreSQL.
+- Produces: `loadRunIntentHmacKey`, which accepts exactly 64 hexadecimal characters and returns 32 key bytes. `ServiceRuntime` requires that key; `buildApp` may invent one only behind its existing development/test guard.
 - Consumes: `OrganizationStore.getSettings(organizationId)` and `defaultModelPolicy` shaped as either `string[]` or `{ allowedModels: string[] }`.
 
 - [ ] **Step 1: Write shared-contract RED tests**
@@ -143,13 +164,23 @@ Persist `appType` and `model ?? null`, include both in audit metadata and `RunSc
 
 In `runs.test.ts`, prove one operation key replay returns one row/start intent and a changed body conflicts. In tenant-isolation integration coverage, prove another organization's policy cannot authorize a model and the foreign project still returns 404.
 
-- [ ] **Step 8: Run Task 2 verification**
+- [ ] **Step 8: Apply the review-approved durability extension with RED tests first**
+
+Create migration `0012_run_request_fingerprint.sql`, backfill existing rows with `legacy:<run-id>`, and make `request_fingerprint` non-null. Derive run identity only from the scoped idempotency key so a retry after a 5xx finds the same row; compare the request fingerprint inside the repository and return `created`, `recovered`, or `conflict`. Keep policy lookup outside the database transaction, but run authorization and audit only for a row this call inserted. Serialize the in-memory repository by tenant/run id to match PostgreSQL.
+
+Before persisting or comparing a run request, HMAC the idempotency plugin fingerprint with the 32-byte key returned by `loadRunIntentHmacKey`. Wire the required key through `server.ts` → `ServiceRuntime` → `composeApp` → `buildApp` → `RunRoutesDeps`; production refuses an omission, while direct development/test `buildApp` calls use a process-local random key through `inDevelopmentOnly`. Add the name-only `.env.example` placeholder and local `dev-up.sh` generation. Do not alter the Redis plugin's digest algorithm.
+
+Commit regressions proving: the raw offline-candidate digest differs from PostgreSQL while the fixed-key HMAC matches; exact retry and changed-body conflict still hold; one-connection PostgreSQL operation does not deadlock; memory and PostgreSQL share concurrent create outcomes; three queued memory callers settle `rejected`, `created`, `recovered` after either authorization or audit rejects, leave one row/one completed audit as applicable, and leak no lock.
+
+- [ ] **Step 9: Run Task 2 verification**
 
 ```bash
 pnpm --filter @zapp/contracts test -- run-intent.test.ts
 pnpm --filter @zapp/db test -- schema-planning.test.ts schema-execution.test.ts
 pnpm --filter @zapp/db test -- prd-schema-conformance.test.ts
 pnpm --filter @zapp/control-api test -- model-policy.test.ts runs.test.ts boundary-schemas.test.ts route-isolation.test.ts
+pnpm --filter @zapp/control-api test -- env.test.ts compose.test.ts compose-event-stream.test.ts server-entrypoint.test.ts
+pnpm --filter @zapp/control-api test:integration -- tenant-isolation.test.ts
 pnpm --filter @zapp/contracts lint && pnpm --filter @zapp/contracts typecheck && pnpm --filter @zapp/contracts build
 pnpm --filter @zapp/db lint && pnpm --filter @zapp/db typecheck && pnpm --filter @zapp/db build
 pnpm --filter @zapp/control-api lint && pnpm --filter @zapp/control-api typecheck && pnpm --filter @zapp/control-api build
@@ -158,11 +189,11 @@ git diff --check
 
 Expected: all commands exit 0 with no skipped tests.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add packages/contracts packages/db services/control-api
-git commit -m "feat(control-api): persist structured run intent"
+git add .env.example scripts/dev-up.sh docs/dev-setup.md docs/superpowers/plans/2026-08-05-structured-run-intent.md packages/contracts packages/db services/control-api
+git commit -m "fix(control-api): key durable run fingerprints"
 ```
 
 ### Task 3: Regenerate and verify the public SDK
