@@ -1,3 +1,5 @@
+import { createHash, createHmac } from 'node:crypto';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
@@ -8,9 +10,11 @@ import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import {
   buildHarness,
   signIn,
+  TEST_RUN_INTENT_HMAC_KEY,
   type Harness,
   type TestSession,
 } from './support/harness.js';
+import { InMemoryOrganizationStore } from './support/org-store.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
 /**
@@ -38,6 +42,8 @@ interface StartCall {
   readonly workflowId: string;
   readonly projectId: string;
   readonly mode: string;
+  readonly appType: 'web' | 'mobile';
+  readonly model: string | null;
   readonly prompt: string;
   readonly operationKey?: string;
 }
@@ -132,6 +138,15 @@ class FakeSandboxServicePort {
   }
 }
 
+class ReadCountingOrganizationStore extends InMemoryOrganizationStore {
+  settingsReads = 0;
+
+  override getSettings(organizationId: string) {
+    this.settingsReads += 1;
+    return super.getSettings(organizationId);
+  }
+}
+
 interface Wired {
   readonly built: Harness;
   readonly data: InMemoryTenantData;
@@ -141,11 +156,33 @@ interface Wired {
   readonly as: (session: TestSession) => Record<string, string>;
 }
 
-async function wire(options: { sandbox?: FakeSandboxServicePort } = {}): Promise<Wired> {
+function newRunInput(id: string) {
+  return {
+    id,
+    workflowId: id,
+    requestFingerprint: 'a'.repeat(64),
+    projectId: newId('proj'),
+    branchId: null,
+    mode: 'build' as const,
+    appType: 'web' as const,
+    model: null,
+    budget: null,
+    startedBy: newId('user'),
+    now: new Date('2026-08-15T12:00:00.000Z'),
+  };
+}
+
+async function wire(
+  options: {
+    sandbox?: FakeSandboxServicePort;
+    organizations?: InMemoryOrganizationStore;
+  } = {},
+): Promise<Wired> {
   const data = new InMemoryTenantData();
   const orchestrator = new FakeOrchestratorPort();
   const built = buildHarness({
     tenantDb: data.factory,
+    ...(options.organizations === undefined ? {} : { organizations: options.organizations }),
     // CP-9 will add this injected dependency. Keeping the fake in the test
     // first lets the HTTP assertion demonstrate the missing route today.
     orchestrator,
@@ -229,9 +266,14 @@ async function joinBuilder(wired: Wired): Promise<TestSession> {
 }
 
 describe('POST /v1/projects/:projectId/runs', () => {
-  it('creates a queued run and starts one workflow keyed by the run id', async () => {
-    const wired = await wire();
+  it('defaults omitted intent durably before starting one workflow', async () => {
+    const organizations = new ReadCountingOrganizationStore();
+    const wired = await wire({ organizations });
     const project = await createProject(wired);
+    organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: { allowedModels: 'malformed' },
+    });
 
     const response = await wired.built.app.inject({
       method: 'POST',
@@ -241,18 +283,130 @@ describe('POST /v1/projects/:projectId/runs', () => {
     });
 
     expect(response.statusCode, response.body).toBe(201);
-    const run = response.json<{ run: { id: string; status: string; projectId: string } }>().run;
-    expect(run).toMatchObject({ projectId: project.id, status: 'queued' });
+    const run = response.json<{
+      run: {
+        id: string;
+        status: string;
+        projectId: string;
+        appType: string;
+        model: string | null;
+      };
+    }>().run;
+    expect(run).toMatchObject({
+      projectId: project.id,
+      status: 'queued',
+      appType: 'web',
+      model: null,
+    });
     expect(wired.data.runs).toHaveLength(1);
+    expect(wired.data.runs[0]).toMatchObject({ appType: 'web', model: null });
     expect(wired.orchestrator.starts).toEqual([
       expect.objectContaining({
         runId: run.id,
         workflowId: run.id,
         projectId: project.id,
         mode: 'build',
+        appType: 'web',
+        model: null,
         prompt: 'Add a billing page',
       }),
     ]);
+    expect(organizations.settingsReads).toBe(0);
+    const audit = wired.built.audit.events.find(
+      (event) => event.action === 'run.created' && event.targetId === run.id,
+    );
+    expect(audit?.metadata).toMatchObject({ appType: 'web', model: null });
+  });
+
+  it('persists, reads, audits, and dispatches an allowed explicit intent unchanged', async () => {
+    const organizations = new ReadCountingOrganizationStore();
+    const wired = await wire({ organizations });
+    const project = await createProject(wired);
+    organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: {
+        allowedModels: ['anthropic/claude-sonnet-5', 'openai/gpt-5'],
+      },
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'explicit-run-intent-01' },
+      payload: {
+        mode: 'build',
+        prompt: 'Build the mobile billing flow',
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    const created = response.json<{
+      run: { id: string; appType: string; model: string | null };
+    }>().run;
+    expect(created).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
+    expect(wired.data.runs).toContainEqual(
+      expect.objectContaining({
+        id: created.id,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+    );
+    expect(wired.orchestrator.starts).toContainEqual(
+      expect.objectContaining({
+        runId: created.id,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+    );
+    const audit = wired.built.audit.events.find(
+      (event) => event.action === 'run.created' && event.targetId === created.id,
+    );
+    expect(audit?.metadata).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
+    expect(organizations.settingsReads).toBe(1);
+
+    const read = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/runs/${created.id}`,
+      headers: wired.as(wired.owner),
+    });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json<{ run: { appType: string; model: string | null } }>().run).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
+  });
+
+  it('rejects an explicit model absent from the selected organization policy', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    wired.built.organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: ['openai/gpt-5'],
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'denied-run-model-01' },
+      payload: {
+        mode: 'build',
+        prompt: 'Do not dispatch this model',
+        model: 'anthropic/claude-sonnet-5',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe('model_not_allowed');
+    expect(wired.data.runs).toEqual([]);
+    expect(wired.orchestrator.starts).toEqual([]);
   });
 
   it('returns invalid_run_state for a completed run without signalling it', async () => {
@@ -264,6 +418,9 @@ describe('POST /v1/projects/:projectId/runs', () => {
       projectId: project.id,
       branchId: null,
       mode: 'build',
+      appType: 'web',
+      model: null,
+      requestFingerprint: 'seed:completed-run',
       status: 'completed',
       specificationId: null,
       temporalWorkflowId: 'workflow-completed',
@@ -327,59 +484,143 @@ describe('POST /v1/projects/:projectId/runs', () => {
   it('replays a run creation without starting a second workflow', async () => {
     const wired = await wire();
     const project = await createProject(wired);
+    wired.built.organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: ['anthropic/claude-sonnet-5'],
+    });
     const headers = { ...wired.as(wired.owner), 'idempotency-key': 'run-replay-01' };
+    const payload = {
+      mode: 'build',
+      prompt: 'Implement the landing page',
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    } as const;
 
     const first = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Implement the landing page' },
+      payload,
     });
     const replay = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Implement the landing page' },
+      payload,
+    });
+    const conflict = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers,
+      payload: { ...payload, appType: 'web' },
     });
 
     expect(first.statusCode, first.body).toBe(201);
     expect(replay.statusCode, replay.body).toBe(201);
     expect(replay.json()).toEqual(first.json());
+    expect(conflict.statusCode, conflict.body).toBe(422);
+    expect(conflict.json<{ error: { code: string } }>().error.code).toBe(
+      'idempotency_conflict',
+    );
     expect(wired.data.runs).toHaveLength(1);
     expect(wired.orchestrator.starts).toHaveLength(1);
+    expect(wired.orchestrator.starts[0]).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
   });
 
-  it('durably records one run intent before dispatch and retries its stable workflow identity', async () => {
-    const wired = await wire();
+  it('retries a persisted explicit intent after policy changes without reauthorizing it', async () => {
+    const organizations = new ReadCountingOrganizationStore();
+    const wired = await wire({ organizations });
     const project = await createProject(wired);
+    organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: ['anthropic/claude-sonnet-5'],
+    });
     wired.orchestrator.failStarts = 1;
     const headers = { ...wired.as(wired.owner), 'idempotency-key': 'durable-run-retry-01' };
+    const payload = {
+      mode: 'build',
+      prompt: 'Retry this durable mobile run',
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    } as const;
 
     const first = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Retry this durable run' },
+      payload,
     });
 
     expect(first.statusCode, first.body).toBe(502);
     expect(wired.data.runs).toHaveLength(1);
     const runId = wired.data.runs[0]?.id;
     expect(runId).toBeDefined();
-    expect(wired.built.audit.events).toContainEqual(
-      expect.objectContaining({ action: 'run.created', targetId: runId }),
+    expect(wired.data.runs[0]).toMatchObject({
+      appType: 'mobile',
+      model: 'anthropic/claude-sonnet-5',
+    });
+    const canonicalBody =
+      '{"appType":"mobile","mode":"build","model":"anthropic/claude-sonnet-5","prompt":"Retry this durable mobile run"}';
+    const rawFingerprint = createHash('sha256')
+      .update(`POST\n/v1/projects/${project.id}/runs\n${canonicalBody}`)
+      .digest('hex');
+    const expectedDurableFingerprint = createHmac('sha256', TEST_RUN_INTENT_HMAC_KEY)
+      .update(rawFingerprint)
+      .digest('hex');
+    expect(wired.data.runs[0]?.requestFingerprint).not.toBe(rawFingerprint);
+    expect(wired.data.runs[0]?.requestFingerprint).toBe(expectedDurableFingerprint);
+
+    const changed = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers,
+      payload: { ...payload, appType: 'web' },
+    });
+
+    expect(changed.statusCode, changed.body).toBe(422);
+    expect(changed.json<{ error: { code: string } }>().error.code).toBe(
+      'idempotency_conflict',
     );
+    expect(wired.data.runs).toHaveLength(1);
+    expect(wired.orchestrator.starts).toHaveLength(1);
+    expect(
+      wired.built.audit.events.filter(
+        (event) => event.action === 'run.created' && event.targetId === runId,
+      ),
+    ).toHaveLength(1);
+
+    organizations.settings.delete(wired.organizationId);
 
     const retry = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/runs`,
       headers,
-      payload: { mode: 'build', prompt: 'Retry this durable run' },
+      payload,
     });
 
     expect(retry.statusCode, retry.body).toBe(201);
     expect(wired.data.runs).toHaveLength(1);
-    expect(wired.orchestrator.starts.map((start) => start.runId)).toEqual([runId, runId]);
+    expect(
+      wired.built.audit.events.filter(
+        (event) => event.action === 'run.created' && event.targetId === runId,
+      ),
+    ).toHaveLength(1);
+    expect(wired.orchestrator.starts).toEqual([
+      expect.objectContaining({
+        runId,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+      expect.objectContaining({
+        runId,
+        appType: 'mobile',
+        model: 'anthropic/claude-sonnet-5',
+      }),
+    ]);
+    expect(organizations.settingsReads).toBe(1);
   });
 
   it('signals each applicable lifecycle action and records its matching audit action', async () => {
@@ -468,6 +709,9 @@ describe('POST /v1/projects/:projectId/runs', () => {
       projectId: foreignProjectId,
       branchId: foreignBranch.id,
       mode: 'build',
+      appType: 'web',
+      model: null,
+      requestFingerprint: 'seed:foreign-run',
       status: 'running',
       specificationId: null,
       temporalWorkflowId: `workflow-${foreignOrganizationId}`,
@@ -553,6 +797,9 @@ describe('POST /v1/projects/:projectId/runs', () => {
       projectId: newId('proj'),
       branchId: null,
       mode: 'build',
+      appType: 'web',
+      model: null,
+      requestFingerprint: 'seed:foreign-run-permission',
       status: 'running',
       specificationId: null,
       temporalWorkflowId: 'foreign-workflow',
@@ -603,6 +850,79 @@ describe('POST /v1/projects/:projectId/runs', () => {
     expect(response.statusCode, response.body).toBe(400);
     expect(wired.data.runs).toEqual([]);
     expect(wired.orchestrator.starts).toEqual([]);
+  });
+});
+
+describe('the in-memory run-create queue', () => {
+  it('releases an authorize rejection so the next caller creates and the third recovers', async () => {
+    const data = new InMemoryTenantData();
+    const id = newId('run');
+    const repository = data.factory(newId('org')).runs;
+    let authorizationAttempts = 0;
+    let audits = 0;
+    const create = () =>
+      repository.create({
+        ...newRunInput(id),
+        authorize: () => {
+          authorizationAttempts += 1;
+          if (authorizationAttempts === 1) throw new Error('authorize rejected');
+        },
+        audit: () => {
+          audits += 1;
+          return Promise.resolve();
+        },
+      });
+
+    const settled = await Promise.allSettled([create(), create(), create()]);
+
+    expect(settled.map((result) => result.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(
+      settled.slice(1).map((result) =>
+        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
+      ),
+    ).toEqual(['created', 'recovered']);
+    expect(data.runs).toHaveLength(1);
+    expect(audits).toBe(1);
+    expect(data.runCreateLocks.size).toBe(0);
+  });
+
+  it('releases an audit rejection so the next caller creates and the third recovers', async () => {
+    const data = new InMemoryTenantData();
+    const id = newId('run');
+    const repository = data.factory(newId('org')).runs;
+    let auditAttempts = 0;
+    let completedAudits = 0;
+    const create = () =>
+      repository.create({
+        ...newRunInput(id),
+        authorize: () => undefined,
+        audit: () => {
+          auditAttempts += 1;
+          if (auditAttempts === 1) return Promise.reject(new Error('audit rejected'));
+          completedAudits += 1;
+          return Promise.resolve();
+        },
+      });
+
+    const settled = await Promise.allSettled([create(), create(), create()]);
+
+    expect(settled.map((result) => result.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(
+      settled.slice(1).map((result) =>
+        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
+      ),
+    ).toEqual(['created', 'recovered']);
+    expect(data.runs).toHaveLength(1);
+    expect(completedAudits).toBe(1);
+    expect(data.runCreateLocks.size).toBe(0);
   });
 });
 
@@ -934,7 +1254,7 @@ describe('workspace passthrough routes', () => {
     ] as const) {
       const seeded: AgentRun = {
         id: newId('run'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
-        mode: 'build', status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
+        mode: 'build', appType: 'web', model: null, requestFingerprint: `seed:viewer-${action}`, status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
         startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
       };
       wired.data.runs.push(seeded);
@@ -994,7 +1314,7 @@ describe('workspace passthrough routes', () => {
     };
     const foreignRun: AgentRun = {
       id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
-      mode: 'build', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
+      mode: 'build', appType: 'web', model: null, requestFingerprint: 'seed:foreign-resource-run', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
       startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
     };
     const foreignWorkspace: Workspace = {

@@ -69,11 +69,11 @@ Master plan §Global Constraints, plus:
 Layout spec (mirrors benchmark screenshot, zapp copy):
 - Full-bleed hero: `--zapp-hero` sky gradient, top bar overlay: left `Home` pill (grid icon), right `CreditsPill` (remaining credits, click → /org/usage) + `Avatar` menu (orgs, settings, sign out).
 - Centered H1 (32px, white): **"Start with one prompt. We'll take it to production."** (copy config-driven; structural parity with benchmark's "Start with one prompt. You can change everything later.").
-- Tabs card: `Web App` (active) | `Mobile App` (behind PostHog flag `mobile-app-tab`; while off, disabled with tooltip "Coming after P0"). 
-- Prompt card (`rounded-2xl`, white, shadow): textarea placeholder *"Describe your idea. zapp will build, test, and ship it."*, autosize 3→10 rows; bottom-left `+` opens a menu exactly matching the benchmark screenshot: **Upload file** (files/images), **Import from GitHub** (→ WEB-4 import flow), **Auto ▸** (mode & model selector submenu: "Auto (recommended)" default; modes Ask / Prototype / Build / Fix / Autonomous with one-line descriptions; model picker within org model policy), **Advanced controls** (run budget cap, target branch); bottom-right: mic button (behind PostHog feature flag `voice-input`, default off — OPS-6 catalog) + circular submit arrow (disabled until ≥ 10 chars). Selected mode/model chips render above the composer when non-Auto.
+- Tabs card: `Web App` (active) | `Mobile App` (behind PostHog flag `mobile-app-tab`; while off, disabled with tooltip "Coming after P0"). Per accepted ADR-0009, the enabled choice is sent as public `appType`; neither tab may report a choice that the generated SDK cannot carry.
+- Prompt card (`rounded-2xl`, white, shadow): textarea placeholder *"Describe your idea. zapp will build, test, and ship it."*, autosize 3→10 rows; bottom-left `+` opens a menu exactly matching the benchmark screenshot: **Upload file** (files/images), **Import from GitHub** (→ WEB-4 import flow), **Auto ▸** (mode & model selector submenu: "Auto (recommended)" default; modes Ask / Prototype / Build / Fix / Autonomous with one-line descriptions; model picker within org model policy), **Advanced controls** (run budget cap, target branch); bottom-right: mic button (behind PostHog feature flag `voice-input`, default off — OPS-6 catalog) + circular submit arrow (disabled until ≥ 10 chars). Selected mode/model chips render above the composer when non-Auto. Per accepted ADR-0009, an explicit model is sent as public `model`; Auto omits it and delegates routing to policy.
 - Below: "Not sure where to start? Try these ⇄" shuffle + 3 `Chip`s with colored-dot icons, rotating from a 9-item config list (e.g. "Client portal for an agency", "Class scheduler for a yoga studio", "SaaS dashboard with Stripe billing"). Click → fills composer (not auto-submit).
 - Bottom-right support bubble (links to docs/support mail P0).
-- Submit → `POST /v1/projects` (name auto-derived) + `POST /v1/projects/:id/runs` (mode: recommended per prompt heuristic — Prototype for exploratory wording, Build otherwise; user can change in builder) → route `/projects/:id` with composer text as first message.
+- Submit → `POST /v1/projects` (name auto-derived) + `POST /v1/projects/:id/runs` (mode: recommended per prompt heuristic — Prototype for exploratory wording, Build otherwise; `appType` from the product tab; optional policy-approved `model`; user can change mode in builder) → route `/projects/:id` with composer text as first message.
 
 - [ ] Failing e2e: renders hero + tabs + chips; typing < 10 chars keeps submit disabled; chip click fills composer; submit navigates to builder with first message visible; keyboard-only path works (tab order: tabs → composer → attach → submit → chips).
 - [ ] Commit: `feat(web): prompt-first home screen`
@@ -94,8 +94,8 @@ Layout spec (mirrors benchmark screenshot, zapp copy):
 
 Layout (PRD §10.0.2): top bar: project name + support badge + env badge, actions right: `Preview` (focus preview tab), `GitHub` (sync state pill: synced/ahead/diverged), `Deploy` (primary, enabled once a preview exists), Mission Control toggle, settings gear. Split: left conversation pane (min 380px, 40%), right surface (60%) tabs `Preview | Code | Logs | Tests`; Mission Control = right-side `Drawer` (overlay ≥ 1280px pushes content), collapsible, state persisted; responsive: < 1024px stacks with bottom tab switcher (conversation default).
 
-- [ ] e2e: pane resize persists; deploy disabled pre-preview with tooltip; Mission Control opens without navigation (URL unchanged, PRD §14.1).
-- [ ] Commit: `feat(web): builder two-pane shell with mission control drawer`
+- [x] e2e: pane resize persists; deploy disabled pre-preview with tooltip; Mission Control opens without navigation (URL unchanged, PRD §14.1).
+- [x] Commit: `feat(web): builder two-pane shell with mission control drawer`
 
 ### Task WEB-6: Conversation stream (M1 subset)
 
@@ -218,3 +218,6 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 - 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
 - 2026-08-05 WEB-2 done — shipped semantic Tailwind v4 tokens and 23 React components with CI-wired Storybook axe (23/23), Next+Vite package-boundary proofs, independent review clean after three rounds, UI 16/16, web 19/19, and the uncached repository gate passed 38/38.
+- 2026-08-05 WEB-3 BLOCKED — independent review found that the locked run API cannot carry the required model or Web/Mobile selection; ADR-0009 proposes structured public/durable fields. The task stays unchecked, and its uncommitted branch also retains five repair findings for resumption.
+- 2026-08-05 WEB-4 BLOCKED — the binding New project → home composer modal depends on blocked WEB-3; dashboard work is deferred intact while independent WEB-5 proceeds.
+- 2026-08-05 WEB-5 done — shipped the tenant-scoped responsive builder shell with persisted resizing and Mission Control, 39/39 web E2E, clean independent spec and quality reviews after three rounds each, and an uncached Node 22 repository gate of 38/38.

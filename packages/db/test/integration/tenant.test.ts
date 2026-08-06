@@ -279,6 +279,7 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           organizationId: alpha.organizationId,
           projectId: beta.projectId,
           mode: 'build',
+          requestFingerprint: 'seed:cross-tenant-run',
           status: 'running',
           startedBy: alpha.userId,
         }),

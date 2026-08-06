@@ -76,6 +76,7 @@ export class InMemoryTenantData {
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
   yieldSpecificationCreates = false;
   readonly specificationLocks = new Map<string, Promise<void>>();
+  readonly runCreateLocks = new Map<string, Promise<void>>();
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
@@ -146,6 +147,26 @@ async function withSpecificationLock<T>(
   } finally {
     unlock();
     if (data.specificationLocks.get(projectId) === current) data.specificationLocks.delete(projectId);
+  }
+}
+
+async function withRunCreateLock<T>(
+  data: InMemoryTenantData,
+  runId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = data.runCreateLocks.get(runId) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.runCreateLocks.set(runId, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.runCreateLocks.get(runId) === current) data.runCreateLocks.delete(runId);
   }
 }
 
@@ -530,25 +551,39 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         return Promise.resolve(mine(orgId, data.runs).find((row) => row.id === runId));
       },
       async create(input) {
-        const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
-        if (existing !== undefined) return existing;
-        const run: AgentRun = {
-          id: input.id,
-          organizationId: orgId,
-          projectId: input.projectId,
-          branchId: input.branchId,
-          mode: input.mode,
-          status: 'queued',
-          specificationId: null,
-          temporalWorkflowId: input.workflowId,
-          startedBy: input.startedBy,
-          budgetJson: input.budget,
-          startedAt: input.now,
-          completedAt: null,
-        };
-        await input.audit(NO_TRANSACTION, run);
-        data.runs.push(run);
-        return run;
+        return await withRunCreateLock(data, `${orgId}:${input.id}`, async () => {
+          const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
+          if (existing !== undefined) {
+            return {
+              outcome:
+                existing.requestFingerprint === input.requestFingerprint
+                  ? 'recovered'
+                  : 'conflict',
+              run: existing,
+            } as const;
+          }
+          const run: AgentRun = {
+            id: input.id,
+            organizationId: orgId,
+            projectId: input.projectId,
+            branchId: input.branchId,
+            mode: input.mode,
+            appType: input.appType,
+            model: input.model,
+            requestFingerprint: input.requestFingerprint,
+            status: 'queued',
+            specificationId: null,
+            temporalWorkflowId: input.workflowId,
+            startedBy: input.startedBy,
+            budgetJson: input.budget,
+            startedAt: input.now,
+            completedAt: null,
+          };
+          input.authorize(run);
+          await input.audit(NO_TRANSACTION, run);
+          data.runs.push(run);
+          return { outcome: 'created', run } as const;
+        });
       },
       async claimOperation(input) {
         const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);

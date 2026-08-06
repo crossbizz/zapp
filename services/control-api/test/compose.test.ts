@@ -54,6 +54,7 @@ function composed(): AppInstance {
     logger: false,
     database: database.db,
     redis: unusedRedis,
+    runIntentHmacKey: Buffer.alloc(32, 0x55),
     auth: {
       databaseUrl: UNUSED_DATABASE_URL,
       config: TEST_AUTH_CONFIG,
@@ -198,6 +199,7 @@ describe('the startup guards', () => {
 
   const orgs = { organizations: new InMemoryOrganizationStore() };
   const tenant = { tenantDb: (() => ({})) as never };
+  const tenantWithRunKey = { ...tenant, runIntentHmacKey: Buffer.alloc(32, 0x66) };
 
   it('refuses an organization surface with no tenant-scoped routes', () => {
     // The mirror of "tenant routes require orgs". Without it, omitting `tenant`
@@ -235,7 +237,7 @@ describe('the startup guards', () => {
     // Defaulting to one in a deployment is the accident this prevents.
     expect(
       withNodeEnv('production', () => {
-        build({ orgs, tenant });
+        build({ orgs, tenant: tenantWithRunKey });
       }),
     ).toThrow(/refusing to start: no rate limiter/);
 
@@ -244,9 +246,23 @@ describe('the startup guards', () => {
     // fallbacks.
     expect(
       withNodeEnv(undefined, () => {
-        build({ orgs, tenant });
+        build({ orgs, tenant: tenantWithRunKey });
       }),
     ).toThrow(/refusing to start/);
+  });
+
+  it('refuses a missing run-intent fingerprint key outside development but permits the guarded development fallback', () => {
+    expect(
+      withNodeEnv('production', () => {
+        build({ orgs, tenant });
+      }),
+    ).toThrow(/run-intent fingerprint HMAC key/);
+
+    expect(
+      withNodeEnv('development', () => {
+        build({ orgs, tenant });
+      }),
+    ).not.toThrow();
   });
 
   it('lets a development run default to them', () => {

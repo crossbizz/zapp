@@ -46,6 +46,20 @@ export function loadRedisUrl(source: unknown = process.env): string {
 }
 
 /**
+ * Cross-instance key for the HMAC stored with durable run intent. There is no
+ * default: retries must derive the same digest on every replica, while a
+ * published fallback would let a database reader test guessed prompts.
+ */
+const RunIntentHmacEnvSchema = z.object({
+  RUN_INTENT_HMAC_SECRET: z.string().regex(/^[0-9a-fA-F]{64}$/),
+});
+
+/** @throws Error naming the variable, never its value. */
+export function loadRunIntentHmacKey(source: unknown = process.env): Buffer {
+  return Buffer.from(defineEnv(RunIntentHmacEnvSchema, source).RUN_INTENT_HMAC_SECRET, 'hex');
+}
+
+/**
  * The master key that wraps every secret's data key (CP-7), and the one
  * variable in this service that *is* a secret.
  *

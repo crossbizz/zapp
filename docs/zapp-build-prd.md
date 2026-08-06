@@ -1647,6 +1647,9 @@ The following is the minimum conceptual model. Physical schema may split large e
 - `project_id`
 - `branch_id`
 - `mode`
+- `app_type`
+- `model`
+- `request_fingerprint`
 - `status`
 - `specification_id`
 - `temporal_workflow_id`

@@ -3,7 +3,13 @@ import { createDb } from '@zapp/db';
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
-import { loadEnv, loadMasterKey, loadRedisUrl, loadServiceTokenConfig } from './env.js';
+import {
+  loadEnv,
+  loadMasterKey,
+  loadRedisUrl,
+  loadRunIntentHmacKey,
+  loadServiceTokenConfig,
+} from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl } from './git/client.js';
@@ -32,6 +38,10 @@ const masterKey = loadMasterKey();
 // the surface with no user-facing form at all, so a deployment that cannot
 // verify a service token must not come up serving it (CP-8).
 const serviceTokens = loadServiceTokenConfig();
+// Durable run retries compare this keyed digest across replicas. Missing or
+// malformed means refusal to boot; a process-local production key would strand
+// every retry that reached another instance.
+const runIntentHmacKey = loadRunIntentHmacKey();
 // Where projects' repositories are actually created (plan 06 GIT-2). Undefined
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
@@ -53,6 +63,7 @@ const app = composeApp({
   database: database.db,
   redis,
   eventWakeups: redis,
+  runIntentHmacKey,
   auth,
   masterKey,
   serviceTokens,

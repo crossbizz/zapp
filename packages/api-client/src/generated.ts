@@ -2590,12 +2590,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             items: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -2622,12 +2625,18 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        /**
+                         * @default web
+                         * @enum {string}
+                         */
+                        appType?: "web" | "mobile";
                         branchId?: string;
                         budget?: {
                             maxCredits: number;
                         };
                         /** @enum {string} */
                         mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                        model?: string;
                         prompt: string;
                     };
                 };
@@ -2677,12 +2686,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -4232,12 +4244,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -4322,12 +4337,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -4503,12 +4521,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -4597,12 +4618,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */
@@ -4685,12 +4709,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
                                 organizationId: string;
                                 projectId: string;
                                 /** Format: date-time */

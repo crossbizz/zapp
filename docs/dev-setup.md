@@ -24,7 +24,7 @@ pnpm install
 
 1. copies `.env.example` to `.env` if you don't have one yet, then fills the
    platform secrets (`SESSION_JWT_SECRET`, `SERVICE_TOKEN_SECRET`,
-   `SECRETS_MASTER_KEY`) with generated local values wherever they are still
+   `RUN_INTENT_HMAC_SECRET`, `SECRETS_MASTER_KEY`) with generated local values wherever they are still
    `replace-me` — in an `.env` you already had as well as a new one, which is how
    an older copy gets healed. A value you set yourself is never overwritten, and
    variables the template has gained since your `.env` was copied are named in a
@@ -127,14 +127,24 @@ placeholder values only. Copy it to `.env` and fill in real keys as each
 milestone needs them (see `AGENTS.md` §10). `.env`, `.env.local.forgejo`, and
 anything else matching `.env.*` are gitignored — never commit real credentials.
 
-Three variables are generated rather than obtained from a vendor:
-`SESSION_JWT_SECRET` and `SERVICE_TOKEN_SECRET` are `openssl rand -hex 32`, and
+Four variables are generated rather than obtained from a vendor:
+`SESSION_JWT_SECRET`, `SERVICE_TOKEN_SECRET`, and `RUN_INTENT_HMAC_SECRET` are
+`openssl rand -hex 32`, and
 the secrets-vault master key `SECRETS_MASTER_KEY` is `openssl rand -base64 32` —
 base64 of exactly 32 bytes, the one value in the file that is not hex. The
 control plane refuses to start on anything else, and it has no default: a vault
 that invented a key would encrypt secrets nothing else could read, and one that
 shared a committed default would encrypt them so that everybody could.
-`dev-up.sh` generates all three, so do this by hand only if you are not using it.
+`dev-up.sh` generates all four, so do this by hand only if you are not using it.
+
+`RUN_INTENT_HMAC_SECRET` is a durable data-compatibility key, not a freely
+rotatable session secret. Every control-api replica in an environment must use
+the same value, and that value must remain stable for as long as an existing
+`agent_runs` row may be retried. Changing it makes the same request fingerprint
+differ and correctly returns `idempotency_conflict`. Production rotation
+therefore requires a dual-key/versioned fingerprint migration or deliberate
+cleanup of all rows whose create requests can no longer be retried; simply
+replacing the variable in a rolling deploy is unsupported.
 
 `SECRETS_MASTER_KEY_VERSION` (defaults to 1) and `SECRETS_PREVIOUS_MASTER_KEY`
 (empty) are the master-key rotation pair — leave both as shipped locally. They

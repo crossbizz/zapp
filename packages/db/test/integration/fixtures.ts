@@ -70,6 +70,7 @@ export async function seedTenant(
     projectId,
     branchId,
     mode: 'build',
+    requestFingerprint: `seed:${runId}`,
     status: 'running',
     startedBy: userId,
   });

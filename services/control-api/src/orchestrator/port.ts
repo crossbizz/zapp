@@ -1,4 +1,9 @@
-import { idSchema, RunModeSchema } from '@zapp/contracts';
+import {
+  AppTypeSchema,
+  idSchema,
+  ModelIdentifierSchema,
+  RunModeSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/);
@@ -11,6 +16,8 @@ export const StartRunInputSchema = z
     projectId: idSchema('proj'),
     branchId: idSchema('br').nullable(),
     mode: RunModeSchema,
+    appType: AppTypeSchema,
+    model: ModelIdentifierSchema.nullable(),
     prompt: z.string().min(1).max(20_000),
     budget: z
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })

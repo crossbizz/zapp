@@ -1,0 +1,93 @@
+import { Button, EnvBadge, SupportLevelBadge, Tooltip } from '@zapp/ui';
+import type { ReactElement, ReactNode } from 'react';
+
+export type RepositorySyncState = 'synced' | 'ahead' | 'diverged' | 'unavailable';
+
+const syncLabels: Readonly<Record<RepositorySyncState, string>> = {
+  ahead: 'Ahead',
+  diverged: 'Diverged',
+  synced: 'Synced',
+  unavailable: 'Unavailable',
+};
+
+interface TopBarProps {
+  readonly missionControl: ReactNode;
+  readonly onPreview: () => void;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly supportLevel: 'compatible' | 'verified' | 'managed';
+  readonly syncState: RepositorySyncState;
+}
+
+function GitHubIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+      <path
+        d="M12 2.8a9.4 9.4 0 0 0-3 18.3c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 0 1.6 1.1 1.6 1.1.9 1.6 2.4 1.1 3 .8.1-.7.4-1.2.7-1.4-2.3-.3-4.7-1.1-4.7-5a3.9 3.9 0 0 1 1-2.7 3.6 3.6 0 0 1 .1-2.7s.8-.3 2.8 1a9.5 9.5 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.3.2 2.3.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.7 5 .4.3.7 1 .7 1.9v2.7c0 .3.2.6.7.5A9.4 9.4 0 0 0 12 2.8Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function SettingsIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+      <path
+        d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8 3.5-.1-1.2 2-1.6-2-3.4-2.4 1a8.2 8.2 0 0 0-2.1-1.2L15 3h-4l-.4 2.6a8.2 8.2 0 0 0-2.1 1.2l-2.4-1-2 3.4 2 1.6L6 12l.1 1.2-2 1.6 2 3.4 2.4-1a8.2 8.2 0 0 0 2.1 1.2L11 21h4l.4-2.6a8.2 8.2 0 0 0 2.1-1.2l2.4 1 2-3.4-2-1.6.1-1.2Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+export function TopBar({
+  missionControl,
+  onPreview,
+  projectId,
+  projectName,
+  supportLevel,
+  syncState,
+}: TopBarProps): ReactElement {
+  return (
+    <header className="zapp-builder-top-bar">
+      <div className="zapp-builder-project-identity">
+        <h1 className="zapp-builder-project-name">{projectName}</h1>
+        <SupportLevelBadge level={supportLevel} />
+        <EnvBadge environment="preview" />
+      </div>
+      <nav aria-label="Project actions" className="zapp-builder-project-actions">
+        <Button onClick={onPreview} variant="secondary">
+          Preview
+        </Button>
+        <a
+          className="zapp-builder-action-link"
+          href={`/projects/${projectId}/settings/integrations`}
+        >
+          <GitHubIcon />
+          <span>GitHub</span>
+          <span className="zapp-builder-sync-pill" data-sync-state={syncState}>
+            {syncLabels[syncState]}
+          </span>
+        </a>
+        <Tooltip content="Preview is not ready yet">
+          <span className="zapp-builder-deploy-help" data-testid="deploy-help" tabIndex={0}>
+            <Button disabled>Deploy</Button>
+          </span>
+        </Tooltip>
+        {missionControl}
+        <a
+          aria-label="Project settings"
+          className="zapp-builder-settings-link"
+          href={`/projects/${projectId}/settings/general`}
+        >
+          <SettingsIcon />
+        </a>
+      </nav>
+    </header>
+  );
+}

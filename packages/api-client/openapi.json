@@ -3576,6 +3576,20 @@
                               "autonomous"
                             ]
                           },
+                          "appType": {
+                            "type": "string",
+                            "enum": [
+                              "web",
+                              "mobile"
+                            ]
+                          },
+                          "model": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                            "nullable": true
+                          },
                           "status": {
                             "type": "string"
                           },
@@ -3598,6 +3612,8 @@
                           "projectId",
                           "branchId",
                           "mode",
+                          "appType",
+                          "model",
                           "status",
                           "startedBy",
                           "startedAt",
@@ -3749,6 +3765,20 @@
                       "maxCredits"
                     ],
                     "additionalProperties": false
+                  },
+                  "appType": {
+                    "type": "string",
+                    "enum": [
+                      "web",
+                      "mobile"
+                    ],
+                    "default": "web"
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
                   }
                 },
                 "required": [
@@ -3814,6 +3844,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -3836,6 +3880,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",
@@ -5926,6 +5972,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -5948,6 +6008,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",
@@ -6109,6 +6171,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -6131,6 +6207,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",
@@ -6292,6 +6370,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -6314,6 +6406,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",
@@ -6496,6 +6590,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -6518,6 +6626,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",
@@ -6678,6 +6788,20 @@
                             "autonomous"
                           ]
                         },
+                        "appType": {
+                          "type": "string",
+                          "enum": [
+                            "web",
+                            "mobile"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                          "nullable": true
+                        },
                         "status": {
                           "type": "string"
                         },
@@ -6700,6 +6824,8 @@
                         "projectId",
                         "branchId",
                         "mode",
+                        "appType",
+                        "model",
                         "status",
                         "startedBy",
                         "startedAt",

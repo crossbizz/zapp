@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { ServiceName } from '@zapp/config';
 import Fastify, {
   type FastifyBaseLogger,
@@ -124,6 +126,8 @@ export interface OrgDeps {
  */
 export interface TenantDeps {
   readonly tenantDb: TenantDbFactory;
+  /** Shared 32-byte key for durable run-request fingerprints. */
+  readonly runIntentHmacKey?: Buffer;
   /**
    * Creates a project's internal repository, inside the transaction that creates
    * the project (CP-6). Defaults to the record-only stand-in, which names the
@@ -255,6 +259,13 @@ function inDevelopmentOnly<T>(name: string, why: string, build: () => T): T {
   return build();
 }
 
+function resolvedRunIntentHmacKey(key: Buffer | undefined): Buffer {
+  if (key === undefined) {
+    throw new Error('run-intent fingerprint HMAC key resolution failed');
+  }
+  return key;
+}
+
 const SINGLE_INSTANCE = 'the in-memory fallback is single-instance only';
 
 /**
@@ -266,6 +277,15 @@ const SINGLE_INSTANCE = 'the in-memory fallback is single-instance only';
  * inherit the compilers and handlers set here.
  */
 export function buildApp(deps: AppDeps = {}): AppInstance {
+  const runIntentHmacKey =
+    deps.tenant === undefined
+      ? undefined
+      : (deps.tenant.runIntentHmacKey ??
+        inDevelopmentOnly(
+          'run-intent fingerprint HMAC key',
+          'a process-local key cannot recover a retry on another instance',
+          () => randomBytes(32),
+        ));
   // Read (and cached) only where a caller did not supply one, so a test that
   // states both never depends on the file at all.
   const proxy = deps.limits?.proxy ?? loadRateLimitSettings().proxy;
@@ -432,7 +452,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,
+            runIntentHmacKey: resolvedRunIntentHmacKey(runIntentHmacKey),
             orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+            organizations: orgs.organizations,
             eventStream:
               tenant.eventStream ??
               inDevelopmentOnly('event stream wakeups', SINGLE_INSTANCE, () => ({

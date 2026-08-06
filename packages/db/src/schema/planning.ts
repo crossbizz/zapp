@@ -1,4 +1,4 @@
-import { RunModeSchema, TaskStateSchema } from '@zapp/contracts';
+import { APP_TYPES, RunModeSchema, TaskStateSchema } from '@zapp/contracts';
 import {
   check,
   index,
@@ -93,6 +93,10 @@ export const agentRuns = pgTable(
     /** Null in ask mode, which answers questions without touching a branch (PRD §11.1). */
     branchId: text('branch_id').references(() => branches.id),
     mode: text('mode', { enum: RUN_MODES }).notNull(),
+    appType: text('app_type', { enum: APP_TYPES }).notNull().default('web'),
+    model: text('model'),
+    /** HMAC-SHA-256 of the plugin digest, used to reject changed-key reuse after dispatch failure. */
+    requestFingerprint: text('request_fingerprint').notNull(),
     status: text('status').notNull(),
     /** Null in modes that build without a specification (ask, prototype). */
     specificationId: text('specification_id').references(() => specifications.id),
@@ -108,6 +112,7 @@ export const agentRuns = pgTable(
   },
   (t) => [
     check('agent_runs_mode_check', oneOf('mode', RUN_MODES)),
+    check('agent_runs_app_type_check', oneOf('app_type', APP_TYPES)),
     // Mission Control reads a project's runs newest-first; the organization
     // index serves the cross-project dashboard and every tenant-scoped read.
     index('agent_runs_project_started_at_idx').on(t.projectId, t.startedAt),

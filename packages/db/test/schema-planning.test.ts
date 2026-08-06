@@ -54,6 +54,9 @@ describe('specification and planning (PRD §23.3)', () => {
       'project_id',
       'branch_id',
       'mode',
+      'app_type',
+      'model',
+      'request_fingerprint',
       'status',
       'specification_id',
       'temporal_workflow_id',
@@ -164,8 +167,11 @@ describe('specification and planning (PRD §23.3)', () => {
     expect(indexNames(approvals)).toEqual(['approvals_run_status_idx']);
   });
 
-  it('constrains run modes to PRD §11, in the database', () => {
-    expect(checkNames(agentRuns)).toEqual(['agent_runs_mode_check']);
+  it('constrains run modes and app types in the database', () => {
+    expect(checkNames(agentRuns)).toEqual([
+      'agent_runs_mode_check',
+      'agent_runs_app_type_check',
+    ]);
     expect(checkExpression(agentRuns, 'agent_runs_mode_check')).toBe(
       "mode in ('ask', 'prototype', 'build', 'fix', 'autonomous')",
     );
@@ -176,6 +182,10 @@ describe('specification and planning (PRD §23.3)', () => {
       'fix',
       'autonomous',
     ]);
+    expect(checkExpression(agentRuns, 'agent_runs_app_type_check')).toBe(
+      "app_type in ('web', 'mobile')",
+    );
+    expect(enumValues(agentRuns, 'app_type')).toEqual(['web', 'mobile']);
   });
 
   it('constrains task states to the PRD §13.2 eleven, in the database', () => {

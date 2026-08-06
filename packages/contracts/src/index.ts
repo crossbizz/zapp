@@ -24,6 +24,13 @@ export {
   type TaskState,
 } from './run.js';
 export {
+  APP_TYPES,
+  AppTypeSchema,
+  ModelIdentifierSchema,
+  type AppType,
+  type ModelIdentifier,
+} from './run-intent.js';
+export {
   ExecutionContractSchema,
   PackageManagerSchema,
   type ExecutionContract,

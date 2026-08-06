@@ -313,6 +313,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       projectId,
       branchId: null,
       mode: 'build',
+      requestFingerprint: `seed:${runId}`,
       status: 'running',
       specificationId: null,
       temporalWorkflowId: runId,
