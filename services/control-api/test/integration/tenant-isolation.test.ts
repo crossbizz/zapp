@@ -426,7 +426,13 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       logger: false,
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations: store, audit },
-      tenant: { tenantDb: createTenantDbFactory(database.db) },
+      tenant: {
+        tenantDb: createTenantDbFactory(database.db),
+        orchestrator: {
+          startRun: () => Promise.resolve(),
+          signalRun: () => Promise.resolve({ applied: true }),
+        },
+      },
       // The vault, wired exactly as `composeApp` wires it but with a token
       // verifier a test can issue from — CP-8 ships the real one.
       secrets: { masterKey: TEST_MASTER_KEY, serviceTokens: serviceTokens.verifier },
@@ -628,6 +634,73 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         headers: as(a.owner, a.organizationId),
       });
       expectRefusal(response, 404, 'project_not_found');
+    });
+
+    it('does not use B’s model policy to authorize A and still hides B’s project', async () => {
+      const model = 'openai/gpt-5';
+      await store.updateSettings({
+        organizationId: a.organizationId,
+        patch: { defaultModelPolicy: ['anthropic/claude-sonnet-5'] },
+        operationKey: 'isolation-model-policy-a-01',
+        audit: noAudit,
+      });
+      await store.updateSettings({
+        organizationId: b.organizationId,
+        patch: { defaultModelPolicy: { allowedModels: [model] } },
+        operationKey: 'isolation-model-policy-b-01',
+        audit: noAudit,
+      });
+
+      try {
+        const denied = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(a.owner, a.organizationId),
+            'idempotency-key': 'isolation-model-policy-denied-01',
+          },
+          payload: { mode: 'build', prompt: 'Do not borrow B policy', model },
+        });
+        expectRefusal(denied, 400, 'model_not_allowed');
+
+        const foreign = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${b.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(a.owner, a.organizationId),
+            'idempotency-key': 'isolation-model-policy-foreign-01',
+          },
+          payload: { mode: 'build', prompt: 'Do not reveal B project', model },
+        });
+        expectRefusal(foreign, 404, 'project_not_found');
+
+        const allowed = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${b.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(b.owner, b.organizationId),
+            'idempotency-key': 'isolation-model-policy-allowed-01',
+          },
+          payload: {
+            mode: 'build',
+            prompt: 'Use B policy for B project',
+            appType: 'mobile',
+            model,
+          },
+        });
+        expect(allowed.statusCode, allowed.body).toBe(201);
+        expect(
+          allowed.json<{
+            run: { organizationId: string; appType: string; model: string | null };
+          }>().run,
+        ).toMatchObject({ organizationId: b.organizationId, appType: 'mobile', model });
+      } finally {
+        await database.sql`
+          update organizations
+          set settings_json = '{}'::jsonb
+          where id in (${a.organizationId}, ${b.organizationId})
+        `;
+      }
     });
 
     it('does not find B’s organization', async () => {

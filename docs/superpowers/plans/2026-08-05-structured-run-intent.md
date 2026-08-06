@@ -66,7 +66,9 @@ git commit -m "docs(architecture): accept structured run intent"
 - Modify: `packages/db/src/schema/planning.ts`
 - Create: `packages/db/drizzle/0011_structured_run_intent.sql`
 - Modify: `packages/db/drizzle/meta/_journal.json`
+- Modify: `docs/zapp-build-prd.md`
 - Test: `packages/db/test/schema-planning.test.ts`
+- Test: `packages/db/test/prd-schema-conformance.test.ts`
 - Create: `services/control-api/src/orgs/model-policy.ts`
 - Test: `services/control-api/test/model-policy.test.ts`
 - Modify: `services/control-api/src/orchestrator/port.ts`
@@ -118,6 +120,7 @@ model: text('model'),
 ```
 
 Create migration `0011_structured_run_intent.sql` with `app_type text NOT NULL DEFAULT 'web'`, nullable `model`, and an `agent_runs_app_type_check` constraint. Append journal index 11 without rewriting prior migrations.
+Update PRD §23.3's `agent_runs` list with `app_type` and `model` immediately after `mode`; keep the bidirectional PRD schema conformance test unchanged.
 
 - [ ] **Step 5: Write model-policy RED tests**
 
@@ -145,6 +148,7 @@ In `runs.test.ts`, prove one operation key replay returns one row/start intent a
 ```bash
 pnpm --filter @zapp/contracts test -- run-intent.test.ts
 pnpm --filter @zapp/db test -- schema-planning.test.ts schema-execution.test.ts
+pnpm --filter @zapp/db test -- prd-schema-conformance.test.ts
 pnpm --filter @zapp/control-api test -- model-policy.test.ts runs.test.ts boundary-schemas.test.ts route-isolation.test.ts
 pnpm --filter @zapp/contracts lint && pnpm --filter @zapp/contracts typecheck && pnpm --filter @zapp/contracts build
 pnpm --filter @zapp/db lint && pnpm --filter @zapp/db typecheck && pnpm --filter @zapp/db build

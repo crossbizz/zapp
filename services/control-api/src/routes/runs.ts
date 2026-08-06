@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { idSchema } from '@zapp/contracts';
+import { AppTypeSchema, idSchema, ModelIdentifierSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -18,6 +18,8 @@ import {
   StartRunInputSchema,
   type OrchestratorPort,
 } from '../orchestrator/port.js';
+import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
+import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { RunSchema, toRun } from '../tenant/view.js';
@@ -33,6 +35,8 @@ const CreateRunBody = z
     prompt: z.string().trim().min(1).max(20_000),
     branchId: idSchema('br').optional(),
     budget: RunBudgetSchema.optional(),
+    appType: AppTypeSchema.default('web'),
+    model: ModelIdentifierSchema.optional(),
   })
   .strict();
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
@@ -71,6 +75,7 @@ const SIGNALS = {
 export interface RunRoutesDeps {
   readonly now: () => Date;
   readonly orchestrator: OrchestratorPort;
+  readonly organizations: OrganizationStore;
   readonly eventStream: EventStreamDependencies;
   readonly revalidateEventStream: (
     context: EventStreamAuthorizationContext,
@@ -98,6 +103,12 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       )
         throw branchNotFound();
       authorize(ctx, 'start_run');
+      if (request.body.model !== undefined) {
+        const settings = await deps.organizations.getSettings(ctx.organizationId);
+        if (!allowedModelsFromPolicy(settings?.defaultModelPolicy).has(request.body.model)) {
+          throw modelNotAllowed();
+        }
+      }
       const operationKey = operationOf(request);
       const runId = stableId('run', operationKey);
       const run = await ctx.db.runs.create({
@@ -106,6 +117,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         projectId: project.id,
         branchId: request.body.branchId ?? null,
         mode: request.body.mode,
+        appType: request.body.appType,
+        model: request.body.model ?? null,
         budget: request.body.budget ?? null,
         startedBy: actorOf(request),
         now: deps.now(),
@@ -114,7 +127,12 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             organizationId: ctx.organizationId,
             action: 'run.created',
             target: { type: 'run', id: created.id },
-            metadata: { projectId: created.projectId, mode: created.mode },
+            metadata: {
+              projectId: created.projectId,
+              mode: created.mode,
+              appType: created.appType,
+              model: created.model,
+            },
           });
         },
       });
@@ -127,6 +145,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             projectId: run.projectId,
             branchId: run.branchId,
             mode: run.mode,
+            appType: run.appType,
+            model: run.model,
             prompt: request.body.prompt,
             budget: request.body.budget ?? null,
             operationKey,
@@ -286,6 +306,13 @@ function projectNotFound(): ApiError {
 }
 function branchNotFound(): ApiError {
   return new ApiError('branch_not_found', 404, 'That branch does not exist.');
+}
+function modelNotAllowed(): ApiError {
+  return new ApiError(
+    'model_not_allowed',
+    400,
+    'That model is not allowed by this organization.',
+  );
 }
 function invalidRunState(): ApiError {
   return new ApiError('invalid_run_state', 409, 'That run cannot accept this action.');

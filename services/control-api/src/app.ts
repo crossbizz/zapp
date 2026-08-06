@@ -433,6 +433,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerRunRoutes(app, {
             now,
             orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+            organizations: orgs.organizations,
             eventStream:
               tenant.eventStream ??
               inDevelopmentOnly('event stream wakeups', SINGLE_INSTANCE, () => ({

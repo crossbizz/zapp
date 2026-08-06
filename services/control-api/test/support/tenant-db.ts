@@ -538,6 +538,8 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           projectId: input.projectId,
           branchId: input.branchId,
           mode: input.mode,
+          appType: input.appType,
+          model: input.model,
           status: 'queued',
           specificationId: null,
           temporalWorkflowId: input.workflowId,

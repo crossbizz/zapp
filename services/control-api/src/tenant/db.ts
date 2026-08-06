@@ -1,5 +1,7 @@
 import {
+  type AppType,
   type AgentEvent,
+  type ModelIdentifier,
   newId,
   type ResourceProfile,
   type RunMode,
@@ -263,6 +265,8 @@ export interface NewRunInput {
   readonly projectId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
+  readonly appType: AppType;
+  readonly model: ModelIdentifier | null;
   readonly budget: unknown;
   readonly startedBy: string;
   readonly now: Date;
@@ -1013,6 +1017,8 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 projectId: input.projectId,
                 branchId: input.branchId,
                 mode: input.mode,
+                appType: input.appType,
+                model: input.model,
                 status: 'queued',
                 specificationId: null,
                 // The stable workflow identity is durable before dispatch. A
