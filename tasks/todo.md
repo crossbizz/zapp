@@ -76,7 +76,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-2 packages/ui design system (Next+Vite)
 - [ ] WEB-3 Home screen (Emergent-modeled)
 - [ ] WEB-4 Dashboard + org switcher + import entry
-- [ ] WEB-5 Builder two-pane shell
+- [x] WEB-5 Builder two-pane shell
 - [ ] WEB-6 Event-sourced conversation thread
 
 ## M2 — Agentic core + Mission Control (Weeks 8–14)

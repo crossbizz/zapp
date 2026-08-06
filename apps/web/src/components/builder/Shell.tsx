@@ -1,0 +1,800 @@
+'use client';
+
+import { createZappClient, ZappApiError } from '@zapp/api-client';
+import { Button, Drawer, EmptyState, ErrorState } from '@zapp/ui';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactElement,
+} from 'react';
+
+import { createControlPlaneClient } from '../../lib/api';
+import { organizationStorageKey, resolveOrganization } from '../../lib/session';
+import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
+import { TopBar } from './TopBar';
+
+const defaultConversationWidth = 40;
+const minimumConversationWidth = 28;
+const maximumConversationWidth = 75;
+const minimumConversationPixels = 380;
+
+interface ShellProps {
+  readonly projectId: string;
+}
+
+function controlPlaneUrl(): string {
+  const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
+  if (value === undefined || value.length === 0) {
+    throw new Error('NEXT_PUBLIC_CONTROL_API_URL must be configured.');
+  }
+  return value;
+}
+
+function getProject(organizationId: string, projectId: string) {
+  return createZappClient({
+    baseUrl: controlPlaneUrl(),
+    getToken: () => '',
+  }).request('/v1/projects/{projectId}', {
+    method: 'GET',
+    headers: { 'x-organization-id': organizationId },
+    path: { projectId },
+  });
+}
+
+type ProjectResponse = Awaited<ReturnType<typeof getProject>>;
+
+type BuilderPane = 'conversation' | 'surface';
+
+function conversationWidthKey(projectId: string): string {
+  return `zapp:builder:conversation-width:${projectId}`;
+}
+
+function missionControlKey(projectId: string): string {
+  return `zapp:builder:mission-control:${projectId}`;
+}
+
+function safeConversationWidth(value: string | null): number {
+  if (value === null || value.trim().length === 0) return defaultConversationWidth;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return defaultConversationWidth;
+  return Math.min(maximumConversationWidth, Math.max(minimumConversationWidth, parsed));
+}
+
+function measuredConversationMinimum(splitWidth: number): number {
+  const measured =
+    splitWidth > 0 ? (minimumConversationPixels / splitWidth) * 100 : minimumConversationWidth;
+  return Math.min(maximumConversationWidth, Math.max(minimumConversationWidth, measured));
+}
+
+function normalizedConversationWidth(value: number, splitWidth: number): number {
+  const measuredMinimum = measuredConversationMinimum(splitWidth);
+  return Math.min(
+    maximumConversationWidth,
+    Math.max(minimumConversationWidth, measuredMinimum, value),
+  );
+}
+
+function BuilderStyles(): ReactElement {
+  return (
+    <style jsx global>{`
+      .zapp-builder-shell {
+        min-height: 100vh;
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-canvas);
+        font-family: var(--zapp-font-sans);
+      }
+
+      .zapp-builder-top-bar {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        min-height: 4.5rem;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--zapp-border);
+        background: var(--zapp-surface-raised);
+      }
+
+      .zapp-builder-project-identity,
+      .zapp-builder-project-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+      }
+
+      .zapp-builder-project-identity {
+        min-width: 0;
+      }
+
+      .zapp-builder-project-name {
+        overflow: hidden;
+        margin: 0;
+        font-size: var(--zapp-text-18);
+        line-height: 1.3;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .zapp-builder-project-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .zapp-builder-action-link,
+      .zapp-builder-settings-link {
+        display: inline-flex;
+        min-height: 2.5rem;
+        align-items: center;
+        justify-content: center;
+        gap: 0.375rem;
+        padding: 0.45rem 0.75rem;
+        border: 1px solid var(--zapp-border);
+        border-radius: var(--zapp-radius-pill);
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-raised);
+        font-size: var(--zapp-text-14);
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .zapp-builder-settings-link {
+        width: 2.5rem;
+        padding: 0;
+      }
+
+      .zapp-builder-action-link:hover,
+      .zapp-builder-settings-link:hover {
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-action-link:focus-visible,
+      .zapp-builder-settings-link:focus-visible,
+      .zapp-builder-deploy-help:focus-visible {
+        outline: 3px solid var(--zapp-focus);
+        outline-offset: 2px;
+      }
+
+      .zapp-builder-action-icon {
+        width: 1.125rem;
+        height: 1.125rem;
+        flex: 0 0 auto;
+      }
+
+      .zapp-builder-sync-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.15rem 0.45rem;
+        border-radius: var(--zapp-radius-pill);
+        font-size: var(--zapp-text-12);
+        font-weight: 700;
+      }
+
+      .zapp-builder-sync-pill[data-sync-state='synced'] {
+        color: var(--zapp-status-success);
+        background: var(--zapp-support-managed-bg);
+      }
+
+      .zapp-builder-sync-pill[data-sync-state='ahead'] {
+        color: var(--zapp-status-warning);
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-sync-pill[data-sync-state='diverged'] {
+        color: var(--zapp-status-danger);
+        background: var(--zapp-danger-surface);
+      }
+
+      .zapp-builder-sync-pill[data-sync-state='unavailable'] {
+        color: var(--zapp-text-muted);
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-deploy-help {
+        display: inline-flex;
+        border-radius: var(--zapp-radius-pill);
+      }
+
+      .zapp-builder-notice {
+        margin: 0;
+        padding: 0.625rem 1rem;
+        border-bottom: 1px solid var(--zapp-border);
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-subtle);
+        font-size: var(--zapp-text-14);
+      }
+
+      .zapp-builder-workspace {
+        display: grid;
+        min-height: calc(100vh - 4.5rem);
+        grid-template-columns: minmax(0, 1fr);
+        transition: grid-template-columns 160ms ease;
+      }
+
+      .zapp-builder-workspace[data-inline-mission='open'] {
+        grid-template-columns: minmax(0, 1fr) 20rem;
+      }
+
+      .zapp-builder-split {
+        display: grid;
+        min-width: 0;
+        min-height: 0;
+        grid-template-columns: minmax(380px, var(--conversation-width)) 0.625rem minmax(0, 1fr);
+      }
+
+      .zapp-builder-pane {
+        min-width: 0;
+        overflow: auto;
+        padding: 1.25rem;
+        background: var(--zapp-surface-raised);
+      }
+
+      .zapp-builder-pane:last-child {
+        background: var(--zapp-surface-canvas);
+      }
+
+      .zapp-builder-separator {
+        position: relative;
+        display: flex;
+        cursor: col-resize;
+        align-items: center;
+        justify-content: center;
+        border-inline: 1px solid var(--zapp-border);
+        background: var(--zapp-surface-subtle);
+        touch-action: none;
+      }
+
+      .zapp-builder-separator:focus-visible {
+        z-index: 1;
+        outline: 3px solid var(--zapp-focus);
+        outline-offset: -3px;
+      }
+
+      .zapp-builder-separator-handle {
+        width: 0.2rem;
+        height: 2rem;
+        border-radius: var(--zapp-radius-pill);
+        background: var(--zapp-border-strong);
+      }
+
+      .zapp-builder-surface-tabs {
+        min-height: 100%;
+      }
+
+      .zapp-builder-mission-control {
+        min-width: 0;
+        padding: 1rem;
+        border-left: 1px solid var(--zapp-border);
+        background: var(--zapp-surface-raised);
+        box-shadow: var(--zapp-shadow-overlay);
+      }
+
+      .zapp-builder-mission-control-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .zapp-builder-mission-control-header h2 {
+        margin: 0;
+        font-size: var(--zapp-text-18);
+      }
+
+      .zapp-builder-mobile-switcher {
+        display: none;
+      }
+
+      .zapp-builder-load-state {
+        display: grid;
+        min-height: 100vh;
+        place-content: center;
+        gap: 1rem;
+        padding: 1.5rem;
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-canvas);
+        font-family: var(--zapp-font-sans);
+      }
+
+      @media (max-width: 1279px) {
+        .zapp-builder-workspace[data-inline-mission='open'] {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      @media (max-width: 1023px) {
+        .zapp-builder-shell {
+          padding-bottom: 4.5rem;
+        }
+
+        .zapp-builder-top-bar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .zapp-builder-project-actions {
+          width: 100%;
+          justify-content: flex-start;
+        }
+
+        .zapp-builder-workspace,
+        .zapp-builder-split {
+          display: block;
+          min-height: calc(100vh - 10rem);
+        }
+
+        .zapp-builder-pane {
+          min-height: calc(100vh - 14.5rem);
+        }
+
+        .zapp-builder-pane[data-mobile-active='false'] {
+          display: none;
+        }
+
+        .zapp-builder-separator {
+          display: none;
+        }
+
+        .zapp-builder-mobile-switcher {
+          position: fixed;
+          z-index: 3;
+          right: 0;
+          bottom: 0;
+          left: 0;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          border-top: 1px solid var(--zapp-border);
+          background: var(--zapp-surface-raised);
+        }
+      }
+
+      @media (max-width: 700px) {
+        .zapp-builder-project-identity,
+        .zapp-builder-project-actions {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .zapp-builder-project-actions,
+        .zapp-builder-project-actions > * {
+          width: 100%;
+        }
+
+        .zapp-builder-action-link,
+        .zapp-builder-settings-link {
+          width: 100%;
+        }
+      }
+    `}</style>
+  );
+}
+
+function MissionControlEmpty(): ReactElement {
+  return (
+    <EmptyState
+      description="Run phases and verification evidence will appear after a run starts."
+      title="No run in progress"
+    />
+  );
+}
+
+export function Shell({ projectId }: ShellProps): ReactElement {
+  const [activePane, setActivePane] = useState<BuilderPane>('conversation');
+  const [desktopSplit, setDesktopSplit] = useState(false);
+  const [effectiveConversationWidth, setEffectiveConversationWidth] =
+    useState(defaultConversationWidth);
+  const [conversationMinimum, setConversationMinimum] = useState(minimumConversationWidth);
+  const [errorDetail, setErrorDetail] = useState<string>();
+  const [focusPreviewRequest, setFocusPreviewRequest] = useState(0);
+  const [inlineMissionControl, setInlineMissionControl] = useState(false);
+  const [invalidOrganizationOverride, setInvalidOrganizationOverride] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [missionControlOpen, setMissionControlOpen] = useState(false);
+  const [failedPreferenceKeys, setFailedPreferenceKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [project, setProject] = useState<ProjectResponse>();
+  const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>('preview');
+  const preferredConversationWidthRef = useRef(defaultConversationWidth);
+  const activeResizePointerIdRef = useRef<number | null>(null);
+  const missionControlTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreMissionControlFocusRef = useRef(false);
+  const splitRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const update = (): void => {
+      setDesktopSplit(media.matches);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => {
+      media.removeEventListener('change', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1280px)');
+    const update = (): void => {
+      setInlineMissionControl(media.matches);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => {
+      media.removeEventListener('change', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    const isCurrent = (): boolean => current;
+
+    const load = async (): Promise<void> => {
+      setErrorDetail(undefined);
+      setFailedPreferenceKeys(new Set());
+      setInvalidOrganizationOverride(false);
+      setLoadFailed(false);
+      setProject(undefined);
+      try {
+        const me = await createControlPlaneClient().getMe();
+        if (!isCurrent()) return;
+        const override = new URLSearchParams(window.location.search).get('organizationId');
+        const storageKey = organizationStorageKey(me.user.id);
+        const selected = resolveOrganization(
+          me.memberships,
+          override,
+          localStorage.getItem(storageKey),
+        );
+        if (selected.membership === undefined) {
+          throw new Error('No active organization is available.');
+        }
+
+        const organizationId = selected.membership.organization.id;
+        localStorage.setItem(storageKey, organizationId);
+        const scopedClient = createControlPlaneClient(organizationId);
+        await scopedClient.getMe();
+        const loadedProject = await getProject(organizationId, projectId);
+        if (!isCurrent()) return;
+
+        const restoredWidth = safeConversationWidth(
+          localStorage.getItem(conversationWidthKey(projectId)),
+        );
+        preferredConversationWidthRef.current = restoredWidth;
+        setEffectiveConversationWidth(restoredWidth);
+        setMissionControlOpen(localStorage.getItem(missionControlKey(projectId)) === 'true');
+        setInvalidOrganizationOverride(selected.invalidOverride);
+        setProject(loadedProject);
+      } catch (error) {
+        if (error instanceof ZappApiError && error.status === 401) {
+          window.location.replace('/login');
+          return;
+        }
+        if (current) setLoadFailed(true);
+      }
+    };
+
+    void load();
+    return () => {
+      current = false;
+    };
+  }, [loadAttempt, projectId]);
+
+  const updateConversationWidth = useCallback((nextWidth: number) => {
+    const splitWidth = splitRef.current?.getBoundingClientRect().width ?? 0;
+    const clamped = normalizedConversationWidth(nextWidth, splitWidth);
+    preferredConversationWidthRef.current = clamped;
+    setEffectiveConversationWidth(clamped);
+    return clamped;
+  }, []);
+
+  const persistPreference = useCallback((key: string, value: string): void => {
+    try {
+      localStorage.setItem(key, value);
+      setFailedPreferenceKeys((current) => {
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    } catch {
+      setFailedPreferenceKeys((current) => {
+        if (current.has(key)) return current;
+        const next = new Set(current);
+        next.add(key);
+        return next;
+      });
+    }
+  }, []);
+
+  const saveConversationWidth = useCallback(
+    (nextWidth: number) => {
+      const clamped = updateConversationWidth(nextWidth);
+      persistPreference(conversationWidthKey(projectId), String(clamped));
+    },
+    [persistPreference, projectId, updateConversationWidth],
+  );
+
+  const persistCurrentConversationWidth = useCallback((): void => {
+    persistPreference(
+      conversationWidthKey(projectId),
+      String(preferredConversationWidthRef.current),
+    );
+  }, [persistPreference, projectId]);
+
+  const toggleMissionControl = useCallback(
+    (open: boolean): void => {
+      setMissionControlOpen(open);
+      persistPreference(missionControlKey(projectId), String(open));
+    },
+    [persistPreference, projectId],
+  );
+
+  useEffect(() => {
+    if (missionControlOpen || !restoreMissionControlFocusRef.current) return;
+    restoreMissionControlFocusRef.current = false;
+    missionControlTriggerRef.current?.focus();
+  }, [missionControlOpen]);
+
+  useLayoutEffect(() => {
+    if (project === undefined || splitRef.current === null) return;
+    const split = splitRef.current;
+    const normalize = (): void => {
+      if (!desktopSplit) {
+        setConversationMinimum(minimumConversationWidth);
+        setEffectiveConversationWidth(preferredConversationWidthRef.current);
+        return;
+      }
+      const splitWidth = split.getBoundingClientRect().width;
+      setConversationMinimum(measuredConversationMinimum(splitWidth));
+      setEffectiveConversationWidth(
+        normalizedConversationWidth(preferredConversationWidthRef.current, splitWidth),
+      );
+    };
+    normalize();
+    const observer = new ResizeObserver(normalize);
+    observer.observe(split);
+    return () => {
+      observer.disconnect();
+    };
+  }, [desktopSplit, project]);
+
+  useEffect(() => {
+    const move = (event: globalThis.PointerEvent): void => {
+      if (
+        activeResizePointerIdRef.current === null ||
+        event.pointerId !== activeResizePointerIdRef.current ||
+        splitRef.current === null
+      ) {
+        return;
+      }
+      const bounds = splitRef.current.getBoundingClientRect();
+      updateConversationWidth(((event.clientX - bounds.left) / bounds.width) * 100);
+    };
+    const stop = (event: globalThis.PointerEvent): void => {
+      if (event.pointerId !== activeResizePointerIdRef.current) return;
+      activeResizePointerIdRef.current = null;
+      persistCurrentConversationWidth();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      activeResizePointerIdRef.current = null;
+    };
+  }, [persistCurrentConversationWidth, updateConversationWidth]);
+
+  const closeInlineMissionControl = (): void => {
+    restoreMissionControlFocusRef.current = true;
+    toggleMissionControl(false);
+  };
+
+  const previewSurface = (): void => {
+    setActivePane('surface');
+    setSurfaceTab('preview');
+    setFocusPreviewRequest((value) => value + 1);
+  };
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    saveConversationWidth(effectiveConversationWidth + (event.key === 'ArrowLeft' ? -2 : 2));
+  };
+
+  const beginResize = (event: PointerEvent<HTMLDivElement>): void => {
+    if (activeResizePointerIdRef.current !== null) return;
+    event.preventDefault();
+    activeResizePointerIdRef.current = event.pointerId;
+  };
+
+  const retry = (): void => {
+    setLoadAttempt((value) => value + 1);
+  };
+
+  if (loadFailed) {
+    return (
+      <>
+        <BuilderStyles />
+        <main className="zapp-builder-load-state">
+          <ErrorState
+            description="Your session and project data remain unchanged."
+            onAskAgent={() => {
+              setErrorDetail('The agent can help after the project session reconnects.');
+            }}
+            onFixAutomatically={retry}
+            onInspectDetails={() => {
+              setErrorDetail('The session or project read could not be completed.');
+            }}
+            onRetry={retry}
+            title="We could not load this project"
+          />
+          {errorDetail === undefined ? null : <p role="status">{errorDetail}</p>}
+        </main>
+      </>
+    );
+  }
+
+  if (project === undefined) {
+    return (
+      <>
+        <BuilderStyles />
+        <main className="zapp-builder-load-state">Loading builder…</main>
+      </>
+    );
+  }
+
+  const missionTrigger = (
+    <Button
+      aria-expanded={missionControlOpen}
+      onClick={
+        inlineMissionControl
+          ? () => {
+              toggleMissionControl(!missionControlOpen);
+            }
+          : undefined
+      }
+      ref={missionControlTriggerRef}
+      variant="secondary"
+    >
+      Mission Control
+    </Button>
+  );
+  const missionControl = inlineMissionControl ? (
+    missionTrigger
+  ) : (
+    <Drawer
+      description="Current run status and verification evidence."
+      onOpenChange={toggleMissionControl}
+      open={missionControlOpen}
+      title="Mission Control"
+      trigger={missionTrigger}
+    >
+      <MissionControlEmpty />
+    </Drawer>
+  );
+  const splitStyle = {
+    '--conversation-width': `${String(effectiveConversationWidth)}%`,
+  } as CSSProperties;
+  const announcedConversationMinimum = Math.round(conversationMinimum);
+  const announcedConversationWidth = Math.max(
+    announcedConversationMinimum,
+    Math.round(effectiveConversationWidth),
+  );
+
+  return (
+    <>
+      <BuilderStyles />
+      <main className="zapp-builder-shell">
+        <TopBar
+          missionControl={missionControl}
+          onPreview={previewSurface}
+          projectId={projectId}
+          projectName={project.project.name}
+          supportLevel={project.project.supportLevel}
+          syncState="unavailable"
+        />
+        {invalidOrganizationOverride ? (
+          <p className="zapp-builder-notice" role="status">
+            Invalid organization selection. Showing your active organization.
+          </p>
+        ) : null}
+        {failedPreferenceKeys.size > 0 ? (
+          <p className="zapp-builder-notice" role="status">
+            Preferences could not be saved.
+          </p>
+        ) : null}
+        <div
+          className="zapp-builder-workspace"
+          data-inline-mission={inlineMissionControl && missionControlOpen ? 'open' : 'closed'}
+          data-testid="builder-workspace"
+        >
+          <div className="zapp-builder-split" ref={splitRef} style={splitStyle}>
+            <section
+              aria-label="Conversation"
+              className="zapp-builder-pane"
+              data-mobile-active={activePane === 'conversation' ? 'true' : 'false'}
+              id="conversation-pane"
+            >
+              <EmptyState
+                description="Start a run to begin building with the agent."
+                title="No conversation yet"
+              />
+            </section>
+            <div
+              aria-controls="conversation-pane surface-pane"
+              aria-label="Resize conversation pane"
+              aria-orientation="vertical"
+              aria-valuemax={maximumConversationWidth}
+              aria-valuemin={announcedConversationMinimum}
+              aria-valuenow={announcedConversationWidth}
+              aria-valuetext={`${String(announcedConversationWidth)}% conversation`}
+              className="zapp-builder-separator"
+              onKeyDown={resizeWithKeyboard}
+              onPointerDown={beginResize}
+              role="separator"
+              tabIndex={0}
+            >
+              <span aria-hidden="true" className="zapp-builder-separator-handle" />
+            </div>
+            <section
+              aria-label="Surface"
+              className="zapp-builder-pane"
+              data-mobile-active={activePane === 'surface' ? 'true' : 'false'}
+              id="surface-pane"
+            >
+              <SurfaceTabs
+                focusPreviewRequest={focusPreviewRequest}
+                onValueChange={setSurfaceTab}
+                value={surfaceTab}
+              />
+            </section>
+          </div>
+          {inlineMissionControl && missionControlOpen ? (
+            <aside aria-label="Mission Control" className="zapp-builder-mission-control">
+              <div className="zapp-builder-mission-control-header">
+                <h2>Mission Control</h2>
+                <Button onClick={closeInlineMissionControl} variant="ghost">
+                  Close
+                </Button>
+              </div>
+              <MissionControlEmpty />
+            </aside>
+          ) : null}
+        </div>
+        <nav aria-label="Builder pane" className="zapp-builder-mobile-switcher">
+          <Button
+            aria-pressed={activePane === 'conversation'}
+            onClick={() => {
+              setActivePane('conversation');
+            }}
+            variant={activePane === 'conversation' ? 'primary' : 'ghost'}
+          >
+            Conversation
+          </Button>
+          <Button
+            aria-pressed={activePane === 'surface'}
+            onClick={() => {
+              setActivePane('surface');
+            }}
+            variant={activePane === 'surface' ? 'primary' : 'ghost'}
+          >
+            Surface
+          </Button>
+        </nav>
+      </main>
+    </>
+  );
+}

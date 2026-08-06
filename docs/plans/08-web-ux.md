@@ -94,8 +94,8 @@ Layout spec (mirrors benchmark screenshot, zapp copy):
 
 Layout (PRD §10.0.2): top bar: project name + support badge + env badge, actions right: `Preview` (focus preview tab), `GitHub` (sync state pill: synced/ahead/diverged), `Deploy` (primary, enabled once a preview exists), Mission Control toggle, settings gear. Split: left conversation pane (min 380px, 40%), right surface (60%) tabs `Preview | Code | Logs | Tests`; Mission Control = right-side `Drawer` (overlay ≥ 1280px pushes content), collapsible, state persisted; responsive: < 1024px stacks with bottom tab switcher (conversation default).
 
-- [ ] e2e: pane resize persists; deploy disabled pre-preview with tooltip; Mission Control opens without navigation (URL unchanged, PRD §14.1).
-- [ ] Commit: `feat(web): builder two-pane shell with mission control drawer`
+- [x] e2e: pane resize persists; deploy disabled pre-preview with tooltip; Mission Control opens without navigation (URL unchanged, PRD §14.1).
+- [x] Commit: `feat(web): builder two-pane shell with mission control drawer`
 
 ### Task WEB-6: Conversation stream (M1 subset)
 
@@ -220,3 +220,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-05 WEB-2 done — shipped semantic Tailwind v4 tokens and 23 React components with CI-wired Storybook axe (23/23), Next+Vite package-boundary proofs, independent review clean after three rounds, UI 16/16, web 19/19, and the uncached repository gate passed 38/38.
 - 2026-08-05 WEB-3 BLOCKED — independent review found that the locked run API cannot carry the required model or Web/Mobile selection; ADR-0009 proposes structured public/durable fields. The task stays unchecked, and its uncommitted branch also retains five repair findings for resumption.
 - 2026-08-05 WEB-4 BLOCKED — the binding New project → home composer modal depends on blocked WEB-3; dashboard work is deferred intact while independent WEB-5 proceeds.
+- 2026-08-05 WEB-5 done — shipped the tenant-scoped responsive builder shell with persisted resizing and Mission Control, 39/39 web E2E, clean independent spec and quality reviews after three rounds each, and an uncached Node 22 repository gate of 38/38.
