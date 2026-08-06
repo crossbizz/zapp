@@ -65,9 +65,9 @@ Providers: anthropic, openai, google, openai-compatible (base-url configurable) 
 **Files:** Create: `src/routing.ts`, `test/routing.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior: route = org policy override → role default; retries: 429/5xx/timeout → 3 attempts jittered exponential (250 ms base); on exhaustion → next fallback model (event `model.fallback` internal); non-retryable (400 schema, content policy) fail fast; per-org concurrency semaphore (default 8 concurrent streams, config).
-- [ ] Failing tests simulate 429→429→200 (succeeds attempt 3), hard 400 (no retry), primary dead → fallback used and telemetry records both.
-- [ ] Commit: `feat(model-gateway): routing with retry + provider fallback`
+- [x] Binding behavior: route = org policy override → role default; retries: 429/5xx/timeout → 3 attempts jittered exponential (250 ms base); on exhaustion → next fallback model (event `model.fallback` internal); non-retryable (400 schema, content policy) fail fast; per-org concurrency semaphore (default 8 concurrent streams, config).
+- [x] Failing tests simulate 429→429→200 (succeeds attempt 3), hard 400 (no retry), primary dead → fallback used and telemetry records both.
+- [x] Commit: `feat(model-gateway): routing with retry + provider fallback`
 
 ### Task AR-3: Usage telemetry + budget enforcement
 
@@ -269,3 +269,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-04 AR-1 architecture gate — The accepted ADR-0005 migration exception is mechanically bounded by a production-reachability, default-deny gate to nine inherited desktop inventory paths (eight runtime consumers plus one import-only module) and exact import/call/use inventory cryptographically derived from `df81175`; AR-1 and its tracker remain unchecked.
 - 2026-08-04 AR-1 BLOCKED: Five capped review-fix rounds (`62420b9..70ace06`) left a real P1 bypass in the mandatory boundary analyzer: non-identifier mutation receivers such as `(alias = slots).unshift(require)`, conditional/logical receiver results, and getter-return receivers can resolve to an empty target set and hide a new provider load. This security gate is load-bearing for downstream AR tasks; AR-1 remains unchecked pending architectural remediation.
 - 2026-08-06 AR-1 done — Closed the provider-boundary evaluator blocker with source-ordered live accessor, callback, closure, constructor, prototype, and opaque-mutation semantics; 182 architecture tests and the exact nine-path production boundary pass.
+- 2026-08-06 AR-2 done — Added organization-aware routing, retry/fallback observations, and per-organization stream concurrency limits through the configured completion path.
