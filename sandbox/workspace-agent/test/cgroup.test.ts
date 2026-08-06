@@ -397,6 +397,61 @@ describe('cgroup-v2 containment', () => {
     }
   });
 
+  test('retains a reused PID generation when the older execution finishes later', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-generation-overlap-'));
+    const containment = new ManualContainment(workspaceRoot);
+    const manager = new ExecManager(workspaceRoot, containment);
+    const reusedPid = 42;
+    type ActiveHandle = {
+      readonly executionId: string;
+      finish(): void;
+    };
+    const beginActive = (
+      manager as unknown as {
+        beginActive(
+          pid: number,
+          executionContainment: ExecutionContainment,
+        ): { readonly active: ActiveHandle };
+      }
+    ).beginActive.bind(manager);
+    let releaseOldFinish: () => void = () => undefined;
+    const oldFinishMayRun = new Promise<void>((resolve) => {
+      releaseOldFinish = resolve;
+    });
+    let oldActive: ActiveHandle | undefined;
+    let currentActive: ActiveHandle | undefined;
+    let delayedOldFinish: Promise<void> | undefined;
+
+    try {
+      const oldExecution = await containment.create();
+      const delayedActive = beginActive(reusedPid, oldExecution).active;
+      oldActive = delayedActive;
+      delayedOldFinish = (async () => {
+        await oldFinishMayRun;
+        delayedActive.finish();
+      })();
+
+      const currentExecution = await containment.create();
+      currentActive = beginActive(reusedPid, currentExecution).active;
+      expect(manager.kill(reusedPid, oldActive.executionId)).toBe(false);
+
+      releaseOldFinish();
+      await delayedOldFinish;
+
+      expect(manager.kill(reusedPid, currentActive.executionId)).toBe(true);
+      currentActive.finish();
+      for (const execution of containment.executions) execution.markEmpty();
+      await Promise.all(containment.executions.map(async (execution) => execution.removed));
+    } finally {
+      releaseOldFinish();
+      await delayedOldFinish?.catch(() => undefined);
+      oldActive?.finish();
+      currentActive?.finish();
+      for (const execution of containment.executions) execution.markEmpty();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test('joins an injected containment before PTY user code', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-pty-'));
     const containment = new ManualContainment(workspaceRoot);

@@ -443,6 +443,60 @@ describe('Modal image publication transaction', () => {
     await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  test('retries when a concurrently released writer lock disappears before recovery stat', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    await mkdir(lockDirectory);
+    let now = Date.now();
+    let reachRecoveryStat: () => void = () => undefined;
+    const recoveryStatReached = new Promise<void>((resolve) => {
+      reachRecoveryStat = resolve;
+    });
+    let continueRecovery: () => void = () => undefined;
+    const recoveryMayContinue = new Promise<void>((resolve) => {
+      continueRecovery = resolve;
+    });
+    const lockTiming = {
+      now: () => now,
+      wait(milliseconds: number) {
+        now += milliseconds;
+        return Promise.resolve();
+      },
+      timeoutMs: 50,
+      async beforeRecoveryStat() {
+        reachRecoveryStat();
+        await recoveryMayContinue;
+      },
+    };
+    const transaction = publishImagesTransaction({
+      ...transactionInput(lockFilePath, successfulPublisher([]), ['dev']),
+      lockTiming,
+    });
+
+    try {
+      const firstOutcome = await Promise.race([
+        recoveryStatReached.then(() => 'recovery-stat-barrier'),
+        transaction.then(
+          () => 'transaction-resolved-before-barrier',
+          (error: unknown) =>
+            error instanceof Error ? `transaction-rejected: ${error.message}` : String(error),
+        ),
+      ]);
+      expect(firstOutcome).toBe('recovery-stat-barrier');
+
+      await rm(lockDirectory, { recursive: true });
+      continueRecovery();
+      const recovered = await transaction;
+
+      expect(recovered.environments.dev?.modalEnvironment).toBe('zapp-dev');
+      await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      continueRecovery();
+      await transaction.catch(() => undefined);
+      await rm(lockDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('bounds writer-lock waiting with the injected clock and timeout', async () => {
     const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
     const lockDirectory = `${lockFilePath}.publish-lock`;

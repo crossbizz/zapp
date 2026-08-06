@@ -485,7 +485,9 @@ export class ExecManager {
         return;
       }
       finished = true;
-      this.active.delete(pid);
+      if (this.active.get(pid) === active) {
+        this.active.delete(pid);
+      }
       void (async () => {
         try {
           await killPromise;

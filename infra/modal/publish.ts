@@ -134,6 +134,7 @@ export interface PublishLockTiming {
   readonly now: () => number;
   readonly wait: (milliseconds: number) => Promise<void>;
   readonly timeoutMs: number;
+  readonly beforeRecoveryStat?: () => Promise<void>;
 }
 
 interface PreflightInput {
@@ -244,7 +245,7 @@ function processIsAlive(pid: number): boolean {
 
 async function recoverAbandonedPublishLock(
   lockDirectory: string,
-  now: () => number,
+  timing: Pick<PublishLockTiming, 'beforeRecoveryStat' | 'now'>,
 ): Promise<void> {
   const ownerPath = resolve(lockDirectory, 'owner.json');
   let owner: z.infer<typeof PublishLockOwnerSchema> | undefined;
@@ -256,7 +257,15 @@ async function recoverAbandonedPublishLock(
   if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
     return;
   }
-  const age = now() - (await stat(lockDirectory)).mtimeMs;
+  await timing.beforeRecoveryStat?.();
+  let lockDirectoryModifiedAt: number;
+  try {
+    lockDirectoryModifiedAt = (await stat(lockDirectory)).mtimeMs;
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  const age = timing.now() - lockDirectoryModifiedAt;
   if (age < ABANDONED_LOCK_GRACE_MS) {
     return;
   }
@@ -302,7 +311,7 @@ async function withPublishLock<T>(
       break;
     } catch (error) {
       if (!isExistingFile(error)) throw error;
-      await recoverAbandonedPublishLock(lockDirectory, timing.now);
+      await recoverAbandonedPublishLock(lockDirectory, timing);
       if (timing.now() >= deadline) {
         throw new Error('Timed out waiting for Modal image publication lock');
       }
