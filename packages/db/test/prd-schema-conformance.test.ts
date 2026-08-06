@@ -132,6 +132,7 @@ describe('PRD §23 conformance', () => {
     // would otherwise turn every assertion below into a silent pass.
     expect(prdTables.size).toBe(28);
     expect(prdTables.get('projects')).toContain('support_level');
+    expect(prdTables.get('agent_runs')).toContain('request_fingerprint');
     expect([...prdTables.values()].every((columns) => columns.length > 0)).toBe(true);
   });
 

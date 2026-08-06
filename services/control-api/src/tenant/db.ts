@@ -262,6 +262,7 @@ export interface TenantSpecificationRepository {
 export interface NewRunInput {
   readonly id: string;
   readonly workflowId: string;
+  readonly requestFingerprint: string;
   readonly projectId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
@@ -270,10 +271,15 @@ export interface NewRunInput {
   readonly budget: unknown;
   readonly startedBy: string;
   readonly now: Date;
-  /** Runs only for a row this call inserted; throwing rolls the insertion back. */
-  readonly authorize: (created: AgentRun) => Promise<void>;
+  /** Runs synchronously only for a row this call inserted; throwing rolls the insertion back. */
+  readonly authorize: (created: AgentRun) => void;
   readonly audit: AuditHook<AgentRun>;
 }
+
+export type RunCreateResult =
+  | { readonly outcome: 'created'; readonly run: AgentRun }
+  | { readonly outcome: 'recovered'; readonly run: AgentRun }
+  | { readonly outcome: 'conflict'; readonly run: AgentRun };
 
 export type OperationOutcome = 'dispatch' | 'completed' | 'rejected' | 'blocked';
 
@@ -302,7 +308,7 @@ export interface CompleteRunOperationInput {
 
 export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
   byProject(projectId: string): Promise<AgentRun[]>;
-  create(input: NewRunInput): Promise<AgentRun>;
+  create(input: NewRunInput): Promise<RunCreateResult>;
   claimOperation(input: ClaimRunOperationInput): Promise<OperationClaim<AgentRun> | undefined>;
   completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined>;
   rejectOperation(
@@ -1009,7 +1015,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       runs: {
         ...base.runs,
 
-        async create(input: NewRunInput): Promise<AgentRun> {
+        async create(input: NewRunInput): Promise<RunCreateResult> {
           return await db.transaction(async (tx) => {
             const [inserted] = await tx
               .insert(agentRuns)
@@ -1021,6 +1027,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 mode: input.mode,
                 appType: input.appType,
                 model: input.model,
+                requestFingerprint: input.requestFingerprint,
                 status: 'queued',
                 specificationId: null,
                 // The stable workflow identity is durable before dispatch. A
@@ -1034,9 +1041,9 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .onConflictDoNothing()
               .returning();
             if (inserted !== undefined) {
-              await input.authorize(inserted);
+              input.authorize(inserted);
               await input.audit(tx, inserted);
-              return inserted;
+              return { outcome: 'created', run: inserted };
             }
             const [run] = await tx
               .select()
@@ -1045,7 +1052,11 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .limit(1);
             if (run === undefined)
               throw new Error('run intent was not found after insert conflict');
-            return run;
+            return {
+              outcome:
+                run.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
+              run,
+            };
           });
         },
 

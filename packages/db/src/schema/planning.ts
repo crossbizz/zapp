@@ -95,6 +95,8 @@ export const agentRuns = pgTable(
     mode: text('mode', { enum: RUN_MODES }).notNull(),
     appType: text('app_type', { enum: APP_TYPES }).notNull().default('web'),
     model: text('model'),
+    /** SHA-256 of the scoped create request, used to reject changed-key reuse after dispatch failure. */
+    requestFingerprint: text('request_fingerprint').notNull(),
     status: text('status').notNull(),
     /** Null in modes that build without a specification (ask, prototype). */
     specificationId: text('specification_id').references(() => specifications.id),

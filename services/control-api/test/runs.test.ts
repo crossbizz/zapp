@@ -401,6 +401,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       mode: 'build',
       appType: 'web',
       model: null,
+      requestFingerprint: 'seed:completed-run',
       status: 'completed',
       specificationId: null,
       temporalWorkflowId: 'workflow-completed',
@@ -542,11 +543,28 @@ describe('POST /v1/projects/:projectId/runs', () => {
       appType: 'mobile',
       model: 'anthropic/claude-sonnet-5',
     });
+    expect(wired.data.runs[0]?.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
-    organizations.settings.set(wired.organizationId, {
-      builderCanDeploy: false,
-      defaultModelPolicy: ['openai/gpt-5'],
+    const changed = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers,
+      payload: { ...payload, appType: 'web' },
     });
+
+    expect(changed.statusCode, changed.body).toBe(422);
+    expect(changed.json<{ error: { code: string } }>().error.code).toBe(
+      'idempotency_conflict',
+    );
+    expect(wired.data.runs).toHaveLength(1);
+    expect(wired.orchestrator.starts).toHaveLength(1);
+    expect(
+      wired.built.audit.events.filter(
+        (event) => event.action === 'run.created' && event.targetId === runId,
+      ),
+    ).toHaveLength(1);
+
+    organizations.settings.delete(wired.organizationId);
 
     const retry = await wired.built.app.inject({
       method: 'POST',
@@ -665,6 +683,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       mode: 'build',
       appType: 'web',
       model: null,
+      requestFingerprint: 'seed:foreign-run',
       status: 'running',
       specificationId: null,
       temporalWorkflowId: `workflow-${foreignOrganizationId}`,
@@ -752,6 +771,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       mode: 'build',
       appType: 'web',
       model: null,
+      requestFingerprint: 'seed:foreign-run-permission',
       status: 'running',
       specificationId: null,
       temporalWorkflowId: 'foreign-workflow',
@@ -1133,7 +1153,7 @@ describe('workspace passthrough routes', () => {
     ] as const) {
       const seeded: AgentRun = {
         id: newId('run'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
-        mode: 'build', appType: 'web', model: null, status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
+        mode: 'build', appType: 'web', model: null, requestFingerprint: `seed:viewer-${action}`, status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
         startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
       };
       wired.data.runs.push(seeded);
@@ -1193,7 +1213,7 @@ describe('workspace passthrough routes', () => {
     };
     const foreignRun: AgentRun = {
       id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
-      mode: 'build', appType: 'web', model: null, status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
+      mode: 'build', appType: 'web', model: null, requestFingerprint: 'seed:foreign-resource-run', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
       startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
     };
     const foreignWorkspace: Workspace = {

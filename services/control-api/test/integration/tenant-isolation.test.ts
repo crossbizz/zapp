@@ -21,8 +21,13 @@ import { createDbOrganizationStore, type OrganizationStore } from '../../src/org
 import { SERVICE_TOKEN_HEADER } from '../../src/internal/service-auth.js';
 import { createInMemoryAuditSink, type InMemoryAuditSink } from '../../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
-import { createTenantDbFactory } from '../../src/tenant/db.js';
+import {
+  createTenantDbFactory,
+  type NewRunInput,
+  type TenantRunRepository,
+} from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
+import { InMemoryTenantData } from '../support/tenant-db.js';
 import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
@@ -146,6 +151,85 @@ function expectOnlyTenantRows(response: Response, tenant: Tenant, expected: stri
       tenant.organizationId,
     );
   }
+}
+
+interface ConcurrentCreateEvidence {
+  readonly outcomes: string[];
+  readonly authorizations: number;
+  readonly audits: number;
+  readonly rows: readonly { readonly id: string }[];
+}
+
+async function exerciseConcurrentRunCreates(
+  repository: TenantRunRepository,
+  base: Omit<NewRunInput, 'requestFingerprint' | 'authorize' | 'audit'>,
+  fingerprints: readonly [string, string],
+  rows: () => Promise<readonly { readonly id: string }[]>,
+): Promise<ConcurrentCreateEvidence> {
+  let authorizations = 0;
+  let audits = 0;
+  let releaseAudit = (): void => undefined;
+  const auditGate = new Promise<void>((resolve) => {
+    releaseAudit = resolve;
+  });
+  let markAuditEntered = (): void => undefined;
+  const auditEntered = new Promise<void>((resolve) => {
+    markAuditEntered = resolve;
+  });
+  const create = (requestFingerprint: string) =>
+    repository.create({
+      ...base,
+      requestFingerprint,
+      authorize: () => {
+        authorizations += 1;
+      },
+      audit: async () => {
+        audits += 1;
+        markAuditEntered();
+        await auditGate;
+      },
+    });
+
+  const pending = [create(fingerprints[0]), create(fingerprints[1])] as const;
+  await auditEntered;
+  await Promise.resolve();
+  await Promise.resolve();
+  releaseAudit();
+  const results = await Promise.all(pending);
+
+  return {
+    outcomes: results.map((result) => result.outcome).sort(),
+    authorizations,
+    audits,
+    rows: await rows(),
+  };
+}
+
+async function withOneAvailableConnection<T>(
+  database: TestDatabase,
+  work: () => Promise<T>,
+): Promise<{ readonly timedOut: boolean; readonly value: T }> {
+  const held = await Promise.all(
+    Array.from({ length: database.sql.options.max - 1 }, async () => await database.sql.reserve()),
+  );
+  const pending = work().then(
+    (value) => ({ state: 'fulfilled' as const, value }),
+    (error: unknown) => ({ state: 'rejected' as const, error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const observed = await Promise.race([
+    pending.then((result) => ({ state: 'settled' as const, result })),
+    new Promise<{ readonly state: 'timeout' }>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ state: 'timeout' });
+      }, 2_000);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  for (const connection of held) connection.release();
+  const final = await pending;
+  if (final.state === 'rejected') throw final.error;
+  return { timedOut: observed.state === 'timeout', value: final.value };
 }
 
 /**
@@ -369,6 +453,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         projectId,
         branchId,
         mode: 'build',
+        requestFingerprint: `seed:${runId}`,
         status: 'running',
         startedBy: owner.userId,
       });
@@ -564,6 +649,20 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         });
         expect(first.statusCode, first.body).toBe(502);
 
+        const changed = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers,
+          payload: { ...payload, appType: 'web' },
+        });
+        expectRefusal(changed, 422, 'idempotency_conflict');
+
+        const afterChangedRows = await database.sql<{ id: string }[]>`
+          select id from agent_runs where organization_id = ${a.organizationId}
+        `;
+        expect(afterChangedRows.filter((row) => !beforeIds.has(row.id))).toHaveLength(1);
+        expect(startCalls.slice(beforeStarts)).toHaveLength(1);
+
         await store.updateSettings({
           organizationId: a.organizationId,
           patch: { defaultModelPolicy: ['openai/gpt-5'] },
@@ -644,6 +743,174 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
           set settings_json = '{}'::jsonb
           where id = ${a.organizationId}
         `;
+      }
+    });
+
+    it('settles authorized and denied new intents with one available PostgreSQL connection', async () => {
+      const model = 'anthropic/claude-sonnet-5';
+      await store.updateSettings({
+        organizationId: a.organizationId,
+        patch: { defaultModelPolicy: [model] },
+        operationKey: 'postgres-one-connection-policy-allow-01',
+        audit: noAudit,
+      });
+      const authorized = await withOneAvailableConnection(database, async () =>
+        await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(a.owner, a.organizationId),
+            'idempotency-key': 'postgres-one-connection-authorized-01',
+          },
+          payload: {
+            mode: 'build',
+            prompt: 'Authorized with a bounded database pool',
+            model,
+          },
+        }),
+      );
+
+      await store.updateSettings({
+        organizationId: a.organizationId,
+        patch: { defaultModelPolicy: ['openai/gpt-5'] },
+        operationKey: 'postgres-one-connection-policy-deny-01',
+        audit: noAudit,
+      });
+      const beforeDenied = await database.sql<{ id: string }[]>`
+        select id from agent_runs where organization_id = ${a.organizationId}
+      `;
+      const denied = await withOneAvailableConnection(database, async () =>
+        await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${a.projectIds[0] ?? ''}/runs`,
+          headers: {
+            ...as(a.owner, a.organizationId),
+            'idempotency-key': 'postgres-one-connection-denied-01',
+          },
+          payload: {
+            mode: 'build',
+            prompt: 'Denied without stranding the insert transaction',
+            model,
+          },
+        }),
+      );
+      const afterDenied = await database.sql<{ id: string }[]>`
+        select id from agent_runs where organization_id = ${a.organizationId}
+      `;
+
+      expect({
+        authorizedTimedOut: authorized.timedOut,
+        authorizedStatus: authorized.value.statusCode,
+        deniedTimedOut: denied.timedOut,
+        deniedStatus: denied.value.statusCode,
+        deniedCode: errorOf(denied.value),
+      }).toEqual({
+        authorizedTimedOut: false,
+        authorizedStatus: 201,
+        deniedTimedOut: false,
+        deniedStatus: 400,
+        deniedCode: 'model_not_allowed',
+      });
+      expect(afterDenied).toEqual(beforeDenied);
+    });
+
+    it('shares one exact concurrent create contract between memory and PostgreSQL', async () => {
+      const postgres = createTenantDbFactory(database.db)(a.organizationId).runs;
+      const memoryData = new InMemoryTenantData();
+      const memory = memoryData.factory(a.organizationId).runs;
+      for (const backend of [
+        {
+          name: 'memory',
+          repository: memory,
+          rows: (id: string) =>
+            Promise.resolve(
+              memoryData.runs.filter((row) => row.id === id).map((row) => ({ id: row.id })),
+            ),
+        },
+        {
+          name: 'postgres',
+          repository: postgres,
+          rows: async (id: string) =>
+            await database.sql<{ id: string }[]>`
+              select id from agent_runs
+              where organization_id = ${a.organizationId} and id = ${id}
+            `,
+        },
+      ]) {
+        const id = newId('run');
+        const evidence = await exerciseConcurrentRunCreates(
+          backend.repository,
+          {
+            id,
+            workflowId: id,
+            projectId: a.projectIds[0] ?? '',
+            branchId: null,
+            mode: 'build',
+            appType: 'web',
+            model: null,
+            budget: null,
+            startedBy: a.owner.userId,
+            now: EVENT_TIME,
+          },
+          ['a'.repeat(64), 'a'.repeat(64)],
+          async () => await backend.rows(id),
+        );
+        expect(evidence, backend.name).toMatchObject({
+          outcomes: ['created', 'recovered'],
+          authorizations: 1,
+          audits: 1,
+        });
+        expect(evidence.rows, backend.name).toEqual([{ id }]);
+      }
+    });
+
+    it('shares one conflicting concurrent create contract between memory and PostgreSQL', async () => {
+      const postgres = createTenantDbFactory(database.db)(a.organizationId).runs;
+      const memoryData = new InMemoryTenantData();
+      const memory = memoryData.factory(a.organizationId).runs;
+      for (const backend of [
+        {
+          name: 'memory',
+          repository: memory,
+          rows: (id: string) =>
+            Promise.resolve(
+              memoryData.runs.filter((row) => row.id === id).map((row) => ({ id: row.id })),
+            ),
+        },
+        {
+          name: 'postgres',
+          repository: postgres,
+          rows: async (id: string) =>
+            await database.sql<{ id: string }[]>`
+              select id from agent_runs
+              where organization_id = ${a.organizationId} and id = ${id}
+            `,
+        },
+      ]) {
+        const id = newId('run');
+        const evidence = await exerciseConcurrentRunCreates(
+          backend.repository,
+          {
+            id,
+            workflowId: id,
+            projectId: a.projectIds[0] ?? '',
+            branchId: null,
+            mode: 'build',
+            appType: 'mobile',
+            model: null,
+            budget: null,
+            startedBy: a.owner.userId,
+            now: EVENT_TIME,
+          },
+          ['b'.repeat(64), 'c'.repeat(64)],
+          async () => await backend.rows(id),
+        );
+        expect(evidence, backend.name).toMatchObject({
+          outcomes: ['conflict', 'created'],
+          authorizations: 1,
+          audits: 1,
+        });
+        expect(evidence.rows, backend.name).toEqual([{ id }]);
       }
     });
   });

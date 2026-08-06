@@ -56,6 +56,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'mode',
       'app_type',
       'model',
+      'request_fingerprint',
       'status',
       'specification_id',
       'temporal_workflow_id',

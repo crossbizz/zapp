@@ -103,40 +103,53 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       )
         throw branchNotFound();
       authorize(ctx, 'start_run');
-      const operationKey = operationOf(request);
+      const idempotency = idempotencyOf(request);
+      const operationKey = creationOperationOf(request);
       const runId = stableId('run', operationKey);
-      const run = await ctx.db.runs.create({
-        id: runId,
-        workflowId: runId,
-        projectId: project.id,
-        branchId: request.body.branchId ?? null,
-        mode: request.body.mode,
-        appType: request.body.appType,
-        model: request.body.model ?? null,
-        budget: request.body.budget ?? null,
-        startedBy: actorOf(request),
-        now: deps.now(),
-        authorize: async (created) => {
-          if (created.model === null) return;
+      let run = await ctx.db.runs.getById(runId);
+      if (run !== undefined && run.requestFingerprint !== idempotency.fingerprint) {
+        throw idempotencyConflict();
+      }
+      if (run === undefined) {
+        let explicitModelAllowed = true;
+        if (request.body.model !== undefined) {
           const settings = await deps.organizations.getSettings(ctx.organizationId);
-          if (!allowedModelsFromPolicy(settings?.defaultModelPolicy).has(created.model)) {
-            throw modelNotAllowed();
-          }
-        },
-        audit: async (tx, created) => {
-          await request.audit(tx, {
-            organizationId: ctx.organizationId,
-            action: 'run.created',
-            target: { type: 'run', id: created.id },
-            metadata: {
-              projectId: created.projectId,
-              mode: created.mode,
-              appType: created.appType,
-              model: created.model,
-            },
-          });
-        },
-      });
+          explicitModelAllowed = allowedModelsFromPolicy(settings?.defaultModelPolicy).has(
+            request.body.model,
+          );
+        }
+        const created = await ctx.db.runs.create({
+          id: runId,
+          workflowId: runId,
+          requestFingerprint: idempotency.fingerprint,
+          projectId: project.id,
+          branchId: request.body.branchId ?? null,
+          mode: request.body.mode,
+          appType: request.body.appType,
+          model: request.body.model ?? null,
+          budget: request.body.budget ?? null,
+          startedBy: actorOf(request),
+          now: deps.now(),
+          authorize: (inserted) => {
+            if (inserted.model !== null && !explicitModelAllowed) throw modelNotAllowed();
+          },
+          audit: async (tx, inserted) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'run.created',
+              target: { type: 'run', id: inserted.id },
+              metadata: {
+                projectId: inserted.projectId,
+                mode: inserted.mode,
+                appType: inserted.appType,
+                model: inserted.model,
+              },
+            });
+          },
+        });
+        if (created.outcome === 'conflict') throw idempotencyConflict();
+        run = created.run;
+      }
       try {
         const started = await deps.orchestrator.startRun(
           StartRunInputSchema.parse({
@@ -276,11 +289,24 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
 function operationOf(request: {
   idempotency?: { key: string; fingerprint: string };
 }): z.infer<typeof OperationKeySchema> {
+  const idempotency = idempotencyOf(request);
+  return OperationKeySchema.parse(
+    `op_${createHash('sha256').update(`${idempotency.key}\n${idempotency.fingerprint}`).digest('hex')}`,
+  );
+}
+function creationOperationOf(request: {
+  idempotency?: { key: string; fingerprint: string };
+}): z.infer<typeof OperationKeySchema> {
+  return OperationKeySchema.parse(
+    `op_${createHash('sha256').update(idempotencyOf(request).key).digest('hex')}`,
+  );
+}
+function idempotencyOf(request: {
+  idempotency?: { key: string; fingerprint: string };
+}): { readonly key: string; readonly fingerprint: string } {
   if (request.idempotency === undefined)
     throw new ApiError('idempotency_key_required', 400, 'An Idempotency-Key header is required.');
-  return OperationKeySchema.parse(
-    `op_${createHash('sha256').update(`${request.idempotency.key}\n${request.idempotency.fingerprint}`).digest('hex')}`,
-  );
+  return request.idempotency;
 }
 function stableId(prefix: 'run' | 'ws', operationKey: string): string {
   const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -313,6 +339,13 @@ function modelNotAllowed(): ApiError {
     'model_not_allowed',
     400,
     'That model is not allowed by this organization.',
+  );
+}
+function idempotencyConflict(): ApiError {
+  return new ApiError(
+    'idempotency_conflict',
+    422,
+    'That Idempotency-Key was already used for a different request.',
   );
 }
 function invalidRunState(): ApiError {
