@@ -40,17 +40,27 @@ export type GitOperation =
   | 'push'
   | 'checkout'
   | 'branch'
-  | 'restore';
+  | 'restore'
+  | 'merge'
+  | 'revert';
 
 export type GitOp =
   | {
-      readonly operation: Exclude<GitOperation, 'add_commit'>;
+      readonly operation: Exclude<GitOperation, 'add_commit' | 'merge' | 'revert'>;
       readonly args?: readonly string[];
     }
   | {
       readonly operation: 'add_commit';
       readonly paths: readonly string[];
       readonly message: string;
+    }
+  | {
+      readonly operation: 'merge';
+      readonly ref: string;
+    }
+  | {
+      readonly operation: 'revert';
+      readonly commit: string;
     };
 
 export interface GitResult {
@@ -132,7 +142,9 @@ export async function resolveInRoot(root: string, path: string): Promise<string>
   return resolved;
 }
 
-const SAFE_GIT_FLAGS: Readonly<Record<Exclude<GitOperation, 'add_commit'>, ReadonlySet<string>>> = {
+const SAFE_GIT_FLAGS: Readonly<
+  Record<Exclude<GitOperation, 'add_commit' | 'merge' | 'revert'>, ReadonlySet<string>>
+> = {
   status: new Set(['--short', '--porcelain', '--branch']),
   diff: new Set(['--cached', '--staged', '--stat', '--name-only', '--name-status', '--patch']),
   log: new Set(['--oneline', '--stat', '--name-only', '--name-status']),
@@ -154,7 +166,7 @@ async function validateGitPaths(root: string, paths: readonly string[]): Promise
 
 async function validateGitArgs(
   root: string,
-  operation: Exclude<GitOperation, 'add_commit'>,
+  operation: Exclude<GitOperation, 'add_commit' | 'merge' | 'revert'>,
   args: readonly string[],
 ): Promise<void> {
   let pathsFollow = false;
@@ -170,6 +182,35 @@ async function validateGitArgs(
       continue;
     }
     await resolveInRoot(root, arg);
+  }
+}
+
+function validateMergeRef(ref: string): void {
+  const components = ref.split('/');
+  const containsUnsafeCharacter = /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref);
+  const hasUnsafeComponent = components.some(
+    (component) =>
+      component.length === 0 || component.startsWith('.') || component.endsWith('.lock'),
+  );
+
+  if (
+    ref.length === 0 ||
+    ref.length > 255 ||
+    ref.startsWith('-') ||
+    ref.endsWith('.') ||
+    ref.endsWith('/') ||
+    ref.includes('..') ||
+    ref.includes('@{') ||
+    containsUnsafeCharacter ||
+    hasUnsafeComponent
+  ) {
+    throw new PathViolationError(ref);
+  }
+}
+
+function validateCommitId(commit: string): void {
+  if (!/^[0-9a-f]{7,64}$/iu.test(commit)) {
+    throw new PathViolationError(commit);
   }
 }
 
@@ -259,7 +300,9 @@ function trimIncompleteUtf8(buffer: Buffer): Buffer {
             ? 4
             : 1;
 
-  return buffer.length - sequenceStart < sequenceLength ? buffer.subarray(0, sequenceStart) : buffer;
+  return buffer.length - sequenceStart < sequenceLength
+    ? buffer.subarray(0, sequenceStart)
+    : buffer;
 }
 
 /** A local, filesystem-backed runtime used as the test double for runtime consumers. */
@@ -393,7 +436,11 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       for (const entry of entries) {
         const child = await resolveInRoot(this.root, relative(root, resolve(current, entry.name)));
         const relativePath = relative(directory, child);
-        const type = entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file';
+        const type = entry.isDirectory()
+          ? 'directory'
+          : entry.isSymbolicLink()
+            ? 'symlink'
+            : 'file';
         if (opts.glob === undefined || relativePath.includes(opts.glob.replaceAll('*', ''))) {
           files.push({ path: relativePath, type });
         }
@@ -436,6 +483,24 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       return this.exec({
         cmd: 'git',
         args: ['commit', '-m', op.message],
+        timeoutMs: 30_000,
+      });
+    }
+
+    if (op.operation === 'merge') {
+      validateMergeRef(op.ref);
+      return this.exec({
+        cmd: 'git',
+        args: ['merge', '--no-edit', '--', op.ref],
+        timeoutMs: 30_000,
+      });
+    }
+
+    if (op.operation === 'revert') {
+      validateCommitId(op.commit);
+      return this.exec({
+        cmd: 'git',
+        args: ['revert', '--no-edit', '--', op.commit],
         timeoutMs: 30_000,
       });
     }
@@ -493,15 +558,12 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         });
       };
       const interval = setInterval(checkReadiness, 50);
-      const timeout = setTimeout(
-        () => {
-          terminateProcessGroup(child);
-          complete(() => {
-            rejectReady(new Error('Development server did not become ready'));
-          });
-        },
-        DEV_SERVER_START_TIMEOUT_MS,
-      );
+      const timeout = setTimeout(() => {
+        terminateProcessGroup(child);
+        complete(() => {
+          rejectReady(new Error('Development server did not become ready'));
+        });
+      }, DEV_SERVER_START_TIMEOUT_MS);
 
       child.once('error', onError);
       child.once('close', onClose);

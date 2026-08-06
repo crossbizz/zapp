@@ -87,6 +87,12 @@ async function initializeGitRepository(runtime: MemoryWorkspaceRuntime): Promise
   ).resolves.toMatchObject({ exitCode: 0 });
 }
 
+async function gitStdout(runtime: MemoryWorkspaceRuntime, args: string[]): Promise<string> {
+  const result = await runtime.exec({ cmd: 'git', args, timeoutMs: 5_000 });
+  expect(result.exitCode).toBe(0);
+  return result.stdout.trim();
+}
+
 describe('MemoryWorkspaceRuntime path safety', () => {
   it('lists files whose paths stay within the workspace root', async () => {
     await withWorkspace(async (_root, runtime) => {
@@ -154,6 +160,83 @@ describe('MemoryWorkspaceRuntime git safety', () => {
       await expect(
         runtime.git({ operation: 'add_commit', paths: ['../outside'], message: 'escape' }),
       ).rejects.toBeInstanceOf(PathViolationError);
+    });
+  });
+
+  it('merges a validated branch ref and reverts a validated commit id', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await initializeGitRepository(runtime);
+      const baseBranch = await gitStdout(runtime, ['branch', '--show-current']);
+
+      expect(
+        (
+          await runtime.exec({
+            cmd: 'git',
+            args: ['checkout', '-b', 'feature/runtime-git'],
+            timeoutMs: 5_000,
+          })
+        ).exitCode,
+      ).toBe(0);
+      await runtime.writeFile('entry.txt', new TextEncoder().encode('feature data'));
+      expect(
+        (
+          await runtime.exec({
+            cmd: 'git',
+            args: ['add', 'entry.txt'],
+            timeoutMs: 5_000,
+          })
+        ).exitCode,
+      ).toBe(0);
+      expect(
+        (
+          await runtime.exec({
+            cmd: 'git',
+            args: ['commit', '-m', 'feature change'],
+            timeoutMs: 5_000,
+          })
+        ).exitCode,
+      ).toBe(0);
+      const featureCommit = await gitStdout(runtime, ['rev-parse', 'HEAD']);
+      expect(
+        (
+          await runtime.exec({
+            cmd: 'git',
+            args: ['checkout', baseBranch],
+            timeoutMs: 5_000,
+          })
+        ).exitCode,
+      ).toBe(0);
+
+      await expect(
+        runtime.git({ operation: 'merge', ref: 'feature/runtime-git' }),
+      ).resolves.toMatchObject({ exitCode: 0 });
+      await expect(runtime.readFile('entry.txt')).resolves.toEqual(
+        new TextEncoder().encode('feature data'),
+      );
+
+      await expect(
+        runtime.git({ operation: 'revert', commit: featureCommit }),
+      ).resolves.toMatchObject({ exitCode: 0 });
+      await expect(runtime.readFile('entry.txt')).resolves.toEqual(
+        new TextEncoder().encode('workspace data'),
+      );
+    });
+  });
+
+  it('rejects merge and revert option injection, ref traversal, and non-commit ids', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await initializeGitRepository(runtime);
+
+      for (const ref of ['--strategy=ours', '../outside', 'feature..outside', 'feature@{1}']) {
+        await expect(runtime.git({ operation: 'merge', ref })).rejects.toBeInstanceOf(
+          PathViolationError,
+        );
+      }
+      for (const commit of ['--no-edit', '../outside', 'HEAD', 'abc123;touch-pwned']) {
+        await expect(runtime.git({ operation: 'revert', commit })).rejects.toBeInstanceOf(
+          PathViolationError,
+        );
+      }
     });
   });
 });

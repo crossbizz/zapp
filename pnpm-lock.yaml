@@ -540,6 +540,25 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  packages/agent-tools:
+    dependencies:
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@zapp/workspace-runtime':
+        specifier: workspace:*
+        version: link:../workspace-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.23.5)(yaml@2.9.0)
+
   packages/api-client:
     dependencies:
       '@zapp/contracts':
