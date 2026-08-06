@@ -2,6 +2,68 @@ import { z } from 'zod';
 
 const IdentifierSchema = z.string().min(1).max(256);
 const TextSchema = z.string().max(1_000_000);
+const RequiredContentSchema = z.string().trim().min(1).max(100_000);
+const RequiredTitleSchema = z.string().trim().min(1).max(512);
+const AcceptanceCriterionSchema = z.string().trim().min(1).max(10_000);
+const NonnegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
+const MAX_ACCEPTANCE_CRITERIA = 100;
+const MAX_DECISIONS = 200;
+const MAX_FILE_INDEX_ENTRIES = 1_000;
+const MAX_DIFFSTAT_FILES = 1_000;
+const MAX_RECENT_COMMITS = 100;
+const MAX_TRANSCRIPT_EVENTS = 200;
+const MAX_EVIDENCE_ARTIFACTS = 200;
+const MAX_COMPACTION_RANGES = 1_000;
+const MAX_EVENTS_PER_RANGE = 10_000;
+const MAX_COMPACTION_ARTIFACTS = 1_000;
+
+function hasDuplicates(values: readonly string[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+const AcceptanceCriteriaSchema = z
+  .array(AcceptanceCriterionSchema)
+  .min(1)
+  .max(MAX_ACCEPTANCE_CRITERIA)
+  .superRefine((criteria, context) => {
+    if (hasDuplicates(criteria)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Criteria must be unique' });
+    }
+  });
+
+export const RepositoryPathSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .superRefine((path, context) => {
+    const segments = path.split('/');
+    const hasUnsafeSegment = segments.some(
+      (segment) => segment.length === 0 || segment === '.' || segment === '..',
+    );
+    if (
+      path.startsWith('/') ||
+      path.endsWith('/') ||
+      path.includes('\\') ||
+      /[\u0000-\u001f\u007f]/u.test(path) ||
+      hasUnsafeSegment
+    ) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Path must be normalized' });
+    }
+  });
+export type RepositoryPath = z.infer<typeof RepositoryPathSchema>;
+
+export const CommitShaSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
+export type CommitSha = z.infer<typeof CommitShaSchema>;
+
+export const OpaqueArtifactIdSchema = z
+  .string()
+  .min(16)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u);
+export type OpaqueArtifactId = z.infer<typeof OpaqueArtifactIdSchema>;
+
+export const CompactionOperationIdSchema = z.string().trim().min(1).max(256);
+export type CompactionOperationId = z.infer<typeof CompactionOperationIdSchema>;
 
 export const ContextRoleSchema = z.enum(['planner', 'builder', 'verifier', 'summarizer']);
 export type ContextRole = z.infer<typeof ContextRoleSchema>;
@@ -38,33 +100,35 @@ const ScopedArtifactBaseSchema = z
 export const SpecificationContextSourceSchema = ScopedArtifactBaseSchema.extend({
   version: z.number().int().positive().safe(),
   approved: z.literal(true),
-  content: TextSchema,
-  acceptanceCriteria: z.array(TextSchema),
+  content: RequiredContentSchema,
+  acceptanceCriteria: AcceptanceCriteriaSchema,
 }).strict();
 export type SpecificationContextSource = z.infer<typeof SpecificationContextSourceSchema>;
 
 export const PlanContextSourceSchema = ScopedArtifactBaseSchema.extend({
   version: z.number().int().positive().safe(),
-  content: TextSchema,
+  content: RequiredContentSchema,
   task: z
     .object({
       taskId: IdentifierSchema,
-      title: TextSchema,
-      acceptanceCriteria: z.array(TextSchema),
+      title: RequiredTitleSchema,
+      acceptanceCriteria: AcceptanceCriteriaSchema,
     })
     .strict(),
 }).strict();
 export type PlanContextSource = z.infer<typeof PlanContextSourceSchema>;
 
 export const DecisionLogContextSourceSchema = ScopedArtifactBaseSchema.extend({
-  decisions: z.array(
-    z
-      .object({
-        decisionId: IdentifierSchema,
-        content: TextSchema,
-      })
-      .strict(),
-  ),
+  decisions: z
+    .array(
+      z
+        .object({
+          decisionId: IdentifierSchema,
+          content: TextSchema,
+        })
+        .strict(),
+    )
+    .max(MAX_DECISIONS),
 }).strict();
 export type DecisionLogContextSource = z.infer<typeof DecisionLogContextSourceSchema>;
 
@@ -74,27 +138,61 @@ export const ArchitectureContextSourceSchema = ScopedArtifactBaseSchema.extend({
 export type ArchitectureContextSource = z.infer<typeof ArchitectureContextSourceSchema>;
 
 export const FileIndexContextSourceSchema = ScopedArtifactBaseSchema.extend({
-  files: z.array(
-    z
-      .object({
-        path: TextSchema,
-        sizeBytes: z.number().int().nonnegative().safe(),
-      })
-      .strict(),
-  ),
+  files: z
+    .array(
+      z
+        .object({
+          path: RepositoryPathSchema,
+          sizeBytes: NonnegativeSafeIntegerSchema,
+        })
+        .strict(),
+    )
+    .max(MAX_FILE_INDEX_ENTRIES),
 }).strict();
 export type FileIndexContextSource = z.infer<typeof FileIndexContextSourceSchema>;
 
+export const DiffstatFileSchema = z
+  .object({
+    path: RepositoryPathSchema,
+    additions: NonnegativeSafeIntegerSchema,
+    deletions: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type DiffstatFile = z.infer<typeof DiffstatFileSchema>;
+
+export const StructuredDiffstatSchema = z
+  .object({
+    files: z.array(DiffstatFileSchema).max(MAX_DIFFSTAT_FILES),
+    additions: NonnegativeSafeIntegerSchema,
+    deletions: NonnegativeSafeIntegerSchema,
+  })
+  .strict()
+  .superRefine((diffstat, context) => {
+    const additions = diffstat.files.reduce((sum, file) => sum + file.additions, 0);
+    const deletions = diffstat.files.reduce((sum, file) => sum + file.deletions, 0);
+    if (
+      !Number.isSafeInteger(additions) ||
+      !Number.isSafeInteger(deletions) ||
+      additions !== diffstat.additions ||
+      deletions !== diffstat.deletions
+    ) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Diffstat totals must match files' });
+    }
+  });
+export type StructuredDiffstat = z.infer<typeof StructuredDiffstatSchema>;
+
 export const RecentChangesContextSourceSchema = ScopedArtifactBaseSchema.extend({
-  commits: z.array(
-    z
-      .object({
-        sha: IdentifierSchema,
-        message: TextSchema,
-        diffstat: TextSchema,
-      })
-      .strict(),
-  ),
+  commits: z
+    .array(
+      z
+        .object({
+          sha: CommitShaSchema,
+          message: z.string().trim().min(1).max(10_000),
+          diffstat: StructuredDiffstatSchema,
+        })
+        .strict(),
+    )
+    .max(MAX_RECENT_COMMITS),
 }).strict();
 export type RecentChangesContextSource = z.infer<typeof RecentChangesContextSourceSchema>;
 
@@ -113,7 +211,7 @@ export const TranscriptContextSourceSchema = z
   .object({
     scope: ContextScopeSchema,
     taskId: IdentifierSchema,
-    events: z.array(ContextEventSchema),
+    events: z.array(ContextEventSchema).max(MAX_TRANSCRIPT_EVENTS),
   })
   .strict();
 export type TranscriptContextSource = z.infer<typeof TranscriptContextSourceSchema>;
@@ -129,7 +227,7 @@ export const EvidenceContextSourceSchema = z
   .object({
     scope: ContextScopeSchema,
     taskId: IdentifierSchema,
-    artifacts: z.array(EvidenceArtifactSchema),
+    artifacts: z.array(EvidenceArtifactSchema).max(MAX_EVIDENCE_ARTIFACTS),
   })
   .strict();
 export type EvidenceContextSource = z.infer<typeof EvidenceContextSourceSchema>;
@@ -171,7 +269,7 @@ export type SourceArtifactLink = z.infer<typeof SourceArtifactLinkSchema>;
 export const CompactionEventRangeSchema = z
   .object({
     link: EventRangeLinkSchema,
-    events: z.array(ContextEventSchema).min(1),
+    events: z.array(ContextEventSchema).min(1).max(MAX_EVENTS_PER_RANGE),
   })
   .strict();
 export type CompactionEventRange = z.infer<typeof CompactionEventRangeSchema>;
@@ -189,10 +287,62 @@ export type CompactionArtifact = z.infer<typeof CompactionArtifactSchema>;
 export const CompactionSourceBundleSchema = z
   .object({
     scope: ContextScopeSchema,
-    eventRanges: z.array(CompactionEventRangeSchema),
-    artifacts: z.array(CompactionArtifactSchema),
+    eventRanges: z.array(CompactionEventRangeSchema).max(MAX_COMPACTION_RANGES),
+    artifacts: z.array(CompactionArtifactSchema).max(MAX_COMPACTION_ARTIFACTS),
   })
-  .strict();
+  .strict()
+  .superRefine((source, context) => {
+    if (source.eventRanges.length === 0 && source.artifacts.length === 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Provenance is required' });
+    }
+
+    const eventIds = new Set<string>();
+    const eventSequences = new Set<number>();
+    let previousEnd: number | undefined;
+    for (const range of source.eventRanges) {
+      const first = range.events[0];
+      const last = range.events.at(-1);
+      const isContiguous = range.events.every(
+        (event, index) => event.sequence === range.link.startSequence + index,
+      );
+      const hasDuplicate = range.events.some((event) => {
+        const duplicate = eventIds.has(event.eventId) || eventSequences.has(event.sequence);
+        eventIds.add(event.eventId);
+        eventSequences.add(event.sequence);
+        return duplicate;
+      });
+      if (
+        first === undefined ||
+        last === undefined ||
+        range.link.startSequence > range.link.endSequence ||
+        first.eventId !== range.link.startEventId ||
+        first.sequence !== range.link.startSequence ||
+        last.eventId !== range.link.endEventId ||
+        last.sequence !== range.link.endSequence ||
+        !isContiguous ||
+        hasDuplicate ||
+        (previousEnd !== undefined && range.link.startSequence !== previousEnd + 1) ||
+        range.link.runId !== source.scope.runId ||
+        range.events.some((event) => !scopesMatch(event.scope, source.scope))
+      ) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Event provenance is invalid' });
+      }
+      previousEnd = range.link.endSequence;
+    }
+
+    const artifactLinks = source.artifacts.map(
+      (artifact) => `${artifact.link.runId}\u0000${artifact.link.artifactId}`,
+    );
+    if (
+      hasDuplicates(artifactLinks) ||
+      source.artifacts.some(
+        (artifact) =>
+          artifact.link.runId !== source.scope.runId || !scopesMatch(artifact.scope, source.scope),
+      )
+    ) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Artifact links must be unique' });
+    }
+  });
 export type CompactionSourceBundle = z.infer<typeof CompactionSourceBundleSchema>;
 
 export const ContextSectionKindSchema = z.enum([
@@ -234,19 +384,104 @@ export const AssembledContextSchema = z
   .strict();
 export type AssembledContext = z.infer<typeof AssembledContextSchema>;
 
+export const CompactContextRequestSchema = z
+  .object({
+    runId: IdentifierSchema,
+    operationId: CompactionOperationIdSchema,
+  })
+  .strict();
+export type CompactContextRequest = z.infer<typeof CompactContextRequestSchema>;
+
+export const CompactionSnapshotRequestSchema = z.object({ runId: IdentifierSchema }).strict();
+export type CompactionSnapshotRequest = z.infer<typeof CompactionSnapshotRequestSchema>;
+
+export const CompactionSnapshotSchema = z
+  .object({
+    source: CompactionSourceBundleSchema,
+    latestVersion: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type CompactionSnapshot = z.infer<typeof CompactionSnapshotSchema>;
+
 export const SummaryArtifactSchema = z
   .object({
-    artifactId: IdentifierSchema,
+    artifactId: OpaqueArtifactIdSchema,
     kind: z.literal('context-summary'),
     scope: ContextScopeSchema,
     version: z.number().int().positive().safe(),
     content: TextSchema,
     tokenCount: z.number().int().nonnegative().safe(),
-    sourceEventRanges: z.array(EventRangeLinkSchema),
-    sourceArtifacts: z.array(SourceArtifactLinkSchema),
+    sourceEventRanges: z.array(EventRangeLinkSchema).max(MAX_COMPACTION_RANGES),
+    sourceArtifacts: z.array(SourceArtifactLinkSchema).max(MAX_COMPACTION_ARTIFACTS),
+  })
+  .strict()
+  .superRefine((summary, context) => {
+    if (summary.sourceEventRanges.length === 0 && summary.sourceArtifacts.length === 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Provenance is required' });
+    }
+
+    let previousEnd: number | undefined;
+    const eventIds = new Set<string>();
+    for (const range of summary.sourceEventRanges) {
+      const duplicateStart = eventIds.has(range.startEventId);
+      eventIds.add(range.startEventId);
+      const duplicateEnd =
+        range.endEventId !== range.startEventId && eventIds.has(range.endEventId);
+      eventIds.add(range.endEventId);
+      if (
+        range.startSequence > range.endSequence ||
+        (previousEnd !== undefined && range.startSequence !== previousEnd + 1) ||
+        range.runId !== summary.scope.runId ||
+        duplicateStart ||
+        duplicateEnd
+      ) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Event ranges are invalid' });
+      }
+      previousEnd = range.endSequence;
+    }
+
+    const artifactLinks = summary.sourceArtifacts.map(
+      (artifact) => `${artifact.runId}\u0000${artifact.artifactId}`,
+    );
+    if (
+      hasDuplicates(artifactLinks) ||
+      summary.sourceArtifacts.some((artifact) => artifact.runId !== summary.scope.runId)
+    ) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Artifact links must be unique' });
+    }
+  });
+export type SummaryArtifact = z.infer<typeof SummaryArtifactSchema>;
+
+export const AtomicCompactionRequestSchema = z
+  .object({
+    operationId: CompactionOperationIdSchema,
+    expectedPreviousVersion: NonnegativeSafeIntegerSchema,
+    source: CompactionSourceBundleSchema,
+    content: TextSchema,
+    tokenCount: NonnegativeSafeIntegerSchema,
   })
   .strict();
-export type SummaryArtifact = z.infer<typeof SummaryArtifactSchema>;
+export type AtomicCompactionRequest = z.infer<typeof AtomicCompactionRequestSchema>;
+
+const CommittedCompactionResultSchema = z
+  .object({ status: z.literal('committed'), summary: SummaryArtifactSchema })
+  .strict();
+const IdempotentCompactionResultSchema = z
+  .object({ status: z.literal('idempotent'), summary: SummaryArtifactSchema })
+  .strict();
+const VersionConflictCompactionResultSchema = z
+  .object({
+    status: z.literal('version-conflict'),
+    currentVersion: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+
+export const CompactionCommitResultSchema = z.discriminatedUnion('status', [
+  CommittedCompactionResultSchema,
+  IdempotentCompactionResultSchema,
+  VersionConflictCompactionResultSchema,
+]);
+export type CompactionCommitResult = z.infer<typeof CompactionCommitResultSchema>;
 
 export const ContextErrorCodeSchema = z.enum([
   'MALFORMED_INPUT',
@@ -298,9 +533,8 @@ export class ContextError extends Error {
 
 export interface ContextRepository {
   fetchContext(request: ContextRepositoryRequest): Promise<unknown>;
-  fetchCompactionSources(runId: string): Promise<unknown>;
-  getLatestSummary(runId: string): Promise<unknown>;
-  appendSummary(summary: SummaryArtifact): Promise<unknown>;
+  fetchCompactionSnapshot(request: CompactionSnapshotRequest): Promise<unknown>;
+  commitCompaction(request: AtomicCompactionRequest): Promise<unknown>;
   resolveEventRange(link: EventRangeLink): Promise<unknown>;
   resolveArtifact(link: SourceArtifactLink): Promise<unknown>;
 }
@@ -314,7 +548,7 @@ export interface ContextServiceDependencies {
 
 export interface ContextService {
   assembleContext(role: unknown, run: unknown, task: unknown): Promise<AssembledContext>;
-  compact(runId: unknown): Promise<SummaryArtifact>;
+  compact(request: unknown): Promise<SummaryArtifact>;
 }
 
 type SectionSeed = Omit<AssembledContextSection, 'tokenCount'>;
@@ -492,6 +726,16 @@ function joinLines(values: readonly string[]): string {
   return values.join('\n');
 }
 
+function formatDiffstat(diffstat: StructuredDiffstat): string {
+  const files = diffstat.files.map(
+    (file) => `${file.path}\t+${String(file.additions)}\t-${String(file.deletions)}`,
+  );
+  return joinLines([
+    ...files,
+    `total\t+${String(diffstat.additions)}\t-${String(diffstat.deletions)}`,
+  ]);
+}
+
 function makeSectionSeeds(source: ContextSourceBundle): SectionSeed[] {
   const artifactIds = [
     source.specification.artifactId,
@@ -568,7 +812,7 @@ function makeSectionSeeds(source: ContextSourceBundle): SectionSeed[] {
       kind: 'recentChanges',
       content: joinLines(
         source.recentChanges.commits.map(
-          (commit) => `${commit.sha} ${commit.message}\n${commit.diffstat}`,
+          (commit) => `${commit.sha} ${commit.message}\n${formatDiffstat(commit.diffstat)}`,
         ),
       ),
       sourceArtifactIds: [source.recentChanges.artifactId],
@@ -608,10 +852,14 @@ function budgetSections(
       return [];
     }
     return [
-      AssembledContextSectionSchema.parse({
-        ...seed,
-        tokenCount: countTokens(seed.content, counter),
-      }),
+      parseBoundary(
+        AssembledContextSectionSchema,
+        {
+          ...seed,
+          tokenCount: countTokens(seed.content, counter),
+        },
+        'REPOSITORY_RESULT',
+      ),
     ];
   });
 
@@ -632,27 +880,11 @@ function assertCompactionScope(source: CompactionSourceBundle, runId: string): v
   }
 
   for (const range of source.eventRanges) {
-    const first = range.events[0];
-    const last = range.events.at(-1);
-    const hasWrongScope = range.events.some((event) => !scopesMatch(event.scope, source.scope));
-    let previousSequence: number | undefined;
-    const isOutOfOrder = range.events.some((event) => {
-      const outOfOrder = previousSequence !== undefined && event.sequence <= previousSequence;
-      previousSequence = event.sequence;
-      return outOfOrder;
-    });
-    if (
-      range.link.runId !== runId ||
-      first === undefined ||
-      last === undefined ||
-      first.eventId !== range.link.startEventId ||
-      first.sequence !== range.link.startSequence ||
-      last.eventId !== range.link.endEventId ||
-      last.sequence !== range.link.endSequence ||
-      hasWrongScope ||
-      isOutOfOrder
-    ) {
+    if (range.link.runId !== runId) {
       throw new ContextError('UNRESOLVED_LINK');
+    }
+    if (range.events.some((event) => !scopesMatch(event.scope, source.scope))) {
+      throw new ContextError('CROSS_SCOPE');
     }
   }
 
@@ -667,61 +899,10 @@ function valuesMatch(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function assertResolvableEventRange(
-  repository: ContextRepository,
-  expected: CompactionEventRange,
-): Promise<void> {
-  const link = EventRangeLinkSchema.parse(expected.link);
-  const result = await callRepository(() => repository.resolveEventRange(link));
-  if (result === null) {
-    throw new ContextError('UNRESOLVED_LINK');
-  }
-  const resolved = parseBoundary(CompactionEventRangeSchema, result, 'REPOSITORY_RESULT');
-  if (!valuesMatch(resolved, expected)) {
-    throw new ContextError('UNRESOLVED_LINK');
-  }
-}
-
-async function assertResolvableArtifact(
-  repository: ContextRepository,
-  expected: CompactionArtifact,
-): Promise<void> {
-  const link = SourceArtifactLinkSchema.parse(expected.link);
-  const result = await callRepository(() => repository.resolveArtifact(link));
-  if (result === null) {
-    throw new ContextError('UNRESOLVED_LINK');
-  }
-  const resolved = parseBoundary(CompactionArtifactSchema, result, 'REPOSITORY_RESULT');
-  if (!valuesMatch(resolved, expected)) {
-    throw new ContextError('UNRESOLVED_LINK');
-  }
-}
-
-async function assertSummaryLinksResolvable(
-  repository: ContextRepository,
-  summary: SummaryArtifact,
-): Promise<void> {
-  for (const link of summary.sourceEventRanges) {
-    const result = await callRepository(() => repository.resolveEventRange(link));
-    if (result === null) {
-      throw new ContextError('UNRESOLVED_LINK');
-    }
-    parseBoundary(CompactionEventRangeSchema, result, 'REPOSITORY_RESULT');
-  }
-  for (const link of summary.sourceArtifacts) {
-    const result = await callRepository(() => repository.resolveArtifact(link));
-    if (result === null) {
-      throw new ContextError('UNRESOLVED_LINK');
-    }
-    parseBoundary(CompactionArtifactSchema, result, 'REPOSITORY_RESULT');
-  }
-}
-
 type CompactionSeed = {
   content: string;
   priority: number;
   stableId: string;
-  tokenCount: number;
 };
 
 function artifactPriority(kind: string): number {
@@ -749,7 +930,6 @@ function buildCompactionContent(
         content,
         priority: artifactPriority(artifact.kind),
         stableId: artifact.link.artifactId,
-        tokenCount: countTokens(content, counter),
       };
     }),
     ...source.eventRanges.map((range) => {
@@ -758,22 +938,64 @@ function buildCompactionContent(
         content,
         priority: 6,
         stableId: `${String(range.link.startSequence)}:${range.link.startEventId}`,
-        tokenCount: countTokens(content, counter),
       };
     }),
-  ].sort(
-    (left, right) => left.priority - right.priority || left.stableId.localeCompare(right.stableId),
-  );
-
-  let total = seeds.reduce((sum, seed) => sum + seed.tokenCount, 0);
-  while (total > budget) {
-    const removed = seeds.pop();
-    if (removed === undefined) {
-      break;
+  ].sort((left, right) => {
+    if (left.priority !== right.priority) {
+      return left.priority - right.priority;
     }
-    total -= removed.tokenCount;
+    if (left.stableId < right.stableId) {
+      return -1;
+    }
+    if (left.stableId > right.stableId) {
+      return 1;
+    }
+    return 0;
+  });
+
+  let content = seeds.map((seed) => seed.content).join('\n\n');
+  let tokenCount = countTokens(content, counter);
+  while (tokenCount > budget && seeds.length > 0) {
+    seeds.pop();
+    content = seeds.map((seed) => seed.content).join('\n\n');
+    tokenCount = countTokens(content, counter);
   }
-  return { content: seeds.map((seed) => seed.content).join('\n\n'), tokenCount: total };
+  return { content, tokenCount };
+}
+
+function expectedSummaryFields(request: AtomicCompactionRequest): Omit<SummaryArtifact, 'artifactId' | 'version'> {
+  return {
+    kind: 'context-summary',
+    scope: request.source.scope,
+    content: request.content,
+    tokenCount: request.tokenCount,
+    sourceEventRanges: request.source.eventRanges.map((range) => range.link),
+    sourceArtifacts: request.source.artifacts.map((artifact) => artifact.link),
+  };
+}
+
+function assertExactCompactionResult(
+  request: AtomicCompactionRequest,
+  result: Exclude<CompactionCommitResult, { status: 'version-conflict' }>,
+): SummaryArtifact {
+  if (
+    !valuesMatch(
+      {
+        kind: result.summary.kind,
+        scope: result.summary.scope,
+        content: result.summary.content,
+        tokenCount: result.summary.tokenCount,
+        sourceEventRanges: result.summary.sourceEventRanges,
+        sourceArtifacts: result.summary.sourceArtifacts,
+      },
+      expectedSummaryFields(request),
+    ) ||
+    (result.status === 'committed' &&
+      result.summary.version !== request.expectedPreviousVersion + 1)
+  ) {
+    throw new ContextError('REPOSITORY_RESULT');
+  }
+  return result.summary;
 }
 
 export function createContextService(dependencies: ContextServiceDependencies): ContextService {
@@ -786,12 +1008,16 @@ export function createContextService(dependencies: ContextServiceDependencies): 
       const task = parseBoundary(TaskContextRequestSchema, taskInput, 'MALFORMED_INPUT');
       assertBudget(run.tokenBudget);
 
-      const request = ContextRepositoryRequestSchema.parse({
-        organizationId: run.organizationId,
-        projectId: run.projectId,
-        runId: run.runId,
-        taskId: task.taskId,
-      });
+      const request = parseBoundary(
+        ContextRepositoryRequestSchema,
+        {
+          organizationId: run.organizationId,
+          projectId: run.projectId,
+          runId: run.runId,
+          taskId: task.taskId,
+        },
+        'MALFORMED_INPUT',
+      );
       const rawResult = await callRepository(() => dependencies.repository.fetchContext(request));
       const source = parseBoundary(ContextSourceBundleSchema, rawResult, 'REPOSITORY_RESULT');
       assertContextScope(source, run, task.taskId);
@@ -824,91 +1050,93 @@ export function createContextService(dependencies: ContextServiceDependencies): 
         scrubbedRun.tokenBudget,
         dependencies.countTokens,
       );
-      return AssembledContextSchema.parse({
-        role: scrubbedRole,
-        scope: {
-          organizationId: scrubbedRun.organizationId,
-          projectId: scrubbedRun.projectId,
-          runId: scrubbedRun.runId,
+      return parseBoundary(
+        AssembledContextSchema,
+        {
+          role: scrubbedRole,
+          scope: {
+            organizationId: scrubbedRun.organizationId,
+            projectId: scrubbedRun.projectId,
+            runId: scrubbedRun.runId,
+          },
+          taskId: scrubbedTask.taskId,
+          tokenBudget: scrubbedRun.tokenBudget,
+          tokenCount: sections.reduce((sum, section) => sum + section.tokenCount, 0),
+          sections,
         },
-        taskId: scrubbedTask.taskId,
-        tokenBudget: scrubbedRun.tokenBudget,
-        tokenCount: sections.reduce((sum, section) => sum + section.tokenCount, 0),
-        sections,
-      });
+        'REPOSITORY_RESULT',
+      );
     },
-    async compact(runIdInput) {
-      const runId = parseBoundary(IdentifierSchema, runIdInput, 'MALFORMED_INPUT');
-      const [rawSourceResult, rawLatestResult] = await Promise.all([
-        callRepository(() => dependencies.repository.fetchCompactionSources(runId)),
-        callRepository(() => dependencies.repository.getLatestSummary(runId)),
-      ]);
-      const source = parseBoundary(
-        CompactionSourceBundleSchema,
-        rawSourceResult,
-        'REPOSITORY_RESULT',
+    async compact(requestInput) {
+      const request = parseBoundary(
+        CompactContextRequestSchema,
+        requestInput,
+        'MALFORMED_INPUT',
       );
-      const latest = parseBoundary(
-        SummaryArtifactSchema.nullable(),
-        rawLatestResult,
-        'REPOSITORY_RESULT',
+      const snapshotRequest = parseBoundary(
+        CompactionSnapshotRequestSchema,
+        { runId: request.runId },
+        'MALFORMED_INPUT',
       );
-      assertCompactionScope(source, runId);
-      if (
-        latest !== null &&
-        (!scopesMatch(latest.scope, source.scope) || latest.scope.runId !== runId)
-      ) {
-        throw new ContextError('CROSS_SCOPE');
+      const maximumAttempts = 3;
+      for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+        const rawSnapshot = await callRepository(() =>
+          dependencies.repository.fetchCompactionSnapshot(snapshotRequest),
+        );
+        const snapshot = parseBoundary(
+          CompactionSnapshotSchema,
+          rawSnapshot,
+          'REPOSITORY_RESULT',
+        );
+        assertCompactionScope(snapshot.source, request.runId);
+        if (!Number.isSafeInteger(snapshot.latestVersion + 1)) {
+          throw new ContextError('REPOSITORY_RESULT');
+        }
+
+        const scrubbedSource = parseBoundary(
+          CompactionSourceBundleSchema,
+          scrubValue(snapshot.source, dependencies.scrub),
+          'SCRUBBER_FAILURE',
+        );
+        assertCompactionScope(
+          scrubbedSource,
+          parseBoundary(
+            IdentifierSchema,
+            scrubValue(request.runId, dependencies.scrub),
+            'SCRUBBER_FAILURE',
+          ),
+        );
+        const compacted = buildCompactionContent(
+          scrubbedSource,
+          dependencies.compactionTokenBudget,
+          dependencies.countTokens,
+        );
+        const atomicRequest = parseBoundary(
+          AtomicCompactionRequestSchema,
+          {
+            operationId: request.operationId,
+            expectedPreviousVersion: snapshot.latestVersion,
+            source: snapshot.source,
+            content: compacted.content,
+            tokenCount: compacted.tokenCount,
+          },
+          'REPOSITORY_RESULT',
+        );
+        const rawResult = await callRepository(() =>
+          dependencies.repository.commitCompaction(atomicRequest),
+        );
+        const result = parseBoundary(
+          CompactionCommitResultSchema,
+          rawResult,
+          'REPOSITORY_RESULT',
+        );
+        if (result.status === 'version-conflict') {
+          continue;
+        }
+        return assertExactCompactionResult(atomicRequest, result);
       }
 
-      for (const range of source.eventRanges) {
-        await assertResolvableEventRange(dependencies.repository, range);
-      }
-      for (const artifact of source.artifacts) {
-        await assertResolvableArtifact(dependencies.repository, artifact);
-      }
-
-      const scrubbedSource = parseBoundary(
-        CompactionSourceBundleSchema,
-        scrubValue(source, dependencies.scrub),
-        'SCRUBBER_FAILURE',
-      );
-      const scrubbedRunId = parseBoundary(
-        IdentifierSchema,
-        scrubValue(runId, dependencies.scrub),
-        'SCRUBBER_FAILURE',
-      );
-      assertCompactionScope(scrubbedSource, scrubbedRunId);
-
-      const previousVersion = latest?.version ?? 0;
-      if (!Number.isSafeInteger(previousVersion + 1)) {
-        throw new ContextError('REPOSITORY_RESULT');
-      }
-      const version = previousVersion + 1;
-      const compacted = buildCompactionContent(
-        scrubbedSource,
-        dependencies.compactionTokenBudget,
-        dependencies.countTokens,
-      );
-      const summary = SummaryArtifactSchema.parse({
-        artifactId: `context-summary:${scrubbedRunId}:v${String(version)}`,
-        kind: 'context-summary',
-        scope: scrubbedSource.scope,
-        version,
-        content: compacted.content,
-        tokenCount: compacted.tokenCount,
-        sourceEventRanges: scrubbedSource.eventRanges.map((range) => range.link),
-        sourceArtifacts: scrubbedSource.artifacts.map((artifact) => artifact.link),
-      });
-
-      await assertSummaryLinksResolvable(dependencies.repository, summary);
-      const rawSaved = await callRepository(() => dependencies.repository.appendSummary(summary));
-      const saved = parseBoundary(SummaryArtifactSchema, rawSaved, 'REPOSITORY_RESULT');
-      if (!valuesMatch(saved, summary)) {
-        throw new ContextError('REPOSITORY_RESULT');
-      }
-      await assertSummaryLinksResolvable(dependencies.repository, saved);
-      return saved;
+      throw new ContextError('REPOSITORY_FAILURE');
     },
   };
 }

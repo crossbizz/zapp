@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CompactionSourceBundleSchema,
@@ -6,6 +6,7 @@ import {
   ContextSourceBundleSchema,
   SummaryArtifactSchema,
   createContextService,
+  type AtomicCompactionRequest,
   type CompactionSourceBundle,
   type ContextRepository,
   type ContextSourceBundle,
@@ -67,9 +68,16 @@ function makeContextSource(): ContextSourceBundle {
       artifactId: 'recent-changes-1',
       commits: [
         {
-          sha: 'abc1234',
+          sha: '0123456789abcdef0123456789abcdef01234567',
           message: 'Add context tests',
-          diffstat: '2 files changed, 20 insertions(+)',
+          diffstat: {
+            files: [
+              { path: 'src/index.ts', additions: 4, deletions: 0 },
+              { path: 'src/session/context.ts', additions: 16, deletions: 0 },
+            ],
+            additions: 20,
+            deletions: 0,
+          },
         },
       ],
     },
@@ -155,6 +163,8 @@ type RepositoryState = {
   summaries: SummaryArtifact[];
   sourceEvents: CompactionSourceBundle['eventRanges'];
   sourceArtifacts: CompactionSourceBundle['artifacts'];
+  operations: Map<string, { request: AtomicCompactionRequest; summary: SummaryArtifact }>;
+  commitAttempts: number;
 };
 
 function clone<T>(value: T): T {
@@ -174,6 +184,11 @@ function makeRepository(options?: {
   compaction?: unknown;
   filterTaskSources?: boolean;
   failContextWith?: Error;
+  appendResult?: (saved: SummaryArtifact) => unknown;
+  mutateStoreAfterSnapshot?: 'links' | 'scope';
+  alwaysConflict?: boolean;
+  artifactId?: string;
+  failResolvers?: boolean;
 }): { repository: ContextRepository; state: RepositoryState } {
   const compaction = options?.compaction ?? makeCompactionSource();
   const parsedCompaction = CompactionSourceBundleSchema.safeParse(compaction);
@@ -183,6 +198,8 @@ function makeRepository(options?: {
     summaries: [],
     sourceEvents: parsedCompaction.success ? clone(parsedCompaction.data.eventRanges) : [],
     sourceArtifacts: parsedCompaction.success ? clone(parsedCompaction.data.artifacts) : [],
+    operations: new Map(),
+    commitAttempts: 0,
   };
 
   const repository: ContextRepository = {
@@ -213,18 +230,110 @@ function makeRepository(options?: {
         },
       });
     },
-    fetchCompactionSources() {
-      return Promise.resolve(state.compaction);
+    fetchCompactionSnapshot() {
+      const snapshot = {
+        source: clone(state.compaction),
+        latestVersion: state.summaries.at(-1)?.version ?? 0,
+      };
+      if (options?.mutateStoreAfterSnapshot !== undefined) {
+        const stored = CompactionSourceBundleSchema.parse(state.compaction);
+        if (options.mutateStoreAfterSnapshot === 'links') {
+          const storedRange = firstItem(stored.eventRanges);
+          storedRange.link.startEventId = 'schema-valid-wrong-event';
+          firstItem(storedRange.events).eventId = 'schema-valid-wrong-event';
+        } else {
+          stored.scope.projectId = 'schema-valid-wrong-project';
+          for (const storedRange of stored.eventRanges) {
+            for (const storedEvent of storedRange.events) {
+              storedEvent.scope.projectId = 'schema-valid-wrong-project';
+            }
+          }
+          for (const storedArtifact of stored.artifacts) {
+            storedArtifact.scope.projectId = 'schema-valid-wrong-project';
+          }
+        }
+        state.compaction = stored;
+        state.sourceEvents = clone(stored.eventRanges);
+        state.sourceArtifacts = clone(stored.artifacts);
+      }
+      return Promise.resolve(snapshot);
     },
-    getLatestSummary() {
-      return Promise.resolve(clone(state.summaries.at(-1) ?? null));
-    },
-    appendSummary(summary) {
-      const saved = SummaryArtifactSchema.parse(summary);
-      state.summaries.push(clone(saved));
-      return Promise.resolve(clone(saved));
+    commitCompaction(request) {
+      state.commitAttempts += 1;
+      const existing = state.operations.get(request.operationId);
+      if (existing !== undefined) {
+        const replayRequest = {
+          ...request,
+          expectedPreviousVersion: existing.request.expectedPreviousVersion,
+        };
+        if (JSON.stringify(replayRequest) !== JSON.stringify(existing.request)) {
+          return Promise.reject(new Error('Operation payload mismatch'));
+        }
+        return Promise.resolve({ status: 'idempotent', summary: clone(existing.summary) });
+      }
+
+      const currentVersion = state.summaries.at(-1)?.version ?? 0;
+      if (options?.alwaysConflict === true) {
+        return Promise.resolve({ status: 'version-conflict', currentVersion });
+      }
+      if (request.expectedPreviousVersion !== currentVersion) {
+        return Promise.resolve({ status: 'version-conflict', currentVersion });
+      }
+      if (
+        JSON.stringify(request.source) !== JSON.stringify(state.compaction) ||
+        request.source.eventRanges.some(
+          (range) =>
+            !state.sourceEvents.some(
+              (stored) => JSON.stringify(stored) === JSON.stringify(range),
+            ),
+        ) ||
+        request.source.artifacts.some(
+          (artifact) =>
+            !state.sourceArtifacts.some(
+              (stored) => JSON.stringify(stored) === JSON.stringify(artifact),
+            ),
+        )
+      ) {
+        return Promise.reject(new Error('Atomic source validation failed'));
+      }
+
+      const candidate = SummaryArtifactSchema.safeParse({
+        artifactId:
+          options?.artifactId ?? `ctxsum_${String(currentVersion + 1).padStart(16, '0')}`,
+        kind: 'context-summary',
+        scope: request.source.scope,
+        version: currentVersion + 1,
+        content: request.content,
+        tokenCount: request.tokenCount,
+        sourceEventRanges: request.source.eventRanges.map((range) => range.link),
+        sourceArtifacts: request.source.artifacts.map((artifact) => artifact.link),
+      });
+      if (!candidate.success) {
+        return Promise.reject(new Error('Generated summary is invalid'));
+      }
+      const transformed = options?.appendResult?.(candidate.data);
+      if (transformed !== undefined) {
+        if (
+          typeof transformed === 'object' &&
+          transformed !== null &&
+          'summary' in transformed &&
+          SummaryArtifactSchema.safeParse(transformed.summary).success &&
+          JSON.stringify(transformed.summary) !== JSON.stringify(candidate.data)
+        ) {
+          return Promise.reject(new Error('Atomic store-return validation failed'));
+        }
+        return Promise.resolve(clone(transformed));
+      }
+
+      const saved = clone(candidate.data);
+      state.summaries.push(saved);
+      state.operations.set(request.operationId, { request: clone(request), summary: clone(saved) });
+      return Promise.resolve({ status: 'committed', summary: clone(saved) });
     },
     resolveEventRange(link) {
+      if (options?.failResolvers === true) {
+        return Promise.reject(new Error('Resolver unavailable'));
+      }
       const range = state.sourceEvents.find(
         (candidate) =>
           candidate.link.runId === link.runId &&
@@ -236,6 +345,9 @@ function makeRepository(options?: {
       return Promise.resolve(clone(range ?? null));
     },
     resolveArtifact(link) {
+      if (options?.failResolvers === true) {
+        return Promise.reject(new Error('Resolver unavailable'));
+      }
       const artifact = state.sourceArtifacts.find(
         (candidate) =>
           candidate.link.runId === link.runId && candidate.link.artifactId === link.artifactId,
@@ -245,6 +357,14 @@ function makeRepository(options?: {
   };
 
   return { repository, state };
+}
+
+async function compactWithOperation(
+  service: ReturnType<typeof makeService>,
+  operationId: string,
+  runId: string = SCOPE.runId,
+): Promise<SummaryArtifact> {
+  return service.compact({ runId, operationId });
 }
 
 function makeService(
@@ -393,7 +513,7 @@ describe('assembleContext atomic content and scrubbing', () => {
     source.architectureSummary.content += ` ${SENSITIVE_VALUE}`;
     firstItem(source.fileIndex.files).path += SENSITIVE_VALUE;
     firstItem(source.recentChanges.commits).message += ` ${SENSITIVE_VALUE}`;
-    firstItem(source.recentChanges.commits).diffstat += ` ${SENSITIVE_VALUE}`;
+    firstItem(firstItem(source.recentChanges.commits).diffstat.files).path += SENSITIVE_VALUE;
     firstItem(source.transcript.events).content += ` ${SENSITIVE_VALUE}`;
     firstItem(source.evidence.artifacts).content += ` ${SENSITIVE_VALUE}`;
     const countedValues: string[] = [];
@@ -489,8 +609,8 @@ describe('compact', () => {
     const originalArtifacts = clone(state.sourceArtifacts);
     const service = makeService(repository);
 
-    const first = await service.compact(SCOPE.runId);
-    const second = await service.compact(SCOPE.runId);
+    const first = await compactWithOperation(service, 'sequential-compaction-1');
+    const second = await compactWithOperation(service, 'sequential-compaction-2');
 
     expect(first.version).toBe(1);
     expect(second.version).toBe(2);
@@ -526,7 +646,7 @@ describe('compact', () => {
       },
     });
 
-    const summary = await service.compact(SCOPE.runId);
+    const summary = await compactWithOperation(service, 'scrubbed-compaction');
 
     expect(JSON.stringify(summary)).not.toContain(SENSITIVE_VALUE);
     expect(JSON.stringify(state.summaries)).not.toContain(SENSITIVE_VALUE);
@@ -539,13 +659,510 @@ describe('compact', () => {
     firstItem(source.eventRanges).link.endEventId = 'missing-event';
     const { repository, state } = makeRepository({ compaction: source });
 
-    await expect(makeService(repository).compact(SCOPE.runId)).rejects.toSatisfy(
+    await expect(
+      compactWithOperation(makeService(repository), 'unresolved-compaction'),
+    ).rejects.toSatisfy(
       (error: unknown) => {
-        expectContextError(error, 'UNRESOLVED_LINK');
+        expectContextError(error, 'REPOSITORY_RESULT');
         return true;
       },
     );
     expect(state.summaries).toEqual([]);
+  });
+});
+
+describe('compact atomic mutation regressions', () => {
+  it('requires a caller-stable operation identifier at the public boundary', async () => {
+    const { repository } = makeRepository();
+
+    await expect(
+      makeService(repository).compact({
+        runId: SCOPE.runId,
+        operationId: 'public-operation-1',
+      }),
+    ).resolves.toMatchObject({ version: 1 });
+  });
+
+  it('commits concurrent distinct operations as consecutive versions', async () => {
+    const { repository, state } = makeRepository();
+    const service = makeService(repository);
+
+    const summaries = await Promise.all([
+      compactWithOperation(service, 'concurrent-operation-a'),
+      compactWithOperation(service, 'concurrent-operation-b'),
+    ]);
+
+    expect(summaries.map((summary) => summary.version).sort()).toEqual([1, 2]);
+    expect(new Set(summaries.map((summary) => summary.artifactId))).toHaveLength(2);
+    expect(state.summaries).toHaveLength(2);
+  });
+
+  it('returns the original version when the same operation is retried', async () => {
+    const { repository, state } = makeRepository();
+    const service = makeService(repository);
+
+    const first = await compactWithOperation(service, 'stable-operation');
+    const retried = await compactWithOperation(service, 'stable-operation');
+
+    expect(retried).toEqual(first);
+    expect(state.summaries).toEqual([first]);
+  });
+
+  it('does not persist when the repository would return a malformed result', async () => {
+    const { repository, state } = makeRepository({
+      appendResult: (saved) => ({
+        status: 'committed',
+        summary: { ...saved, unexpected: true },
+      }),
+    });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'malformed-result-operation'),
+    ).rejects.toBeInstanceOf(ContextError);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it('does not persist a schema-valid store-return mismatch', async () => {
+    const { repository, state } = makeRepository({
+      appendResult: (saved) => ({
+        status: 'committed',
+        summary: { ...saved, artifactId: 'schema-valid-wrong-artifact' },
+      }),
+    });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'mismatched-result-operation'),
+    ).rejects.toBeInstanceOf(ContextError);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it.each(['links', 'scope'] as const)(
+    'rejects a schema-valid atomic %s mismatch without committing',
+    async (mismatch) => {
+      const { repository, state } = makeRepository({ mutateStoreAfterSnapshot: mismatch });
+
+      await expect(
+        compactWithOperation(makeService(repository), `wrong-${mismatch}-operation`),
+      ).rejects.toBeInstanceOf(ContextError);
+      expect(state.summaries).toEqual([]);
+    },
+  );
+
+  it('bounds version-conflict refetch and rebuild attempts', async () => {
+    const { repository, state } = makeRepository({ alwaysConflict: true });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'persistently-conflicted-operation'),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_FAILURE');
+      return true;
+    });
+    expect(state.commitAttempts).toBe(3);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it('does not perform fallible resolver calls after an atomic commit', async () => {
+    const { repository, state } = makeRepository({ failResolvers: true });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'no-post-commit-resolver-operation'),
+    ).resolves.toMatchObject({ version: 1 });
+    expect(state.summaries).toHaveLength(1);
+  });
+});
+
+describe('compact exact token accounting', () => {
+  it('counts the exact final joined content including separators at the boundary', async () => {
+    const source = makeCompactionSource();
+    source.eventRanges = [];
+    source.artifacts = [
+      {
+        link: { runId: SCOPE.runId, artifactId: 'specification-source' },
+        scope: SCOPE,
+        kind: 'specification',
+        content: 'required specification',
+      },
+      {
+        link: { runId: SCOPE.runId, artifactId: 'runtime-source' },
+        scope: SCOPE,
+        kind: 'runtime',
+        content: 'lower priority runtime',
+      },
+    ];
+    const expected =
+      '[artifact specification:specification-source]\nrequired specification\n\n' +
+      '[artifact runtime:runtime-source]\nlower priority runtime';
+    const { repository } = makeRepository({ compaction: source });
+
+    const summary = await compactWithOperation(
+      makeService(repository, {
+        countTokens: (value) => value.length,
+        compactionTokenBudget: expected.length,
+      }),
+      'exact-budget-operation',
+    );
+
+    expect(summary.content).toBe(expected);
+    expect(summary.tokenCount).toBe(summary.content.length);
+    expect(summary.tokenCount).toBeLessThanOrEqual(expected.length);
+  });
+
+  it('drops one whole lowest-priority seed and recounts at one token below the boundary', async () => {
+    const source = makeCompactionSource();
+    source.eventRanges = [];
+    source.artifacts = [
+      {
+        link: { runId: SCOPE.runId, artifactId: 'specification-source' },
+        scope: SCOPE,
+        kind: 'specification',
+        content: 'required specification',
+      },
+      {
+        link: { runId: SCOPE.runId, artifactId: 'runtime-source' },
+        scope: SCOPE,
+        kind: 'runtime',
+        content: 'lower priority runtime',
+      },
+    ];
+    const retained = '[artifact specification:specification-source]\nrequired specification';
+    const complete = `${retained}\n\n[artifact runtime:runtime-source]\nlower priority runtime`;
+    const budget = complete.length - 1;
+    const { repository } = makeRepository({ compaction: source });
+
+    const summary = await compactWithOperation(
+      makeService(repository, {
+        countTokens: (value) => value.length,
+        compactionTokenBudget: budget,
+      }),
+      'one-smaller-budget-operation',
+    );
+
+    expect(summary.content).toBe(retained);
+    expect(summary.tokenCount).toBe(summary.content.length);
+    expect(summary.tokenCount).toBeLessThanOrEqual(budget);
+  });
+});
+
+describe('compact provenance integrity', () => {
+  function event(sequence: number, eventId = `event-${String(sequence)}`) {
+    return {
+      scope: SCOPE,
+      eventId,
+      sequence,
+      taskId: TASK.taskId,
+      content: `event ${String(sequence)}`,
+    };
+  }
+
+  function range(start: number, end: number, events: ReturnType<typeof event>[]) {
+    return {
+      link: {
+        runId: SCOPE.runId,
+        startEventId: firstItem(events).eventId,
+        endEventId: events.at(-1)?.eventId ?? firstItem(events).eventId,
+        startSequence: start,
+        endSequence: end,
+      },
+      events,
+    };
+  }
+
+  it('accepts a single event provenance range', async () => {
+    const source = makeCompactionSource();
+    source.eventRanges = [range(1, 1, [event(1)])];
+    source.artifacts = [];
+    const { repository } = makeRepository({ compaction: source });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'single-event-operation'),
+    ).resolves.toMatchObject({ version: 1 });
+  });
+
+  it('accepts adjacent ordered event ranges', async () => {
+    const source = makeCompactionSource();
+    source.eventRanges = [range(1, 1, [event(1)]), range(2, 2, [event(2)])];
+    source.artifacts = [];
+    const { repository } = makeRepository({ compaction: source });
+
+    await expect(
+      compactWithOperation(makeService(repository), 'adjacent-range-operation'),
+    ).resolves.toMatchObject({ version: 1 });
+  });
+
+  it.each([
+    [
+      'empty provenance',
+      () => ({ ...makeCompactionSource(), eventRanges: [], artifacts: [] }),
+    ],
+    [
+      'a gap within a range',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(1, 3, [event(1), event(3)])], artifacts: [] }),
+    ],
+    [
+      'a gap across ranges',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(1, 1, [event(1)]), range(3, 3, [event(3)])], artifacts: [] }),
+    ],
+    [
+      'overlapping ranges',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(1, 2, [event(1), event(2)]), range(2, 3, [event(2), event(3)])], artifacts: [] }),
+    ],
+    [
+      'duplicate event identifiers',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(1, 2, [event(1, 'duplicate-event'), event(2, 'duplicate-event')])], artifacts: [] }),
+    ],
+    [
+      'duplicate event sequences',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(1, 1, [event(1, 'event-a'), event(1, 'event-b')])], artifacts: [] }),
+    ],
+    [
+      'duplicate artifact links',
+      () => {
+        const source = makeCompactionSource();
+        source.eventRanges = [];
+        source.artifacts = [firstItem(source.artifacts), clone(firstItem(source.artifacts))];
+        return source;
+      },
+    ],
+    [
+      'a reversed range',
+      () => ({ ...makeCompactionSource(), eventRanges: [range(2, 1, [event(1), event(2)])], artifacts: [] }),
+    ],
+  ])('rejects %s before committing', async (_label, makeSource) => {
+    const { repository, state } = makeRepository({ compaction: makeSource() });
+
+    await expect(
+      compactWithOperation(makeService(repository), `invalid-provenance-${_label}`),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+    expect(state.summaries).toEqual([]);
+  });
+});
+
+describe('required context semantics', () => {
+  const malformedCases: ReadonlyArray<
+    readonly [string, (source: ContextSourceBundle) => void]
+  > = [
+    ['missing specification', (source) => void Reflect.deleteProperty(source, 'specification')],
+    ['blank specification content', (source) => void (source.specification.content = '   ')],
+    ['empty specification criteria', (source) => void (source.specification.acceptanceCriteria = [])],
+    [
+      'duplicate specification criteria',
+      (source) => void (source.specification.acceptanceCriteria = ['criterion', ' criterion ']),
+    ],
+    ['blank plan content', (source) => void (source.plan.content = '\t')],
+    ['blank task title', (source) => void (source.plan.task.title = '\n')],
+    ['empty task criteria', (source) => void (source.plan.task.acceptanceCriteria = [])],
+    [
+      'duplicate task criteria',
+      (source) => void (source.plan.task.acceptanceCriteria = ['criterion', 'criterion']),
+    ],
+    [
+      'over-bounded specification content',
+      (source) => void (source.specification.content = 'x'.repeat(100_001)),
+    ],
+    ['over-bounded task title', (source) => void (source.plan.task.title = 'x'.repeat(513))],
+  ];
+
+  it.each(malformedCases)('rejects %s before returning partial context', async (_label, mutate) => {
+    const source = makeContextSource();
+    mutate(source);
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+});
+
+describe('semantic repository source schemas', () => {
+  it.each(['../secret.ts', '/absolute/path.ts', 'src//unnormalized.ts', 'src/file.ts\n@@ patch']) (
+    'rejects unsafe repository path %s',
+    async (path) => {
+      const source = makeContextSource();
+      firstItem(source.fileIndex.files).path = path;
+      const { repository } = makeRepository({ context: source });
+
+      await expect(
+        makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'REPOSITORY_RESULT');
+        return true;
+      });
+    },
+  );
+
+  it('rejects a non-commit SHA and free-form patch body', async () => {
+    const source = makeContextSource();
+    const commit = firstItem(source.recentChanges.commits) as unknown as Record<string, unknown>;
+    commit.sha = 'not-a-commit';
+    commit.diffstat = '@@ -1 +1 @@\n-secret\n+body';
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('summarizer', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+
+  it('rejects unsafe structured diffstat numbers', async () => {
+    const source = makeContextSource();
+    const commit = firstItem(source.recentChanges.commits) as unknown as Record<string, unknown>;
+    commit.sha = '0123456789abcdef0123456789abcdef01234567';
+    commit.diffstat = {
+      files: [{ path: 'src/index.ts', additions: -1, deletions: 0 }],
+      additions: -1,
+      deletions: 0,
+    };
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('summarizer', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+
+  const overCapCases: ReadonlyArray<
+    readonly [string, (source: ContextSourceBundle) => void]
+  > = [
+    [
+      'file index',
+      (source) => {
+        source.fileIndex.files = Array.from({ length: 1_001 }, (_value, index) => ({
+          path: `src/file-${String(index)}.ts`,
+          sizeBytes: index,
+        }));
+      },
+    ],
+    [
+      'recent commits',
+      (source) => {
+        source.recentChanges.commits = Array.from({ length: 101 }, (_value, index) => ({
+          sha: index.toString(16).padStart(40, '0'),
+          message: `commit ${String(index)}`,
+          diffstat: { files: [], additions: 0, deletions: 0 },
+        }));
+      },
+    ],
+    [
+      'transcript tail',
+      (source) => {
+        source.transcript.events = Array.from({ length: 201 }, (_value, index) => ({
+          scope: SCOPE,
+          eventId: `event-${String(index)}`,
+          sequence: index,
+          taskId: TASK.taskId,
+          content: `event ${String(index)}`,
+        }));
+      },
+    ],
+  ];
+
+  it.each(overCapCases)('enforces the explicit %s cap', async (_label, mutate) => {
+    const source = makeContextSource();
+    mutate(source);
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+});
+
+describe('opaque identifiers and locale-independent ordering', () => {
+  it('accepts the opaque artifact identifier maximum and maps overflow to ContextError', async () => {
+    const maximumId = `a${'b'.repeat(127)}`;
+    const maximum = makeRepository({ artifactId: maximumId });
+    await expect(
+      compactWithOperation(makeService(maximum.repository), 'maximum-artifact-id-operation'),
+    ).resolves.toMatchObject({ artifactId: maximumId });
+
+    const overflow = makeRepository({ artifactId: `${maximumId}c` });
+    await expect(
+      compactWithOperation(makeService(overflow.repository), 'overflow-artifact-id-operation'),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_FAILURE');
+      return true;
+    });
+    expect(overflow.state.summaries).toEqual([]);
+  });
+
+  it('accepts a maximum-length run identifier without exposing it in the artifact identifier', async () => {
+    const runId = 'r'.repeat(256);
+    const source = makeCompactionSource();
+    source.scope.runId = runId;
+    for (const range of source.eventRanges) {
+      range.link.runId = runId;
+      for (const sourceEvent of range.events) {
+        sourceEvent.scope.runId = runId;
+      }
+    }
+    for (const artifact of source.artifacts) {
+      artifact.link.runId = runId;
+      artifact.scope.runId = runId;
+    }
+    const { repository } = makeRepository({ compaction: source });
+
+    const summary = await compactWithOperation(
+      makeService(repository),
+      'maximum-run-id-operation',
+      runId,
+    );
+
+    expect(summary.artifactId.length).toBeLessThanOrEqual(128);
+    expect(summary.artifactId).not.toContain(runId);
+  });
+
+  it('orders non-ASCII equal-priority seeds without consulting localeCompare', async () => {
+    const source = makeCompactionSource();
+    source.eventRanges = [];
+    source.artifacts = [
+      {
+        link: { runId: SCOPE.runId, artifactId: 'ä-source' },
+        scope: SCOPE,
+        kind: 'other',
+        content: 'ä',
+      },
+      {
+        link: { runId: SCOPE.runId, artifactId: 'z-source' },
+        scope: SCOPE,
+        kind: 'other',
+        content: 'z',
+      },
+    ];
+    const retained = '[artifact other:z-source]\nz';
+    const localeCompare = vi
+      .spyOn(String.prototype, 'localeCompare')
+      .mockImplementation(function mockSwedishOrder(this: string, other) {
+        return this === 'ä-source' && other === 'z-source' ? -1 : 1;
+      });
+
+    try {
+      const { repository } = makeRepository({ compaction: source });
+      const summary = await compactWithOperation(
+        makeService(repository, {
+          countTokens: (value) => value.length,
+          compactionTokenBudget: retained.length,
+        }),
+        'locale-independent-operation',
+      );
+
+      expect(summary.content).toBe(retained);
+      expect(summary.tokenCount).toBe(retained.length);
+    } finally {
+      localeCompare.mockRestore();
+    }
   });
 });
 
@@ -556,6 +1173,24 @@ describe('strict boundaries and non-mutation', () => {
 
     await expect(
       service.assembleContext('builder', { ...SCOPE, tokenBudget: 10, unexpected: true }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'MALFORMED_INPUT');
+      return true;
+    });
+    await expect(service.compact({ runId: SCOPE.runId })).rejects.toSatisfy(
+      (error: unknown) => {
+        expectContextError(error, 'MALFORMED_INPUT');
+        return true;
+      },
+    );
+    await expect(
+      service.compact({ runId: SCOPE.runId, operationId: '   ' }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'MALFORMED_INPUT');
+      return true;
+    });
+    await expect(
+      service.compact({ runId: SCOPE.runId, operationId: 'strict-operation', unexpected: true }),
     ).rejects.toSatisfy((error: unknown) => {
       expectContextError(error, 'MALFORMED_INPUT');
       return true;
