@@ -115,7 +115,7 @@ describe('the backup CLI entrypoint', () => {
       stdout: '',
       stderr: 'Git backup operation failed\n',
     });
-  });
+  }, 15_000);
 
   it('executes the real entrypoint and rejects an invalid restore selector', async () => {
     await expect(

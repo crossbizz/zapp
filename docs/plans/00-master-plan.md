@@ -288,6 +288,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-03: Plan set authored from PRD v1.1. Not yet executed.
 - 2026-08-03: Stack decisions finalized by product owner: **Stytch** (auth, supersedes WorkOS rec), **Neon** (confirmed), **Stripe** (confirmed), **Flexprice** (metering/credits/rating), **OTel → Grafana Cloud** incl. Faro + OnCall (supersedes Sentry), **PostHog** (analytics + feature flags). Plans 00/01/02/03/04/05/07/08/10, README, and tracker updated accordingly.
 - 2026-08-07: M1-GATE-1 done — made the mandated cold local gate deterministic by ordering same-package build before typecheck, declaring web's control-api test dependency, keeping Turbo-internal web tests artifact-read-only, and bounding the real-Git empty-restore test; forced local gate 53/53, while GitHub Actions remains unverified because billing prevents job startup.
+- 2026-08-07: M1-GATE-2 done — gave two real child-process fixtures finite 15-second test budgets while preserving five-second production Git deadlines; the combined WS-10 forced cold gate passed 57/57 locally, while GitHub Actions remains unverified because billing prevents job startup.
 
 ## M0 gate sign-off — 2026-08-04
 

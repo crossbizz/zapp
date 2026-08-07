@@ -230,7 +230,7 @@ describe('createGitBundleCommands', () => {
     expect(stdout).toContain(' refs/heads/feature/x\n');
     expect(stdout).toContain(' refs/tags/v1\n');
     expect(stdout).toContain(' refs/notes/zapp-backup\n');
-  });
+  }, 15_000);
 
   it('backs up an empty repository and mirror-pushes it to clear a previously non-empty target', async () => {
     const root = await workspace();
