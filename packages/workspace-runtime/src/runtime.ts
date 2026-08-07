@@ -26,6 +26,7 @@ export interface ExecResult {
   readonly stderr: string;
   readonly durationMs: number;
   readonly truncated: boolean;
+  readonly terminationReason?: 'timeout';
 }
 
 export interface ExecChunk {
@@ -47,6 +48,7 @@ export interface FileStat extends FileEntry {
 export interface AtomicFileWrite {
   readonly path: string;
   readonly data: Uint8Array;
+  readonly expectedData?: Uint8Array;
 }
 
 export interface WorkspaceSearchInput {
@@ -158,6 +160,19 @@ export class AtomicWriteError extends Error {
     super(code);
     this.name = 'AtomicWriteError';
   }
+}
+
+export class AtomicWriteConflictError extends Error {
+  readonly code = 'atomic_write_conflict' as const;
+
+  constructor() {
+    super('Atomic file changed before commit');
+    this.name = 'AtomicWriteConflictError';
+  }
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -419,6 +434,18 @@ async function listenerBelongsToProcessGroup(port: number, groupId: number): Pro
   return groups.includes(groupId);
 }
 
+async function httpProbeSucceeds(port: number, path: string): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
+      signal: AbortSignal.timeout(250),
+    });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 function terminateProcessGroup(child: ChildProcess): void {
   if (child.pid !== undefined && process.platform !== 'win32') {
     try {
@@ -502,6 +529,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
   private devServer: ChildProcess | undefined;
   private readonly atomicFileOperations: AtomicFileOperations;
+  private atomicCommitTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly root: string,
@@ -564,6 +592,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         resolveResult({
           exitCode: timedOut ? 124 : (exitCode ?? (spawnError === undefined ? 1 : 127)),
           durationMs: performance.now() - startedAt,
+          ...(timedOut ? { terminationReason: 'timeout' as const } : {}),
           ...captured,
         });
       });
@@ -633,6 +662,20 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     await writeFile(await resolveInRoot(this.root, path), data);
   }
 
+  private async withAtomicCommit<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.atomicCommitTail;
+    let release: (() => void) | undefined;
+    this.atomicCommitTail = new Promise<void>((resolveNext) => {
+      release = resolveNext;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
+  }
+
   async writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void> {
     const resolvedFiles = await Promise.all(
       files.map(async (file) => {
@@ -691,7 +734,13 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
                 data: await this.atomicFileOperations.read(file.target),
                 mode: file.metadata.mode & 0o7777,
               };
-        return { target: file.target, temporary, data: file.data, original };
+        return {
+          target: file.target,
+          temporary,
+          data: file.data,
+          expectedData: file.expectedData,
+          original,
+        };
       }),
     );
 
@@ -703,35 +752,51 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
           await this.atomicFileOperations.setMode(file.temporary, file.original.mode);
         }
       }
-      const committed: typeof staged = [];
-      try {
+      await this.withAtomicCommit(async () => {
         for (const file of staged) {
-          committed.push(file);
-          await this.atomicFileOperations.move(file.temporary, file.target);
-        }
-      } catch (error: unknown) {
-        const rollbackFailures: unknown[] = [];
-        for (const file of committed.reverse()) {
-          try {
-            if (file.original === undefined) {
-              await this.atomicFileOperations.remove(file.target);
-            } else {
-              await this.atomicFileOperations.write(
-                file.target,
-                file.original.data,
-                file.original.mode,
-              );
-              await this.atomicFileOperations.setMode(file.target, file.original.mode);
+          if (file.expectedData !== undefined) {
+            let currentData: Uint8Array;
+            try {
+              currentData = await this.atomicFileOperations.read(file.target);
+            } catch {
+              throw new AtomicWriteConflictError();
             }
-          } catch (rollbackError: unknown) {
-            rollbackFailures.push(rollbackError);
+            if (!bytesEqual(currentData, file.expectedData)) {
+              throw new AtomicWriteConflictError();
+            }
           }
         }
-        failure =
-          rollbackFailures.length === 0
-            ? new AtomicWriteError('atomic_commit_failed', [error])
-            : new AtomicWriteError('atomic_rollback_failed', [error, ...rollbackFailures]);
-      }
+
+        const committed: typeof staged = [];
+        try {
+          for (const file of staged) {
+            committed.push(file);
+            await this.atomicFileOperations.move(file.temporary, file.target);
+          }
+        } catch (error: unknown) {
+          const rollbackFailures: unknown[] = [];
+          for (const file of committed.reverse()) {
+            try {
+              if (file.original === undefined) {
+                await this.atomicFileOperations.remove(file.target);
+              } else {
+                await this.atomicFileOperations.write(
+                  file.target,
+                  file.original.data,
+                  file.original.mode,
+                );
+                await this.atomicFileOperations.setMode(file.target, file.original.mode);
+              }
+            } catch (rollbackError: unknown) {
+              rollbackFailures.push(rollbackError);
+            }
+          }
+          failure =
+            rollbackFailures.length === 0
+              ? new AtomicWriteError('atomic_commit_failed', [error])
+              : new AtomicWriteError('atomic_rollback_failed', [error, ...rollbackFailures]);
+        }
+      });
     } catch (error: unknown) {
       failure = error;
     }
@@ -914,7 +979,10 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
 
     await new Promise<void>((resolveReady, rejectReady) => {
       let checking = false;
+      let settled = false;
       const complete = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
         clearInterval(interval);
         clearTimeout(timeout);
         child.off('error', onError);
@@ -922,16 +990,22 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         callback();
       };
       const checkReadiness = (): void => {
-        if (checking) {
+        if (checking || settled) {
           return;
         }
         checking = true;
-        void listenerBelongsToProcessGroup(contract.develop.port, child.pid ?? -1).then((ready) => {
-          checking = false;
-          if (ready) {
-            complete(resolveReady);
-          }
-        });
+        void listenerBelongsToProcessGroup(contract.develop.port, child.pid ?? -1)
+          .then(async (owned) =>
+            owned
+              ? httpProbeSucceeds(contract.develop.port, contract.health?.path ?? '/')
+              : false,
+          )
+          .then((ready) => {
+            checking = false;
+            if (ready) {
+              complete(resolveReady);
+            }
+          });
       };
       const onError = (error: Error): void => {
         terminateProcessGroup(child);

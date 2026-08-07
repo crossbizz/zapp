@@ -61,6 +61,7 @@ export const ToolAttemptAuditPayloadSchema = z
       'tool_failed',
       'tool_timeout',
       'tool_cancelled',
+      'path_rejected',
     ]),
     attemptCount: z.number().int().nonnegative(),
   })
@@ -131,13 +132,13 @@ export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, 
 }
 
 export class ToolExecutionError extends Error {
-  readonly code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled';
+  readonly code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled' | 'path_rejected';
   readonly context: ToolExecutionContext;
   readonly auditPayload: ToolAttemptAuditPayload;
 
   constructor(
     tool: ToolName,
-    code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled',
+    code: 'tool_failed' | 'tool_timeout' | 'tool_cancelled' | 'path_rejected',
     context: ToolExecutionContext,
     auditPayload: ToolAttemptAuditPayload,
   ) {
@@ -190,7 +191,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
 }
 
 async function withTimeout<T>(
-  promise: Promise<T>,
+  operation: () => Promise<T>,
   timeoutMs: number,
   tool: ToolName,
   controller: AbortController,
@@ -216,6 +217,10 @@ async function withTimeout<T>(
   });
 
   try {
+    if (callerSignal?.aborted === true) {
+      onCallerAbort();
+    }
+    const promise = callerSignal?.aborted === true ? cancellation : operation();
     return await Promise.race([promise, timeout, cancellation]);
   } finally {
     if (timer !== undefined) {
@@ -278,6 +283,15 @@ function outputFailed(output: unknown): boolean {
     typeof output === 'object' &&
     'ok' in output &&
     (output as { readonly ok?: unknown }).ok === false
+  );
+}
+
+function outputTimedOut(output: unknown): boolean {
+  return (
+    output !== null &&
+    typeof output === 'object' &&
+    'terminationReason' in output &&
+    (output as { readonly terminationReason?: unknown }).terminationReason === 'timeout'
   );
 }
 
@@ -378,7 +392,7 @@ export class ToolRegistry {
         };
         try {
           const rawOutput = await withTimeout(
-            spec.run(input, context, controller.signal, recordAudit),
+            () => spec.run(input, context, controller.signal, recordAudit),
             spec.timeoutMs,
             spec.name,
             controller,
@@ -388,6 +402,7 @@ export class ToolRegistry {
           const visibleOutput = spec.redactOutput ? redactValue(output, redactor) : output;
           const parsedOutput = spec.outputSchema.parse(visibleOutput);
           const failed = outputFailed(parsedOutput);
+          const timedOut = outputTimedOut(parsedOutput);
           return {
             output: parsedOutput,
             context,
@@ -395,15 +410,27 @@ export class ToolRegistry {
               context,
               spec.name,
               attempt,
-              failed ? 'failed' : 'succeeded',
-              failed ? 'tool_result_failed' : 'ok',
+              timedOut ? 'timed_out' : failed ? 'failed' : 'succeeded',
+              timedOut ? 'tool_timeout' : failed ? 'tool_result_failed' : 'ok',
               { ...spec.auditPayload(input, parsedOutput), ...recordedAudit },
               redactor,
             ),
           };
         } catch (error: unknown) {
           if (error instanceof PathViolationError) {
-            throw error;
+            if (Object.keys(recordedAudit).length === 0) {
+              throw error;
+            }
+            const auditPayload = attemptAuditPayload(
+              context,
+              spec.name,
+              attempt,
+              'failed',
+              'path_rejected',
+              recordedAudit,
+              redactor,
+            );
+            throw new ToolExecutionError(spec.name, 'path_rejected', context, auditPayload);
           }
           if (
             (error instanceof ToolControlError && error.code === 'tool_cancelled') ||

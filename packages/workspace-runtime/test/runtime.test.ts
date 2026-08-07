@@ -771,11 +771,34 @@ describe('MemoryWorkspaceRuntime git safety', () => {
 });
 
 describe('MemoryWorkspaceRuntime development server', () => {
+  it('rejects a process-owned raw TCP listener without a successful HTTP probe', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      const port = await availablePort();
+      const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `require('node:net').createServer((socket) => socket.destroy()).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
+      )}`;
+      const starting = runtime.startDevServer(executionContract(command, port));
+
+      try {
+        await expect(starting).rejects.toThrow('Development server did not become ready');
+      } finally {
+        const unexpected = await starting.catch(() => undefined);
+        if (unexpected !== undefined) {
+          try {
+            process.kill(process.platform === 'win32' ? unexpected.pid : -unexpected.pid, 'SIGKILL');
+          } catch {
+            // A process that exited during the failed assertion needs no cleanup.
+          }
+        }
+      }
+    });
+  }, 8_000);
+
   it('restarts by stopping the managed process before starting a replacement pid', async () => {
     await withWorkspace(async (_root, runtime) => {
       const port = await availablePort();
       const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-        `require('node:net').createServer(() => {}).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
+        `require('node:http').createServer((_request, response) => { response.writeHead(204); response.end(); }).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
       )}`;
       let replacementPid: number | undefined;
 
@@ -803,7 +826,7 @@ describe('MemoryWorkspaceRuntime development server', () => {
     await withWorkspace(async (_root, runtime) => {
       const port = await availablePort();
       const servingCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-        `require('node:net').createServer(() => {}).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
+        `require('node:http').createServer((_request, response) => { response.writeHead(204); response.end(); }).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`,
       )}`;
       const idleCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
         'setInterval(() => {}, 1000);',

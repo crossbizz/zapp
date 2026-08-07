@@ -1,5 +1,5 @@
 import { idSchema } from '@zapp/contracts';
-import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
+import { AtomicWriteConflictError, type WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
 import type { AnyToolSpec, ToolMutationContext, ToolSpec } from './registry.js';
 import { mutationContext } from './registry.js';
@@ -320,18 +320,29 @@ export function createMutationTools(
       run: async (input) => {
         try {
           const files = parseUnifiedPatch(input.patch);
-          const staged: Array<{ path: string; data: Uint8Array; hunks: number }> = [];
+          const staged: Array<{
+            path: string;
+            data: Uint8Array;
+            expectedData: Uint8Array;
+            hunks: number;
+          }> = [];
           for (const file of files) {
-            const current = new TextDecoder().decode(await runtime.readFile(file.path));
+            const expectedData = await runtime.readFile(file.path);
+            const current = new TextDecoder().decode(expectedData);
             const applied = applyHunks(current, file);
             staged.push({
               path: file.path,
               data: new TextEncoder().encode(applied.content),
+              expectedData,
               hunks: applied.hunksApplied,
             });
           }
           await runtime.writeFilesAtomically(
-            staged.map((file) => ({ path: file.path, data: file.data })),
+            staged.map((file) => ({
+              path: file.path,
+              data: file.data,
+              expectedData: file.expectedData,
+            })),
           );
           return {
             ok: true,
@@ -339,7 +350,7 @@ export function createMutationTools(
             hunksApplied: staged.reduce((total, file) => total + file.hunks, 0),
           };
         } catch (error: unknown) {
-          if (error instanceof PatchConflictError) {
+          if (error instanceof PatchConflictError || error instanceof AtomicWriteConflictError) {
             return { ok: false, error: { code: 'patch_conflict', message: error.message } };
           }
           throw error;

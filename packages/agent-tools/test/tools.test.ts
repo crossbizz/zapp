@@ -492,6 +492,40 @@ describe('workspace-bound tools', () => {
     });
   });
 
+  it('preserves a concurrent source change made after patch validation and before commit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-patch-conflict-'));
+    class ConcurrentRuntime extends MemoryWorkspaceRuntime {
+      override async writeFilesAtomically(
+        files: Parameters<WorkspaceRuntime['writeFilesAtomically']>[0],
+      ): Promise<void> {
+        await this.writeFile('app.ts', new TextEncoder().encode('concurrent-change\n'));
+        await super.writeFilesAtomically(files);
+      }
+    }
+    const runtime = new ConcurrentRuntime(root);
+    const registry = registryFor(runtime);
+
+    try {
+      await runtime.writeFile('app.ts', new TextEncoder().encode('first\nsecond\nthird\n'));
+
+      await expect(
+        registry.execute(
+          'apply_patch',
+          {
+            patch:
+              '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+patched\n third\n',
+          },
+          trustedContext,
+        ),
+      ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
+      await expect(runtime.readFile('app.ts')).resolves.toEqual(
+        new TextEncoder().encode('concurrent-change\n'),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('stages every patched file before writing when a later file conflicts', async () => {
     await withMemoryRegistry(async (runtime, registry) => {
       await runtime.writeFile('first.txt', new TextEncoder().encode('first\n'));
@@ -899,6 +933,49 @@ describe('execution truth and redaction', () => {
     expect(runtime.execCalls).toHaveLength(2);
   });
 
+  it('wraps a dispatched command path rejection in a redacted attributed attempt audit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-path-audit-'));
+    const rejectedPathFragment = 'private-fragment';
+    const registry = registryFor(new MemoryWorkspaceRuntime(root), {
+      redactor: {
+        redact: (value) => value.replaceAll(rejectedPathFragment, '[redacted:path]'),
+      },
+    });
+
+    try {
+      const failure = await rejectedToolExecution(
+        registry.executeWithAudit(
+          'run_command',
+          { cmd: 'node', args: ['--version'], cwd: `../${rejectedPathFragment}` },
+          trustedContext,
+        ),
+      );
+
+      expect(failure.name).toBe('ToolExecutionError');
+      expect(failure.message).toBe('run_command failed');
+      expect(failure.code).toBe('path_rejected');
+      expect(failure.context).toEqual(trustedContext);
+      expect(failure.auditPayload).toEqual({
+        organizationId: 'org_trusted',
+        projectId: 'project_trusted',
+        runId: 'run_trusted',
+        taskId: 'task_trusted',
+        step: 'step-1',
+        tool: 'run_command',
+        outcome: 'failed',
+        code: 'path_rejected',
+        attemptCount: 1,
+        command: 'node',
+        argument0: '--version',
+        argumentCount: 1,
+        cwd: '../[redacted:path]',
+      });
+      expect(JSON.stringify(failure)).not.toContain(rejectedPathFragment);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('carries attempt audits when arbitrary and named commands time out', async () => {
     vi.useFakeTimers();
     class PendingRuntime extends RecordingRuntime {
@@ -948,6 +1025,40 @@ describe('execution truth and redaction', () => {
       expect(runtime.execCalls).toHaveLength(2);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('classifies a runtime-enforced command timeout as a timed-out attempt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-runtime-timeout-'));
+    const registry = registryFor(new MemoryWorkspaceRuntime(root));
+
+    try {
+      const result = await registry.executeWithAudit(
+        'run_command',
+        {
+          cmd: process.execPath,
+          args: ['-e', 'setInterval(() => {}, 1000)'],
+          timeoutMs: 25,
+        },
+        trustedContext,
+      );
+
+      expect(result.output).toMatchObject({
+        ok: false,
+        exitCode: 124,
+        terminationReason: 'timeout',
+      });
+      expect(result.auditPayload).toMatchObject({
+        tool: 'run_command',
+        outcome: 'timed_out',
+        code: 'tool_timeout',
+        attemptCount: 1,
+        exitCode: 124,
+        ok: false,
+        terminationReason: 'timeout',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1725,6 +1836,44 @@ describe('review round 1 safety regressions', () => {
       ),
     ).rejects.toMatchObject({ code: 'tool_cancelled' });
     expect(calls).toBe(0);
+  });
+
+  it('registers caller cancellation before invoking a cancellable high-risk service port', async () => {
+    const caller = new AbortController();
+    let calls = 0;
+    let receivedSignal: AbortSignal | undefined;
+    const environment: EnvironmentPort = {
+      setEnvironmentVariable: (_input, _context, signal) => {
+        calls += 1;
+        receivedSignal = signal;
+        caller.abort(new Error('caller stopped synchronous mutation'));
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({ updated: true, name: 'CONFIG_VALUE', scope: 'preview' });
+          }, 25);
+        });
+      },
+    };
+
+    const failure = await rejectedToolExecution(
+      registryFor(new RecordingRuntime(), { environment }).executeWithAudit(
+        'set_environment_variable',
+        toolInputs.set_environment_variable,
+        trustedContext,
+        caller.signal,
+      ),
+    );
+
+    expect(failure.code).toBe('tool_cancelled');
+    expect(failure.context).toEqual(trustedContext);
+    expect(failure.auditPayload).toMatchObject({
+      tool: 'set_environment_variable',
+      outcome: 'cancelled',
+      code: 'tool_cancelled',
+      attemptCount: 1,
+    });
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(calls).toBe(1);
   });
 
   it('propagates in-flight caller cancellation and halts retries immediately', async () => {

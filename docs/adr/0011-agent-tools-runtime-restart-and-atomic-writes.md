@@ -14,7 +14,8 @@ applied a validated multi-file patch through separate `writeFile` calls. The fir
 behavior was not a restart, and the second could leave an earlier file changed if a
 later write failed. Agent-tools may not use host processes or host filesystem calls
 to repair either behavior because workspace lifecycle and files belong to
-`WorkspaceRuntime`.
+`WorkspaceRuntime`. A later review also proved that patch context could be validated,
+then changed concurrently before the atomic replacement, allowing a lost update.
 
 ## Decision
 
@@ -34,12 +35,17 @@ Extend WS-1 with exactly two workspace-owned primitives:
   hidden per-parent probe directory, creates none of the requested target paths, and
   removes every probe before staging. The operation stages all bytes before changing
   targets and rolls back committed targets if a later commit fails. Staging and
-  rollback preserve each existing target's file mode.
+  rollback preserve each existing target's file mode. A file record may additionally
+  carry exact `expectedData`; the runtime serializes atomic commit sections and
+  compares every supplied expectation inside that boundary before replacing any
+  target. Any mismatch, including disappearance, raises a typed atomic-write conflict
+  and changes no target. `apply_patch` supplies the bytes used for hunk validation and
+  maps that typed conflict to its existing `patch_conflict` result.
 
 Both primitives preserve `resolveInRoot` lexical and symlink checks. The batch API
-accepts only `{ path, data }` records and the restart API accepts only the validated
-`ExecutionContract`; neither exposes host paths, shell fragments, or process-control
-options to agent-tools.
+accepts only `{ path, data, expectedData? }` records and the restart API accepts only
+the validated `ExecutionContract`; neither exposes host paths, shell fragments, or
+process-control options to agent-tools.
 
 ## Consequences
 
@@ -51,6 +57,8 @@ options to agent-tools.
   success while collapsing onto one target because duplicate target identity rejects
   before the first staging write. An existing leaf symlink cannot be replaced while
   its former referent remains separately mutated or unchanged under a false success.
+  Exact expected bytes also prevent a validated patch from overwriting a source edit
+  that wins before the serialized runtime commit boundary.
 - Runtime fault-injection tests fail after the first, middle, and final real rename,
   then verify byte and mode restoration, temporary-file cleanup, and distinct truthful
   rollback or cleanup failure codes.

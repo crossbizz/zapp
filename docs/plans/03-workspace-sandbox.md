@@ -61,7 +61,7 @@ export interface WorkspaceRuntime {
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;              // { stream: "stdout"|"stderr", data, at }
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
-  writeFilesAtomically(files: readonly { path: string; data: Uint8Array }[]): Promise<void>; // leaf symlinks and canonical/same-inode/filesystem-name aliases reject before staging
+  writeFilesAtomically(files: readonly { path: string; data: Uint8Array; expectedData?: Uint8Array }[]): Promise<void>; // aliases reject before staging; supplied prior bytes compare inside the serialized commit boundary
   search(input: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
@@ -99,7 +99,7 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 
 ```ts
 POST /files/atomic-write
-  body: { files: Array<{ path: string; dataBase64: string }> }
+  body: { files: Array<{ path: string; dataBase64: string; expectedDataBase64?: string }> }
   200:  { ok: true }
 POST /search
   body: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }
@@ -112,6 +112,12 @@ POST /files/rename
 ```
 
 Every filesystem operation is descriptor-relative under the pinned workspace-root descriptor per ADR-0006/ADR-0013: walk parents without following links, reject leaf symlinks for atomic writes, stage/commit/rollback through pinned parent descriptors, run allowlisted `rg` against an inherited pinned target descriptor, delete with nonrecursive `unlinkat` semantics (`ENOENT` succeeds; directories reject), and rename with descriptor-relative atomic replace. Atomic-write preflight rejects lexical/canonical/same-inode duplicates plus initially absent names that the canonical parent filesystem treats as case-folding or Unicode-normalization aliases; capability probing/reservation occurs only in a hidden per-parent directory, creates none of the requested targets, and is cleaned before staging. Implements the WS-1 semantics server-side (the agent-level path guard remains defense in depth).
+
+Atomic-write commits are serialized. When `expectedDataBase64` is present, WS-3
+compares the decoded exact prior bytes while holding that commit boundary and before
+the first target replacement; any mismatch returns the stable typed atomic-write
+conflict and writes no target. The strict optional field exists only for compare-guarded
+batch writes and does not expose a generic filesystem operation.
 **Effort:** L
 
 - [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for `writeFilesAtomically`, `search`, `deleteFile`, and `renameFile` against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`

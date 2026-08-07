@@ -120,6 +120,7 @@ const ExecOutputSchema = z
     stderr: z.string(),
     durationMs: z.number().nonnegative(),
     truncated: z.boolean(),
+    terminationReason: z.literal('timeout').optional(),
   })
   .strict();
 const DevServerOutputSchema = z
@@ -159,6 +160,19 @@ function execOutput(
     stderr: result.stderr,
     durationMs: result.durationMs,
     truncated: result.truncated,
+    ...(result.terminationReason === undefined
+      ? {}
+      : { terminationReason: result.terminationReason }),
+  };
+}
+
+function execResultAudit(output: z.infer<typeof ExecOutputSchema>): ToolAuditPayload {
+  return {
+    exitCode: output.exitCode,
+    ok: output.ok,
+    ...(output.terminationReason === undefined
+      ? {}
+      : { terminationReason: output.terminationReason }),
   };
 }
 
@@ -290,7 +304,7 @@ export function createExecutionTools(
             );
       },
       userSummary: (_input, output) => commandSummary(label, output),
-      auditPayload: (_input, output) => ({ exitCode: output.exitCode, ok: output.ok }),
+      auditPayload: (_input, output) => execResultAudit(output),
     }),
   );
   const named = new Map(namedCommands.map((tool) => [tool.name, tool]));
@@ -315,8 +329,7 @@ export function createExecutionTools(
       userSummary: (_input, output) => commandSummary('Command', output),
       auditPayload: (input, output) => ({
         ...commandAuditIdentity(input),
-        exitCode: output.exitCode,
-        ok: output.ok,
+        ...execResultAudit(output),
       }),
     }),
     executionTool({
