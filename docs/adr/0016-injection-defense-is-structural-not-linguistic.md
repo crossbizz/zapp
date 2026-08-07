@@ -1,4 +1,4 @@
-# ADR-0011: AR-5 injection defense is structural, not linguistic
+# ADR-0016: AR-5 injection defense is structural, not linguistic
 
 - Status: Accepted
 - Date: 2026-08-06

@@ -205,7 +205,7 @@ The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and
 
 - [ ] Failing tests (local, proxying a fixture express app): HTML injected exactly once incl. streamed responses; WS echo forwarded; console.error in fixture page appears on `/__zapp/events` (jsdom or playwright-driven); fetch metadata captured without body; non-HTML (JSON, images) untouched byte-for-byte.
 - [ ] Commit: `feat(sandbox): preview proxy with capture + selection client`
-- [ ] **Re-scoped by ADR-0012 (unblocks WS-2).** Do NOT hand-parse HTML — `task/WS-10` capped on unquoted `src` + `<style>` raw-text. Inject the `<script>` before `</head>` with a streaming HTML rewriter (`lol-html`/`HTMLRewriter` or `parse5`); non-HTML passes byte-for-byte untouched. The rewriter is the correctness boundary; there is no bespoke scanner to make complete.
+- [ ] **Re-scoped by ADR-0017 (unblocks WS-2).** Do NOT hand-parse HTML — `task/WS-10` capped on unquoted `src` + `<style>` raw-text. Inject the `<script>` before `</head>` with a streaming HTML rewriter (`lol-html`/`HTMLRewriter` or `parse5`); non-HTML passes byte-for-byte untouched. The rewriter is the correctness boundary; there is no bespoke scanner to make complete.
 
 ### Task WS-11: Secrets injection + network profiles + redaction
 

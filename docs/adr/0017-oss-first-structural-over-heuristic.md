@@ -1,11 +1,11 @@
-# ADR-0012: OSS-first for solved problems; structural controls over completeness heuristics
+# ADR-0017: OSS-first for solved problems; structural controls over completeness heuristics
 
 - Status: Accepted
 - Date: 2026-08-06
 - Owners: controller / all workstreams
 - Approval: controller decision under the user's delegated decision authority, 2026-08-06
 - Affects: WS-10, VF-14, VF-11, AR-11/AR-16/AR-20, AR-1 (retrospective), the plan-04/05 review rubric, AGENTS.md
-- References: ADR-0011; master Global Constraints 2/15/16; plan 03 WS-10/WS-11, plan 04 AR-1/AR-5, plan 05 VF-11/VF-14
+- References: ADR-0016; master Global Constraints 2/15/16; plan 03 WS-10/WS-11, plan 04 AR-1/AR-5, plan 05 VF-11/VF-14
 
 ## Context
 
@@ -13,7 +13,7 @@ Three of the tasks that hit the five-round review cap — AR-1, AR-5, WS-10 — 
 same way, and it is worth naming the shape because more tasks are queued into it.
 
 - **AR-5** (blocked): built an exhaustive shell grammar + astral-plane SQL parser + English
-  intent classifier. Re-scoped by ADR-0011.
+  intent classifier. Re-scoped by ADR-0016.
 - **AR-1** (marked done, by brute force): the Global-Constraint-2 boundary — "no
   model-provider calls outside `services/model-gateway`" — was enforced by a bespoke
   analyzer of JavaScript mutation semantics (live accessors, closures, prototypes,
@@ -55,7 +55,7 @@ declarative rule already does. Specifically:
 Build custom only where the value is genuinely zapp-specific: tenant scoping,
 `evaluateToolCall`, the verifier decision, the evidence manifest, the durable workflows.
 
-**2. Structural over heuristic** (ADR-0011, generalized). The guarantee lives in a
+**2. Structural over heuristic** (ADR-0016, generalized). The guarantee lives in a
 structural control evaluated in code — credential scoping, sandbox/network profile,
 approval gate, tool allowlist, a declarative lint rule. String / NL / AST / HTML heuristics
 are **best-effort signals whose completeness is a non-goal**. If correctness depends on a

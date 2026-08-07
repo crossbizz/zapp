@@ -1,4 +1,4 @@
-# ADR-0010: Model provider integration layer
+# ADR-0015: Model provider integration layer
 
 - Status: Accepted
 - Date: 2026-08-06
