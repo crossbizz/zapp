@@ -9,18 +9,24 @@
 # has no gate until dev-up runs). Edit the tracked copy, then re-run dev-up.
 #
 # Turbo caches per package, so unchanged packages replay instantly — in practice
-# this only runs what you actually touched.
+# this only runs what you actually touched. test:isolation and test:gate5 run
+# outside turbo and always execute for real.
 #
-# Fails closed: if the dev stack is not up, integration and isolation suites
-# would skip, and a skip must never read as a pass. Start it with
-# ./scripts/dev-up.sh. Emergency bypass: ZAPP_SKIP_VERIFY=1 git push (announce it).
+# Fails closed, structurally: it exports CI, which arms the refuse-to-skip
+# guards inside the integration/isolation suites themselves — a suite whose
+# configuration is missing THROWS instead of skipping, so "green because
+# nothing ran" cannot happen here any more than it could in CI. (It did happen
+# on 2026-08-07: the hook ran verify without the dev-stack env, 53/54 isolation
+# tests skipped, and the push sailed through.) The pg_isready probe below is
+# only a faster, clearer version of the same refusal.
+# Emergency bypass: ZAPP_SKIP_VERIFY=1 git push (announce it in your report).
 set -euo pipefail
 
 remote_ref_is_main=0
 # The `|| [ -n … ]` guard is load-bearing: the gstack-managed wrapper pipes the
 # ref list via `printf '%s'` with NO trailing newline, and a bare `read` returns
 # non-zero on an unterminated final line — the loop body would never run and the
-# gate would silently disarm (that exact miss shipped on 2026-08-07).
+# gate would silently disarm (that exact miss also shipped on 2026-08-07).
 while read -r _local_ref _local_sha remote_ref _remote_sha || [ -n "${_local_ref:-}" ]; do
   case "$remote_ref" in refs/heads/main) remote_ref_is_main=1 ;; esac
 done
@@ -39,6 +45,18 @@ if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
   echo "      and a skip is not a pass. Run ./scripts/dev-up.sh first." >&2
   exit 1
 fi
+
+# Load the dev-stack env the way ci.yml's `env:` blocks did: .env is the
+# catalogue (dev-up.sh seeds it), .env.local.forgejo is written by dev-up.sh
+# and is fresher for FORGEJO_* (sourced second, so it wins). Turbo's strict
+# envMode still filters what each task actually sees.
+set -a
+[ -f .env ] && . ./.env
+[ -f .env.local.forgejo ] && . ./.env.local.forgejo
+set +a
+
+# This hook is the CI now; arm the suites' refuse-to-skip guards.
+export CI="${CI:-zapp-prepush}"
 
 echo "zapp: running pnpm verify before pushing to main…" >&2
 pnpm verify

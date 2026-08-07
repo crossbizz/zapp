@@ -89,7 +89,7 @@ At each milestone boundary, STOP feature work and run the milestone's exit check
 
 ## 9. Git
 
-- Trunk-based. Serial execution commits directly to `main` (controller decision 2026-08-03); `task/<TASK-ID>` branches become mandatory once parallel agents start. After FND-8 lands, CI must be green before push.
+- Trunk-based. Serial execution commits directly to `main` (controller decision 2026-08-03); `task/<TASK-ID>` branches become mandatory once parallel agents start. `pnpm verify` must be green before any push to `main` — the pre-push hook enforces it (GitHub Actions is parked; see §5).
 - Small commits, prescribed messages. Never rewrite published history. Never commit `.env`, keys, or generated secrets.
 
 ## 10. External credentials by milestone
