@@ -1,12 +1,16 @@
 name: Security
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    # Mondays 06:17 UTC. Off-the-hour to avoid GitHub's scheduler stampede.
-    - cron: '17 6 * * 1'
+  # DISABLED — this private repo meters Actions minutes and the owner has chosen
+  # not to raise the spending limit. The gate is local: `pnpm verify` (and the
+  # pre-push hook in .git/hooks/pre-push.local, which runs it before any push to
+  # main and fails closed if the dev stack is down).
+  #
+  # This file is kept intact and runnable on demand. To restore automatic Security:
+  # either raise the spending limit and re-add `push: {branches: [main]}` +
+  # `pull_request:`, or register a self-hosted runner (self-hosted minutes are
+  # not billed, even on private repos) and change `runs-on` accordingly.
+  workflow_dispatch:
 
 permissions:
   contents: read

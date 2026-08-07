@@ -49,6 +49,14 @@ A task is done only when ALL of these are true — otherwise it stays unchecked 
 ## 5. Honesty rules
 
 - Never mark a box, write "done", or claim green without having run the command in this session.
+- **`pnpm verify` is the gate — GitHub Actions is disabled.** This private repo meters
+  Actions minutes and the owner has chosen not to raise the spending limit, so no workflow
+  runs automatically. Before pushing to `main`, run `pnpm verify` (turbo caches per package,
+  so only what you touched actually executes); use `pnpm verify:cold` before a push that
+  changes build wiring, since a stale `dist/` has hidden a real cold-checkout failure here
+  before. `.git/hooks/pre-push.local` enforces this and **fails closed if the dev stack is
+  down** — integration and isolation suites would otherwise skip, and a skip is not a pass.
+  Never bypass with `ZAPP_SKIP_VERIFY=1` without saying so plainly in your report.
 - If a test can't run (missing external credential), it must **skip visibly** (env-gated per the plan), and your report must say "skipped: no `STYTCH_SECRET`" — never convert a skip into a pass claim.
 - If you wrote code you couldn't verify, say exactly that and list what's unverified.
 
