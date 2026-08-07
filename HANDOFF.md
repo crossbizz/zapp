@@ -99,6 +99,43 @@ cross-repo denial test is the only thing proving customer repos are isolated fro
 
 ---
 
+## 3a. Current state as of 2026-08-06 (supersedes §1 counts)
+
+M1 is **19 of 35 tasks done**. Verified from `tasks/todo.md`, not from reports.
+
+**Done:** CP-9…CP-16 (all eight — control plane API, event ingest, Redis fanout, resumable
+SSE, generated SDK), WS-1, GIT-4, AR-1, AR-2, AR-4, AR-7, WEB-1, WEB-2, WEB-3, WEB-5.
+
+**The bottleneck is the sandbox chain.** WS-2…WS-12 are all open, and they are what M1's
+exit criterion actually needs (prompt → Modal workspace → live preview). Everything else
+remaining is comparatively small: AR-3, AR-5, AR-6, AR-8, WEB-4, WEB-6.
+
+**Critical path, in order:**
+
+1. **WS-10** (preview proxy) — blocked; blocks WS-2. Rewrite the HTML injection with
+   `parse5` per ADR-0017.
+2. **WS-2** (Modal images) — bakes the proxy + agent into the images.
+3. **WS-3** (workspace agent) — branch `task/WS-3` already passed independent review;
+   only smoke verification is pending. Salvage, do not restart.
+4. **WS-4 → WS-12** — Modal provider, git clone/push, lifecycle, checkpoints, profiles,
+   secrets injection, preview tokens.
+5. In parallel (disjoint packages): **AR-5** → **AR-6** → **AR-8**; **AR-3**; **WEB-4**,
+   **WEB-6**.
+
+### Branch dispositions (agents were stopped mid-flight; nothing is lost)
+
+| Branch | Commits ahead | Disposition |
+|---|---|---|
+| `task/WS-3` | 11 | **Salvage** — reviewed and approved, smoke pending |
+| `task/WS-2-resume` | 26 | **Salvage** — WS-2 work; re-verify against the rewritten proxy |
+| `task/WS-10`, `task/WS-10-resume` | 4, 13 | **Partial salvage** — keep the proxy, WebSocket forwarding, capture client and SSE endpoint; **discard only the hand-written HTML injection scanner** (its two capped blockers were unquoted `src` and `<style>` raw-text — both HTML-parsing). Replace with `parse5`. |
+| `task/AR-3`, `task/AR-3-resume` | 8, 7 | **Salvage** — fix the two real accounting defects (recorder reports `provider_error` instead of `usage_accounting_failed`; OTel attribute writes can prevent `span.end()`) |
+| `task/AR-5`, `task/AR-5-resume` | 6, 20 | **Abandon** per ADR-0016 — 1,760 lines of shell/SQL/NL analyzer. Rewrite from the re-scoped brief. Do not merge, do not mine for logic. |
+| `task/WEB-4` | 1 | Minor; re-verify before continuing |
+| All `task/*` at 0 ahead | 0 | Already merged; ignore |
+
+No branch is deleted — the history is intact if any decision here proves wrong.
+
 ## 4. Next milestone — M1: prompt → Modal workspace → live preview
 
 **M1 exit criterion (master plan §4):** in the browser, sign in → home prompt → project
