@@ -130,6 +130,24 @@ if [ -n "$seeded" ]; then
   log "generated local values for placeholder secrets:$seeded"
 fi
 
+# ---------------------------------------------------------------- push gate --
+# CI is disabled (private repo, metered Actions minutes) — the pre-push hook IS
+# the gate. .git/hooks is untracked, so a fresh clone has no gate until this
+# installs it. If a managed wrapper hook already exists (gstack) it chains to
+# pre-push.local itself; otherwise a shim makes git call the gate directly.
+HOOKS_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-path hooks)"
+case "$HOOKS_DIR" in /*) ;; *) HOOKS_DIR="$REPO_ROOT/$HOOKS_DIR" ;; esac
+mkdir -p "$HOOKS_DIR"
+install -m 0755 "$REPO_ROOT/scripts/git-hooks/pre-push.local" "$HOOKS_DIR/pre-push.local"
+if [ ! -e "$HOOKS_DIR/pre-push" ]; then
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '# zapp shim — the real gate is pre-push.local (installed by scripts/dev-up.sh).' \
+    'exec "$(git rev-parse --git-path hooks)/pre-push.local" "$@"' \
+    >"$HOOKS_DIR/pre-push"
+  chmod 0755 "$HOOKS_DIR/pre-push"
+fi
+log "push gate installed — pre-push runs 'pnpm verify' before any push to main"
+
 # Variables the template has gained since this .env was copied from it. Named
 # rather than filled in: .env.example is the catalogue, and appending values to a
 # file the developer may have hand-edited is worse than telling them what is

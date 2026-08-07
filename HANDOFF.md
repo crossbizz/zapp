@@ -123,7 +123,9 @@ the allowance.
 **The gate is local.** `pnpm verify` runs exactly what CI ran: lint, typecheck, build,
 unit, integration, and the tenant-isolation gate. `pnpm verify:cold` wipes `dist/` and
 `.turbo` first — use it when build wiring changes, because a stale `dist/` has hidden a
-real cold-checkout failure here before. `.git/hooks/pre-push.local` runs `pnpm verify`
+real cold-checkout failure here before. The pre-push hook (source of truth
+`scripts/git-hooks/pre-push.local`, installed into `.git/hooks/` by `scripts/dev-up.sh` —
+run dev-up once on any fresh clone or the gate does not exist) runs `pnpm verify`
 before any push to `main` and **fails closed if the dev stack is down**, since integration
 and isolation suites would otherwise skip and a skip must never read as a pass.
 

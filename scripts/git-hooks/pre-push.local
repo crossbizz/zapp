@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# zapp local verification gate.
+#
+# GitHub Actions is intentionally disabled (private repo, metered minutes, no
+# spending limit). This hook is the gate. It runs the same suites CI ran.
+#
+# Source of truth: scripts/git-hooks/pre-push.local — installed into
+# .git/hooks/ by scripts/dev-up.sh (.git/hooks is untracked, so a fresh clone
+# has no gate until dev-up runs). Edit the tracked copy, then re-run dev-up.
+#
+# Turbo caches per package, so unchanged packages replay instantly — in practice
+# this only runs what you actually touched.
+#
+# Fails closed: if the dev stack is not up, integration and isolation suites
+# would skip, and a skip must never read as a pass. Start it with
+# ./scripts/dev-up.sh. Emergency bypass: ZAPP_SKIP_VERIFY=1 git push (announce it).
+set -euo pipefail
+
+remote_ref_is_main=0
+# The `|| [ -n … ]` guard is load-bearing: the gstack-managed wrapper pipes the
+# ref list via `printf '%s'` with NO trailing newline, and a bare `read` returns
+# non-zero on an unterminated final line — the loop body would never run and the
+# gate would silently disarm (that exact miss shipped on 2026-08-07).
+while read -r _local_ref _local_sha remote_ref _remote_sha || [ -n "${_local_ref:-}" ]; do
+  case "$remote_ref" in refs/heads/main) remote_ref_is_main=1 ;; esac
+done
+[ "$remote_ref_is_main" -eq 1 ] || exit 0
+
+if [ "${ZAPP_SKIP_VERIFY:-0}" = "1" ]; then
+  echo "zapp: VERIFY BYPASSED via ZAPP_SKIP_VERIFY=1 — main is unverified." >&2
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
+  echo "zapp: dev stack is not running — integration + isolation suites would skip," >&2
+  echo "      and a skip is not a pass. Run ./scripts/dev-up.sh first." >&2
+  exit 1
+fi
+
+echo "zapp: running pnpm verify before pushing to main…" >&2
+pnpm verify

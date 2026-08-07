@@ -54,8 +54,10 @@ A task is done only when ALL of these are true — otherwise it stays unchecked 
   runs automatically. Before pushing to `main`, run `pnpm verify` (turbo caches per package,
   so only what you touched actually executes); use `pnpm verify:cold` before a push that
   changes build wiring, since a stale `dist/` has hidden a real cold-checkout failure here
-  before. `.git/hooks/pre-push.local` enforces this and **fails closed if the dev stack is
+  before. The pre-push hook (source: `scripts/git-hooks/pre-push.local`, installed into
+  `.git/hooks/` by `scripts/dev-up.sh`) enforces this and **fails closed if the dev stack is
   down** — integration and isolation suites would otherwise skip, and a skip is not a pass.
+  On a fresh clone, run `./scripts/dev-up.sh` before your first push — until it runs, no gate exists.
   Never bypass with `ZAPP_SKIP_VERIFY=1` without saying so plainly in your report.
 - If a test can't run (missing external credential), it must **skip visibly** (env-gated per the plan), and your report must say "skipped: no `STYTCH_SECRET`" — never convert a skip into a pass claim.
 - If you wrote code you couldn't verify, say exactly that and list what's unverified.

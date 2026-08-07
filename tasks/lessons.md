@@ -16,3 +16,28 @@ local run only proves the tree is green, not that main is.
 **Related:** turbo `lint` also needed `dependsOn: ["^build"]` — type-aware lint rules
 resolve workspace imports through `dist/`, so a cold CI checkout reported `no-unsafe-*`
 errors that never reproduce locally where `dist/` survives from earlier builds.
+
+## 2026-08-07 — Test a hook through its production caller, not an approximation
+
+**What happened:** The new pre-push verify gate passed a direct simulation but
+silently never fired on a real push. The managed wrapper hook pipes the ref list
+via `_input="$(cat)"` + `printf '%s' "$_input"` — command substitution strips the
+trailing newline and `printf '%s'` doesn't restore it. The gate's `while read`
+loop returns non-zero on an unterminated final line, so its body never ran,
+`remote_ref_is_main` stayed 0, and the hook exited 0. My simulation used `echo`,
+which adds the newline the production path lacks.
+
+**Why:** I verified my mental model of the caller instead of the caller. One
+byte of difference (a missing `\n`) turned the gate into a no-op that *looked*
+verified.
+
+**Rule:** A guard is verified only when exercised through the exact production
+entry point — the real wrapper, the real stdin shape, the real env. If the
+production path can't be run directly, reproduce its transport byte-for-byte
+(here: `printf '%s'`, not `echo`). And any `while read` over externally-supplied
+input gets the `|| [ -n "$var" ]` unterminated-final-line guard by default.
+
+**Related:** the gate now lives tracked at `scripts/git-hooks/pre-push.local`
+and is installed by `scripts/dev-up.sh` — .git/hooks is untracked, so without
+the installer a fresh clone has no gate at all (same silent-disarm failure,
+different mechanism).
