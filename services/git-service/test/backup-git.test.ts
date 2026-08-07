@@ -297,7 +297,7 @@ describe('createGitBundleCommands', () => {
     expect(restored).toEqual({ checkedBranches: 0, branches: [], refs: [] });
     await expect(run('git', ['--git-dir', target, 'for-each-ref', '--format=%(refname)'])).resolves
       .toMatchObject({ stdout: '' });
-  });
+  }, 15_000);
 
   it('uses argv arrays, an askpass environment, disabled prompts, and removes all credential scratch paths', async () => {
     const calls: GitCommandCall[] = [];

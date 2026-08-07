@@ -38,6 +38,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M1 — Walking skeleton: prompt → preview (Weeks 3–8)
 
+### Cross-plan gate repairs
+- [x] M1-GATE-1 Deterministic cold-state local validation (Turbo ordering + test isolation; CI billing-blocked)
+
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes
 - [x] CP-10 Specification routes

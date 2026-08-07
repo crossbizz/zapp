@@ -21,7 +21,7 @@
       "outputs": ["dist/**", ".next/**"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "build"]
     },
     "lint": {
       // `^build` because typescript-eslint's type-aware rules resolve workspace

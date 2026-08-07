@@ -9,8 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm --filter @zapp/contracts build && pnpm --filter @zapp/config build && pnpm --filter @zapp/db build && pnpm --filter @zapp/api-client build && playwright test",
-    "test:e2e": "pnpm --filter @zapp/contracts build && pnpm --filter @zapp/config build && pnpm --filter @zapp/db build && pnpm --filter @zapp/api-client build && playwright test"
+    "test": "playwright test",
+    "test:e2e": "../../node_modules/.bin/turbo run test --filter=@zapp/web"
   },
   "dependencies": {
     "@zapp/api-client": "workspace:*",
@@ -27,6 +27,7 @@
     "@types/node": "^22.9.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@zapp/control-api": "workspace:*",
     "tsx": "^4.23.5",
     "typescript": "^5.6.3"
   }
