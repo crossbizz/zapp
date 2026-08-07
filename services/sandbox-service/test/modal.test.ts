@@ -119,9 +119,15 @@ describe('Modal image provider facade', () => {
       publishedName: `forge-node-base:${TAG}`,
       agentToken: randomUUID(),
     } as const;
+    const credentialEndpoint = new URL(
+      '/v1/telemetry',
+      'https://sandbox-service.internal',
+    );
+    credentialEndpoint.username = 'fixture-user';
+    credentialEndpoint.password = 'fixture-password';
     for (const telemetryEndpoint of [
       'http://sandbox-service.internal/v1/telemetry',
-      'https://user:token@sandbox-service.internal/v1/telemetry',
+      credentialEndpoint.toString(),
       'https://sandbox-service.internal/v1/telemetry?token=secret',
       'https://sandbox-service.internal/v1/telemetry#api-key',
     ]) {
