@@ -36,6 +36,23 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain('snapshot.debian.org/archive/debian/20260714T000000Z');
   });
 
+  test('bootstraps trusted CAs from the signed snapshot before switching it to HTTPS', () => {
+    const commands = createForgeNodeBaseRecipe(SOURCE_REVISION).commands;
+    const caBootstrapIndex = commands.findIndex(
+      (command) => command.includes('apt-get install') && command.includes('ca-certificates'),
+    );
+    const httpsSnapshotIndex = commands.findIndex((command) =>
+      command.includes('https://snapshot.debian.org/archive/debian/20260714T000000Z'),
+    );
+
+    expect(caBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(httpsSnapshotIndex).toBeGreaterThan(caBootstrapIndex);
+    expect(commands.slice(0, caBootstrapIndex + 1).join('\n')).toContain(
+      'http://snapshot.debian.org/archive/debian/20260714T000000Z',
+    );
+    expect(commands.join('\n')).not.toMatch(/Verify-Peer.*false/iu);
+  });
+
   test('fetches and verifies the exact immutable source revision before deploying both builds', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION);
     const commands = recipe.commands.join('\n');

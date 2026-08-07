@@ -106,8 +106,10 @@ export function createForgeNodeBaseRecipe(untrustedSource: SourceRevision): Imag
     imageName: 'forge-node-base',
     base: { kind: 'registry', ref: FORGE_NODE_BASE_IMAGE },
     commands: [
-      'RUN sed -i -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260714T000000Z|g" -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260714T000000Z|g" /etc/apt/sources.list.d/debian.sources && printf \'Acquire::Check-Valid-Until "false";\\n\' > /etc/apt/apt.conf.d/99snapshot',
-      'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
+      'RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/20260714T000000Z|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/20260714T000000Z|g" /etc/apt/sources.list.d/debian.sources && printf \'Acquire::Check-Valid-Until "false";\\n\' > /etc/apt/apt.conf.d/99snapshot',
+      'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
+      'RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/20260714T000000Z|https://snapshot.debian.org/archive/debian-security/20260714T000000Z|g" -e "s|http://snapshot.debian.org/archive/debian/20260714T000000Z|https://snapshot.debian.org/archive/debian/20260714T000000Z|g" /etc/apt/sources.list.d/debian.sources',
+      'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
       'RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && corepack prepare yarn@1.22.22 --activate',
       `RUN git clone --filter=blob:none --no-checkout '${source.repositoryUrl}' ${sourceDirectory} && cd ${sourceDirectory} && git fetch --depth=1 origin '${source.commitSha}' && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = '${source.commitSha}'`,
       `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
