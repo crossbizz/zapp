@@ -1452,10 +1452,10 @@ describe('model and provider configuration', () => {
     expect(() =>
       loadModelsConfig({
         roles: {
-          planner: { primary: 'unknown/model', fallbacks: [] },
-          builder: { primary: 'anthropic/model', fallbacks: [] },
-          verifier: { primary: 'anthropic/model', fallbacks: [] },
-          summarizer: { primary: 'anthropic/model', fallbacks: [] },
+          planner: { primary: 'unknown/model', fallbacks: ['openai/model'] },
+          builder: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
+          verifier: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
+          summarizer: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
         },
         providers: {
           anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', inlineApiKey: 'forbidden' },
@@ -1474,10 +1474,10 @@ describe('model and provider configuration', () => {
   it('reports missing provider credentials as typed disabled outcomes', () => {
     const config = loadModelsConfig({
       roles: {
-        planner: { primary: 'anthropic/model', fallbacks: [] },
-        builder: { primary: 'anthropic/model', fallbacks: [] },
-        verifier: { primary: 'anthropic/model', fallbacks: [] },
-        summarizer: { primary: 'anthropic/model', fallbacks: [] },
+        planner: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
+        builder: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
+        verifier: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
+        summarizer: { primary: 'anthropic/model', fallbacks: ['openai/model'] },
       },
       providers: {
         anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },

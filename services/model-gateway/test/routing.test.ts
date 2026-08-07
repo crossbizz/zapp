@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
 import { createConfiguredCompletion } from '../src/completion.js';
@@ -35,6 +37,60 @@ const models = loadModelsConfig({
       name: 'compatible',
     },
   },
+});
+
+describe('model routing configuration', () => {
+  it('rejects a role whose primary and fallbacks all use the compatible transport', () => {
+    expect(() =>
+      loadModelsConfig({
+        ...models,
+        roles: {
+          ...models.roles,
+          builder: {
+            primary: 'compatible/anthropic/claude-sonnet-4',
+            fallbacks: ['compatible/openai/gpt-5', 'compatible/google/gemini-2.5-pro'],
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it('loads the checked-in cross-transport model configuration', async () => {
+    const input = JSON.parse(
+      await readFile(new URL('../config/models.json', import.meta.url), 'utf8'),
+    ) as unknown;
+
+    expect(loadModelsConfig(input).roles.builder).toEqual({
+      primary: 'anthropic/claude-sonnet-5',
+      fallbacks: ['openai/gpt-5', 'google/gemini-2.5-pro'],
+    });
+  });
+
+  it('routes compatible vendor-qualified references with the model ID preserved', async () => {
+    const compatible = provider('compatible', [
+      [{ type: 'text-delta', text: 'compatible completion' }],
+    ]);
+    const completion = createConfiguredCompletion({
+      models: loadModelsConfig({
+        ...models,
+        roles: {
+          ...models.roles,
+          builder: {
+            primary: 'compatible/anthropic/claude-sonnet-4',
+            fallbacks: ['openai/builder-fallback'],
+          },
+        },
+      }),
+      providers: { compatible: compatible.adapter },
+    });
+
+    await expect(collect(completion.stream(request, new AbortController().signal))).resolves.toEqual([
+      { type: 'text-delta', text: 'compatible completion' },
+    ]);
+    expect(compatible.inputs.map((input) => input.modelId)).toEqual([
+      'anthropic/claude-sonnet-4',
+    ]);
+  });
 });
 
 interface StreamFailure {
@@ -305,7 +361,10 @@ describe('configured completion routing', () => {
             requestedOrganizations.push(organizationId);
             return {
               roles: {
-                builder: { primary: 'openai/org-builder-primary', fallbacks: [] },
+                builder: {
+                  primary: 'openai/org-builder-primary',
+                  fallbacks: ['anthropic/org-builder-fallback'],
+                },
               },
             };
           },

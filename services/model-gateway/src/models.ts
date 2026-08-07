@@ -20,7 +20,21 @@ const RoleModelSchema = z
     primary: ModelReferenceSchema,
     fallbacks: z.array(ModelReferenceSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((role, context) => {
+    const transports = new Set(
+      [role.primary, ...role.fallbacks].map((reference) =>
+        reference.slice(0, reference.indexOf('/')),
+      ),
+    );
+    if (transports.size < 2) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'role primary and fallbacks must use at least two transports',
+        path: ['fallbacks'],
+      });
+    }
+  });
 
 const StandardProviderSchema = z
   .object({
