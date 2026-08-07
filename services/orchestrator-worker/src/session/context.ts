@@ -79,7 +79,11 @@ export const SourceRevisionSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u);
 export type SourceRevision = z.infer<typeof SourceRevisionSchema>;
 
-export const CompactionOperationIdSchema = z.string().trim().min(1).max(256);
+export const CompactionOperationIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((operationId) => operationId.trim() === operationId);
 export type CompactionOperationId = z.infer<typeof CompactionOperationIdSchema>;
 
 export const ContextRoleSchema = z.enum(['planner', 'builder', 'verifier', 'summarizer']);

@@ -225,6 +225,10 @@ type RepositoryState = {
   sourceArtifacts: CompactionSourceBundle['artifacts'];
   operations: Map<string, { request: AtomicCompactionRequest; summary: SummaryArtifact }>;
   artifactBindings: Map<string, string>;
+  fetchContextAttempts: number;
+  snapshotAttempts: number;
+  resolveEventAttempts: number;
+  resolveArtifactAttempts: number;
   commitAttempts: number;
   commitRequests: AtomicCompactionRequest[];
 };
@@ -269,12 +273,17 @@ function makeRepository(options?: {
     sourceArtifacts: parsedCompaction.success ? clone(parsedCompaction.data.artifacts) : [],
     operations: new Map(),
     artifactBindings: new Map(),
+    fetchContextAttempts: 0,
+    snapshotAttempts: 0,
+    resolveEventAttempts: 0,
+    resolveArtifactAttempts: 0,
     commitAttempts: 0,
     commitRequests: [],
   };
 
   const repository: ContextRepository = {
     fetchContext(request) {
+      state.fetchContextAttempts += 1;
       if (options?.failContextWith !== undefined) {
         return Promise.reject(options.failContextWith);
       }
@@ -302,6 +311,7 @@ function makeRepository(options?: {
       });
     },
     fetchCompactionSnapshot() {
+      state.snapshotAttempts += 1;
       const snapshot = {
         source: clone(state.compaction),
         latestVersion: state.summaries.at(-1)?.version ?? 0,
@@ -428,6 +438,7 @@ function makeRepository(options?: {
       return Promise.resolve({ status: 'committed', summary: clone(saved) });
     },
     resolveEventRange(link) {
+      state.resolveEventAttempts += 1;
       if (
         options?.failResolvers === true ||
         (options?.failResolversAfterCommit === true && state.summaries.length > 0)
@@ -474,6 +485,7 @@ function makeRepository(options?: {
       return Promise.resolve(clone(range));
     },
     resolveArtifact(link) {
+      state.resolveArtifactAttempts += 1;
       if (
         options?.failResolvers === true ||
         (options?.failResolversAfterCommit === true && state.summaries.length > 0)
@@ -1227,6 +1239,100 @@ describe('compact raw snapshot revision CAS', () => {
     expect(commitRequests.every((request) => !('source' in request))).toBe(true);
     expect(JSON.stringify(commitRequests)).not.toContain('raw-secret-alpha');
     expect(JSON.stringify(commitRequests)).not.toContain('raw-secret-beta');
+  });
+});
+
+describe('compact operation identity boundary', () => {
+  it.each([
+    ['leading ASCII space', ' operation-edge-space'],
+    ['trailing ASCII space', 'operation-edge-space '],
+    ['leading tab', '\toperation-edge-tab'],
+    ['trailing tab', 'operation-edge-tab\t'],
+    ['leading newline', '\noperation-edge-newline'],
+    ['trailing newline', 'operation-edge-newline\n'],
+    ['leading nonbreaking space', '\u00a0operation-edge-unicode'],
+    ['trailing em space', 'operation-edge-unicode\u2003'],
+  ] as const)('rejects %s before every repository interaction', async (_label, operationId) => {
+    const { repository, state } = makeRepository();
+    let caught: unknown;
+
+    try {
+      await compactWithOperation(makeService(repository), operationId);
+    } catch (error) {
+      caught = error;
+    }
+
+    expectContextError(caught, 'MALFORMED_INPUT');
+    expect(state.fetchContextAttempts).toBe(0);
+    expect(state.snapshotAttempts).toBe(0);
+    expect(state.resolveEventAttempts).toBe(0);
+    expect(state.resolveArtifactAttempts).toBe(0);
+    expect(state.commitAttempts).toBe(0);
+    expect(state.summaries).toEqual([]);
+    expect(state.operations.size).toBe(0);
+  });
+
+  it('preserves an accepted operation ID exactly across fresh service instances', async () => {
+    const operationId = 'canonical-operation-identity';
+    const { repository, state } = makeRepository();
+
+    const first = await compactWithOperation(makeService(repository), operationId);
+    const replay = await compactWithOperation(makeService(repository), operationId);
+
+    expect(replay).toEqual(first);
+    expect(state.commitRequests.map((request) => request.operationId)).toEqual([
+      operationId,
+      operationId,
+    ]);
+    expect(state.commitRequests.map((request) => request.artifactId)).toEqual([
+      first.artifactId,
+      first.artifactId,
+    ]);
+    expect([...state.operations.keys()]).toEqual([operationId]);
+    expect(state.summaries).toEqual([first]);
+  });
+
+  it('keeps distinct accepted interior-whitespace and Unicode operation identities separate', async () => {
+    const operationIds = [
+      'interior operation identity',
+      'interior\toperation identity',
+      'unicode-operation-\u00e9',
+      'unicode-operation-e\u0301',
+    ];
+    const { repository, state } = makeRepository();
+
+    const summaries = [];
+    for (const operationId of operationIds) {
+      summaries.push(await compactWithOperation(makeService(repository), operationId));
+    }
+
+    expect(new Set(summaries.map((summary) => summary.artifactId)).size).toBe(
+      operationIds.length,
+    );
+    expect(new Set(state.commitRequests.map((request) => request.operationId))).toEqual(
+      new Set(operationIds),
+    );
+    expect(new Set(state.operations.keys())).toEqual(new Set(operationIds));
+    expect(state.summaries).toHaveLength(operationIds.length);
+  });
+
+  it('does not accept an edge-padded second operation as an idempotent replay', async () => {
+    const operationId = 'normalization-alias-operation';
+    const { repository, state } = makeRepository();
+    const first = await compactWithOperation(makeService(repository), operationId);
+    let caught: unknown;
+
+    try {
+      await compactWithOperation(makeService(repository), ` ${operationId} `);
+    } catch (error) {
+      caught = error;
+    }
+
+    expectContextError(caught, 'MALFORMED_INPUT');
+    expect(state.summaries).toEqual([first]);
+    expect([...state.operations.keys()]).toEqual([operationId]);
+    expect(state.commitAttempts).toBe(1);
+    expect(state.snapshotAttempts).toBe(1);
   });
 });
 
