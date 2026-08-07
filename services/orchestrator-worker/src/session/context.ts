@@ -23,6 +23,10 @@ function hasDuplicates(values: readonly string[]): boolean {
   return new Set(values).size !== values.length;
 }
 
+function canonicalRepositoryPath(path: string): string {
+  return path.normalize('NFC');
+}
+
 const AcceptanceCriteriaSchema = z
   .array(AcceptanceCriterionSchema)
   .min(1)
@@ -43,6 +47,7 @@ export const RepositoryPathSchema = z
       (segment) => segment.length === 0 || segment === '.' || segment === '..',
     );
     if (
+      path !== canonicalRepositoryPath(path) ||
       path.startsWith('/') ||
       path.endsWith('/') ||
       path.includes('\\') ||
@@ -63,6 +68,13 @@ export const OpaqueArtifactIdSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u);
 export type OpaqueArtifactId = z.infer<typeof OpaqueArtifactIdSchema>;
+
+export const SourceRevisionSchema = z
+  .string()
+  .min(16)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u);
+export type SourceRevision = z.infer<typeof SourceRevisionSchema>;
 
 export const CompactionOperationIdSchema = z.string().trim().min(1).max(256);
 export type CompactionOperationId = z.infer<typeof CompactionOperationIdSchema>;
@@ -153,7 +165,7 @@ export const FileIndexContextSourceSchema = ScopedArtifactBaseSchema.extend({
 })
   .strict()
   .superRefine((source, context) => {
-    if (hasDuplicates(source.files.map((file) => file.path))) {
+    if (hasDuplicates(source.files.map((file) => canonicalRepositoryPath(file.path)))) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'File paths must be unique' });
     }
   });
@@ -186,7 +198,7 @@ export const StructuredDiffstatSchema = z
     ) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'Diffstat totals must match files' });
     }
-    if (hasDuplicates(diffstat.files.map((file) => file.path))) {
+    if (hasDuplicates(diffstat.files.map((file) => canonicalRepositoryPath(file.path)))) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'Diffstat paths must be unique' });
     }
   });
@@ -224,7 +236,24 @@ export const TranscriptContextSourceSchema = z
     taskId: IdentifierSchema,
     events: z.array(ContextEventSchema).max(MAX_TRANSCRIPT_EVENTS),
   })
-  .strict();
+  .strict()
+  .superRefine((source, context) => {
+    const eventIds = new Set<string>();
+    let previousSequence: number | undefined;
+    for (const event of source.events) {
+      if (
+        eventIds.has(event.eventId) ||
+        (previousSequence !== undefined && event.sequence <= previousSequence)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Transcript events must be unique and strictly increasing',
+        });
+      }
+      eventIds.add(event.eventId);
+      previousSequence = event.sequence;
+    }
+  });
 export type TranscriptContextSource = z.infer<typeof TranscriptContextSourceSchema>;
 
 export const EvidenceArtifactSchema = ScopedArtifactBaseSchema.extend({
@@ -410,6 +439,7 @@ export const CompactionSnapshotSchema = z
   .object({
     source: CompactionSourceBundleSchema,
     latestVersion: NonnegativeSafeIntegerSchema,
+    sourceRevision: SourceRevisionSchema,
   })
   .strict();
 export type CompactionSnapshot = z.infer<typeof CompactionSnapshotSchema>;
@@ -440,12 +470,16 @@ export const SummaryArtifactSchema = z
       const duplicateEnd =
         range.endEventId !== range.startEventId && eventIds.has(range.endEventId);
       eventIds.add(range.endEventId);
+      const hasInvalidEndpoints =
+        (span === 1 && range.startEventId !== range.endEventId) ||
+        (span > 1 && range.startEventId === range.endEventId);
       if (
         range.startSequence > range.endSequence ||
         (previousEnd !== undefined && range.startSequence !== previousEnd + 1) ||
         range.runId !== summary.scope.runId ||
         duplicateStart ||
         duplicateEnd ||
+        hasInvalidEndpoints ||
         !Number.isSafeInteger(span) ||
         span > MAX_EVENTS_PER_RANGE
       ) {
@@ -469,12 +503,34 @@ export type SummaryArtifact = z.infer<typeof SummaryArtifactSchema>;
 export const AtomicCompactionRequestSchema = z
   .object({
     operationId: CompactionOperationIdSchema,
+    artifactId: OpaqueArtifactIdSchema,
     expectedPreviousVersion: NonnegativeSafeIntegerSchema,
-    source: CompactionSourceBundleSchema,
+    sourceRevision: SourceRevisionSchema,
+    scope: ContextScopeSchema,
     content: TextSchema,
     tokenCount: NonnegativeSafeIntegerSchema,
+    sourceEventRanges: z.array(EventRangeLinkSchema).max(MAX_COMPACTION_RANGES),
+    sourceArtifacts: z.array(SourceArtifactLinkSchema).max(MAX_COMPACTION_ARTIFACTS),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    const summaryShape = {
+      artifactId: request.artifactId,
+      kind: 'context-summary' as const,
+      scope: request.scope,
+      version: request.expectedPreviousVersion + 1,
+      content: request.content,
+      tokenCount: request.tokenCount,
+      sourceEventRanges: request.sourceEventRanges,
+      sourceArtifacts: request.sourceArtifacts,
+    };
+    if (!SummaryArtifactSchema.safeParse(summaryShape).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Compaction summary payload is invalid',
+      });
+    }
+  });
 export type AtomicCompactionRequest = z.infer<typeof AtomicCompactionRequestSchema>;
 
 const CommittedCompactionResultSchema = z
@@ -562,6 +618,7 @@ export interface ContextServiceDependencies {
   scrub: (value: string) => string;
   countTokens: (value: string) => number;
   compactionTokenBudget: number;
+  createSummaryArtifactId: (operationId: CompactionOperationId) => unknown;
 }
 
 export interface ContextService {
@@ -659,12 +716,13 @@ function scrubText(value: string, scrub: ContextServiceDependencies['scrub']): s
   }
 }
 
+function scrubValue<T>(value: T, scrub: ContextServiceDependencies['scrub']): T;
 function scrubValue(value: unknown, scrub: ContextServiceDependencies['scrub']): unknown {
   if (typeof value === 'string') {
     return scrubText(value, scrub);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => scrubValue(item, scrub));
+    return value.map((item: unknown) => scrubValue(item, scrub));
   }
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
@@ -737,6 +795,99 @@ function assertContextScope(
   ];
   if (sourceTaskIds.some((value) => value !== taskId)) {
     throw new ContextError('CROSS_SCOPE');
+  }
+}
+
+function assemblyIdentity(
+  role: ContextRole,
+  run: RunContextRequest,
+  task: TaskContextRequest,
+  source: ContextSourceBundle,
+): unknown {
+  return {
+    role,
+    run,
+    task,
+    source: {
+      scope: source.scope,
+      specification: {
+        scope: source.specification.scope,
+        artifactId: source.specification.artifactId,
+        version: source.specification.version,
+        approved: source.specification.approved,
+      },
+      plan: {
+        scope: source.plan.scope,
+        artifactId: source.plan.artifactId,
+        version: source.plan.version,
+        taskId: source.plan.task.taskId,
+      },
+      decisionLog: {
+        scope: source.decisionLog.scope,
+        artifactId: source.decisionLog.artifactId,
+        decisionIds: source.decisionLog.decisions.map((decision) => decision.decisionId),
+      },
+      architectureSummary: {
+        scope: source.architectureSummary.scope,
+        artifactId: source.architectureSummary.artifactId,
+      },
+      fileIndex: {
+        scope: source.fileIndex.scope,
+        artifactId: source.fileIndex.artifactId,
+        files: source.fileIndex.files.map((file) => ({
+          path: file.path,
+          sizeBytes: file.sizeBytes,
+        })),
+      },
+      recentChanges: {
+        scope: source.recentChanges.scope,
+        artifactId: source.recentChanges.artifactId,
+        commits: source.recentChanges.commits.map((commit) => ({
+          sha: commit.sha,
+          diffstat: commit.diffstat,
+        })),
+      },
+      transcript: {
+        scope: source.transcript.scope,
+        taskId: source.transcript.taskId,
+        events: source.transcript.events.map((event) => ({
+          scope: event.scope,
+          eventId: event.eventId,
+          sequence: event.sequence,
+          taskId: event.taskId,
+        })),
+      },
+      evidence: {
+        scope: source.evidence.scope,
+        taskId: source.evidence.taskId,
+        artifacts: source.evidence.artifacts.map((artifact) => ({
+          scope: artifact.scope,
+          artifactId: artifact.artifactId,
+          taskId: artifact.taskId,
+          kind: artifact.kind,
+        })),
+      },
+    },
+  };
+}
+
+function assertScrubPreservesAssemblyIdentity(
+  role: ContextRole,
+  run: RunContextRequest,
+  task: TaskContextRequest,
+  source: ContextSourceBundle,
+  scrubbedRole: ContextRole,
+  scrubbedRun: RunContextRequest,
+  scrubbedTask: TaskContextRequest,
+  scrubbedSource: ContextSourceBundle,
+): void {
+  if (
+    !valuesMatch(
+      assemblyIdentity(role, run, task, source),
+      assemblyIdentity(scrubbedRole, scrubbedRun, scrubbedTask, scrubbedSource),
+    )
+  ) {
+    throw new ContextError('IDENTITY_SCRUBBED');
   }
 }
 
@@ -942,6 +1093,27 @@ function assertScrubPreservesCompactionIdentity(
   }
 }
 
+function allocateSummaryArtifactId(
+  operationId: CompactionOperationId,
+  dependencies: ContextServiceDependencies,
+): OpaqueArtifactId {
+  let rawArtifactId: unknown;
+  try {
+    rawArtifactId = dependencies.createSummaryArtifactId(operationId);
+  } catch {
+    throw new ContextError('REPOSITORY_FAILURE');
+  }
+  if (typeof rawArtifactId !== 'string') {
+    throw new ContextError('REPOSITORY_RESULT');
+  }
+
+  const scrubbedArtifactId = scrubText(rawArtifactId, dependencies.scrub);
+  if (scrubbedArtifactId !== rawArtifactId) {
+    throw new ContextError('IDENTITY_SCRUBBED');
+  }
+  return parseBoundary(OpaqueArtifactIdSchema, scrubbedArtifactId, 'REPOSITORY_RESULT');
+}
+
 async function assertCompactionSourcesResolvable(
   repository: ContextRepository,
   source: CompactionSourceBundle,
@@ -1045,14 +1217,15 @@ function buildCompactionContent(
   return { content, tokenCount };
 }
 
-function expectedSummaryFields(request: AtomicCompactionRequest): Omit<SummaryArtifact, 'artifactId' | 'version'> {
+function expectedSummaryFields(request: AtomicCompactionRequest): Omit<SummaryArtifact, 'version'> {
   return {
+    artifactId: request.artifactId,
     kind: 'context-summary',
-    scope: request.source.scope,
+    scope: request.scope,
     content: request.content,
     tokenCount: request.tokenCount,
-    sourceEventRanges: request.source.eventRanges.map((range) => range.link),
-    sourceArtifacts: request.source.artifacts.map((artifact) => artifact.link),
+    sourceEventRanges: request.sourceEventRanges,
+    sourceArtifacts: request.sourceArtifacts,
   };
 }
 
@@ -1063,6 +1236,7 @@ function assertExactCompactionResult(
   if (
     !valuesMatch(
       {
+        artifactId: result.summary.artifactId,
         kind: result.summary.kind,
         scope: result.summary.scope,
         content: result.summary.content,
@@ -1143,24 +1317,39 @@ export function createContextService(dependencies: ContextServiceDependencies): 
       const source = parseBoundary(ContextSourceBundleSchema, rawResult, 'REPOSITORY_RESULT');
       assertContextScope(source, run, task.taskId);
 
+      const scrubbedRoleValue = scrubValue(role, dependencies.scrub);
+      const scrubbedRunValue = scrubValue(run, dependencies.scrub);
+      const scrubbedTaskValue = scrubValue(task, dependencies.scrub);
+      const scrubbedSourceValue = scrubValue(source, dependencies.scrub);
+      assertScrubPreservesAssemblyIdentity(
+        role,
+        run,
+        task,
+        source,
+        scrubbedRoleValue,
+        scrubbedRunValue,
+        scrubbedTaskValue,
+        scrubbedSourceValue,
+      );
+
       const scrubbedRole = parseBoundary(
         ContextRoleSchema,
-        scrubValue(role, dependencies.scrub),
+        scrubbedRoleValue,
         'SCRUBBER_FAILURE',
       );
       const scrubbedRun = parseBoundary(
         RunContextRequestSchema,
-        scrubValue(run, dependencies.scrub),
+        scrubbedRunValue,
         'SCRUBBER_FAILURE',
       );
       const scrubbedTask = parseBoundary(
         TaskContextRequestSchema,
-        scrubValue(task, dependencies.scrub),
+        scrubbedTaskValue,
         'SCRUBBER_FAILURE',
       );
       const scrubbedSource = parseBoundary(
         ContextSourceBundleSchema,
-        scrubValue(source, dependencies.scrub),
+        scrubbedSourceValue,
         'SCRUBBER_FAILURE',
       );
       assertContextScope(scrubbedSource, scrubbedRun, scrubbedTask.taskId);
@@ -1202,6 +1391,10 @@ export function createContextService(dependencies: ContextServiceDependencies): 
       if (!valuesMatch(scrubbedRequest, request)) {
         throw new ContextError('IDENTITY_SCRUBBED');
       }
+      const artifactId = allocateSummaryArtifactId(
+        scrubbedRequest.operationId,
+        dependencies,
+      );
       const snapshotRequest = parseBoundary(
         CompactionSnapshotRequestSchema,
         { runId: scrubbedRequest.runId },
@@ -1220,14 +1413,22 @@ export function createContextService(dependencies: ContextServiceDependencies): 
         if (!Number.isSafeInteger(snapshot.latestVersion + 1)) {
           throw new ContextError('REPOSITORY_RESULT');
         }
+        const scrubbedSourceRevision = scrubText(
+          snapshot.sourceRevision,
+          dependencies.scrub,
+        );
+        if (scrubbedSourceRevision !== snapshot.sourceRevision) {
+          throw new ContextError('IDENTITY_SCRUBBED');
+        }
         await assertCompactionSourcesResolvable(dependencies.repository, snapshot.source);
 
+        const scrubbedSourceValue = scrubValue(snapshot.source, dependencies.scrub);
+        assertScrubPreservesCompactionIdentity(snapshot.source, scrubbedSourceValue);
         const scrubbedSource = parseBoundary(
           CompactionSourceBundleSchema,
-          scrubValue(snapshot.source, dependencies.scrub),
+          scrubbedSourceValue,
           'SCRUBBER_FAILURE',
         );
-        assertScrubPreservesCompactionIdentity(snapshot.source, scrubbedSource);
         assertCompactionScope(scrubbedSource, scrubbedRequest.runId);
         const compacted = buildCompactionContent(
           scrubbedSource,
@@ -1238,10 +1439,14 @@ export function createContextService(dependencies: ContextServiceDependencies): 
           AtomicCompactionRequestSchema,
           {
             operationId: scrubbedRequest.operationId,
+            artifactId,
             expectedPreviousVersion: snapshot.latestVersion,
-            source: scrubbedSource,
+            sourceRevision: snapshot.sourceRevision,
+            scope: scrubbedSource.scope,
             content: compacted.content,
             tokenCount: compacted.tokenCount,
+            sourceEventRanges: scrubbedSource.eventRanges.map((range) => range.link),
+            sourceArtifacts: scrubbedSource.artifacts.map((artifact) => artifact.link),
           },
           'REPOSITORY_RESULT',
         );

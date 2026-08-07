@@ -179,9 +179,45 @@ function setCompactionScopeIdentity(
   }
 }
 
+function setContextScopeIdentity(
+  source: ContextSourceBundle,
+  field: 'organizationId' | 'projectId' | 'runId',
+  value: string,
+): void {
+  const scopes = [
+    source.scope,
+    source.specification.scope,
+    source.plan.scope,
+    source.decisionLog.scope,
+    source.architectureSummary.scope,
+    source.fileIndex.scope,
+    source.recentChanges.scope,
+    source.transcript.scope,
+    source.evidence.scope,
+    ...source.transcript.events.map((event) => event.scope),
+    ...source.evidence.artifacts.map((artifact) => artifact.scope),
+  ];
+  for (const scope of scopes) {
+    scope[field] = value;
+  }
+}
+
+function setContextTaskIdentity(source: ContextSourceBundle, taskId: string): void {
+  source.plan.task.taskId = taskId;
+  source.transcript.taskId = taskId;
+  source.evidence.taskId = taskId;
+  for (const event of source.transcript.events) {
+    event.taskId = taskId;
+  }
+  for (const artifact of source.evidence.artifacts) {
+    artifact.taskId = taskId;
+  }
+}
+
 type RepositoryState = {
   context: unknown;
   compaction: unknown;
+  sourceRevision: string;
   summaries: SummaryArtifact[];
   sourceEvents: CompactionSourceBundle['eventRanges'];
   sourceArtifacts: CompactionSourceBundle['artifacts'];
@@ -192,21 +228,6 @@ type RepositoryState = {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function scrubFixtureValue(value: unknown, scrub: (value: string) => string): unknown {
-  if (typeof value === 'string') {
-    return scrub(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => scrubFixtureValue(item, scrub));
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, scrubFixtureValue(item, scrub)]),
-    );
-  }
-  return value;
 }
 
 function firstItem<T>(values: readonly T[]): T {
@@ -225,7 +246,6 @@ function makeRepository(options?: {
   appendResult?: (saved: SummaryArtifact) => unknown;
   mutateStoreAfterSnapshot?: 'links' | 'scope';
   alwaysConflict?: boolean;
-  artifactId?: string;
   failResolvers?: boolean;
   failResolversAfterCommit?: boolean;
   persistThen?: 'throw-once' | 'malform-once';
@@ -233,13 +253,13 @@ function makeRepository(options?: {
   resolvedEvent?: 'null' | 'wrong-link' | 'wrong-scope' | 'wrong-content';
   resolvedArtifact?: 'null' | 'wrong-link' | 'wrong-scope' | 'wrong-content';
   resolvedArtifactId?: string;
-  atomicScrub?: (value: string) => string;
 }): { repository: ContextRepository; state: RepositoryState } {
   const compaction = options?.compaction ?? makeCompactionSource();
   const parsedCompaction = CompactionSourceBundleSchema.safeParse(compaction);
   const state: RepositoryState = {
     context: options?.context ?? makeContextSource(),
     compaction,
+    sourceRevision: 'source_revision_00000001',
     summaries: [],
     sourceEvents: parsedCompaction.success ? clone(parsedCompaction.data.eventRanges) : [],
     sourceArtifacts: parsedCompaction.success ? clone(parsedCompaction.data.artifacts) : [],
@@ -280,6 +300,7 @@ function makeRepository(options?: {
       const snapshot = {
         source: clone(state.compaction),
         latestVersion: state.summaries.at(-1)?.version ?? 0,
+        sourceRevision: state.sourceRevision,
       };
       if (options?.mutateStoreAfterSnapshot !== undefined) {
         const stored = CompactionSourceBundleSchema.parse(state.compaction);
@@ -299,6 +320,7 @@ function makeRepository(options?: {
           }
         }
         state.compaction = stored;
+        state.sourceRevision = 'source_revision_00000002';
         state.sourceEvents = clone(stored.eventRanges);
         state.sourceArtifacts = clone(stored.artifacts);
       }
@@ -333,37 +355,29 @@ function makeRepository(options?: {
       if (request.expectedPreviousVersion !== currentVersion) {
         return Promise.resolve({ status: 'version-conflict', currentVersion });
       }
-      const storedSource = CompactionSourceBundleSchema.parse(
-        scrubFixtureValue(state.compaction, options?.atomicScrub ?? ((value) => value)),
-      );
+      if (request.sourceRevision !== state.sourceRevision) {
+        return Promise.resolve({ status: 'version-conflict', currentVersion });
+      }
+      const storedSource = CompactionSourceBundleSchema.parse(state.compaction);
       if (
-        JSON.stringify(request.source) !== JSON.stringify(storedSource) ||
-        request.source.eventRanges.some(
-          (range) =>
-            !storedSource.eventRanges.some(
-              (stored) => JSON.stringify(stored) === JSON.stringify(range),
-            ),
-        ) ||
-        request.source.artifacts.some(
-          (artifact) =>
-            !storedSource.artifacts.some(
-              (stored) => JSON.stringify(stored) === JSON.stringify(artifact),
-            ),
-        )
+        JSON.stringify(request.scope) !== JSON.stringify(storedSource.scope) ||
+        JSON.stringify(request.sourceEventRanges) !==
+          JSON.stringify(storedSource.eventRanges.map((range) => range.link)) ||
+        JSON.stringify(request.sourceArtifacts) !==
+          JSON.stringify(storedSource.artifacts.map((artifact) => artifact.link))
       ) {
         return Promise.reject(new Error('Atomic source validation failed'));
       }
 
       const candidate = SummaryArtifactSchema.safeParse({
-        artifactId:
-          options?.artifactId ?? `ctxsum_${String(currentVersion + 1).padStart(16, '0')}`,
+        artifactId: request.artifactId,
         kind: 'context-summary',
-        scope: request.source.scope,
+        scope: request.scope,
         version: currentVersion + 1,
         content: request.content,
         tokenCount: request.tokenCount,
-        sourceEventRanges: request.source.eventRanges.map((range) => range.link),
-        sourceArtifacts: request.source.artifacts.map((artifact) => artifact.link),
+        sourceEventRanges: request.sourceEventRanges,
+        sourceArtifacts: request.sourceArtifacts,
       });
       if (!candidate.success) {
         return Promise.reject(new Error('Generated summary is invalid'));
@@ -497,13 +511,28 @@ function makeService(
     scrub?: (value: string) => string;
     countTokens?: (value: string) => number;
     compactionTokenBudget?: number;
+    createSummaryArtifactId?: (operationId: string) => unknown;
   },
 ) {
+  const operationIds = new Map<string, string>();
+  let nextId = 1;
   return createContextService({
     repository,
     scrub: options?.scrub ?? ((value) => value),
     countTokens: options?.countTokens ?? (() => 1),
     compactionTokenBudget: options?.compactionTokenBudget ?? 100,
+    createSummaryArtifactId:
+      options?.createSummaryArtifactId ??
+      ((operationId) => {
+        const existing = operationIds.get(operationId);
+        if (existing !== undefined) {
+          return existing;
+        }
+        const allocated = `ctxsum_${String(nextId).padStart(16, '0')}`;
+        nextId += 1;
+        operationIds.set(operationId, allocated);
+        return allocated;
+      }),
   });
 }
 
@@ -626,7 +655,7 @@ describe('assembleContext atomic content and scrubbing', () => {
     expect(tooSmall.sections).toEqual([]);
   });
 
-  it('scrubs every assembled section before token counting and output', async () => {
+  it('scrubs assembled content before token counting and output', async () => {
     const source = makeContextSource();
     source.specification.content += ` ${SENSITIVE_VALUE}`;
     source.specification.acceptanceCriteria[0] = `${firstItem(source.specification.acceptanceCriteria)} ${SENSITIVE_VALUE}`;
@@ -635,9 +664,7 @@ describe('assembleContext atomic content and scrubbing', () => {
     source.plan.task.acceptanceCriteria[0] = `${firstItem(source.plan.task.acceptanceCriteria)} ${SENSITIVE_VALUE}`;
     firstItem(source.decisionLog.decisions).content += ` ${SENSITIVE_VALUE}`;
     source.architectureSummary.content += ` ${SENSITIVE_VALUE}`;
-    firstItem(source.fileIndex.files).path += SENSITIVE_VALUE;
     firstItem(source.recentChanges.commits).message += ` ${SENSITIVE_VALUE}`;
-    firstItem(firstItem(source.recentChanges.commits).diffstat.files).path += SENSITIVE_VALUE;
     firstItem(source.transcript.events).content += ` ${SENSITIVE_VALUE}`;
     firstItem(source.evidence.artifacts).content += ` ${SENSITIVE_VALUE}`;
     const countedValues: string[] = [];
@@ -725,6 +752,129 @@ describe('assembleContext task and tenant isolation', () => {
   });
 });
 
+describe('assembleContext identity-aware secret scrubbing', () => {
+  type AssemblyFixture = {
+    role: 'planner' | 'builder' | 'verifier' | 'summarizer';
+    run: { organizationId: string; projectId: string; runId: string; tokenBudget: number };
+    task: { taskId: string };
+    source: ContextSourceBundle;
+    scrub: (value: string) => string;
+  };
+
+  const identityCases: ReadonlyArray<readonly [string, (fixture: AssemblyFixture) => void]> = [
+    [
+      'role',
+      (fixture) => {
+        fixture.scrub = (value) => (value === 'builder' ? 'planner' : value);
+      },
+    ],
+    [
+      'organization scope',
+      (fixture) => {
+        const value = `organization-${SENSITIVE_VALUE}`;
+        fixture.run.organizationId = value;
+        setContextScopeIdentity(fixture.source, 'organizationId', value);
+      },
+    ],
+    [
+      'project scope',
+      (fixture) => {
+        const value = `project-${SENSITIVE_VALUE}`;
+        fixture.run.projectId = value;
+        setContextScopeIdentity(fixture.source, 'projectId', value);
+      },
+    ],
+    [
+      'run scope',
+      (fixture) => {
+        const value = `run-${SENSITIVE_VALUE}`;
+        fixture.run.runId = value;
+        setContextScopeIdentity(fixture.source, 'runId', value);
+      },
+    ],
+    [
+      'task identity',
+      (fixture) => {
+        const value = `task-${SENSITIVE_VALUE}`;
+        fixture.task.taskId = value;
+        setContextTaskIdentity(fixture.source, value);
+      },
+    ],
+    [
+      'event identity',
+      (fixture) => {
+        firstItem(fixture.source.transcript.events).eventId = `event-${SENSITIVE_VALUE}`;
+      },
+    ],
+    [
+      'artifact identity',
+      (fixture) => {
+        fixture.source.specification.artifactId = `artifact-${SENSITIVE_VALUE}`;
+      },
+    ],
+    [
+      'artifact kind',
+      (fixture) => {
+        firstItem(fixture.source.evidence.artifacts).kind = `kind-${SENSITIVE_VALUE}`;
+      },
+    ],
+    [
+      'commit SHA',
+      (fixture) => {
+        const sha = 'a'.repeat(40);
+        firstItem(fixture.source.recentChanges.commits).sha = sha;
+        fixture.scrub = (value) => (value === sha ? 'b'.repeat(40) : value);
+      },
+    ],
+    [
+      'repository path',
+      (fixture) => {
+        firstItem(fixture.source.fileIndex.files).path = `src/${SENSITIVE_VALUE}.ts`;
+      },
+    ],
+    [
+      'decision identity',
+      (fixture) => {
+        firstItem(fixture.source.decisionLog.decisions).decisionId =
+          `decision-${SENSITIVE_VALUE}`;
+      },
+    ],
+  ];
+
+  it.each(identityCases)(
+    'fails closed before output when scrubbing changes %s',
+    async (_label, mutate) => {
+      const fixture: AssemblyFixture = {
+        role: 'builder',
+        run: { ...SCOPE, tokenBudget: 100 },
+        task: { ...TASK },
+        source: makeContextSource(),
+        scrub: (value) => value.replaceAll(SENSITIVE_VALUE, 'redacted'),
+      };
+      mutate(fixture);
+      const { repository } = makeRepository({ context: fixture.source });
+      let returned: unknown;
+      let caught: unknown;
+
+      try {
+        returned = await makeService(repository, { scrub: fixture.scrub }).assembleContext(
+          fixture.role,
+          fixture.run,
+          fixture.task,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(returned).toBeUndefined();
+      expectContextError(caught, 'IDENTITY_SCRUBBED');
+      expect(JSON.stringify(caught instanceof ContextError ? caught.toRecord() : caught)).not.toContain(
+        SENSITIVE_VALUE,
+      );
+    },
+  );
+});
+
 describe('compact', () => {
   it('appends v1 then v2 while original events, artifacts, and exact links remain resolvable', async () => {
     const { repository, state } = makeRepository();
@@ -762,10 +912,7 @@ describe('compact', () => {
     firstItem(source.artifacts).content += ` ${SENSITIVE_VALUE}`;
     const countedValues: string[] = [];
     const scrub = (value: string): string => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]');
-    const { repository, state } = makeRepository({
-      compaction: source,
-      atomicScrub: scrub,
-    });
+    const { repository, state } = makeRepository({ compaction: source });
     const service = makeService(repository, {
       scrub,
       countTokens: (value) => {
@@ -957,7 +1104,247 @@ describe('compact pre-commit source resolution', () => {
   );
 });
 
+describe('compact raw snapshot revision CAS', () => {
+  it('rejects a secret-bearing source revision before commit', async () => {
+    const { repository: baseRepository, state } = makeRepository();
+    const repository: ContextRepository = {
+      ...baseRepository,
+      async fetchCompactionSnapshot(request) {
+        const snapshot = await baseRepository.fetchCompactionSnapshot(request);
+        return {
+          ...(snapshot as object),
+          sourceRevision: `source_revision_${SENSITIVE_VALUE}`,
+        };
+      },
+    };
+
+    await expect(
+      compactWithOperation(
+        makeService(repository, {
+          scrub: (value) => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]'),
+        }),
+        'secret-source-revision-operation',
+      ),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'IDENTITY_SCRUBBED');
+      expect(String(error)).not.toContain(SENSITIVE_VALUE);
+      return true;
+    });
+    expect(state.commitAttempts).toBe(0);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it('conflicts and rebuilds when distinct raw snapshots have identical redaction', async () => {
+    type RevisionRequest = {
+      operationId: string;
+      artifactId: string;
+      expectedPreviousVersion: number;
+      sourceRevision: string;
+      scope: typeof SCOPE;
+      content: string;
+      tokenCount: number;
+      sourceEventRanges: CompactionSourceBundle['eventRanges'][number]['link'][];
+      sourceArtifacts: CompactionSourceBundle['artifacts'][number]['link'][];
+    };
+
+    const source = makeCompactionSource();
+    firstItem(source.artifacts).content = 'raw-secret-alpha';
+    const durableSource = clone(source);
+    let sourceRevision = 'source_revision_00000001';
+    let changed = false;
+    const summaries: SummaryArtifact[] = [];
+    const commitRequests: RevisionRequest[] = [];
+
+    const repository: ContextRepository = {
+      fetchContext() {
+        return Promise.resolve(makeContextSource());
+      },
+      fetchCompactionSnapshot() {
+        return Promise.resolve({
+          source: clone(durableSource),
+          latestVersion: summaries.at(-1)?.version ?? 0,
+          sourceRevision,
+        });
+      },
+      commitCompaction(request) {
+        const atomic = clone(request) as unknown as RevisionRequest;
+        commitRequests.push(atomic);
+        if (!changed) {
+          changed = true;
+          firstItem(durableSource.artifacts).content = 'raw-secret-beta';
+          sourceRevision = 'source_revision_00000002';
+        }
+        if (atomic.sourceRevision !== sourceRevision) {
+          return Promise.resolve({ status: 'version-conflict', currentVersion: 0 });
+        }
+
+        const summary = SummaryArtifactSchema.parse({
+          artifactId: atomic.artifactId,
+          kind: 'context-summary',
+          scope: atomic.scope,
+          version: 1,
+          content: atomic.content,
+          tokenCount: atomic.tokenCount,
+          sourceEventRanges: atomic.sourceEventRanges,
+          sourceArtifacts: atomic.sourceArtifacts,
+        });
+        summaries.push(summary);
+        return Promise.resolve({ status: 'committed', summary: clone(summary) });
+      },
+      resolveEventRange(link) {
+        const range = durableSource.eventRanges.find(
+          (candidate) => JSON.stringify(candidate.link) === JSON.stringify(link),
+        );
+        return Promise.resolve(range === undefined ? null : clone(range));
+      },
+      resolveArtifact(link) {
+        const artifact = durableSource.artifacts.find(
+          (candidate) => JSON.stringify(candidate.link) === JSON.stringify(link),
+        );
+        return Promise.resolve(artifact === undefined ? null : clone(artifact));
+      },
+    };
+    const scrub = (value: string): string =>
+      value.replace(/raw-secret-(?:alpha|beta)/gu, '[REDACTED]');
+
+    const summary = await compactWithOperation(
+      makeService(repository, {
+        scrub,
+        createSummaryArtifactId: () => 'ctxsum_revision_00000001',
+      }),
+      'raw-revision-operation',
+    );
+
+    expect(summary.version).toBe(1);
+    expect(summaries).toEqual([summary]);
+    expect(commitRequests).toHaveLength(2);
+    expect(commitRequests.map((request) => request.sourceRevision)).toEqual([
+      'source_revision_00000001',
+      'source_revision_00000002',
+    ]);
+    expect(commitRequests[1]?.content).toBe(commitRequests[0]?.content);
+    expect(commitRequests.every((request) => !('source' in request))).toBe(true);
+    expect(JSON.stringify(commitRequests)).not.toContain('raw-secret-alpha');
+    expect(JSON.stringify(commitRequests)).not.toContain('raw-secret-beta');
+  });
+});
+
 describe('compact atomic mutation regressions', () => {
+  it('allocates, scrubs, validates, and commits the exact summary artifact ID before mutation', async () => {
+    const allocatedId = 'ctxsum_factory_00000001';
+    const factory = vi.fn(() => allocatedId);
+    const { repository, state } = makeRepository();
+
+    const summary = await compactWithOperation(
+      makeService(repository, { createSummaryArtifactId: factory }),
+      'factory-id-operation',
+    );
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledWith('factory-id-operation');
+    expect(summary.artifactId).toBe(allocatedId);
+    expect(firstItem(state.commitRequests)).toMatchObject({ artifactId: allocatedId });
+    expect(firstItem(state.summaries).artifactId).toBe(allocatedId);
+  });
+
+  it('rejects a mismatched result ID and recovers the exact persisted ID idempotently', async () => {
+    const allocatedId = 'ctxsum_exact_result_0001';
+    const { repository: baseRepository, state } = makeRepository();
+    let corruptFirstResult = true;
+    const repository: ContextRepository = {
+      ...baseRepository,
+      async commitCompaction(request) {
+        const result = await baseRepository.commitCompaction(request);
+        if (
+          corruptFirstResult &&
+          typeof result === 'object' &&
+          result !== null &&
+          'status' in result &&
+          result.status === 'committed' &&
+          'summary' in result
+        ) {
+          corruptFirstResult = false;
+          return {
+            status: 'committed',
+            summary: {
+              ...(result.summary as SummaryArtifact),
+              artifactId: 'ctxsum_wrong_result_0001',
+            },
+          };
+        }
+        return result;
+      },
+    };
+
+    const summary = await compactWithOperation(
+      makeService(repository, { createSummaryArtifactId: () => allocatedId }),
+      'exact-result-id-operation',
+    );
+
+    expect(summary.artifactId).toBe(allocatedId);
+    expect(state.summaries).toHaveLength(1);
+    expect(firstItem(state.summaries).artifactId).toBe(allocatedId);
+    expect(state.commitAttempts).toBe(2);
+    expect(state.commitRequests[1]).toEqual(state.commitRequests[0]);
+  });
+
+  it.each([
+    [
+      'secret-bearing',
+      (): string => `ctxsum_${SENSITIVE_VALUE}_0000`,
+      'IDENTITY_SCRUBBED',
+    ],
+    ['malformed', (): string => 'bad-id', 'REPOSITORY_RESULT'],
+    [
+      'throwing',
+      (): never => {
+        throw new Error(`factory failed ${SENSITIVE_VALUE}`);
+      },
+      'REPOSITORY_FAILURE',
+    ],
+  ] as const)(
+    'rejects a %s summary ID factory before commit',
+    async (_label, createSummaryArtifactId, code) => {
+      const { repository, state } = makeRepository();
+      let caught: unknown;
+
+      try {
+        await compactWithOperation(
+          makeService(repository, {
+            createSummaryArtifactId,
+            scrub: (value) => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]'),
+          }),
+          `rejected-id-factory-${_label}`,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expectContextError(caught, code);
+      expect(String(caught)).not.toContain(SENSITIVE_VALUE);
+      expect(state.commitAttempts).toBe(0);
+      expect(state.summaries).toEqual([]);
+    },
+  );
+
+  it('allocates the summary ID exactly once while rebuilding version conflicts', async () => {
+    const createSummaryArtifactId = vi.fn(() => 'ctxsum_conflict_0000001');
+    const { repository, state } = makeRepository({ alwaysConflict: true });
+
+    await expect(
+      compactWithOperation(
+        makeService(repository, { createSummaryArtifactId }),
+        'single-allocation-conflict-operation',
+      ),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_FAILURE');
+      return true;
+    });
+
+    expect(createSummaryArtifactId).toHaveBeenCalledOnce();
+    expect(state.commitAttempts).toBe(3);
+  });
+
   it('requires a caller-stable operation identifier at the public boundary', async () => {
     const { repository } = makeRepository();
 
@@ -971,7 +1358,12 @@ describe('compact atomic mutation regressions', () => {
 
   it('commits concurrent distinct operations as consecutive versions', async () => {
     const { repository, state } = makeRepository();
-    const service = makeService(repository);
+    const ids = new Map([
+      ['concurrent-operation-a', 'ctxsum_concurrent_a_0001'],
+      ['concurrent-operation-b', 'ctxsum_concurrent_b_0001'],
+    ]);
+    const createSummaryArtifactId = vi.fn((operationId: string) => ids.get(operationId));
+    const service = makeService(repository, { createSummaryArtifactId });
 
     const summaries = await Promise.all([
       compactWithOperation(service, 'concurrent-operation-a'),
@@ -979,18 +1371,22 @@ describe('compact atomic mutation regressions', () => {
     ]);
 
     expect(summaries.map((summary) => summary.version).sort()).toEqual([1, 2]);
-    expect(new Set(summaries.map((summary) => summary.artifactId))).toHaveLength(2);
+    expect(new Set(summaries.map((summary) => summary.artifactId))).toEqual(new Set(ids.values()));
+    expect(createSummaryArtifactId).toHaveBeenCalledTimes(2);
     expect(state.summaries).toHaveLength(2);
   });
 
   it('returns the original version when the same operation is retried', async () => {
     const { repository, state } = makeRepository();
-    const service = makeService(repository);
+    const createSummaryArtifactId = vi.fn(() => 'ctxsum_stable_operation_1');
+    const service = makeService(repository, { createSummaryArtifactId });
 
     const first = await compactWithOperation(service, 'stable-operation');
     const retried = await compactWithOperation(service, 'stable-operation');
 
     expect(retried).toEqual(first);
+    expect(first.artifactId).toBe('ctxsum_stable_operation_1');
+    expect(createSummaryArtifactId).toHaveBeenCalledTimes(2);
     expect(state.summaries).toEqual([first]);
   });
 
@@ -1272,7 +1668,12 @@ describe('compact provenance integrity', () => {
 });
 
 describe('saved summary provenance bounds', () => {
-  function summaryWithRange(startSequence: number, endSequence: number): unknown {
+  function summaryWithRange(
+    startSequence: number,
+    endSequence: number,
+    startEventId = 'range-start',
+    endEventId = 'range-end',
+  ): unknown {
     return {
       artifactId: 'ctxsum_0000000000000001',
       kind: 'context-summary',
@@ -1283,8 +1684,8 @@ describe('saved summary provenance bounds', () => {
       sourceEventRanges: [
         {
           runId: SCOPE.runId,
-          startEventId: 'range-start',
-          endEventId: 'range-end',
+          startEventId,
+          endEventId,
           startSequence,
           endSequence,
         },
@@ -1299,6 +1700,17 @@ describe('saved summary provenance bounds', () => {
     expect(
       SummaryArtifactSchema.safeParse(summaryWithRange(0, Number.MAX_SAFE_INTEGER)).success,
     ).toBe(false);
+  });
+
+  it('requires endpoint IDs to match exactly for one event and differ for multiple events', () => {
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(7, 7, 'event-7', 'event-7')).success)
+      .toBe(true);
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(7, 7, 'event-7', 'event-8')).success)
+      .toBe(false);
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(7, 8, 'event-7', 'event-8')).success)
+      .toBe(true);
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(7, 8, 'event-7', 'event-7')).success)
+      .toBe(false);
   });
 });
 
@@ -1334,6 +1746,64 @@ describe('required context semantics', () => {
 
     await expect(
       makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+});
+
+describe('transcript chronology semantics', () => {
+  function transcriptEvent(sequence: number, eventId: string) {
+    return {
+      scope: SCOPE,
+      eventId,
+      sequence,
+      taskId: TASK.taskId,
+      content: `event ${String(sequence)}`,
+    };
+  }
+
+  it('accepts strictly increasing task-local transcript sequences with gaps', async () => {
+    const source = makeContextSource();
+    source.transcript.events = [
+      transcriptEvent(11, 'event-11'),
+      transcriptEvent(15, 'event-15'),
+    ];
+    const { repository } = makeRepository({ context: source });
+
+    const context = await makeService(repository).assembleContext(
+      'verifier',
+      { ...SCOPE, tokenBudget: 100 },
+      TASK,
+    );
+
+    expect(context.sections.find((section) => section.kind === 'taskTranscript')).toMatchObject({
+      content: '[11] event 11\n[15] event 15',
+      sourceEventIds: ['event-11', 'event-15'],
+    });
+  });
+
+  it.each([
+    [
+      'a duplicate event ID',
+      [transcriptEvent(11, 'duplicate-event'), transcriptEvent(15, 'duplicate-event')],
+    ],
+    [
+      'a duplicate sequence',
+      [transcriptEvent(11, 'event-11'), transcriptEvent(11, 'event-12')],
+    ],
+    [
+      'reversed sequences',
+      [transcriptEvent(15, 'event-15'), transcriptEvent(11, 'event-11')],
+    ],
+  ] as const)('rejects %s before partial assembly', async (_label, events) => {
+    const source = makeContextSource();
+    source.transcript.events = events.map((event) => clone(event));
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('verifier', { ...SCOPE, tokenBudget: 100 }, TASK),
     ).rejects.toSatisfy((error: unknown) => {
       expectContextError(error, 'REPOSITORY_RESULT');
       return true;
@@ -1391,6 +1861,75 @@ describe('semantic repository source schemas', () => {
       return true;
     });
   });
+
+  it('rejects a non-NFC repository path before output', async () => {
+    const source = makeContextSource();
+    firstItem(source.fileIndex.files).path = 'src/cafe\u0301.ts';
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+
+  it.each([
+    ['equal metadata', 42],
+    ['conflicting metadata', 43],
+  ] as const)(
+    'rejects canonically equivalent file-index paths with %s',
+    async (_label, sizeBytes) => {
+      const source = makeContextSource();
+      source.fileIndex.files = [
+        { path: 'src/café.ts', sizeBytes: 42 },
+        { path: 'src/cafe\u0301.ts', sizeBytes },
+      ];
+      const { repository } = makeRepository({ context: source });
+
+      await expect(
+        makeService(repository).assembleContext(
+          'builder',
+          { ...SCOPE, tokenBudget: 100 },
+          TASK,
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'REPOSITORY_RESULT');
+        return true;
+      });
+    },
+  );
+
+  it.each([
+    ['equal metadata', 4, 8],
+    ['conflicting metadata', 5, 9],
+  ] as const)(
+    'rejects canonically equivalent diffstat paths with %s and exact totals',
+    async (_label, secondAdditions, totalAdditions) => {
+      const source = makeContextSource();
+      firstItem(source.recentChanges.commits).diffstat = {
+        files: [
+          { path: 'src/café.ts', additions: 4, deletions: 0 },
+          { path: 'src/cafe\u0301.ts', additions: secondAdditions, deletions: 0 },
+        ],
+        additions: totalAdditions,
+        deletions: 0,
+      };
+      const { repository } = makeRepository({ context: source });
+
+      await expect(
+        makeService(repository).assembleContext(
+          'summarizer',
+          { ...SCOPE, tokenBudget: 100 },
+          TASK,
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'REPOSITORY_RESULT');
+        return true;
+      });
+    },
+  );
 
   it.each([
     ['equal metadata', 42],
@@ -1494,18 +2033,27 @@ describe('semantic repository source schemas', () => {
 describe('opaque identifiers and locale-independent ordering', () => {
   it('accepts the opaque artifact identifier maximum and maps overflow to ContextError', async () => {
     const maximumId = `a${'b'.repeat(127)}`;
-    const maximum = makeRepository({ artifactId: maximumId });
+    const maximum = makeRepository();
     await expect(
-      compactWithOperation(makeService(maximum.repository), 'maximum-artifact-id-operation'),
+      compactWithOperation(
+        makeService(maximum.repository, { createSummaryArtifactId: () => maximumId }),
+        'maximum-artifact-id-operation',
+      ),
     ).resolves.toMatchObject({ artifactId: maximumId });
 
-    const overflow = makeRepository({ artifactId: `${maximumId}c` });
+    const overflow = makeRepository();
     await expect(
-      compactWithOperation(makeService(overflow.repository), 'overflow-artifact-id-operation'),
+      compactWithOperation(
+        makeService(overflow.repository, {
+          createSummaryArtifactId: () => `${maximumId}c`,
+        }),
+        'overflow-artifact-id-operation',
+      ),
     ).rejects.toSatisfy((error: unknown) => {
-      expectContextError(error, 'OUTCOME_UNKNOWN');
+      expectContextError(error, 'REPOSITORY_RESULT');
       return true;
     });
+    expect(overflow.state.commitAttempts).toBe(0);
     expect(overflow.state.summaries).toEqual([]);
   });
 
