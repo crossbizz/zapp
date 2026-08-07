@@ -157,6 +157,28 @@ function makeCompactionSource(): CompactionSourceBundle {
   });
 }
 
+function setCompactionScopeIdentity(
+  source: CompactionSourceBundle,
+  field: 'organizationId' | 'projectId' | 'runId',
+  value: string,
+): void {
+  source.scope[field] = value;
+  for (const range of source.eventRanges) {
+    if (field === 'runId') {
+      range.link.runId = value;
+    }
+    for (const event of range.events) {
+      event.scope[field] = value;
+    }
+  }
+  for (const artifact of source.artifacts) {
+    if (field === 'runId') {
+      artifact.link.runId = value;
+    }
+    artifact.scope[field] = value;
+  }
+}
+
 type RepositoryState = {
   context: unknown;
   compaction: unknown;
@@ -165,10 +187,26 @@ type RepositoryState = {
   sourceArtifacts: CompactionSourceBundle['artifacts'];
   operations: Map<string, { request: AtomicCompactionRequest; summary: SummaryArtifact }>;
   commitAttempts: number;
+  commitRequests: AtomicCompactionRequest[];
 };
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function scrubFixtureValue(value: unknown, scrub: (value: string) => string): unknown {
+  if (typeof value === 'string') {
+    return scrub(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubFixtureValue(item, scrub));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, scrubFixtureValue(item, scrub)]),
+    );
+  }
+  return value;
 }
 
 function firstItem<T>(values: readonly T[]): T {
@@ -189,6 +227,13 @@ function makeRepository(options?: {
   alwaysConflict?: boolean;
   artifactId?: string;
   failResolvers?: boolean;
+  failResolversAfterCommit?: boolean;
+  persistThen?: 'throw-once' | 'malform-once';
+  alwaysUnknown?: 'throw' | 'malform';
+  resolvedEvent?: 'null' | 'wrong-link' | 'wrong-scope' | 'wrong-content';
+  resolvedArtifact?: 'null' | 'wrong-link' | 'wrong-scope' | 'wrong-content';
+  resolvedArtifactId?: string;
+  atomicScrub?: (value: string) => string;
 }): { repository: ContextRepository; state: RepositoryState } {
   const compaction = options?.compaction ?? makeCompactionSource();
   const parsedCompaction = CompactionSourceBundleSchema.safeParse(compaction);
@@ -200,6 +245,7 @@ function makeRepository(options?: {
     sourceArtifacts: parsedCompaction.success ? clone(parsedCompaction.data.artifacts) : [],
     operations: new Map(),
     commitAttempts: 0,
+    commitRequests: [],
   };
 
   const repository: ContextRepository = {
@@ -260,6 +306,7 @@ function makeRepository(options?: {
     },
     commitCompaction(request) {
       state.commitAttempts += 1;
+      state.commitRequests.push(clone(request));
       const existing = state.operations.get(request.operationId);
       if (existing !== undefined) {
         const replayRequest = {
@@ -272,6 +319,13 @@ function makeRepository(options?: {
         return Promise.resolve({ status: 'idempotent', summary: clone(existing.summary) });
       }
 
+      if (options?.alwaysUnknown === 'throw') {
+        return Promise.reject(new Error(`Ambiguous commit ${SENSITIVE_VALUE}`));
+      }
+      if (options?.alwaysUnknown === 'malform') {
+        return Promise.resolve({ status: 'committed', malformed: true });
+      }
+
       const currentVersion = state.summaries.at(-1)?.version ?? 0;
       if (options?.alwaysConflict === true) {
         return Promise.resolve({ status: 'version-conflict', currentVersion });
@@ -279,17 +333,20 @@ function makeRepository(options?: {
       if (request.expectedPreviousVersion !== currentVersion) {
         return Promise.resolve({ status: 'version-conflict', currentVersion });
       }
+      const storedSource = CompactionSourceBundleSchema.parse(
+        scrubFixtureValue(state.compaction, options?.atomicScrub ?? ((value) => value)),
+      );
       if (
-        JSON.stringify(request.source) !== JSON.stringify(state.compaction) ||
+        JSON.stringify(request.source) !== JSON.stringify(storedSource) ||
         request.source.eventRanges.some(
           (range) =>
-            !state.sourceEvents.some(
+            !storedSource.eventRanges.some(
               (stored) => JSON.stringify(stored) === JSON.stringify(range),
             ),
         ) ||
         request.source.artifacts.some(
           (artifact) =>
-            !state.sourceArtifacts.some(
+            !storedSource.artifacts.some(
               (stored) => JSON.stringify(stored) === JSON.stringify(artifact),
             ),
         )
@@ -328,10 +385,22 @@ function makeRepository(options?: {
       const saved = clone(candidate.data);
       state.summaries.push(saved);
       state.operations.set(request.operationId, { request: clone(request), summary: clone(saved) });
+      if (options?.persistThen === 'throw-once' && state.commitAttempts === 1) {
+        return Promise.reject(new Error(`Response lost ${SENSITIVE_VALUE}`));
+      }
+      if (options?.persistThen === 'malform-once' && state.commitAttempts === 1) {
+        return Promise.resolve({
+          status: 'committed',
+          summary: { ...clone(saved), unexpected: true },
+        });
+      }
       return Promise.resolve({ status: 'committed', summary: clone(saved) });
     },
     resolveEventRange(link) {
-      if (options?.failResolvers === true) {
+      if (
+        options?.failResolvers === true ||
+        (options?.failResolversAfterCommit === true && state.summaries.length > 0)
+      ) {
         return Promise.reject(new Error('Resolver unavailable'));
       }
       const range = state.sourceEvents.find(
@@ -342,17 +411,72 @@ function makeRepository(options?: {
           candidate.link.startSequence === link.startSequence &&
           candidate.link.endSequence === link.endSequence,
       );
-      return Promise.resolve(clone(range ?? null));
+      if (range === undefined || options?.resolvedEvent === 'null') {
+        return Promise.resolve(null);
+      }
+      if (options?.resolvedEvent === 'wrong-link') {
+        return Promise.resolve(
+          clone({ ...range, link: { ...range.link, startEventId: 'wrong-event-link' } }),
+        );
+      }
+      if (options?.resolvedEvent === 'wrong-scope') {
+        return Promise.resolve(
+          clone({
+            ...range,
+            events: range.events.map((event) => ({
+              ...event,
+              scope: { ...event.scope, projectId: 'wrong-project' },
+            })),
+          }),
+        );
+      }
+      if (options?.resolvedEvent === 'wrong-content') {
+        return Promise.resolve(
+          clone({
+            ...range,
+            events: range.events.map((event, index) =>
+              index === 0 ? { ...event, content: 'wrong event content' } : event,
+            ),
+          }),
+        );
+      }
+      return Promise.resolve(clone(range));
     },
     resolveArtifact(link) {
-      if (options?.failResolvers === true) {
+      if (
+        options?.failResolvers === true ||
+        (options?.failResolversAfterCommit === true && state.summaries.length > 0)
+      ) {
         return Promise.reject(new Error('Resolver unavailable'));
       }
       const artifact = state.sourceArtifacts.find(
         (candidate) =>
           candidate.link.runId === link.runId && candidate.link.artifactId === link.artifactId,
       );
-      return Promise.resolve(clone(artifact ?? null));
+      const resolvedArtifact =
+        options?.resolvedArtifactId === undefined || options.resolvedArtifactId === link.artifactId
+          ? options?.resolvedArtifact
+          : undefined;
+      if (artifact === undefined || resolvedArtifact === 'null') {
+        return Promise.resolve(null);
+      }
+      if (resolvedArtifact === 'wrong-link') {
+        return Promise.resolve(
+          clone({ ...artifact, link: { ...artifact.link, artifactId: 'wrong-artifact-link' } }),
+        );
+      }
+      if (resolvedArtifact === 'wrong-scope') {
+        return Promise.resolve(
+          clone({
+            ...artifact,
+            scope: { ...artifact.scope, projectId: 'wrong-project' },
+          }),
+        );
+      }
+      if (resolvedArtifact === 'wrong-content') {
+        return Promise.resolve(clone({ ...artifact, content: 'wrong artifact content' }));
+      }
+      return Promise.resolve(clone(artifact));
     },
   };
 
@@ -637,9 +761,13 @@ describe('compact', () => {
     firstItem(firstItem(source.eventRanges).events).content += ` ${SENSITIVE_VALUE}`;
     firstItem(source.artifacts).content += ` ${SENSITIVE_VALUE}`;
     const countedValues: string[] = [];
-    const { repository, state } = makeRepository({ compaction: source });
+    const scrub = (value: string): string => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]');
+    const { repository, state } = makeRepository({
+      compaction: source,
+      atomicScrub: scrub,
+    });
     const service = makeService(repository, {
-      scrub: (value) => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]'),
+      scrub,
       countTokens: (value) => {
         countedValues.push(value);
         return 1;
@@ -650,6 +778,8 @@ describe('compact', () => {
 
     expect(JSON.stringify(summary)).not.toContain(SENSITIVE_VALUE);
     expect(JSON.stringify(state.summaries)).not.toContain(SENSITIVE_VALUE);
+    expect(JSON.stringify([...state.operations.entries()])).not.toContain(SENSITIVE_VALUE);
+    expect(JSON.stringify(state.commitRequests)).not.toContain(SENSITIVE_VALUE);
     expect(JSON.stringify(countedValues)).not.toContain(SENSITIVE_VALUE);
     expect(summary.content).toContain('[REDACTED]');
   });
@@ -669,6 +799,162 @@ describe('compact', () => {
     );
     expect(state.summaries).toEqual([]);
   });
+});
+
+describe('compact identity-aware secret scrubbing', () => {
+  type IdentityFixture = {
+    source: CompactionSourceBundle;
+    runId: string;
+    operationId: string;
+  };
+
+  const identityCases: ReadonlyArray<
+    readonly [string, (fixture: IdentityFixture) => void]
+  > = [
+    [
+      'organization IDs',
+      (fixture) => {
+        setCompactionScopeIdentity(
+          fixture.source,
+          'organizationId',
+          `organization-${SENSITIVE_VALUE}`,
+        );
+      },
+    ],
+    [
+      'project IDs',
+      (fixture) => {
+        setCompactionScopeIdentity(
+          fixture.source,
+          'projectId',
+          `project-${SENSITIVE_VALUE}`,
+        );
+      },
+    ],
+    [
+      'run and source-link IDs',
+      (fixture) => {
+        fixture.runId = `run-${SENSITIVE_VALUE}`;
+        setCompactionScopeIdentity(fixture.source, 'runId', fixture.runId);
+      },
+    ],
+    [
+      'task IDs',
+      (fixture) => {
+        for (const range of fixture.source.eventRanges) {
+          for (const event of range.events) {
+            event.taskId = `task-${SENSITIVE_VALUE}`;
+          }
+        }
+      },
+    ],
+    [
+      'event and event-link IDs',
+      (fixture) => {
+        const range = firstItem(fixture.source.eventRanges);
+        const event = firstItem(range.events);
+        event.eventId = `event-${SENSITIVE_VALUE}`;
+        range.link.startEventId = event.eventId;
+      },
+    ],
+    [
+      'artifact and artifact-link IDs',
+      (fixture) => {
+        firstItem(fixture.source.artifacts).link.artifactId =
+          `artifact-${SENSITIVE_VALUE}`;
+      },
+    ],
+    [
+      'artifact kinds',
+      (fixture) => {
+        firstItem(fixture.source.artifacts).kind = `kind-${SENSITIVE_VALUE}`;
+      },
+    ],
+    [
+      'operation-visible IDs',
+      (fixture) => {
+        fixture.operationId = `operation-${SENSITIVE_VALUE}`;
+      },
+    ],
+  ];
+
+  it.each(identityCases)(
+    'fails closed before mutation when scrubbing changes %s',
+    async (_label, mutate) => {
+      const fixture: IdentityFixture = {
+        source: makeCompactionSource(),
+        runId: SCOPE.runId,
+        operationId: 'identity-scrub-operation',
+      };
+      mutate(fixture);
+      const { repository, state } = makeRepository({ compaction: fixture.source });
+      const service = makeService(repository, {
+        scrub: (value) => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]'),
+      });
+
+      let returned: SummaryArtifact | undefined;
+      let caught: unknown;
+      try {
+        returned = await compactWithOperation(service, fixture.operationId, fixture.runId);
+      } catch (error) {
+        caught = error;
+      }
+
+      const observable = JSON.stringify({
+        returned,
+        summaries: state.summaries,
+        operations: [...state.operations.entries()],
+        error:
+          caught instanceof ContextError
+            ? caught.toRecord()
+            : caught instanceof Error
+              ? { name: caught.name, message: caught.message }
+              : caught,
+      });
+      expect(observable).not.toContain(SENSITIVE_VALUE);
+      expect(caught).toBeInstanceOf(ContextError);
+      expect(caught).toMatchObject({ code: 'IDENTITY_SCRUBBED' });
+      expect(state.commitAttempts).toBe(0);
+      expect(state.summaries).toEqual([]);
+    },
+  );
+});
+
+describe('compact pre-commit source resolution', () => {
+  it.each(['null', 'wrong-link', 'wrong-scope', 'wrong-content'] as const)(
+    'rejects an event range resolver result with %s before committing',
+    async (resolvedEvent) => {
+      const { repository, state } = makeRepository({ resolvedEvent });
+
+      await expect(
+        compactWithOperation(makeService(repository), `event-resolution-${resolvedEvent}`),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'UNRESOLVED_LINK');
+        return true;
+      });
+      expect(state.commitAttempts).toBe(0);
+      expect(state.summaries).toEqual([]);
+    },
+  );
+
+  it.each(['null', 'wrong-link', 'wrong-scope', 'wrong-content'] as const)(
+    'rejects a later artifact resolver result with %s before committing',
+    async (resolvedArtifact) => {
+      const { repository, state } = makeRepository({
+        resolvedArtifact,
+        resolvedArtifactId: 'evidence-1',
+      });
+
+      await expect(
+        compactWithOperation(makeService(repository), `artifact-resolution-${resolvedArtifact}`),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'UNRESOLVED_LINK');
+        return true;
+      });
+      expect(state.commitAttempts).toBe(0);
+      expect(state.summaries).toEqual([]);
+    },
+  );
 });
 
 describe('compact atomic mutation regressions', () => {
@@ -707,6 +993,51 @@ describe('compact atomic mutation regressions', () => {
     expect(retried).toEqual(first);
     expect(state.summaries).toEqual([first]);
   });
+
+  it.each(['throw-once', 'malform-once'] as const)(
+    'recovers the original commit after the repository persists then returns %s',
+    async (persistThen) => {
+      const { repository, state } = makeRepository({ persistThen });
+
+      const summary = await compactWithOperation(
+        makeService(repository),
+        `ambiguous-${persistThen}-operation`,
+      );
+
+      expect(summary).toEqual(firstItem(state.summaries));
+      expect(summary.version).toBe(1);
+      expect(state.summaries).toHaveLength(1);
+      expect(state.commitAttempts).toBe(2);
+      expect(state.commitRequests).toHaveLength(2);
+      expect(state.commitRequests[1]).toEqual(state.commitRequests[0]);
+    },
+  );
+
+  it.each(['throw', 'malform'] as const)(
+    'reports a distinct fixed outcome-unknown error after bounded %s ambiguity',
+    async (alwaysUnknown) => {
+      const { repository, state } = makeRepository({ alwaysUnknown });
+      let caught: unknown;
+
+      try {
+        await compactWithOperation(
+          makeService(repository),
+          `exhausted-${alwaysUnknown}-${SENSITIVE_VALUE}`,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(ContextError);
+      expect(caught).toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+      expect(String(caught)).not.toContain(SENSITIVE_VALUE);
+      expect(state.commitAttempts).toBe(3);
+      expect(state.summaries).toEqual([]);
+      expect(state.commitRequests).toHaveLength(3);
+      expect(state.commitRequests[1]).toEqual(state.commitRequests[0]);
+      expect(state.commitRequests[2]).toEqual(state.commitRequests[0]);
+    },
+  );
 
   it('does not persist when the repository would return a malformed result', async () => {
     const { repository, state } = makeRepository({
@@ -762,7 +1093,7 @@ describe('compact atomic mutation regressions', () => {
   });
 
   it('does not perform fallible resolver calls after an atomic commit', async () => {
-    const { repository, state } = makeRepository({ failResolvers: true });
+    const { repository, state } = makeRepository({ failResolversAfterCommit: true });
 
     await expect(
       compactWithOperation(makeService(repository), 'no-post-commit-resolver-operation'),
@@ -940,6 +1271,37 @@ describe('compact provenance integrity', () => {
   });
 });
 
+describe('saved summary provenance bounds', () => {
+  function summaryWithRange(startSequence: number, endSequence: number): unknown {
+    return {
+      artifactId: 'ctxsum_0000000000000001',
+      kind: 'context-summary',
+      scope: SCOPE,
+      version: 1,
+      content: 'bounded summary',
+      tokenCount: 1,
+      sourceEventRanges: [
+        {
+          runId: SCOPE.runId,
+          startEventId: 'range-start',
+          endEventId: 'range-end',
+          startSequence,
+          endSequence,
+        },
+      ],
+      sourceArtifacts: [],
+    };
+  }
+
+  it('accepts the maximum event span and rejects one larger or arithmetically unsafe', () => {
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(1, 10_000)).success).toBe(true);
+    expect(SummaryArtifactSchema.safeParse(summaryWithRange(1, 10_001)).success).toBe(false);
+    expect(
+      SummaryArtifactSchema.safeParse(summaryWithRange(0, Number.MAX_SAFE_INTEGER)).success,
+    ).toBe(false);
+  });
+});
+
 describe('required context semantics', () => {
   const malformedCases: ReadonlyArray<
     readonly [string, (source: ContextSourceBundle) => void]
@@ -1030,6 +1392,55 @@ describe('semantic repository source schemas', () => {
     });
   });
 
+  it.each([
+    ['equal metadata', 42],
+    ['conflicting metadata', 43],
+  ] as const)('rejects duplicate normalized file-index paths with %s', async (_label, sizeBytes) => {
+    const source = makeContextSource();
+    source.fileIndex.files = [
+      { path: 'src/index.ts', sizeBytes: 42 },
+      { path: 'src/index.ts', sizeBytes },
+    ];
+    const { repository } = makeRepository({ context: source });
+
+    await expect(
+      makeService(repository).assembleContext('builder', { ...SCOPE, tokenBudget: 100 }, TASK),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+  });
+
+  it.each([
+    ['equal metadata', 4, 8],
+    ['conflicting metadata', 5, 9],
+  ] as const)(
+    'rejects duplicate normalized diffstat paths with %s while totals remain exact',
+    async (_label, secondAdditions, totalAdditions) => {
+      const source = makeContextSource();
+      firstItem(source.recentChanges.commits).diffstat = {
+        files: [
+          { path: 'src/index.ts', additions: 4, deletions: 0 },
+          { path: 'src/index.ts', additions: secondAdditions, deletions: 0 },
+        ],
+        additions: totalAdditions,
+        deletions: 0,
+      };
+      const { repository } = makeRepository({ context: source });
+
+      await expect(
+        makeService(repository).assembleContext(
+          'summarizer',
+          { ...SCOPE, tokenBudget: 100 },
+          TASK,
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectContextError(error, 'REPOSITORY_RESULT');
+        return true;
+      });
+    },
+  );
+
   const overCapCases: ReadonlyArray<
     readonly [string, (source: ContextSourceBundle) => void]
   > = [
@@ -1092,7 +1503,7 @@ describe('opaque identifiers and locale-independent ordering', () => {
     await expect(
       compactWithOperation(makeService(overflow.repository), 'overflow-artifact-id-operation'),
     ).rejects.toSatisfy((error: unknown) => {
-      expectContextError(error, 'REPOSITORY_FAILURE');
+      expectContextError(error, 'OUTCOME_UNKNOWN');
       return true;
     });
     expect(overflow.state.summaries).toEqual([]);
