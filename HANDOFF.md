@@ -39,7 +39,20 @@ system (not against task reports). Sign-off with the evidence table is in
 
 ---
 
-## 2. Open decision blocking nothing yet, but answer it before GIT-4 or plan 06
+## 2. RESOLVED — Forgejo stays (see ADR-0018)
+
+**Decision, 2026-08-07: internal Git stays Forgejo; GitHub remains an optional peer
+remote. No code removed.** Rationale and rejected alternatives in
+[`docs/adr/0018-internal-git-stays-forgejo.md`](docs/adr/0018-internal-git-stays-forgejo.md).
+The short version: PRD §19.1 promises the product works *without* a user GitHub account,
+which the activation flow and the agency persona both depend on; GitHub already has its
+designed place as a peer remote (plan 06 INT-1..4). The accepted cost is that we operate a
+stateful service; the exit hatch is swapping `GitProvider` to a managed host — not making
+users have GitHub accounts.
+
+The original framing is preserved below for context.
+
+## 2b. Original open question (now answered by ADR-0018)
 
 **The product owner said "we don't need Forgejo, the repository is already initialized
 with GitHub, just use that."** This was not resolved.
@@ -101,7 +114,7 @@ cross-repo denial test is the only thing proving customer repos are isolated fro
 
 ## 3a. Current state as of 2026-08-06 (supersedes §1 counts)
 
-M1 is **19 of 35 tasks done**. Verified from `tasks/todo.md`, not from reports.
+M1 is **18 of 35 tasks done**. Verified by counting `tasks/todo.md` directly.
 
 **Done:** CP-9…CP-16 (all eight — control plane API, event ingest, Redis fanout, resumable
 SSE, generated SDK), WS-1, GIT-4, AR-1, AR-2, AR-4, AR-7, WEB-1, WEB-2, WEB-3, WEB-5.
