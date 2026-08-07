@@ -1,5 +1,20 @@
 name: CI
 
+# ONE ubuntu job. Deliberately.
+#
+# This repo is private, so Actions minutes are metered, and the previous shape —
+# five CI jobs + three security jobs + two macos-14 jobs (billed at 10x) on every
+# push — exhausted the allowance and stopped CI entirely. Cost is a correctness
+# property here: a gate that cannot run is not a gate.
+#
+# The local `pnpm verify` script is the real gate and runs the same suites. This
+# job is the backstop for the one thing local runs cannot catch: "works on my
+# machine" (a cold checkout with no prebuilt dist, no stale node_modules).
+#
+# Every suite that was previously its own job still runs here, and each one
+# throws rather than skips when CI is set and its configuration is missing, so
+# merging jobs cannot silently drop a gate. That guard is in the suites
+# themselves (tenant-isolation.test.ts, git-service test helpers), not here.
 on:
   push:
     branches: [main]
@@ -8,110 +23,21 @@ on:
 permissions:
   contents: read
 
-# Superseded PR runs are cancelled to free runners; pushes to main always run to
-# completion so every commit on the default branch has a real result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # corepack must not block on an interactive download prompt in CI.
   COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
   TURBO_TELEMETRY_DISABLED: '1'
   DO_NOT_TRACK: '1'
 
 jobs:
-  checks:
-    name: lint / typecheck / build / test
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      # persist-credentials: false -- this job executes repo code (build/test)
-      # and package postinstall scripts, so no push-capable token is left
-      # behind in .git/config for them to pick up.
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          # Architecture lint re-scans ADR-0005's immutable baseline commit.
-          fetch-depth: 0
-          persist-credentials: false
-
-      # Must run before setup-node: `cache: pnpm` shells out to `pnpm store path`,
-      # so a pnpm binary has to exist on PATH first. corepack reads the
-      # `packageManager` field in package.json to pick the exact pnpm version.
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Local turbo cache -- separable from the deferred remote cache and needs
-      # no token. Restores the previous run's task artifacts so unchanged
-      # packages replay instead of rebuilding.
-      - name: Cache turbo artifacts
-        uses: actions/cache@v5
-        with:
-          path: .turbo
-          # Key is job-scoped, deliberately. A key shared with the integration
-          # job would have both jobs racing to reserve one entry per SHA: only
-          # the first save wins, and integration wins that race (its only task
-          # is cache:false, so it does no work) -- storing a near-empty .turbo
-          # that the restore-keys prefix would then serve to every later checks
-          # run, silently zeroing out the cache this step exists to provide.
-          key: turbo-${{ runner.os }}-checks-${{ github.sha }}
-          restore-keys: |
-            turbo-${{ runner.os }}-checks-
-
-      # @zapp/desktop is the vendored Electron app; its scripts are not wired
-      # into the shared toolchain yet (it has no lint/typecheck/build/test
-      # scripts, it uses ts/lint:oxlint/test:unit), so it is excluded from the
-      # default matrix. The exclusion must be presence-guarded: turbo hard-errors
-      # ("No package found with name '@zapp/desktop' in workspace") on a name
-      # filter for a package that is not in the workspace -- including a
-      # negation filter -- so a hard-coded --filter breaks every checkout that
-      # predates the vendored app. Emits an empty string when it is absent, so
-      # the expansion below disappears entirely rather than passing an empty
-      # argument to turbo.
-      #
-      # Path and name are coupled here: the guard tests for the manifest at
-      # apps/desktop/package.json but the filter names @zapp/desktop. If the app
-      # moves or is renamed, both halves have to change (in both jobs).
-      - name: Resolve turbo filters
-        id: filters
-        run: |
-          if [ -f apps/desktop/package.json ]; then
-            filter="--filter=!@zapp/desktop"
-          else
-            filter=""
-          fi
-          echo "desktop=${filter}" >> "$GITHUB_OUTPUT"
-          echo "desktop filter: [${filter}]"
-
-      # One turbo invocation for all four tasks so the whole thing is scheduled
-      # as a single DAG (typecheck/test wait only on the builds they need,
-      # instead of four sequential full passes).
-      #
-      # --continue keeps going past the first failing task, so one CI round-trip
-      # reports every lint AND test failure instead of a lint error masking the
-      # tests behind it. Tasks whose dependencies failed are still skipped.
-      - name: Architecture lint
-        run: pnpm lint:architecture
-
-      - name: Lint, typecheck, build, test
-        run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
-
-  integration:
-    name: integration tests
+  verify:
+    name: verify (lint, types, build, tests, isolation gates)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # Steps do not start until every service reports healthy.
     services:
       postgres:
         image: postgres:16
@@ -119,301 +45,75 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: zapp
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres -d zapp"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+          --health-interval 5s --health-timeout 5s --health-retries 20
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
-    env:
-      # Throwaway credentials for ephemeral service containers on the runner's
-      # loopback interface. Not secrets, never reused outside this job.
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
-      REDIS_URL: redis://localhost:6379
-
-    steps:
-      # persist-credentials: false -- this job executes repo code (build/test)
-      # and package postinstall scripts, so no push-capable token is left
-      # behind in .git/config for them to pick up.
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Job-scoped cache key -- see the rationale in the checks job above.
-      - name: Cache turbo artifacts
-        uses: actions/cache@v5
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-integration-${{ github.sha }}
-          restore-keys: |
-            turbo-${{ runner.os }}-integration-
-
-      # Presence-guarded for the same reason as the checks job above. Same
-      # path-vs-name coupling: manifest at apps/desktop/package.json, package
-      # named @zapp/desktop -- a rename or move has to update both.
-      - name: Resolve turbo filters
-        id: filters
-        run: |
-          if [ -f apps/desktop/package.json ]; then
-            filter="--filter=!@zapp/desktop"
-          else
-            filter=""
-          fi
-          echo "desktop=${filter}" >> "$GITHUB_OUTPUT"
-          echo "desktop filter: [${filter}]"
-
-      # Executes @zapp/db's integration suites against the service containers
-      # (FND-5+). test:integration is cache:false in turbo.json, so these never
-      # come back from cache.
-      #
-      # @zapp/git-service is excluded because this job has no Forgejo, and its
-      # suites refuse to skip when CI is set (test/integration/helpers.ts) --
-      # they carry the cross-repo denial property, so a run that skipped them
-      # would be a green tick for a security claim nobody checked. The
-      # `git-isolation` job below is the one that starts a Forgejo and runs them.
-      - name: Integration tests
-        run: >-
-          pnpm turbo run test:integration
-          ${{ steps.filters.outputs.desktop }} --filter=!@zapp/git-service
-
-  # The M0 exit criterion -- "two organizations cannot access one another's
-  # projects or artifacts" -- as its own required job.
-  #
-  # It duplicates the integration job's service containers rather than adding a
-  # step to it, and that is the point: a milestone gate that lives inside a
-  # broader job is one `--filter` or one flaky neighbour away from being skipped
-  # without anyone deciding to skip it. This job runs exactly
-  # services/control-api/test/integration/tenant-isolation.test.ts, and it fails
-  # if that file stops existing (vitest exits non-zero when a name filter matches
-  # no test file) or if it runs without a database (the suite asserts
-  # DATABASE_URL is set whenever CI is).
-  tenant-isolation:
-    name: tenant isolation (M0 exit criterion)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    # Steps do not start until every service reports healthy.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: zapp
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d zapp"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
-    env:
-      # Throwaway credentials for ephemeral service containers on the runner's
-      # loopback interface. Not secrets, never reused outside this job.
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
-      REDIS_URL: redis://localhost:6379
-
-    steps:
-      # persist-credentials: false -- this job executes repo code (build/test)
-      # and package postinstall scripts, so no push-capable token is left
-      # behind in .git/config for them to pick up.
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Job-scoped cache key -- see the rationale in the checks job above.
-      - name: Cache turbo artifacts
-        uses: actions/cache@v5
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-tenant-isolation-${{ github.sha }}
-          restore-keys: |
-            turbo-${{ runner.os }}-tenant-isolation-
-
-      # The suite imports its workspace dependencies through their package entry
-      # points (@zapp/db resolves to dist/), so a cold checkout has to build them
-      # before anything can run. turbo's `build` task already depends on ^build,
-      # so this one filter covers the whole chain.
-      - name: Build workspace dependencies
-        run: pnpm turbo run build --filter=@zapp/control-api
-
-      # Deliberately not a turbo task: this job exists to run one file, and
-      # `pnpm --filter ... run` is the shortest path from "the gate" to "the
-      # file", with nothing in between that could decide to skip it.
-      - name: Tenant isolation suite
-        run: pnpm --filter @zapp/control-api run test:isolation
-
-  # The other property that must not be able to pass by not running: a
-  # repository-scoped Git token (plan 06 GIT-3) can reach exactly one repository.
-  #
-  # Its own job for the same reason `tenant-isolation` is one -- see the comment
-  # there. A gate that lives inside a broader job is one `--filter` or one flaky
-  # neighbour away from being skipped without anyone deciding to skip it, and
-  # this gate is easier to lose than most: Forgejo cannot scope a token at all,
-  # so the property is manufactured out of a restricted user with exactly one
-  # collaboration, and only a real `git clone` against a real instance can say
-  # whether it holds.
-  #
-  # The `integration` job above excludes @zapp/git-service precisely so that this
-  # job is the only place those suites run, and
-  # services/git-service/test/integration/helpers.ts throws rather than skips
-  # whenever CI is set -- so if this job ever stops providing a Forgejo, it fails
-  # instead of quietly proving nothing.
-  git-isolation:
-    name: git isolation (repository-scoped tokens)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    # Steps do not start until every service reports healthy.
-    services:
-      # No app.ini is mounted: the upstream image's `environment-to-ini` step
-      # merges every FORGEJO__section__KEY below into the config it generates on
-      # first boot. The settings that matter to this gate are the ones that make
-      # a repository private by default and keep self-service registration off --
-      # the same posture as infra/docker/forgejo/app.ini.prod.
+          --health-interval 5s --health-timeout 5s --health-retries 20
       forgejo:
         image: codeberg.org/forgejo/forgejo:9
         env:
-          USER_UID: "1000"
-          USER_GID: "1000"
-          FORGEJO__security__INSTALL_LOCK: "true"
+          FORGEJO__security__INSTALL_LOCK: 'true'
           FORGEJO__database__DB_TYPE: sqlite3
           FORGEJO__database__PATH: /data/gitea/forgejo.db
-          FORGEJO__server__OFFLINE_MODE: "true"
+          FORGEJO__server__OFFLINE_MODE: 'true'
           FORGEJO__server__ROOT_URL: http://localhost:3000/
-          FORGEJO__service__DISABLE_REGISTRATION: "true"
-          FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: "true"
+          FORGEJO__service__DISABLE_REGISTRATION: 'true'
+          FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: 'true'
           FORGEJO__service__DEFAULT_USER_VISIBILITY: private
           FORGEJO__service__DEFAULT_ORG_VISIBILITY: private
           FORGEJO__repository__DEFAULT_PRIVATE: private
-          FORGEJO__actions__ENABLED: "false"
-          FORGEJO__mailer__ENABLED: "false"
-          FORGEJO__cron__ENABLED: "false"
-        ports:
-          - 3000:3000
-        # Forgejo runs its own migrations on first boot, so the start period is
-        # generous; the probe is the same one the dev stack uses.
+          FORGEJO__actions__ENABLED: 'false'
+          FORGEJO__mailer__ENABLED: 'false'
+          FORGEJO__cron__ENABLED: 'false'
+        ports: ['3000:3000']
         options: >-
           --health-cmd "wget -q -O /dev/null http://127.0.0.1:3000/api/healthz"
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 30
+          --health-interval 10s --health-timeout 10s --health-retries 30
           --health-start-period 30s
-      # The audit suite writes a git_token.minted row to audit_events, which is
-      # the half of "audited" a recording sink cannot prove.
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: zapp
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d zapp"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
 
     env:
-      # Throwaway credentials for ephemeral service containers on the runner's
-      # loopback interface. Not secrets, never reused outside this job.
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
+      REDIS_URL: redis://localhost:6379
       FORGEJO_URL: http://localhost:3000
 
     steps:
-      # persist-credentials: false -- this job executes repo code (build/test)
-      # and package postinstall scripts, so no push-capable token is left
-      # behind in .git/config for them to pick up.
-      - name: Checkout
-        uses: actions/checkout@v5
+      # persist-credentials: false -- this job runs repo code and package
+      # postinstall scripts, so no push-capable token is left in .git/config.
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
+      # Must precede setup-node: `cache: pnpm` shells out to `pnpm store path`.
       - name: Enable corepack
         run: corepack enable
 
-      - name: Setup Node
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          package-manager-cache: false
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
-      # Job-scoped cache key -- see the rationale in the checks job above.
-      - name: Cache turbo artifacts
-        uses: actions/cache@v5
+      - uses: actions/cache@v5
         with:
           path: .turbo
-          key: turbo-${{ runner.os }}-git-isolation-${{ github.sha }}
-          restore-keys: |
-            turbo-${{ runner.os }}-git-isolation-
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
 
-      # Ported from scripts/dev-up.sh, and for the reason that script does it
-      # this way: Forgejo's API refuses to mint an access token without HTTP
-      # basic auth, so the *first* token has to come from the CLI inside the
-      # container. Everything after this line uses the API.
-      #
-      # The token is masked before it reaches an output, so it cannot appear in
-      # a log line even if a later step echoes its own environment.
       - name: Seed the Forgejo admin token
         id: forgejo
         run: |
           set -euo pipefail
           container="$(docker ps --filter 'ancestor=codeberg.org/forgejo/forgejo:9' --format '{{.ID}}' | head -1)"
           if [ -z "$container" ]; then
-            echo "::error::no forgejo service container found"
-            docker ps
-            exit 1
+            echo "::error::no forgejo service container found"; docker ps; exit 1
           fi
           password="$(openssl rand -hex 24)"
           docker exec -u git "$container" forgejo admin user create \
@@ -421,176 +121,42 @@ jobs:
             --password "$password" --must-change-password=false
           token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
             --username zapp-ci --token-name ci --scopes all --raw | tr -d '\r\n')"
-          if [ -z "$token" ]; then
-            echo "::error::failed to mint a Forgejo admin token"
-            exit 1
-          fi
+          if [ -z "$token" ]; then echo "::error::failed to mint a Forgejo admin token"; exit 1; fi
           echo "::add-mask::$token"
           echo "token=$token" >> "$GITHUB_OUTPUT"
-          service_token_secret="$(openssl rand -hex 32)"
-          echo "::add-mask::$service_token_secret"
-          echo "SERVICE_TOKEN_SECRET=$service_token_secret" >> "$GITHUB_ENV"
+          secret="$(openssl rand -hex 32)"
+          echo "::add-mask::$secret"
+          echo "SERVICE_TOKEN_SECRET=$secret" >> "$GITHUB_ENV"
 
-      # The suites import their workspace dependencies through package entry
-      # points (@zapp/db resolves to dist/), so a cold checkout has to build them
-      # first. turbo's `build` already depends on ^build, so this covers the chain.
-      - name: Build workspace dependencies
-        run: pnpm turbo run build --filter=@zapp/git-service
+      # apps/desktop is the vendored Electron tree and defines none of the shared
+      # tasks; the guard keeps the filter valid on checkouts that predate it.
+      - name: Resolve turbo filters
+        id: filters
+        run: |
+          if [ -f apps/desktop/package.json ]; then
+            echo "desktop=--filter=!@zapp/desktop" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=" >> "$GITHUB_OUTPUT"
+          fi
 
-      # Deliberately not a turbo task: this job exists to run these suites, and
-      # `pnpm --filter ... run` is the shortest path from "the gate" to "the
-      # files", with nothing in between that could decide to skip them.
-      - name: Repository-scoped token isolation suite
+      # One DAG: typecheck/test wait only on the builds they need. --continue so
+      # one CI round-trip reports every failure instead of the first.
+      - name: Lint, typecheck, build, test
+        run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
+
+      - name: Integration suites
         env:
           FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
-        run: pnpm --filter @zapp/git-service run test:integration
+        run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }}
 
-      # GATE-5: one real request must cross both service boundaries and leave a
-      # cloneable private repository in Forgejo. The suite throws instead of
-      # skipping whenever CI is set and any required configuration is absent.
+      # Named directly rather than through turbo: these are the multi-tenant
+      # guarantees (M0 exit criterion + repository-scoped token isolation), and
+      # nothing between the gate and the files should be able to skip them. The
+      # suites themselves throw when CI is set and configuration is absent.
+      - name: Tenant isolation gate
+        run: pnpm --filter @zapp/control-api run test:isolation
+
       - name: Control API to Forgejo integration gate
         env:
           FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
         run: pnpm --filter @zapp/control-api run test:gate5
-
-  # GIT-4's backup claim is destructive inside disposable infrastructure: it
-  # creates a private repository, bundles it into S3-compatible storage,
-  # deletes the source, restores through a restricted credential, verifies all
-  # refs, and clones the result. This dedicated job names the one live test file
-  # directly, so a missing file or missing service cannot silently become a
-  # skipped green integration job.
-  git-backup-live:
-    name: git backup live recovery gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    services:
-      forgejo:
-        image: codeberg.org/forgejo/forgejo:9
-        env:
-          USER_UID: "1000"
-          USER_GID: "1000"
-          FORGEJO__security__INSTALL_LOCK: "true"
-          FORGEJO__database__DB_TYPE: sqlite3
-          FORGEJO__database__PATH: /data/gitea/forgejo.db
-          FORGEJO__server__OFFLINE_MODE: "true"
-          FORGEJO__server__ROOT_URL: http://localhost:3000/
-          FORGEJO__service__DISABLE_REGISTRATION: "true"
-          FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: "true"
-          FORGEJO__service__DEFAULT_USER_VISIBILITY: private
-          FORGEJO__service__DEFAULT_ORG_VISIBILITY: private
-          FORGEJO__repository__DEFAULT_PRIVATE: private
-          FORGEJO__actions__ENABLED: "false"
-          FORGEJO__mailer__ENABLED: "false"
-          FORGEJO__cron__ENABLED: "false"
-        ports:
-          - 3000:3000
-        options: >-
-          --health-cmd "wget -q -O /dev/null http://127.0.0.1:3000/api/healthz"
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 30
-          --health-start-period 30s
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: zapp
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d zapp"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
-    env:
-      GIT_BACKUP_LIVE: '1'
-      DATABASE_URL: postgres://postgres@localhost:5432/zapp
-      FORGEJO_URL: http://localhost:3000
-      ARTIFACT_ENDPOINT: http://localhost:9000
-      ARTIFACT_KEY: minioadmin
-      ARTIFACT_SECRET: minioadmin
-      ARTIFACT_BUCKET: zapp-git-backups
-      ARTIFACT_REGION: us-east-1
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Start MinIO service
-        run: |
-          set -euo pipefail
-          docker run --detach --name zapp-git-backup-minio --publish 9000:9000 \
-            --env MINIO_ROOT_USER=minioadmin --env MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
-          for _ in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs zapp-git-backup-minio
-          exit 1
-
-      - name: Create MinIO backup bucket
-        run: |
-          pnpm --filter @zapp/git-service exec node --input-type=module <<'NODE'
-          import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
-          const client = new S3Client({
-            endpoint: process.env.ARTIFACT_ENDPOINT,
-            region: process.env.ARTIFACT_REGION,
-            forcePathStyle: true,
-            credentials: {
-              accessKeyId: process.env.ARTIFACT_KEY,
-              secretAccessKey: process.env.ARTIFACT_SECRET,
-            },
-          });
-          await client.send(new CreateBucketCommand({ Bucket: process.env.ARTIFACT_BUCKET }));
-          NODE
-
-      - name: Seed the Forgejo admin token
-        id: forgejo
-        run: |
-          set -euo pipefail
-          container="$(docker ps --filter 'ancestor=codeberg.org/forgejo/forgejo:9' --format '{{.ID}}' | head -1)"
-          if [ -z "$container" ]; then
-            echo "::error::no forgejo service container found"
-            docker ps
-            exit 1
-          fi
-          password="$(openssl rand -hex 24)"
-          docker exec -u git "$container" forgejo admin user create \
-            --admin --username zapp-ci --email ci@zapp.local \
-            --password "$password" --must-change-password=false
-          token="$(docker exec -u git "$container" forgejo admin user generate-access-token \
-            --username zapp-ci --token-name ci --scopes all --raw | tr -d '\r\n')"
-          if [ -z "$token" ]; then
-            echo "::error::failed to mint a Forgejo admin token"
-            exit 1
-          fi
-          echo "::add-mask::$token"
-          echo "token=$token" >> "$GITHUB_OUTPUT"
-
-      - name: Build workspace dependencies
-        run: pnpm turbo run build --filter=@zapp/git-service
-
-      - name: Live backup recovery gate
-        env:
-          FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
-        run: pnpm --filter @zapp/git-service exec vitest run test/integration/backup.test.ts --no-file-parallelism

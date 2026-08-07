@@ -5,29 +5,21 @@ name: Desktop
 # macOS runner, a standalone hoisted install, and real time -- none of which
 # should sit in front of every PR that does not touch the desktop app.
 on:
-  pull_request:
-    paths:
-      - 'apps/desktop/**'
-      - '.github/workflows/desktop.yml'
-  push:
-    # main is included so the preserve suite actually guards the branch: work
-    # lands on main directly here, so a PR-only trigger would leave the
-    # regression net inert. `paths` gates the branch pushes; per GitHub's
-    # workflow syntax reference, "path filters are not evaluated for pushes of
-    # tags", so the v* release trigger below is unaffected by it.
-    branches:
-      - main
-    tags:
-      - 'v*'
-    paths:
-      - 'apps/desktop/**'
-      - '.github/workflows/desktop.yml'
+  # NO routine triggers. macos-14 bills Actions minutes at 10x, and these two
+  # jobs (90-min + 45-min budgets) exhausted this private repo's allowance and
+  # took CI down entirely. The desktop app is also not on M1's exit path -- that
+  # is browser-only (prompt -> Modal sandbox -> live preview). MAC-1/2/3 are
+  # done and their regression net still exists; it runs on demand and on a
+  # release tag, which is when packaging correctness actually matters.
+  # Re-enable a nightly or PR trigger at M2, when MAC-4..6 resume.
   workflow_dispatch:
     inputs:
       sign:
         description: 'Sign and notarize (requires the Apple secrets to be set)'
         type: boolean
         default: false
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read

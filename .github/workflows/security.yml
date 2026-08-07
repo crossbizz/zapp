@@ -66,6 +66,9 @@ jobs:
 
   license-boundary:
     name: license boundary (no Dyad src/pro)
+    # Weekly + PR only: this is advisory/slow-moving and does not need to
+    # re-run on every push to main (private repo = metered minutes).
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -216,6 +219,9 @@ jobs:
 
   dependencies:
     name: dependency scan (osv-scanner)
+    # Weekly + PR only: this is advisory/slow-moving and does not need to
+    # re-run on every push to main (private repo = metered minutes).
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
