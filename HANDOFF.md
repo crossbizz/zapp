@@ -112,6 +112,27 @@ cross-repo denial test is the only thing proving customer repos are isolated fro
 
 ---
 
+## 3-CI. How verification works now (2026-08-07 — supersedes §1's CI line)
+
+**GitHub Actions is disabled.** This private repo meters Actions minutes; the owner has
+chosen not to raise the spending limit. `ci.yml` and `security.yml` are parked to
+`workflow_dispatch` (intact, runnable on demand); `desktop.yml` runs only on manual
+dispatch and `v*` tags — its two `macos-14` jobs bill at **10x** and were what exhausted
+the allowance.
+
+**The gate is local.** `pnpm verify` runs exactly what CI ran: lint, typecheck, build,
+unit, integration, and the tenant-isolation gate. `pnpm verify:cold` wipes `dist/` and
+`.turbo` first — use it when build wiring changes, because a stale `dist/` has hidden a
+real cold-checkout failure here before. `.git/hooks/pre-push.local` runs `pnpm verify`
+before any push to `main` and **fails closed if the dev stack is down**, since integration
+and isolation suites would otherwise skip and a skip must never read as a pass.
+
+Turbo caches per package, so in practice only what you touched actually executes.
+
+To restore automatic CI later: raise the spending limit and re-add `push`/`pull_request`
+triggers, or register a **self-hosted runner** — self-hosted minutes are not billed, even
+on private repos — and change `runs-on`.
+
 ## 3a. Current state as of 2026-08-06 (supersedes §1 counts)
 
 M1 is **18 of 35 tasks done**. Verified by counting `tasks/todo.md` directly.
