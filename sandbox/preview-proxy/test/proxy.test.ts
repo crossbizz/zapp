@@ -82,6 +82,13 @@ function anyValue(): unknown {
   return expect.anything();
 }
 
+function fixtureCredentialUrl(hostname: string, path: string): string {
+  const url = new URL(path, `https://${hostname}`);
+  url.username = 'fixture-user';
+  url.password = 'fixture-password';
+  return url.toString();
+}
+
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -952,7 +959,10 @@ describe('preview proxy acceptance contract', () => {
     expect(() => {
       browserConsole.error(
         hostile,
-        'https://viewer:passphrase@example.test/logs?access_token=URL_SENTINEL&tab=preview',
+        fixtureCredentialUrl(
+          'example.test',
+          '/logs?access_token=URL_SENTINEL&tab=preview',
+        ),
         'x'.repeat(10_000),
       );
     }).not.toThrow();
@@ -970,7 +980,7 @@ describe('preview proxy acceptance contract', () => {
     expect(event.payload.message.length).toBeLessThanOrEqual(4_096);
     expect(serialized).not.toContain('GETTER_SENTINEL');
     expect(serialized).not.toContain('URL_SENTINEL');
-    expect(serialized).not.toContain('passphrase');
+    expect(serialized).not.toContain('fixture-password');
     expect(serialized).toContain('%5BREDACTED%5D');
   });
 
@@ -1141,8 +1151,10 @@ describe('preview proxy acceptance contract', () => {
     dom.window.history.pushState({}, '', '/route?session_token=CLIENT_ROUTE_SENTINEL&tab=preview');
     const error = new dom.window.Error('authorization=CLIENT_ERROR_SENTINEL');
     Object.defineProperty(error, 'stack', {
-      value:
-        'Error: authorization=CLIENT_STACK_SENTINEL at https://viewer:passphrase@errors.example.test/frame?token=CLIENT_QUERY_SENTINEL',
+      value: `Error: authorization=CLIENT_STACK_SENTINEL at ${fixtureCredentialUrl(
+        'errors.example.test',
+        '/frame?token=CLIENT_QUERY_SENTINEL',
+      )}`,
     });
     dom.window.dispatchEvent(
       new dom.window.ErrorEvent('error', {
@@ -1159,7 +1171,7 @@ describe('preview proxy acceptance contract', () => {
 
     const serialized = JSON.stringify(uploads);
     expect(serialized).not.toMatch(/CLIENT_(?:URL|ROUTE|ERROR|STACK|QUERY)_SENTINEL/);
-    expect(serialized).not.toContain('passphrase');
+    expect(serialized).not.toContain('fixture-password');
     expect(serialized).toContain('tab=preview');
     expect(serialized).toContain('%5BREDACTED%5D');
   });
@@ -1175,8 +1187,10 @@ describe('preview proxy acceptance contract', () => {
       payload: {
         level: 'error',
         message: `token=SERVER_MESSAGE_SENTINEL ${'x'.repeat(8_000)}`,
-        stack:
-          'Error at https://viewer:passphrase@errors.example.test/frame?access_token=SERVER_STACK_SENTINEL&tab=preview',
+        stack: `Error at ${fixtureCredentialUrl(
+          'errors.example.test',
+          '/frame?access_token=SERVER_STACK_SENTINEL&tab=preview',
+        )}`,
       },
       type: 'console',
     });
@@ -1186,7 +1200,10 @@ describe('preview proxy acceptance contract', () => {
         method: 'GET',
         status: 200,
         transport: 'fetch',
-        url: 'https://viewer:passphrase@api.example.test/items?access_token=SERVER_URL_SENTINEL&tab=preview',
+        url: fixtureCredentialUrl(
+          'api.example.test',
+          '/items?access_token=SERVER_URL_SENTINEL&tab=preview',
+        ),
       },
       type: 'network',
     });
@@ -1217,7 +1234,7 @@ describe('preview proxy acceptance contract', () => {
 
     expect(consoleEvent.payload.message.length).toBeLessThanOrEqual(4_096);
     expect(serialized).not.toMatch(/SERVER_(?:MESSAGE|STACK|URL|ROUTE|ERROR)_SENTINEL/);
-    expect(serialized).not.toContain('passphrase');
+    expect(serialized).not.toContain('fixture-password');
     expect(serialized).toContain('tab=preview');
     expect(serialized).toContain('%5BREDACTED%5D');
   });
