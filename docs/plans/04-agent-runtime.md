@@ -72,6 +72,18 @@ Providers: anthropic, openai, google, openai-compatible (base-url configurable) 
 
 ### Task AR-3: Usage telemetry + budget enforcement
 
+> **DEFERRED OUT OF THE M1 CRITICAL PATH (controller, 2026-08-07).** AR-3 has now capped
+> twice — five review-fix rounds on 2026-08-06 and five more on `task/AR-3-recovery`
+> 2026-08-07 — roughly ten rounds, more than any other task, while **not appearing in M1's
+> exit criterion** (sign in → prompt → sandbox → dev server → preview → builder edit →
+> commit → sandbox killed → resume). Per AGENTS.md's cap rule the response to a second cap
+> is re-scope and escalate, not a third attempt. Stop work on AR-3 now; do not open round
+> 11. It is safe to defer because no model-provider credentials exist yet, so there is no
+> live spend to meter. **Hard precondition:** AR-3 must land before either (a) real
+> model-provider credentials are used for anything beyond a smoke test, or (b) M2's
+> autonomous runs (AR-14 budget approval depends on it). Reopen it as the first M2 task
+> with the two structural P1 defects from the round-5 review as its starting brief.
+
 **Files:** Create: `src/budget.ts`, `src/telemetry.ts`, `test/budget.test.ts`
 **Effort:** M
 
@@ -311,3 +323,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-06 ADR-0016 accepted + AR-5 re-scoped — injection defense is structural (AR-4 allowlist + approval gates + WS-11 sandbox), not linguistic. Abandon task/AR-5 and task/AR-5-resume (risk.ts 1245 + injection.ts 515 lines: exhaustive shell grammar + astral-SQL parser + NL directive classifier — five capped rounds each, root cause a category error on both implementer and reviewer). Rewrite from the amended brief: provenance gating, blocklist speed-bump, 10 eval strings, corpus deferred to OPS-13. Reviewer rubric changed: heuristic incompleteness is Minor, not P1.
 - 2026-08-07 AR-5 done — Rebuilt the policy package around structural untrusted-provenance gating, production-safe approval defaults, canonical deployment approvals, declarative catastrophic-command signals, and exactly 10 eval strings; 119 policy tests plus a 520-assertion independent adversarial matrix passed locally, and independent review found no P0/P1/P2 defects. CI is unverified because GitHub billing prevented jobs from starting.
 - 2026-08-07 AR-3 BLOCKED round 5 — The capped final independent review of staged branch `task/AR-3-recovery` found two structural P1 defects: ambiguous provider finish reason `other` is charged and allowed to reach `done`, and an idempotency completion that durably commits then rejects can emit `provider_error` while a same-key retry replays the original terminal event. The branch remains uncommitted and AR-3 unchecked; do not begin a sixth routine review/fix loop without an explicit re-scope. Local unit coverage passed (model-gateway 146 with 2 credential skips; DB 148), but Anthropic cache and live PostgreSQL/Redis acceptance remain unverified, and CI is unverified because GitHub billing prevented jobs from starting.
+- 2026-08-07 AR-3 DEFERRED out of the M1 critical path (controller) — capped twice (~10 rounds), not in M1 exit criterion, no live model spend to meter yet. Reopen as first M2 task; hard precondition before real model credentials or M2 autonomous runs.
