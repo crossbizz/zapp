@@ -283,6 +283,36 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     });
   });
 
+  it('fails a missing guarded snapshot closed after preserving lexical path rejection', async () => {
+    await withWorkspace(async (root, runtime) => {
+      const missingPath = 'private-fragment-missing.txt';
+      const conflict = await runtime.readFileForUpdate(missingPath).catch((error: unknown) => error);
+
+      expect(conflict).toBeInstanceOf(AtomicWriteConflictError);
+      expect(conflict).toMatchObject({
+        code: 'atomic_write_conflict',
+        message: 'Atomic file changed before commit',
+      });
+      expect(JSON.stringify(conflict)).not.toContain(missingPath);
+      await expect(runtime.readFileForUpdate('../private-fragment.txt')).rejects.toBeInstanceOf(
+        PathViolationError,
+      );
+      expect(await readdir(root)).toEqual([]);
+    });
+  });
+
+  it('preserves a stable non-directory path-validation error as non-conflict', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await runtime.writeFile('not-a-directory', new Uint8Array());
+      const failure = await runtime
+        .readFileForUpdate('not-a-directory/child.txt')
+        .catch((error: unknown) => error);
+
+      expect(failure).not.toBeInstanceOf(AtomicWriteConflictError);
+      expect(failure).toMatchObject({ code: 'ENOTDIR' });
+    });
+  });
+
   it('serializes ordinary runtime writes after an in-flight atomic replacement', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-write-serialization-'));
     const target = join(root, 'target.txt');

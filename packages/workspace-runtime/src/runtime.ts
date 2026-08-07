@@ -662,7 +662,16 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
 
   async readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot> {
     const target = await resolveInRoot(this.root, path);
-    if ((await lstat(target)).isSymbolicLink()) {
+    let isSymbolicLink: boolean;
+    try {
+      isSymbolicLink = (await lstat(target)).isSymbolicLink();
+    } catch (error: unknown) {
+      if (isFileSystemError(error, 'ENOENT') || isFileSystemError(error, 'ENOTDIR')) {
+        throw new AtomicWriteConflictError();
+      }
+      throw error;
+    }
+    if (isSymbolicLink) {
       throw new Error(`Atomic file target must not be a symbolic link: ${path}`);
     }
     throw new AtomicWriteConflictError();

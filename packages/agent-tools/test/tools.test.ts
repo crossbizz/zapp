@@ -1,4 +1,13 @@
-import { lstat, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'node:path';
 import { TOOL_GROUPS, TOOL_NAMES, type ExecutionContract, type ToolName } from '@zapp/contracts';
@@ -530,6 +539,65 @@ describe('workspace-bound tools', () => {
     await expect(runtime.readFile('app.ts')).resolves.toEqual(
       new TextEncoder().encode('first\nchanged\nthird\n'),
     );
+  });
+
+  it('returns patch_conflict without writes or raw errors when the patch target is missing', async () => {
+    await withMemoryRegistry(async (_runtime, registry, root) => {
+      const missingPath = 'private-fragment-missing.ts';
+      let outcome: unknown;
+      try {
+        outcome = await registry.execute(
+          'apply_patch',
+          {
+            patch:
+              `--- a/${missingPath}\n+++ b/${missingPath}\n` +
+              '@@ -1,1 +1,1 @@\n-before\n+after\n',
+          },
+          trustedContext,
+        );
+      } catch (error: unknown) {
+        outcome = {
+          threw: true,
+          name: error instanceof Error ? error.name : 'unknown',
+          code: error instanceof ToolExecutionError ? error.code : 'unknown',
+          message: error instanceof Error ? error.message : 'unknown',
+          auditCode:
+            error instanceof ToolExecutionError && typeof error.auditPayload.code === 'string'
+              ? error.auditPayload.code
+              : 'unknown',
+        };
+      }
+
+      expect({ outcome, entries: await readdir(root) }).toEqual({
+        outcome: {
+          ok: false,
+          error: {
+            code: 'patch_conflict',
+            message: 'Atomic file changed before commit',
+          },
+        },
+        entries: [],
+      });
+      expect(JSON.stringify(outcome)).not.toContain(missingPath);
+      expect(JSON.stringify(outcome)).not.toContain('ENOENT');
+    });
+  });
+
+  it('preserves path rejection for an escaping guarded patch target', async () => {
+    await withMemoryRegistry(async (_runtime, registry) => {
+      const rejectedPath = '../private-fragment.ts';
+      await expect(
+        registry.execute(
+          'apply_patch',
+          {
+            patch:
+              `--- a/${rejectedPath}\n+++ b/${rejectedPath}\n` +
+              '@@ -1,1 +1,1 @@\n-before\n+after\n',
+          },
+          trustedContext,
+        ),
+      ).rejects.toBeInstanceOf(PathViolationError);
+    });
   });
 
   it('preserves a concurrent source change made after patch validation and before commit', async () => {
