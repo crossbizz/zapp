@@ -12,10 +12,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 
-import {
-  createControlPlaneClient,
-  type CreateRunInput,
-} from '../../lib/api';
+import { createControlPlaneClient, type CreateRunInput } from '../../lib/api';
 import { rememberFirstPrompt } from '../../lib/prompt-handoff';
 import styles from './home.module.css';
 
@@ -31,22 +28,33 @@ interface ModeOption {
 const MODE_OPTIONS = [
   { description: 'Let zapp choose from your prompt.', label: 'Auto (recommended)', value: 'auto' },
   { description: 'Get guidance without changing code.', label: 'Ask', value: 'ask' },
-  { description: 'Explore an idea with a lightweight first pass.', label: 'Prototype', value: 'prototype' },
+  {
+    description: 'Explore an idea with a lightweight first pass.',
+    label: 'Prototype',
+    value: 'prototype',
+  },
   { description: 'Build a production-oriented implementation.', label: 'Build', value: 'build' },
   { description: 'Repair a specific problem.', label: 'Fix', value: 'fix' },
-  { description: 'Run the full workflow with minimal intervention.', label: 'Autonomous', value: 'autonomous' },
+  {
+    description: 'Run the full workflow with minimal intervention.',
+    label: 'Autonomous',
+    value: 'autonomous',
+  },
 ] as const satisfies readonly ModeOption[];
 
-const EXPLORATORY_PATTERN = /\b(?:idea|explore|experiment|prototype|try)\b|\bwhat\s+if\b|\bnot\s+sure\b/u;
+const EXPLORATORY_PATTERN =
+  /\b(?:idea|explore|experiment|prototype|try)\b|\bwhat\s+if\b|\bnot\s+sure\b/u;
 const MODEL_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/u;
 
 type AppType = NonNullable<CreateRunInput['appType']>;
 
 interface SpeechRecognitionResultLike {
   readonly results: {
-    readonly [index: number]: {
-      readonly [index: number]: { readonly transcript: string } | undefined;
-    } | undefined;
+    readonly [index: number]:
+      | {
+          readonly [index: number]: { readonly transcript: string } | undefined;
+        }
+      | undefined;
   };
 }
 
@@ -82,8 +90,10 @@ function renderedTextareaRows(textarea: HTMLTextAreaElement): number {
   textarea.rows = 3;
   const style = window.getComputedStyle(textarea);
   const lineHeight = Number.parseFloat(style.lineHeight);
-  const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
-  if (!Number.isFinite(lineHeight) || lineHeight <= 0 || !Number.isFinite(verticalPadding)) return 3;
+  const verticalPadding =
+    Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  if (!Number.isFinite(lineHeight) || lineHeight <= 0 || !Number.isFinite(verticalPadding))
+    return 3;
   const renderedRows = Math.ceil((textarea.scrollHeight - verticalPadding) / lineHeight);
   const clampedRows = Math.min(10, Math.max(3, renderedRows));
   textarea.rows = clampedRows;
@@ -106,6 +116,7 @@ interface PendingCreation {
 export interface PromptComposerProps {
   readonly allowedModels: readonly string[];
   readonly appType: AppType;
+  readonly githubImportEnabled?: boolean;
   readonly organizationId: string;
   readonly onPromptChange: (value: string) => void;
   readonly prompt: string;
@@ -115,6 +126,7 @@ export interface PromptComposerProps {
 export function PromptComposer({
   allowedModels,
   appType,
+  githubImportEnabled = true,
   organizationId,
   onPromptChange,
   prompt,
@@ -138,12 +150,17 @@ export function PromptComposer({
   const [textareaRowCount, setTextareaRowCount] = useState(3);
   const trimmedPrompt = prompt.trim();
   const canSubmit = trimmedPrompt.length >= 10 && !submitting;
-  const speechWindow = typeof window === 'undefined' ? undefined : window as SpeechWindow;
-  const SpeechRecognition = speechWindow?.SpeechRecognition ?? speechWindow?.webkitSpeechRecognition;
+  const speechWindow = typeof window === 'undefined' ? undefined : (window as SpeechWindow);
+  const SpeechRecognition =
+    speechWindow?.SpeechRecognition ?? speechWindow?.webkitSpeechRecognition;
   const voiceAvailable = voiceInputEnabled && SpeechRecognition !== undefined;
-  const modelOptions = [...new Set(allowedModels.filter((value) => {
-    return MODEL_IDENTIFIER_PATTERN.test(value);
-  }))];
+  const modelOptions = [
+    ...new Set(
+      allowedModels.filter((value) => {
+        return MODEL_IDENTIFIER_PATTERN.test(value);
+      }),
+    ),
+  ];
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -161,10 +178,7 @@ export function PromptComposer({
       let pending = retry ? pendingCreationRef.current : undefined;
       if (pending === undefined) {
         const budgetNumber = budget.length === 0 ? undefined : Number(budget);
-        if (
-          budgetNumber !== undefined
-          && (!Number.isInteger(budgetNumber) || budgetNumber <= 0)
-        ) {
+        if (budgetNumber !== undefined && (!Number.isInteger(budgetNumber) || budgetNumber <= 0)) {
           throw new RangeError('invalid_budget');
         }
         pending = {
@@ -199,11 +213,7 @@ export function PromptComposer({
         ...(pending.model === undefined ? {} : { model: pending.model }),
         prompt: pending.prompt,
       };
-      await client.createRun(
-        created.project.id,
-        pending.runBody,
-        pending.runIdempotencyKey,
-      );
+      await client.createRun(created.project.id, pending.runBody, pending.runIdempotencyKey);
       rememberFirstPrompt(created.project.id, pending.prompt);
       pendingCreationRef.current = undefined;
       router.push(`/projects/${encodeURIComponent(created.project.id)}`);
@@ -254,21 +264,27 @@ export function PromptComposer({
       <form onSubmit={submit}>
         <div className={styles.selectionChips} aria-live="polite">
           {mode === 'auto' ? null : (
-            <span aria-label={`Selected mode: ${MODE_OPTIONS.find((item) => item.value === mode)?.label ?? mode}`} className={styles.selectionChip}>
+            <span
+              aria-label={`Selected mode: ${MODE_OPTIONS.find((item) => item.value === mode)?.label ?? mode}`}
+              className={styles.selectionChip}
+            >
               {MODE_OPTIONS.find((item) => item.value === mode)?.label}
             </span>
           )}
           {selectedModel === undefined ? null : (
-            <span
-              aria-label={`Selected model: ${selectedModel}`}
-              className={styles.selectionChip}
-            >
+            <span aria-label={`Selected model: ${selectedModel}`} className={styles.selectionChip}>
               {selectedModel}
             </span>
           )}
-          {attachedFiles.map((file) => <span className={styles.selectionChip} key={file}>{file}</span>)}
+          {attachedFiles.map((file) => (
+            <span className={styles.selectionChip} key={file}>
+              {file}
+            </span>
+          ))}
         </div>
-        <label className="zapp-sr-only" htmlFor="home-prompt">Describe your project</label>
+        <label className="zapp-sr-only" htmlFor="home-prompt">
+          Describe your project
+        </label>
         <textarea
           className={styles.composerTextarea}
           id="home-prompt"
@@ -317,9 +333,11 @@ export function PromptComposer({
                 type="file"
               />
             </label>
-            <Link className={styles.menuItem} href="/projects?import=github">
-              Import from GitHub
-            </Link>
+            {githubImportEnabled ? (
+              <Link className={styles.menuItem} href="/projects?import=github">
+                Import from GitHub
+              </Link>
+            ) : null}
             <button
               className={styles.menuItem}
               onClick={() => {
@@ -355,7 +373,10 @@ export function PromptComposer({
                         }}
                         type="radio"
                       />
-                      <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                      <span>
+                        <strong>{option.label}</strong>
+                        <small>{option.description}</small>
+                      </span>
                     </label>
                   ))}
                 </fieldset>
@@ -370,7 +391,10 @@ export function PromptComposer({
                       }}
                       type="radio"
                     />
-                    <span><strong>Automatic</strong><small>Automatic selection managed by your organization.</small></span>
+                    <span>
+                      <strong>Automatic</strong>
+                      <small>Automatic selection managed by your organization.</small>
+                    </span>
                   </label>
                   {modelOptions.map((model) => (
                     <label className={styles.radioOption} key={model}>
@@ -382,7 +406,9 @@ export function PromptComposer({
                         }}
                         type="radio"
                       />
-                      <span><strong>{model}</strong></span>
+                      <span>
+                        <strong>{model}</strong>
+                      </span>
                     </label>
                   ))}
                 </fieldset>
@@ -425,9 +451,11 @@ export function PromptComposer({
 
       {submitError ? (
         <ErrorState
-          description={detailsOpen
-            ? 'Request failed before the project handoff completed.'
-            : 'Your prompt is safe. Choose an action to continue.'}
+          description={
+            detailsOpen
+              ? 'Request failed before the project handoff completed.'
+              : 'Your prompt is safe. Choose an action to continue.'
+          }
           onAskAgent={() => {
             window.location.href = 'mailto:support@zapp.build?subject=Project%20creation%20help';
           }}

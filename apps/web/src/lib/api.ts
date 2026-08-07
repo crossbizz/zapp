@@ -1,15 +1,14 @@
-import {
-  createZappClient,
-  type FetchImplementation,
-  type paths,
-} from '@zapp/api-client';
+import { createZappClient, type FetchImplementation, type paths } from '@zapp/api-client';
 
 const csrfCookieName = 'zapp_csrf';
 const csrfHeaderName = 'x-zapp-csrf';
 const idempotencyHeaderName = 'idempotency-key';
 
-export type CreateProjectInput = paths['/v1/projects']['post']['requestBody']['content']['application/json'];
-export type CreateRunInput = paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
+export type CreateProjectInput =
+  paths['/v1/projects']['post']['requestBody']['content']['application/json'];
+export type CreateRunInput =
+  paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
+export type ListProjectsQuery = NonNullable<paths['/v1/projects']['get']['parameters']['query']>;
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -75,6 +74,13 @@ export function createControlPlaneClient(organizationId?: string) {
       client.request('/v1/me', {
         method: 'GET',
         ...(organizationHeaders === undefined ? {} : { headers: headers() }),
+      }),
+    listProjects: (query: ListProjectsQuery = {}, signal?: AbortSignal) =>
+      client.request('/v1/projects', {
+        method: 'GET',
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
       }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string) =>
       client.request('/v1/projects', {
