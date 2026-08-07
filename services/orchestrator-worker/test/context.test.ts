@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CompactionCommitResultSchema,
   CompactionSourceBundleSchema,
   ContextError,
   ContextSourceBundleSchema,
+  OpaqueArtifactIdSchema,
   SummaryArtifactSchema,
   createContextService,
   type AtomicCompactionRequest,
@@ -222,6 +224,7 @@ type RepositoryState = {
   sourceEvents: CompactionSourceBundle['eventRanges'];
   sourceArtifacts: CompactionSourceBundle['artifacts'];
   operations: Map<string, { request: AtomicCompactionRequest; summary: SummaryArtifact }>;
+  artifactBindings: Map<string, string>;
   commitAttempts: number;
   commitRequests: AtomicCompactionRequest[];
 };
@@ -246,6 +249,7 @@ function makeRepository(options?: {
   appendResult?: (saved: SummaryArtifact) => unknown;
   mutateStoreAfterSnapshot?: 'links' | 'scope';
   alwaysConflict?: boolean;
+  bindArtifactToDifferentOperationBeforeCommit?: boolean;
   failResolvers?: boolean;
   failResolversAfterCommit?: boolean;
   persistThen?: 'throw-once' | 'malform-once';
@@ -264,6 +268,7 @@ function makeRepository(options?: {
     sourceEvents: parsedCompaction.success ? clone(parsedCompaction.data.eventRanges) : [],
     sourceArtifacts: parsedCompaction.success ? clone(parsedCompaction.data.artifacts) : [],
     operations: new Map(),
+    artifactBindings: new Map(),
     commitAttempts: 0,
     commitRequests: [],
   };
@@ -341,6 +346,17 @@ function makeRepository(options?: {
         return Promise.resolve({ status: 'idempotent', summary: clone(existing.summary) });
       }
 
+      if (
+        options?.bindArtifactToDifferentOperationBeforeCommit === true &&
+        !state.artifactBindings.has(request.artifactId)
+      ) {
+        state.artifactBindings.set(request.artifactId, 'different-durable-operation');
+      }
+      const boundOperation = state.artifactBindings.get(request.artifactId);
+      if (boundOperation !== undefined && boundOperation !== request.operationId) {
+        return Promise.resolve({ status: 'artifact-id-collision' });
+      }
+
       if (options?.alwaysUnknown === 'throw') {
         return Promise.reject(new Error(`Ambiguous commit ${SENSITIVE_VALUE}`));
       }
@@ -399,6 +415,7 @@ function makeRepository(options?: {
       const saved = clone(candidate.data);
       state.summaries.push(saved);
       state.operations.set(request.operationId, { request: clone(request), summary: clone(saved) });
+      state.artifactBindings.set(request.artifactId, request.operationId);
       if (options?.persistThen === 'throw-once' && state.commitAttempts === 1) {
         return Promise.reject(new Error(`Response lost ${SENSITIVE_VALUE}`));
       }
@@ -511,28 +528,13 @@ function makeService(
     scrub?: (value: string) => string;
     countTokens?: (value: string) => number;
     compactionTokenBudget?: number;
-    createSummaryArtifactId?: (operationId: string) => unknown;
   },
 ) {
-  const operationIds = new Map<string, string>();
-  let nextId = 1;
   return createContextService({
     repository,
     scrub: options?.scrub ?? ((value) => value),
     countTokens: options?.countTokens ?? (() => 1),
     compactionTokenBudget: options?.compactionTokenBudget ?? 100,
-    createSummaryArtifactId:
-      options?.createSummaryArtifactId ??
-      ((operationId) => {
-        const existing = operationIds.get(operationId);
-        if (existing !== undefined) {
-          return existing;
-        }
-        const allocated = `ctxsum_${String(nextId).padStart(16, '0')}`;
-        nextId += 1;
-        operationIds.set(operationId, allocated);
-        return allocated;
-      }),
   });
 }
 
@@ -1210,7 +1212,6 @@ describe('compact raw snapshot revision CAS', () => {
     const summary = await compactWithOperation(
       makeService(repository, {
         scrub,
-        createSummaryArtifactId: () => 'ctxsum_revision_00000001',
       }),
       'raw-revision-operation',
     );
@@ -1230,25 +1231,168 @@ describe('compact raw snapshot revision CAS', () => {
 });
 
 describe('compact atomic mutation regressions', () => {
-  it('allocates, scrubs, validates, and commits the exact summary artifact ID before mutation', async () => {
-    const allocatedId = 'ctxsum_factory_00000001';
-    const factory = vi.fn(() => allocatedId);
-    const { repository, state } = makeRepository();
+  it('rejects an otherwise exact idempotent result newer than the observed next version', async () => {
+    const { repository: baseRepository, state } = makeRepository();
+    const repository: ContextRepository = {
+      ...baseRepository,
+      commitCompaction(request) {
+        state.commitAttempts += 1;
+        state.commitRequests.push(clone(request));
+        return Promise.resolve({
+          status: 'idempotent',
+          summary: SummaryArtifactSchema.parse({
+            artifactId: request.artifactId,
+            kind: 'context-summary',
+            scope: request.scope,
+            version: 999,
+            content: request.content,
+            tokenCount: request.tokenCount,
+            sourceEventRanges: request.sourceEventRanges,
+            sourceArtifacts: request.sourceArtifacts,
+          }),
+        });
+      },
+    };
+    let caught: unknown;
 
-    const summary = await compactWithOperation(
-      makeService(repository, { createSummaryArtifactId: factory }),
-      'factory-id-operation',
+    try {
+      await compactWithOperation(makeService(repository), 'future-idempotent-version');
+    } catch (error) {
+      caught = error;
+    }
+
+    expectContextError(caught, 'OUTCOME_UNKNOWN');
+    expect(state.commitAttempts).toBe(3);
+    expect(state.commitRequests[1]).toEqual(state.commitRequests[0]);
+    expect(state.commitRequests[2]).toEqual(state.commitRequests[0]);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it('derives the same artifact ID across fresh services and recovers the original operation', async () => {
+    const { repository: baseRepository, state } = makeRepository();
+    const first = await compactWithOperation(
+      makeService(baseRepository),
+      'durable-operation-across-processes',
+    );
+    let rejectNextSnapshot = true;
+    const restartedRepository: ContextRepository = {
+      ...baseRepository,
+      fetchCompactionSnapshot(request) {
+        if (rejectNextSnapshot) {
+          rejectNextSnapshot = false;
+          return Promise.resolve({ malformed: true });
+        }
+        return baseRepository.fetchCompactionSnapshot(request);
+      },
+    };
+    const restartedService = makeService(restartedRepository);
+
+    await expect(
+      compactWithOperation(restartedService, 'unrelated-failed-operation'),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectContextError(error, 'REPOSITORY_RESULT');
+      return true;
+    });
+    const replay = await compactWithOperation(
+      restartedService,
+      'durable-operation-across-processes',
     );
 
-    expect(factory).toHaveBeenCalledOnce();
-    expect(factory).toHaveBeenCalledWith('factory-id-operation');
-    expect(summary.artifactId).toBe(allocatedId);
-    expect(firstItem(state.commitRequests)).toMatchObject({ artifactId: allocatedId });
-    expect(firstItem(state.summaries).artifactId).toBe(allocatedId);
+    expect(replay).toEqual(first);
+    expect(state.summaries).toEqual([first]);
+    expect(state.commitRequests.at(-1)?.artifactId).toBe(first.artifactId);
+  });
+
+  it('derives distinct opaque IDs for different operations across fresh services', async () => {
+    const { repository, state } = makeRepository();
+
+    const summaries = await Promise.all([
+      compactWithOperation(makeService(repository), 'fresh-operation-alpha'),
+      compactWithOperation(makeService(repository), 'fresh-operation-beta'),
+    ]);
+
+    expect(summaries.map((summary) => summary.version).sort()).toEqual([1, 2]);
+    expect(new Set(summaries.map((summary) => summary.artifactId)).size).toBe(2);
+    expect(
+      summaries.every((summary) => OpaqueArtifactIdSchema.safeParse(summary.artifactId).success),
+    ).toBe(true);
+    expect(state.summaries).toHaveLength(2);
+  });
+
+  it('derives distinct opaque IDs for the same operation in different runs', async () => {
+    const otherRunId = 'run-2';
+    const otherRunSource = makeCompactionSource();
+    setCompactionScopeIdentity(otherRunSource, 'runId', otherRunId);
+    const firstRepository = makeRepository();
+    const secondRepository = makeRepository({ compaction: otherRunSource });
+
+    const [first, second] = await Promise.all([
+      compactWithOperation(
+        makeService(firstRepository.repository),
+        'same-operation-different-run',
+      ),
+      compactWithOperation(
+        makeService(secondRepository.repository),
+        'same-operation-different-run',
+        otherRunId,
+      ),
+    ]);
+
+    expect(first.artifactId).not.toBe(second.artifactId);
+    expect(OpaqueArtifactIdSchema.safeParse(first.artifactId).success).toBe(true);
+    expect(OpaqueArtifactIdSchema.safeParse(second.artifactId).success).toBe(true);
+  });
+
+  it('maps an atomic concurrent artifact-ID binding collision to a fixed error', async () => {
+    const { repository, state } = makeRepository({
+      bindArtifactToDifferentOperationBeforeCommit: true,
+    });
+    let caught: unknown;
+
+    try {
+      await compactWithOperation(
+        makeService(repository),
+        `collision-operation-${SENSITIVE_VALUE}`,
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expectContextError(caught, 'ARTIFACT_ID_COLLISION');
+    expect(String(caught)).not.toContain(SENSITIVE_VALUE);
+    expect(JSON.stringify(caught instanceof ContextError ? caught.toRecord() : caught)).not.toContain(
+      SENSITIVE_VALUE,
+    );
+    expect(state.commitAttempts).toBe(1);
+    expect(state.summaries).toEqual([]);
+  });
+
+  it('defines artifact-ID collision as a strict payload-free repository result', () => {
+    expect(
+      CompactionCommitResultSchema.safeParse({ status: 'artifact-id-collision' }).success,
+    ).toBe(true);
+    const malformed = CompactionCommitResultSchema.safeParse({
+      status: 'artifact-id-collision',
+      operationId: SENSITIVE_VALUE,
+    });
+
+    expect(malformed.success).toBe(false);
+    if (!malformed.success) {
+      expect(JSON.stringify(malformed.error.issues)).not.toContain(SENSITIVE_VALUE);
+    }
+  });
+
+  it('derives, validates, and commits the exact summary artifact ID before mutation', async () => {
+    const { repository, state } = makeRepository();
+
+    const summary = await compactWithOperation(makeService(repository), 'derived-id-operation');
+
+    expect(OpaqueArtifactIdSchema.safeParse(summary.artifactId).success).toBe(true);
+    expect(firstItem(state.commitRequests)).toMatchObject({ artifactId: summary.artifactId });
+    expect(firstItem(state.summaries).artifactId).toBe(summary.artifactId);
   });
 
   it('rejects a mismatched result ID and recovers the exact persisted ID idempotently', async () => {
-    const allocatedId = 'ctxsum_exact_result_0001';
     const { repository: baseRepository, state } = makeRepository();
     let corruptFirstResult = true;
     const repository: ContextRepository = {
@@ -1276,64 +1420,20 @@ describe('compact atomic mutation regressions', () => {
       },
     };
 
-    const summary = await compactWithOperation(
-      makeService(repository, { createSummaryArtifactId: () => allocatedId }),
-      'exact-result-id-operation',
-    );
+    const summary = await compactWithOperation(makeService(repository), 'exact-result-id-operation');
 
-    expect(summary.artifactId).toBe(allocatedId);
     expect(state.summaries).toHaveLength(1);
-    expect(firstItem(state.summaries).artifactId).toBe(allocatedId);
+    expect(firstItem(state.summaries).artifactId).toBe(summary.artifactId);
     expect(state.commitAttempts).toBe(2);
     expect(state.commitRequests[1]).toEqual(state.commitRequests[0]);
   });
 
-  it.each([
-    [
-      'secret-bearing',
-      (): string => `ctxsum_${SENSITIVE_VALUE}_0000`,
-      'IDENTITY_SCRUBBED',
-    ],
-    ['malformed', (): string => 'bad-id', 'REPOSITORY_RESULT'],
-    [
-      'throwing',
-      (): never => {
-        throw new Error(`factory failed ${SENSITIVE_VALUE}`);
-      },
-      'REPOSITORY_FAILURE',
-    ],
-  ] as const)(
-    'rejects a %s summary ID factory before commit',
-    async (_label, createSummaryArtifactId, code) => {
-      const { repository, state } = makeRepository();
-      let caught: unknown;
-
-      try {
-        await compactWithOperation(
-          makeService(repository, {
-            createSummaryArtifactId,
-            scrub: (value) => value.replaceAll(SENSITIVE_VALUE, '[REDACTED]'),
-          }),
-          `rejected-id-factory-${_label}`,
-        );
-      } catch (error) {
-        caught = error;
-      }
-
-      expectContextError(caught, code);
-      expect(String(caught)).not.toContain(SENSITIVE_VALUE);
-      expect(state.commitAttempts).toBe(0);
-      expect(state.summaries).toEqual([]);
-    },
-  );
-
-  it('allocates the summary ID exactly once while rebuilding version conflicts', async () => {
-    const createSummaryArtifactId = vi.fn(() => 'ctxsum_conflict_0000001');
+  it('keeps the derived summary ID stable while rebuilding version conflicts', async () => {
     const { repository, state } = makeRepository({ alwaysConflict: true });
 
     await expect(
       compactWithOperation(
-        makeService(repository, { createSummaryArtifactId }),
+        makeService(repository),
         'single-allocation-conflict-operation',
       ),
     ).rejects.toSatisfy((error: unknown) => {
@@ -1341,8 +1441,8 @@ describe('compact atomic mutation regressions', () => {
       return true;
     });
 
-    expect(createSummaryArtifactId).toHaveBeenCalledOnce();
     expect(state.commitAttempts).toBe(3);
+    expect(new Set(state.commitRequests.map((request) => request.artifactId)).size).toBe(1);
   });
 
   it('requires a caller-stable operation identifier at the public boundary', async () => {
@@ -1358,12 +1458,7 @@ describe('compact atomic mutation regressions', () => {
 
   it('commits concurrent distinct operations as consecutive versions', async () => {
     const { repository, state } = makeRepository();
-    const ids = new Map([
-      ['concurrent-operation-a', 'ctxsum_concurrent_a_0001'],
-      ['concurrent-operation-b', 'ctxsum_concurrent_b_0001'],
-    ]);
-    const createSummaryArtifactId = vi.fn((operationId: string) => ids.get(operationId));
-    const service = makeService(repository, { createSummaryArtifactId });
+    const service = makeService(repository);
 
     const summaries = await Promise.all([
       compactWithOperation(service, 'concurrent-operation-a'),
@@ -1371,23 +1466,23 @@ describe('compact atomic mutation regressions', () => {
     ]);
 
     expect(summaries.map((summary) => summary.version).sort()).toEqual([1, 2]);
-    expect(new Set(summaries.map((summary) => summary.artifactId))).toEqual(new Set(ids.values()));
-    expect(createSummaryArtifactId).toHaveBeenCalledTimes(2);
+    expect(new Set(summaries.map((summary) => summary.artifactId)).size).toBe(2);
     expect(state.summaries).toHaveLength(2);
   });
 
-  it('returns the original version when the same operation is retried', async () => {
+  it('returns an earlier original version when its operation is retried after a later commit', async () => {
     const { repository, state } = makeRepository();
-    const createSummaryArtifactId = vi.fn(() => 'ctxsum_stable_operation_1');
-    const service = makeService(repository, { createSummaryArtifactId });
+    const service = makeService(repository);
 
     const first = await compactWithOperation(service, 'stable-operation');
+    const later = await compactWithOperation(service, 'later-operation');
     const retried = await compactWithOperation(service, 'stable-operation');
 
     expect(retried).toEqual(first);
-    expect(first.artifactId).toBe('ctxsum_stable_operation_1');
-    expect(createSummaryArtifactId).toHaveBeenCalledTimes(2);
-    expect(state.summaries).toEqual([first]);
+    expect(first.version).toBe(1);
+    expect(later.version).toBe(2);
+    expect(state.commitRequests[2]?.artifactId).toBe(first.artifactId);
+    expect(state.summaries).toEqual([first, later]);
   });
 
   it.each(['throw-once', 'malform-once'] as const)(
@@ -2031,30 +2126,11 @@ describe('semantic repository source schemas', () => {
 });
 
 describe('opaque identifiers and locale-independent ordering', () => {
-  it('accepts the opaque artifact identifier maximum and maps overflow to ContextError', async () => {
+  it('accepts the opaque artifact identifier maximum and rejects overflow', () => {
     const maximumId = `a${'b'.repeat(127)}`;
-    const maximum = makeRepository();
-    await expect(
-      compactWithOperation(
-        makeService(maximum.repository, { createSummaryArtifactId: () => maximumId }),
-        'maximum-artifact-id-operation',
-      ),
-    ).resolves.toMatchObject({ artifactId: maximumId });
 
-    const overflow = makeRepository();
-    await expect(
-      compactWithOperation(
-        makeService(overflow.repository, {
-          createSummaryArtifactId: () => `${maximumId}c`,
-        }),
-        'overflow-artifact-id-operation',
-      ),
-    ).rejects.toSatisfy((error: unknown) => {
-      expectContextError(error, 'REPOSITORY_RESULT');
-      return true;
-    });
-    expect(overflow.state.commitAttempts).toBe(0);
-    expect(overflow.state.summaries).toEqual([]);
+    expect(OpaqueArtifactIdSchema.safeParse(maximumId).success).toBe(true);
+    expect(OpaqueArtifactIdSchema.safeParse(`${maximumId}c`).success).toBe(false);
   });
 
   it('accepts a maximum-length run identifier without exposing it in the artifact identifier', async () => {

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 const IdentifierSchema = z.string().min(1).max(256);
@@ -18,6 +20,7 @@ const MAX_EVENTS_PER_RANGE = 10_000;
 const MAX_COMPACTION_ARTIFACTS = 1_000;
 const MAX_VERSION_CONFLICT_ATTEMPTS = 3;
 const MAX_OUTCOME_RECOVERY_ATTEMPTS = 3;
+const SUMMARY_ARTIFACT_ID_NAMESPACE = 'zapp.context-summary.v1';
 
 function hasDuplicates(values: readonly string[]): boolean {
   return new Set(values).size !== values.length;
@@ -545,11 +548,15 @@ const VersionConflictCompactionResultSchema = z
     currentVersion: NonnegativeSafeIntegerSchema,
   })
   .strict();
+const ArtifactIdCollisionCompactionResultSchema = z
+  .object({ status: z.literal('artifact-id-collision') })
+  .strict();
 
 export const CompactionCommitResultSchema = z.discriminatedUnion('status', [
   CommittedCompactionResultSchema,
   IdempotentCompactionResultSchema,
   VersionConflictCompactionResultSchema,
+  ArtifactIdCollisionCompactionResultSchema,
 ]);
 export type CompactionCommitResult = z.infer<typeof CompactionCommitResultSchema>;
 
@@ -564,6 +571,7 @@ export const ContextErrorCodeSchema = z.enum([
   'TOKEN_COUNTER_FAILURE',
   'IDENTITY_SCRUBBED',
   'OUTCOME_UNKNOWN',
+  'ARTIFACT_ID_COLLISION',
 ]);
 export type ContextErrorCode = z.infer<typeof ContextErrorCodeSchema>;
 
@@ -586,6 +594,7 @@ const ERROR_MESSAGES: Readonly<Record<ContextErrorCode, string>> = {
   TOKEN_COUNTER_FAILURE: 'Context token counter failed',
   IDENTITY_SCRUBBED: 'Context identity changed during secret scrubbing',
   OUTCOME_UNKNOWN: 'Context compaction outcome is unknown',
+  ARTIFACT_ID_COLLISION: 'Context summary artifact identity collision',
 };
 
 export class ContextError extends Error {
@@ -618,7 +627,6 @@ export interface ContextServiceDependencies {
   scrub: (value: string) => string;
   countTokens: (value: string) => number;
   compactionTokenBudget: number;
-  createSummaryArtifactId: (operationId: CompactionOperationId) => unknown;
 }
 
 export interface ContextService {
@@ -1093,22 +1101,17 @@ function assertScrubPreservesCompactionIdentity(
   }
 }
 
-function allocateSummaryArtifactId(
+function deriveSummaryArtifactId(
+  runId: string,
   operationId: CompactionOperationId,
-  dependencies: ContextServiceDependencies,
+  scrub: ContextServiceDependencies['scrub'],
 ): OpaqueArtifactId {
-  let rawArtifactId: unknown;
-  try {
-    rawArtifactId = dependencies.createSummaryArtifactId(operationId);
-  } catch {
-    throw new ContextError('REPOSITORY_FAILURE');
-  }
-  if (typeof rawArtifactId !== 'string') {
-    throw new ContextError('REPOSITORY_RESULT');
-  }
-
-  const scrubbedArtifactId = scrubText(rawArtifactId, dependencies.scrub);
-  if (scrubbedArtifactId !== rawArtifactId) {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([SUMMARY_ARTIFACT_ID_NAMESPACE, runId, operationId]))
+    .digest('hex');
+  const artifactId = `ctxsum_${digest}`;
+  const scrubbedArtifactId = scrubText(artifactId, scrub);
+  if (scrubbedArtifactId !== artifactId) {
     throw new ContextError('IDENTITY_SCRUBBED');
   }
   return parseBoundary(OpaqueArtifactIdSchema, scrubbedArtifactId, 'REPOSITORY_RESULT');
@@ -1231,8 +1234,15 @@ function expectedSummaryFields(request: AtomicCompactionRequest): Omit<SummaryAr
 
 function assertExactCompactionResult(
   request: AtomicCompactionRequest,
-  result: Exclude<CompactionCommitResult, { status: 'version-conflict' }>,
+  result: Extract<CompactionCommitResult, { status: 'committed' | 'idempotent' }>,
 ): SummaryArtifact {
+  const maximumResultVersion = request.expectedPreviousVersion + 1;
+  // A commit creates exactly the next version; an idempotent replay may return its earlier
+  // original version, but can never claim a version beyond the request's observed next slot.
+  const hasInvalidVersion =
+    result.status === 'committed'
+      ? result.summary.version !== maximumResultVersion
+      : result.summary.version > maximumResultVersion;
   if (
     !valuesMatch(
       {
@@ -1246,8 +1256,7 @@ function assertExactCompactionResult(
       },
       expectedSummaryFields(request),
     ) ||
-    (result.status === 'committed' &&
-      result.summary.version !== request.expectedPreviousVersion + 1)
+    hasInvalidVersion
   ) {
     throw new ContextError('REPOSITORY_RESULT');
   }
@@ -1257,7 +1266,7 @@ function assertExactCompactionResult(
 async function commitWithOutcomeRecovery(
   repository: ContextRepository,
   request: AtomicCompactionRequest,
-): Promise<CompactionCommitResult> {
+): Promise<Exclude<CompactionCommitResult, { status: 'artifact-id-collision' }>> {
   let outcomeWasUnknown = false;
   for (let attempt = 0; attempt < MAX_OUTCOME_RECOVERY_ATTEMPTS; attempt += 1) {
     let rawResult: unknown;
@@ -1272,6 +1281,9 @@ async function commitWithOutcomeRecovery(
     if (!parsed.success) {
       outcomeWasUnknown = true;
       continue;
+    }
+    if (parsed.data.status === 'artifact-id-collision') {
+      throw new ContextError('ARTIFACT_ID_COLLISION');
     }
     if (parsed.data.status === 'version-conflict') {
       if (!outcomeWasUnknown) {
@@ -1391,9 +1403,10 @@ export function createContextService(dependencies: ContextServiceDependencies): 
       if (!valuesMatch(scrubbedRequest, request)) {
         throw new ContextError('IDENTITY_SCRUBBED');
       }
-      const artifactId = allocateSummaryArtifactId(
+      const artifactId = deriveSummaryArtifactId(
+        scrubbedRequest.runId,
         scrubbedRequest.operationId,
-        dependencies,
+        dependencies.scrub,
       );
       const snapshotRequest = parseBoundary(
         CompactionSnapshotRequestSchema,
