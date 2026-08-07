@@ -69,7 +69,11 @@ export interface AtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
   metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
-  move(source: string, destination: string): Promise<void>;
+  replace(input: {
+    source: string;
+    destination: string;
+    expectedData?: Uint8Array;
+  }): Promise<'replaced' | 'conflict'>;
   setMode(path: string, mode: number): Promise<void>;
   remove(path: string): Promise<void>;
 }
@@ -544,7 +548,21 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       write: async (path, data, mode) => {
         await writeFile(path, data, mode === undefined ? undefined : { mode });
       },
-      move: rename,
+      replace: async ({ source, destination, expectedData }) => {
+        if (expectedData !== undefined) {
+          let currentData: Uint8Array;
+          try {
+            currentData = new Uint8Array(await readFile(destination));
+          } catch {
+            return 'conflict';
+          }
+          if (!bytesEqual(currentData, expectedData)) {
+            return 'conflict';
+          }
+        }
+        await rename(source, destination);
+        return 'replaced';
+      },
       setMode: chmod,
       remove: async (path) => rm(path, { force: true }),
     };
@@ -659,7 +677,8 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await writeFile(await resolveInRoot(this.root, path), data);
+    const target = await resolveInRoot(this.root, path);
+    await this.withAtomicCommit(async () => writeFile(target, data));
   }
 
   private async withAtomicCommit<T>(operation: () => Promise<T>): Promise<T> {
@@ -771,7 +790,15 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         try {
           for (const file of staged) {
             committed.push(file);
-            await this.atomicFileOperations.move(file.temporary, file.target);
+            const replacement = await this.atomicFileOperations.replace({
+              source: file.temporary,
+              destination: file.target,
+              ...(file.expectedData === undefined ? {} : { expectedData: file.expectedData }),
+            });
+            if (replacement === 'conflict') {
+              committed.pop();
+              throw new AtomicWriteConflictError();
+            }
           }
         } catch (error: unknown) {
           const rollbackFailures: unknown[] = [];
@@ -792,9 +819,11 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
             }
           }
           failure =
-            rollbackFailures.length === 0
-              ? new AtomicWriteError('atomic_commit_failed', [error])
-              : new AtomicWriteError('atomic_rollback_failed', [error, ...rollbackFailures]);
+            rollbackFailures.length === 0 && error instanceof AtomicWriteConflictError
+              ? error
+              : rollbackFailures.length === 0
+                ? new AtomicWriteError('atomic_commit_failed', [error])
+                : new AtomicWriteError('atomic_rollback_failed', [error, ...rollbackFailures]);
         }
       });
     } catch (error: unknown) {

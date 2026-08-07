@@ -80,6 +80,7 @@ const ExecOutputSchema = z
     stderr: z.string(),
     durationMs: z.number().nonnegative(),
     truncated: z.boolean(),
+    terminationReason: z.literal('timeout').optional(),
   })
   .strict();
 
@@ -93,6 +94,9 @@ function execOutput(
     stderr: result.stderr,
     durationMs: result.durationMs,
     truncated: result.truncated,
+    ...(result.terminationReason === undefined
+      ? {}
+      : { terminationReason: result.terminationReason }),
   };
 }
 
@@ -436,13 +440,18 @@ export function createMutationTools(
       idempotent: true,
       timeoutMs: 120_000,
       redactOutput: true,
-      run: async (input) => {
+      run: async (input, _context, _signal, recordAudit) => {
         const base = input.packageManager === 'npm' ? ['install'] : ['add'];
         const devFlag = input.dev
           ? input.packageManager === 'npm' || input.packageManager === 'pnpm'
             ? ['--save-dev']
             : ['--dev']
           : [];
+        recordAudit({
+          packageManager: input.packageManager,
+          count: input.packages.length,
+          cwd: input.cwd ?? '.',
+        });
         return execOutput(
           await runtime.exec({
             cmd: input.packageManager,

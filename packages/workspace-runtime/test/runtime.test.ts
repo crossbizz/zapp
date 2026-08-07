@@ -18,13 +18,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ExecutionContract } from '@zapp/contracts';
-import { MemoryWorkspaceRuntime, PathViolationError } from '../src/runtime.js';
+import {
+  AtomicWriteConflictError,
+  MemoryWorkspaceRuntime,
+  PathViolationError,
+} from '../src/runtime.js';
 
 interface TestAtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
   metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
-  move(source: string, destination: string): Promise<void>;
+  replace(input: {
+    source: string;
+    destination: string;
+    expectedData?: Uint8Array;
+  }): Promise<'replaced' | 'conflict'>;
   setMode(path: string, mode: number): Promise<void>;
   remove(path: string): Promise<void>;
 }
@@ -37,7 +45,24 @@ const nodeAtomicFileOperations: TestAtomicFileOperations = {
   },
   write: async (path, data, mode) =>
     writeFile(path, data, mode === undefined ? undefined : { mode }),
-  move: rename,
+  replace: async ({ source, destination, expectedData }) => {
+    if (expectedData !== undefined) {
+      let currentData: Uint8Array;
+      try {
+        currentData = new Uint8Array(await readFile(destination));
+      } catch {
+        return 'conflict';
+      }
+      if (
+        currentData.byteLength !== expectedData.byteLength ||
+        currentData.some((byte, index) => byte !== expectedData[index])
+      ) {
+        return 'conflict';
+      }
+    }
+    await rename(source, destination);
+    return 'replaced';
+  },
   setMode: chmod,
   remove: (path) => rm(path, { force: true }),
 };
@@ -255,6 +280,81 @@ describe('MemoryWorkspaceRuntime path safety', () => {
         new TextEncoder().encode('changed second'),
       );
     });
+  });
+
+  it('rejects a target write in the final expected-state compare-to-replace window', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-final-window-'));
+    const target = join(root, 'target.txt');
+    const expected = new TextEncoder().encode('expected\n');
+    const patched = new TextEncoder().encode('patched\n');
+    const concurrent = new TextEncoder().encode('concurrent\n');
+    let atomicTargetWrites = 0;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        replace: async (input) => {
+          await writeFile(input.destination, concurrent);
+          const result = await nodeAtomicFileOperations.replace(input);
+          if (result === 'replaced') atomicTargetWrites += 1;
+          return result;
+        },
+      },
+    });
+
+    try {
+      await writeFile(target, expected);
+
+      await expect(
+        runtime.writeFilesAtomically([{ path: 'target.txt', data: patched, expectedData: expected }]),
+      ).rejects.toBeInstanceOf(AtomicWriteConflictError);
+      expect(atomicTargetWrites).toBe(0);
+      await expect(readFile(target)).resolves.toEqual(Buffer.from(concurrent));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes ordinary runtime writes after an in-flight atomic replacement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-write-serialization-'));
+    const target = join(root, 'target.txt');
+    const expected = new TextEncoder().encode('expected\n');
+    const patched = new TextEncoder().encode('patched\n');
+    const concurrent = new TextEncoder().encode('concurrent\n');
+    const events: string[] = [];
+    let concurrentWrite: Promise<void> | undefined;
+    const runtime = new MemoryWorkspaceRuntime(root, {
+      atomicFileOperations: {
+        ...nodeAtomicFileOperations,
+        replace: async (input) => {
+          events.push('replace-started');
+          concurrentWrite = runtime.writeFile('target.txt', concurrent).then(() => {
+            events.push('ordinary-write-completed');
+          });
+          await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+          const result = await nodeAtomicFileOperations.replace(input);
+          events.push('replace-completed');
+          return result;
+        },
+      },
+    });
+
+    try {
+      await writeFile(target, expected);
+
+      await expect(
+        runtime.writeFilesAtomically([{ path: 'target.txt', data: patched, expectedData: expected }]),
+      ).resolves.toBeUndefined();
+      await concurrentWrite;
+
+      expect(events).toEqual([
+        'replace-started',
+        'replace-completed',
+        'ordinary-write-completed',
+      ]);
+      await expect(readFile(target)).resolves.toEqual(Buffer.from(concurrent));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('rejects duplicate lexical targets before staging any atomic write', async () => {
@@ -583,10 +683,12 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       let commitCount = 0;
       const operations: TestAtomicFileOperations = {
         ...nodeAtomicFileOperations,
-        move: async (source, destination) => {
-          await rename(source, destination);
+        replace: async (input) => {
+          const result = await nodeAtomicFileOperations.replace(input);
+          if (result === 'conflict') return result;
           commitCount += 1;
           if (commitCount === failAfter) throw new Error(`commit ${String(failAfter)} failed`);
+          return result;
         },
       };
       const runtime = new MemoryWorkspaceRuntime(root, { atomicFileOperations: operations });
@@ -625,8 +727,9 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       let commitFailed = false;
       const operations: TestAtomicFileOperations = {
         ...nodeAtomicFileOperations,
-        move: async (source, destination) => {
-          await rename(source, destination);
+        replace: async (input) => {
+          const result = await nodeAtomicFileOperations.replace(input);
+          if (result === 'conflict') return result;
           commitFailed = true;
           throw new Error('commit failed after rename');
         },

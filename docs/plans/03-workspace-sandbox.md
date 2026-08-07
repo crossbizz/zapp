@@ -57,11 +57,11 @@ packages/workspace-runtime/
 export interface WorkspaceRuntime {
   readonly kind: "cloud" | "local" | "docker";
   exec(input: { cmd: string; args: string[]; cwd?: string; env?: Record<string,string>;
-    timeoutMs: number; pty?: boolean }): Promise<ExecResult>;          // { exitCode, stdout, stderr, durationMs, truncated }
+    timeoutMs: number; pty?: boolean }): Promise<ExecResult>;          // { exitCode, stdout, stderr, durationMs, truncated, terminationReason?: "timeout" }
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;              // { stream: "stdout"|"stderr", data, at }
   readFile(path: string): Promise<Uint8Array>;
-  writeFile(path: string, data: Uint8Array): Promise<void>;
-  writeFilesAtomically(files: readonly { path: string; data: Uint8Array; expectedData?: Uint8Array }[]): Promise<void>; // aliases reject before staging; supplied prior bytes compare inside the serialized commit boundary
+  writeFile(path: string, data: Uint8Array): Promise<void>;            // participates in the atomic commit serialization boundary
+  writeFilesAtomically(files: readonly { path: string; data: Uint8Array; expectedData?: Uint8Array }[]): Promise<void>; // aliases reject before staging; supplied prior bytes use preflight plus indivisible final compare-and-replace
   search(input: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
@@ -113,11 +113,15 @@ POST /files/rename
 
 Every filesystem operation is descriptor-relative under the pinned workspace-root descriptor per ADR-0006/ADR-0013: walk parents without following links, reject leaf symlinks for atomic writes, stage/commit/rollback through pinned parent descriptors, run allowlisted `rg` against an inherited pinned target descriptor, delete with nonrecursive `unlinkat` semantics (`ENOENT` succeeds; directories reject), and rename with descriptor-relative atomic replace. Atomic-write preflight rejects lexical/canonical/same-inode duplicates plus initially absent names that the canonical parent filesystem treats as case-folding or Unicode-normalization aliases; capability probing/reservation occurs only in a hidden per-parent directory, creates none of the requested targets, and is cleaned before staging. Implements the WS-1 semantics server-side (the agent-level path guard remains defense in depth).
 
-Atomic-write commits are serialized. When `expectedDataBase64` is present, WS-3
-compares the decoded exact prior bytes while holding that commit boundary and before
-the first target replacement; any mismatch returns the stable typed atomic-write
-conflict and writes no target. The strict optional field exists only for compare-guarded
-batch writes and does not expose a generic filesystem operation.
+Atomic-write commits and ordinary file writes are serialized together. When
+`expectedDataBase64` is present, WS-3 compares the decoded exact prior bytes while
+holding that boundary before the first target replacement, then performs each guarded
+target replacement through one descriptor-relative compare-and-replace operation with
+no intervening injectable move. A preflight mismatch returns the stable typed
+atomic-write conflict and writes no target; a final-window mismatch does not replace
+that target and rolls back any earlier batch replacement. The strict optional field
+exists only for compare-guarded batch writes and does not expose a generic filesystem
+operation.
 **Effort:** L
 
 - [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for `writeFilesAtomically`, `search`, `deleteFile`, and `renameFile` against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`

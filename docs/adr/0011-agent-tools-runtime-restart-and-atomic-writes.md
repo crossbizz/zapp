@@ -38,9 +38,14 @@ Extend WS-1 with exactly two workspace-owned primitives:
   rollback preserve each existing target's file mode. A file record may additionally
   carry exact `expectedData`; the runtime serializes atomic commit sections and
   compares every supplied expectation inside that boundary before replacing any
-  target. Any mismatch, including disappearance, raises a typed atomic-write conflict
-  and changes no target. `apply_patch` supplies the bytes used for hunk validation and
-  maps that typed conflict to its existing `patch_conflict` result.
+  target. Each guarded replacement then crosses one runtime-owned compare-and-replace
+  operation that repeats the exact-byte check and replaces the target without an
+  intervening injectable move step. Ordinary `writeFile` calls participate in the same
+  serialization boundary. Any preflight mismatch, including disappearance, raises a
+  typed atomic-write conflict and changes no target; a final-window mismatch performs
+  no replacement for that target and rolls back any earlier replacement in the batch.
+  `apply_patch` supplies the bytes used for hunk validation and maps that typed conflict
+  to its existing `patch_conflict` result.
 
 Both primitives preserve `resolveInRoot` lexical and symlink checks. The batch API
 accepts only `{ path, data, expectedData? }` records and the restart API accepts only
@@ -58,7 +63,8 @@ process-control options to agent-tools.
   before the first staging write. An existing leaf symlink cannot be replaced while
   its former referent remains separately mutated or unchanged under a false success.
   Exact expected bytes also prevent a validated patch from overwriting a source edit
-  that wins before the serialized runtime commit boundary.
+  that wins before or inside the final compare-to-replace window, while ordinary
+  runtime writes cannot bypass that serialized boundary.
 - Runtime fault-injection tests fail after the first, middle, and final real rename,
   then verify byte and mode restoration, temporary-file cleanup, and distinct truthful
   rollback or cleanup failure codes.

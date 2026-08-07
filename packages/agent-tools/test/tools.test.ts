@@ -1062,6 +1062,87 @@ describe('execution truth and redaction', () => {
     }
   });
 
+  it('classifies a runtime-enforced dependency install timeout as a timed-out attempt', async () => {
+    const runtime = new RecordingRuntime();
+    runtime.execResult = {
+      exitCode: 124,
+      stdout: '',
+      stderr: 'installation timed out',
+      durationMs: 120_001,
+      truncated: false,
+      terminationReason: 'timeout',
+    };
+
+    const result = await registryFor(runtime).executeWithAudit(
+      'install_dependency',
+      { packageManager: 'pnpm', packages: ['zod'], dev: false },
+      trustedContext,
+    );
+
+    expect(result.output).toMatchObject({
+      ok: false,
+      exitCode: 124,
+      terminationReason: 'timeout',
+    });
+    expect(result.auditPayload).toMatchObject({
+      tool: 'install_dependency',
+      outcome: 'timed_out',
+      code: 'tool_timeout',
+      attemptCount: 1,
+      packageManager: 'pnpm',
+      count: 1,
+      ok: false,
+    });
+  });
+
+  it('wraps a dependency install path rejection in a redacted attributed attempt audit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-install-path-audit-'));
+    const rejectedPathFragment = 'private-fragment';
+    const registry = registryFor(new MemoryWorkspaceRuntime(root), {
+      redactor: {
+        redact: (value) => value.replaceAll(rejectedPathFragment, '[redacted:path]'),
+      },
+    });
+
+    try {
+      const failure = await rejectedToolExecution(
+        registry.executeWithAudit(
+          'install_dependency',
+          {
+            packageManager: 'pnpm',
+            packages: ['zod'],
+            dev: false,
+            cwd: `../${rejectedPathFragment}`,
+          },
+          trustedContext,
+        ),
+      );
+
+      expect(failure.name).toBe('ToolExecutionError');
+      expect(failure.message).toBe('install_dependency failed');
+      expect(failure.code).toBe('path_rejected');
+      expect(failure.context).toEqual(trustedContext);
+      expect(failure.auditPayload).toEqual({
+        organizationId: 'org_trusted',
+        projectId: 'project_trusted',
+        runId: 'run_trusted',
+        taskId: 'task_trusted',
+        step: 'step-1',
+        tool: 'install_dependency',
+        outcome: 'failed',
+        code: 'path_rejected',
+        attemptCount: 1,
+        packageManager: 'pnpm',
+        count: 1,
+        cwd: '../[redacted:path]',
+      });
+      expect(failure.message).not.toContain(rejectedPathFragment);
+      expect(JSON.stringify(failure)).not.toContain(rejectedPathFragment);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('carries attempt audits and dispatches no retry after in-flight command cancellation', async () => {
     class PendingRuntime extends RecordingRuntime {
       override exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
