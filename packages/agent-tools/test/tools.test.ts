@@ -1,8 +1,9 @@
 import { lstat, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { TOOL_GROUPS, TOOL_NAMES, type ExecutionContract, type ToolName } from '@zapp/contracts';
 import {
+  AtomicWriteConflictError,
   MemoryWorkspaceRuntime,
   PathViolationError,
   type ExecChunk,
@@ -13,6 +14,7 @@ import {
   type GitResult,
   type WorkspaceRenameInput,
   type WorkspaceSearchInput,
+  type WorkspaceFileSnapshot,
   type WorkspaceRuntime,
 } from '@zapp/workspace-runtime';
 import { describe, expect, it, vi } from 'vitest';
@@ -78,7 +80,8 @@ class RecordingRuntime implements WorkspaceRuntime {
   readonly deleteFileCalls: string[] = [];
   readonly renameFileCalls: WorkspaceRenameInput[] = [];
   readonly gitCalls: GitOp[] = [];
-  readonly atomicWriteCalls: Array<readonly { path: string; data: Uint8Array }[]> = [];
+  readonly atomicWriteCalls: Array<Parameters<WorkspaceRuntime['writeFilesAtomically']>[0]> = [];
+  atomicTargetWrites = 0;
   restartCalls = 0;
   execResult: ExecResult = {
     exitCode: 0,
@@ -92,6 +95,20 @@ class RecordingRuntime implements WorkspaceRuntime {
     ['rename.txt', new TextEncoder().encode('rename')],
     ['delete.txt', new TextEncoder().encode('delete')],
   ]);
+  private revisionCounter = 0;
+  private readonly revisions = new Map<string, string>();
+
+  private revisionFor(path: string): string {
+    const existing = this.revisions.get(path);
+    if (existing !== undefined) return existing;
+    const revision = `revision-${String((this.revisionCounter += 1))}`;
+    this.revisions.set(path, revision);
+    return revision;
+  }
+
+  private bumpRevision(path: string): void {
+    this.revisions.set(path, `revision-${String((this.revisionCounter += 1))}`);
+  }
 
   exec(input: Parameters<WorkspaceRuntime['exec']>[0]): Promise<ExecResult> {
     this.execCalls.push(input);
@@ -113,18 +130,38 @@ class RecordingRuntime implements WorkspaceRuntime {
     return Promise.resolve(value);
   }
 
+  async readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot> {
+    return { data: await this.readFile(path), revision: this.revisionFor(path) };
+  }
+
   writeFile(path: string, data: Uint8Array): Promise<void> {
     this.files.set(path, data);
+    this.bumpRevision(path);
     return Promise.resolve();
   }
 
-  async writeFilesAtomically(
-    files: readonly { path: string; data: Uint8Array }[],
+  writeFilesAtomically(
+    files: Parameters<WorkspaceRuntime['writeFilesAtomically']>[0],
   ): Promise<void> {
     this.atomicWriteCalls.push(files);
-    for (const file of files) {
-      await this.writeFile(file.path, file.data);
+    const normalizedPaths = files.map((file) => normalize(file.path));
+    if (new Set(normalizedPaths).size !== normalizedPaths.length) {
+      return Promise.reject(new Error('Atomic file batch contains duplicate targets'));
     }
+    for (const file of files) {
+      if (
+        file.expectedRevision !== undefined &&
+        this.revisionFor(file.path) !== file.expectedRevision
+      ) {
+        return Promise.reject(new AtomicWriteConflictError());
+      }
+    }
+    for (const file of files) {
+      this.files.set(file.path, file.data);
+      this.bumpRevision(file.path);
+      this.atomicTargetWrites += 1;
+    }
+    return Promise.resolve();
   }
 
   search(input: WorkspaceSearchInput): Promise<ExecResult> {
@@ -152,13 +189,14 @@ class RecordingRuntime implements WorkspaceRuntime {
   }
 
   delete(path: string): Promise<void> {
-    this.files.delete(path);
+    if (this.files.delete(path)) this.bumpRevision(path);
     return Promise.resolve();
   }
 
   deleteFile(path: string): Promise<void> {
     this.deleteFileCalls.push(path);
     if (!this.files.delete(path)) return Promise.reject(new Error(`Missing test file: ${path}`));
+    this.bumpRevision(path);
     return Promise.resolve();
   }
 
@@ -171,6 +209,8 @@ class RecordingRuntime implements WorkspaceRuntime {
     if (data === undefined) return Promise.reject(new Error(`Missing test file: ${input.source}`));
     this.files.set(input.destination, data);
     this.files.delete(input.source);
+    this.bumpRevision(input.source);
+    this.bumpRevision(input.destination);
     return Promise.resolve();
   }
 
@@ -467,34 +507,33 @@ describe('workspace-bound tools', () => {
   });
 
   it('applies a unified patch atomically and reports patch_conflict without a partial write', async () => {
-    await withMemoryRegistry(async (runtime, registry) => {
-      await runtime.writeFile('app.ts', new TextEncoder().encode('first\nsecond\nthird\n'));
-      await expect(
-        registry.execute('apply_patch', {
-          patch: '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+changed\n third\n',
-        }, trustedContext),
-      ).resolves.toMatchObject({ ok: true, filesChanged: 1, hunksApplied: 1 });
-      await expect(runtime.readFile('app.ts')).resolves.toEqual(
-        new TextEncoder().encode('first\nchanged\nthird\n'),
-      );
+    const runtime = new RecordingRuntime();
+    const registry = registryFor(runtime);
+    await runtime.writeFile('app.ts', new TextEncoder().encode('first\nsecond\nthird\n'));
+    await expect(
+      registry.execute('apply_patch', {
+        patch: '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+changed\n third\n',
+      }, trustedContext),
+    ).resolves.toMatchObject({ ok: true, filesChanged: 1, hunksApplied: 1 });
+    await expect(runtime.readFile('app.ts')).resolves.toEqual(
+      new TextEncoder().encode('first\nchanged\nthird\n'),
+    );
 
-      const conflict = await registry.execute('apply_patch', {
-        patch:
-          '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-missing-context\n+wrong\n third\n',
-      }, trustedContext);
-      expect(conflict).toMatchObject({
-        ok: false,
-        error: { code: 'patch_conflict' },
-      });
-      await expect(runtime.readFile('app.ts')).resolves.toEqual(
-        new TextEncoder().encode('first\nchanged\nthird\n'),
-      );
+    const conflict = await registry.execute('apply_patch', {
+      patch:
+        '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-missing-context\n+wrong\n third\n',
+    }, trustedContext);
+    expect(conflict).toMatchObject({
+      ok: false,
+      error: { code: 'patch_conflict' },
     });
+    await expect(runtime.readFile('app.ts')).resolves.toEqual(
+      new TextEncoder().encode('first\nchanged\nthird\n'),
+    );
   });
 
   it('preserves a concurrent source change made after patch validation and before commit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'zapp-agent-tools-patch-conflict-'));
-    class ConcurrentRuntime extends MemoryWorkspaceRuntime {
+    class ConcurrentRuntime extends RecordingRuntime {
       override async writeFilesAtomically(
         files: Parameters<WorkspaceRuntime['writeFilesAtomically']>[0],
       ): Promise<void> {
@@ -502,68 +541,114 @@ describe('workspace-bound tools', () => {
         await super.writeFilesAtomically(files);
       }
     }
-    const runtime = new ConcurrentRuntime(root);
+    const runtime = new ConcurrentRuntime();
     const registry = registryFor(runtime);
 
-    try {
-      await runtime.writeFile('app.ts', new TextEncoder().encode('first\nsecond\nthird\n'));
+    await runtime.writeFile('app.ts', new TextEncoder().encode('first\nsecond\nthird\n'));
 
-      await expect(
-        registry.execute(
-          'apply_patch',
-          {
-            patch:
-              '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+patched\n third\n',
-          },
-          trustedContext,
-        ),
-      ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
-      await expect(runtime.readFile('app.ts')).resolves.toEqual(
-        new TextEncoder().encode('concurrent-change\n'),
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
+    await expect(
+      registry.execute(
+        'apply_patch',
+        {
+          patch:
+            '--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,3 @@\n first\n-second\n+patched\n third\n',
+        },
+        trustedContext,
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
+    await expect(runtime.readFile('app.ts')).resolves.toEqual(
+      new TextEncoder().encode('concurrent-change\n'),
+    );
+  });
+
+  it('rejects a concurrent write after the final content comparison before replacement', async () => {
+    const concurrent = new TextEncoder().encode('concurrent\n');
+    let comparisons = 0;
+    class FinalWindowRuntime extends RecordingRuntime {
+      override async readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot> {
+        comparisons += 1;
+        return super.readFileForUpdate(path);
+      }
+
+      override async writeFilesAtomically(
+        files: Parameters<WorkspaceRuntime['writeFilesAtomically']>[0],
+      ): Promise<void> {
+        const finalSnapshot = await super.readFileForUpdate('app.ts');
+        comparisons += 1;
+        expect(finalSnapshot.revision).toBe(files[0]?.expectedRevision);
+        await this.writeFile('app.ts', concurrent);
+        await super.writeFilesAtomically(files);
+      }
     }
+    const runtime = new FinalWindowRuntime();
+    await runtime.writeFile('app.ts', new TextEncoder().encode('source\n'));
+    const output = await registryFor(runtime).execute(
+      'apply_patch',
+      {
+        patch: '--- a/app.ts\n+++ b/app.ts\n@@ -1,1 +1,1 @@\n-source\n+patched\n',
+      },
+      trustedContext,
+    );
+    const finalData = new TextDecoder().decode(await runtime.readFile('app.ts'));
+
+    expect({ comparisons, targetWrites: runtime.atomicTargetWrites, output, finalData }).toEqual({
+      comparisons: 2,
+      targetWrites: 0,
+      output: {
+        ok: false,
+        error: { code: 'patch_conflict', message: 'Atomic file changed before commit' },
+      },
+      finalData: 'concurrent\n',
+    });
   });
 
   it('stages every patched file before writing when a later file conflicts', async () => {
-    await withMemoryRegistry(async (runtime, registry) => {
-      await runtime.writeFile('first.txt', new TextEncoder().encode('first\n'));
-      await runtime.writeFile('second.txt', new TextEncoder().encode('second\n'));
+    const runtime = new RecordingRuntime();
+    const registry = registryFor(runtime);
+    await runtime.writeFile('first.txt', new TextEncoder().encode('first\n'));
+    await runtime.writeFile('second.txt', new TextEncoder().encode('second\n'));
 
-      await expect(
-        registry.execute('apply_patch', {
-          patch:
-            '--- a/first.txt\n+++ b/first.txt\n@@ -1,1 +1,1 @@\n-first\n+changed\n--- a/second.txt\n+++ b/second.txt\n@@ -1,1 +1,1 @@\n-missing\n+wrong\n',
-        }, trustedContext),
-      ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
-      await expect(runtime.readFile('first.txt')).resolves.toEqual(
-        new TextEncoder().encode('first\n'),
-      );
-      await expect(runtime.readFile('second.txt')).resolves.toEqual(
-        new TextEncoder().encode('second\n'),
-      );
-    });
+    await expect(
+      registry.execute('apply_patch', {
+        patch:
+          '--- a/first.txt\n+++ b/first.txt\n@@ -1,1 +1,1 @@\n-first\n+changed\n--- a/second.txt\n+++ b/second.txt\n@@ -1,1 +1,1 @@\n-missing\n+wrong\n',
+      }, trustedContext),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'patch_conflict' } });
+    await expect(runtime.readFile('first.txt')).resolves.toEqual(
+      new TextEncoder().encode('first\n'),
+    );
+    await expect(runtime.readFile('second.txt')).resolves.toEqual(
+      new TextEncoder().encode('second\n'),
+    );
   });
 
   it('rejects two patch sections that resolve to one file without losing either edit', async () => {
-    await withMemoryRegistry(async (runtime, registry) => {
-      await runtime.writeFile('file.txt', new TextEncoder().encode('one\ntwo\n'));
+    class NormalizingRuntime extends RecordingRuntime {
+      override readFile(path: string): Promise<Uint8Array> {
+        return super.readFile(normalize(path));
+      }
 
-      await expect(
-        registry.execute(
-          'apply_patch',
-          {
-            patch:
-              '--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n--- a/./file.txt\n+++ b/./file.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n',
-          },
-          trustedContext,
-        ),
-      ).rejects.toThrow();
-      await expect(runtime.readFile('file.txt')).resolves.toEqual(
-        new TextEncoder().encode('one\ntwo\n'),
-      );
-    });
+      override readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot> {
+        return super.readFileForUpdate(normalize(path));
+      }
+    }
+    const runtime = new NormalizingRuntime();
+    const registry = registryFor(runtime);
+    await runtime.writeFile('file.txt', new TextEncoder().encode('one\ntwo\n'));
+
+    await expect(
+      registry.execute(
+        'apply_patch',
+        {
+          patch:
+            '--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n--- a/./file.txt\n+++ b/./file.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n',
+        },
+        trustedContext,
+      ),
+    ).rejects.toThrow();
+    await expect(runtime.readFile('file.txt')).resolves.toEqual(
+      new TextEncoder().encode('one\ntwo\n'),
+    );
   });
 
   it('rejects apply_patch to a leaf symlink without replacing it or changing its referent', async () => {
@@ -1469,10 +1554,10 @@ describe('review round 1 safety regressions', () => {
         }
 
         override writeFilesAtomically(
-          files: readonly { path: string; data: Uint8Array }[],
+          files: Parameters<WorkspaceRuntime['writeFilesAtomically']>[0],
         ): Promise<void> {
           this.atomicWriteCalls.push(files);
-          const staged: Array<{ path: string; data: Uint8Array }> = [];
+          const staged: Array<(typeof files)[number]> = [];
           for (const [index, file] of files.entries()) {
             if (index === failAt) {
               return Promise.reject(new Error(`injected atomic write ${String(failAt)}`));

@@ -327,17 +327,17 @@ export function createMutationTools(
           const staged: Array<{
             path: string;
             data: Uint8Array;
-            expectedData: Uint8Array;
+            expectedRevision: string;
             hunks: number;
           }> = [];
           for (const file of files) {
-            const expectedData = await runtime.readFile(file.path);
-            const current = new TextDecoder().decode(expectedData);
+            const snapshot = await runtime.readFileForUpdate(file.path);
+            const current = new TextDecoder().decode(snapshot.data);
             const applied = applyHunks(current, file);
             staged.push({
               path: file.path,
               data: new TextEncoder().encode(applied.content),
-              expectedData,
+              expectedRevision: snapshot.revision,
               hunks: applied.hunksApplied,
             });
           }
@@ -345,7 +345,7 @@ export function createMutationTools(
             staged.map((file) => ({
               path: file.path,
               data: file.data,
-              expectedData: file.expectedData,
+              expectedRevision: file.expectedRevision,
             })),
           );
           return {

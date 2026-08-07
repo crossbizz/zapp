@@ -48,7 +48,12 @@ export interface FileStat extends FileEntry {
 export interface AtomicFileWrite {
   readonly path: string;
   readonly data: Uint8Array;
-  readonly expectedData?: Uint8Array;
+  readonly expectedRevision?: string;
+}
+
+export interface WorkspaceFileSnapshot {
+  readonly data: Uint8Array;
+  readonly revision: string;
 }
 
 export interface WorkspaceSearchInput {
@@ -69,11 +74,7 @@ export interface AtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
   metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
-  replace(input: {
-    source: string;
-    destination: string;
-    expectedData?: Uint8Array;
-  }): Promise<'replaced' | 'conflict'>;
+  replace(source: string, destination: string): Promise<void>;
   setMode(path: string, mode: number): Promise<void>;
   remove(path: string): Promise<void>;
 }
@@ -132,6 +133,7 @@ export interface WorkspaceRuntime {
   }): Promise<ExecResult>;
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;
   readFile(path: string): Promise<Uint8Array>;
+  readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
   writeFilesAtomically(files: readonly AtomicFileWrite[]): Promise<void>;
   search(input: WorkspaceSearchInput): Promise<ExecResult>;
@@ -173,10 +175,6 @@ export class AtomicWriteConflictError extends Error {
     super('Atomic file changed before commit');
     this.name = 'AtomicWriteConflictError';
   }
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -548,21 +546,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       write: async (path, data, mode) => {
         await writeFile(path, data, mode === undefined ? undefined : { mode });
       },
-      replace: async ({ source, destination, expectedData }) => {
-        if (expectedData !== undefined) {
-          let currentData: Uint8Array;
-          try {
-            currentData = new Uint8Array(await readFile(destination));
-          } catch {
-            return 'conflict';
-          }
-          if (!bytesEqual(currentData, expectedData)) {
-            return 'conflict';
-          }
-        }
-        await rename(source, destination);
-        return 'replaced';
-      },
+      replace: rename,
       setMode: chmod,
       remove: async (path) => rm(path, { force: true }),
     };
@@ -676,6 +660,14 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     return new Uint8Array(await readFile(await resolveInRoot(this.root, path)));
   }
 
+  async readFileForUpdate(path: string): Promise<WorkspaceFileSnapshot> {
+    const target = await resolveInRoot(this.root, path);
+    if ((await lstat(target)).isSymbolicLink()) {
+      throw new Error(`Atomic file target must not be a symbolic link: ${path}`);
+    }
+    throw new AtomicWriteConflictError();
+  }
+
   async writeFile(path: string, data: Uint8Array): Promise<void> {
     const target = await resolveInRoot(this.root, path);
     await this.withAtomicCommit(async () => writeFile(target, data));
@@ -743,6 +735,10 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
       ),
     );
 
+    if (resolvedFiles.some((file) => file.expectedRevision !== undefined)) {
+      throw new AtomicWriteConflictError();
+    }
+
     const staged = await Promise.all(
       resolvedFiles.map(async (file) => {
         const temporary = resolve(dirname(file.target), `.zapp-atomic-${randomUUID()}`);
@@ -757,7 +753,6 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
           target: file.target,
           temporary,
           data: file.data,
-          expectedData: file.expectedData,
           original,
         };
       }),
@@ -772,33 +767,11 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
         }
       }
       await this.withAtomicCommit(async () => {
-        for (const file of staged) {
-          if (file.expectedData !== undefined) {
-            let currentData: Uint8Array;
-            try {
-              currentData = await this.atomicFileOperations.read(file.target);
-            } catch {
-              throw new AtomicWriteConflictError();
-            }
-            if (!bytesEqual(currentData, file.expectedData)) {
-              throw new AtomicWriteConflictError();
-            }
-          }
-        }
-
         const committed: typeof staged = [];
         try {
           for (const file of staged) {
             committed.push(file);
-            const replacement = await this.atomicFileOperations.replace({
-              source: file.temporary,
-              destination: file.target,
-              ...(file.expectedData === undefined ? {} : { expectedData: file.expectedData }),
-            });
-            if (replacement === 'conflict') {
-              committed.pop();
-              throw new AtomicWriteConflictError();
-            }
+            await this.atomicFileOperations.replace(file.temporary, file.target);
           }
         } catch (error: unknown) {
           const rollbackFailures: unknown[] = [];

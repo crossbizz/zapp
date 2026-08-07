@@ -28,11 +28,7 @@ interface TestAtomicFileOperations {
   read(path: string): Promise<Uint8Array>;
   metadata(path: string): Promise<{ mode: number; dev: number; ino: number }>;
   write(path: string, data: Uint8Array, mode?: number): Promise<void>;
-  replace(input: {
-    source: string;
-    destination: string;
-    expectedData?: Uint8Array;
-  }): Promise<'replaced' | 'conflict'>;
+  replace(source: string, destination: string): Promise<void>;
   setMode(path: string, mode: number): Promise<void>;
   remove(path: string): Promise<void>;
 }
@@ -45,24 +41,7 @@ const nodeAtomicFileOperations: TestAtomicFileOperations = {
   },
   write: async (path, data, mode) =>
     writeFile(path, data, mode === undefined ? undefined : { mode }),
-  replace: async ({ source, destination, expectedData }) => {
-    if (expectedData !== undefined) {
-      let currentData: Uint8Array;
-      try {
-        currentData = new Uint8Array(await readFile(destination));
-      } catch {
-        return 'conflict';
-      }
-      if (
-        currentData.byteLength !== expectedData.byteLength ||
-        currentData.some((byte, index) => byte !== expectedData[index])
-      ) {
-        return 'conflict';
-      }
-    }
-    await rename(source, destination);
-    return 'replaced';
-  },
+  replace: rename,
   setMode: chmod,
   remove: (path) => rm(path, { force: true }),
 };
@@ -282,36 +261,26 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     });
   });
 
-  it('rejects a target write in the final expected-state compare-to-replace window', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'zapp-atomic-final-window-'));
-    const target = join(root, 'target.txt');
-    const expected = new TextEncoder().encode('expected\n');
-    const patched = new TextEncoder().encode('patched\n');
-    const concurrent = new TextEncoder().encode('concurrent\n');
-    let atomicTargetWrites = 0;
-    const runtime = new MemoryWorkspaceRuntime(root, {
-      atomicFileOperations: {
-        ...nodeAtomicFileOperations,
-        replace: async (input) => {
-          await writeFile(input.destination, concurrent);
-          const result = await nodeAtomicFileOperations.replace(input);
-          if (result === 'replaced') atomicTargetWrites += 1;
-          return result;
-        },
-      },
-    });
+  it('fails closed when guarded writes lack a provider revision CAS', async () => {
+    await withWorkspace(async (_root, runtime) => {
+      await runtime.writeFile('target.txt', new TextEncoder().encode('expected\n'));
 
-    try {
-      await writeFile(target, expected);
-
+      await expect(runtime.readFileForUpdate('target.txt')).rejects.toBeInstanceOf(
+        AtomicWriteConflictError,
+      );
       await expect(
-        runtime.writeFilesAtomically([{ path: 'target.txt', data: patched, expectedData: expected }]),
+        runtime.writeFilesAtomically([
+          {
+            path: 'target.txt',
+            data: new TextEncoder().encode('patched\n'),
+            expectedRevision: 'unavailable-revision',
+          },
+        ]),
       ).rejects.toBeInstanceOf(AtomicWriteConflictError);
-      expect(atomicTargetWrites).toBe(0);
-      await expect(readFile(target)).resolves.toEqual(Buffer.from(concurrent));
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+      await expect(runtime.readFile('target.txt')).resolves.toEqual(
+        new TextEncoder().encode('expected\n'),
+      );
+    });
   });
 
   it('serializes ordinary runtime writes after an in-flight atomic replacement', async () => {
@@ -325,15 +294,14 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     const runtime = new MemoryWorkspaceRuntime(root, {
       atomicFileOperations: {
         ...nodeAtomicFileOperations,
-        replace: async (input) => {
+        replace: async (source, destination) => {
           events.push('replace-started');
           concurrentWrite = runtime.writeFile('target.txt', concurrent).then(() => {
             events.push('ordinary-write-completed');
           });
           await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
-          const result = await nodeAtomicFileOperations.replace(input);
+          await nodeAtomicFileOperations.replace(source, destination);
           events.push('replace-completed');
-          return result;
         },
       },
     });
@@ -342,7 +310,7 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       await writeFile(target, expected);
 
       await expect(
-        runtime.writeFilesAtomically([{ path: 'target.txt', data: patched, expectedData: expected }]),
+        runtime.writeFilesAtomically([{ path: 'target.txt', data: patched }]),
       ).resolves.toBeUndefined();
       await concurrentWrite;
 
@@ -683,12 +651,10 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       let commitCount = 0;
       const operations: TestAtomicFileOperations = {
         ...nodeAtomicFileOperations,
-        replace: async (input) => {
-          const result = await nodeAtomicFileOperations.replace(input);
-          if (result === 'conflict') return result;
+        replace: async (source, destination) => {
+          await nodeAtomicFileOperations.replace(source, destination);
           commitCount += 1;
           if (commitCount === failAfter) throw new Error(`commit ${String(failAfter)} failed`);
-          return result;
         },
       };
       const runtime = new MemoryWorkspaceRuntime(root, { atomicFileOperations: operations });
@@ -727,9 +693,8 @@ describe('MemoryWorkspaceRuntime path safety', () => {
       let commitFailed = false;
       const operations: TestAtomicFileOperations = {
         ...nodeAtomicFileOperations,
-        replace: async (input) => {
-          const result = await nodeAtomicFileOperations.replace(input);
-          if (result === 'conflict') return result;
+        replace: async (source, destination) => {
+          await nodeAtomicFileOperations.replace(source, destination);
           commitFailed = true;
           throw new Error('commit failed after rename');
         },

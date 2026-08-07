@@ -60,8 +60,9 @@ export interface WorkspaceRuntime {
     timeoutMs: number; pty?: boolean }): Promise<ExecResult>;          // { exitCode, stdout, stderr, durationMs, truncated, terminationReason?: "timeout" }
   execStream(input: ExecInput): AsyncIterable<ExecChunk>;              // { stream: "stdout"|"stderr", data, at }
   readFile(path: string): Promise<Uint8Array>;
+  readFileForUpdate(path: string): Promise<{ data: Uint8Array; revision: string }>; // fails closed unless the provider can enforce revision CAS across every mutation path
   writeFile(path: string, data: Uint8Array): Promise<void>;            // participates in the atomic commit serialization boundary
-  writeFilesAtomically(files: readonly { path: string; data: Uint8Array; expectedData?: Uint8Array }[]): Promise<void>; // aliases reject before staging; supplied prior bytes use preflight plus indivisible final compare-and-replace
+  writeFilesAtomically(files: readonly { path: string; data: Uint8Array; expectedRevision?: string }[]): Promise<void>; // guarded batches atomically validate all revisions and commit, or conflict with zero target writes
   search(input: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }): Promise<ExecResult>;
   listFiles(path: string, opts?: { glob?: string; maxDepth?: number }): Promise<FileEntry[]>;
   stat(path: string): Promise<FileStat>;
@@ -99,8 +100,10 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 
 ```ts
 POST /files/atomic-write
-  body: { files: Array<{ path: string; dataBase64: string; expectedDataBase64?: string }> }
+  body: { files: Array<{ path: string; dataBase64: string; expectedRevision?: string }> }
   200:  { ok: true }
+GET /files/update-snapshot?path=<percent-encoded workspace-relative path>
+  200:  { dataBase64: string; revision: string }
 POST /search
   body: { pattern: string; path: string; glob?: string; fixedStrings?: boolean; ignoreCase?: boolean }
   200:  ExecResult
@@ -113,29 +116,40 @@ POST /files/rename
 
 Every filesystem operation is descriptor-relative under the pinned workspace-root descriptor per ADR-0006/ADR-0013: walk parents without following links, reject leaf symlinks for atomic writes, stage/commit/rollback through pinned parent descriptors, run allowlisted `rg` against an inherited pinned target descriptor, delete with nonrecursive `unlinkat` semantics (`ENOENT` succeeds; directories reject), and rename with descriptor-relative atomic replace. Atomic-write preflight rejects lexical/canonical/same-inode duplicates plus initially absent names that the canonical parent filesystem treats as case-folding or Unicode-normalization aliases; capability probing/reservation occurs only in a hidden per-parent directory, creates none of the requested targets, and is cleaned before staging. Implements the WS-1 semantics server-side (the agent-level path guard remains defense in depth).
 
-Atomic-write commits and ordinary file writes are serialized together. When
-`expectedDataBase64` is present, WS-3 compares the decoded exact prior bytes while
-holding that boundary before the first target replacement, then performs each guarded
-target replacement through one descriptor-relative compare-and-replace operation with
-no intervening injectable move. A preflight mismatch returns the stable typed
-atomic-write conflict and writes no target; a final-window mismatch does not replace
-that target and rolls back any earlier batch replacement. The strict optional field
-exists only for compare-guarded batch writes and does not expose a generic filesystem
-operation.
+Atomic-write commits and ordinary file writes are serialized together. A guarded
+snapshot and batch use an opaque revision only when the backing provider offers an
+atomic revision CAS whose revision domain observes every mutation path, including
+workspace-agent exec/Git activity, other runtime instances, editors, and provider
+operations. The provider validates every expected revision and commits the complete
+batch at one linearization point; a mismatch returns the stable typed atomic-write
+conflict with zero target writes. Descriptor-relative byte comparison followed by
+rename, in-process queues, and advisory locks do not satisfy this contract. WS-3 must
+return the typed conflict for guarded snapshot/write requests when its backing
+provider cannot enforce the CAS. The strict revision fields exist only for guarded
+batch writes and do not expose a generic filesystem operation.
+
+**Blocking guarded-write acceptance:** fail-closed behavior is the safe unsupported
+fallback, not proof of production patch capability. WS-3/WS-4 cannot be marked
+complete until at least one production cloud runtime proves successful guarded patch
+commit plus deterministic final-window conflict/zero-write preservation while its
+revision domain covers exec, Git, editor, other-runtime, and provider mutations. If
+the selected provider exposes no such primitive, record WS-3 as blocked and obtain an
+approved architecture decision; do not substitute compare-then-rename or a
+non-compulsory lock.
 **Effort:** L
 
-- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for `writeFilesAtomically`, `search`, `deleteFile`, and `renameFile` against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
+- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for unguarded `writeFilesAtomically`, search, delete, rename, and unsupported guarded-write fail-closed behavior against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter; the blocking production-provider suite separately proves guarded revision CAS success and final-window conflict with zero target writes → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
 
 **Files:** Create: `services/sandbox-service/src/provider/modal.ts`, `src/app.ts`, `src/routes/workspaces.ts`, `test/integration/modal-provider.test.ts` (env-gated `MODAL_TOKEN_ID`)
-**Interfaces produced:** `ModalSandboxProvider implements CloudSandboxProvider` (FND-4): `createWorkspace` (image from lock file, resources from profile, tags, env allowlist, boot cmd, readiness = agent healthz poll ≤ 30 s p95 warm), `attachWorkspace` (by provider id — reattach after service restart), `terminateWorkspace`, `exec`/`readFile`/`writeFile`/`writeFilesAtomically`/`search`/`deleteFile`/`renameFile`/`startDevServer`/`restartDevServer` proxied through the exact WS-3 workspace-agent routes, `getStatus`. The provider client accepts only the WS-1 typed inputs, base64-encodes atomic bytes, validates every strict response before returning, and never exposes a generic agent URL, host path, filesystem flag, or arbitrary git/process escape hatch. Service routes `/internal/workspaces*` map CP-9 calls onto provider + `workspaces` table rows.
+**Interfaces produced:** `ModalSandboxProvider implements CloudSandboxProvider` (FND-4): `createWorkspace` (image from lock file, resources from profile, tags, env allowlist, boot cmd, readiness = agent healthz poll ≤ 30 s p95 warm), `attachWorkspace` (by provider id — reattach after service restart), `terminateWorkspace`, `exec`/`readFile`/`readFileForUpdate`/`writeFile`/`writeFilesAtomically`/`search`/`deleteFile`/`renameFile`/`startDevServer`/`restartDevServer` proxied through the exact WS-3 workspace-agent routes, `getStatus`. The provider client accepts only the WS-1 typed inputs, base64-encodes atomic bytes, validates every strict response before returning, and never exposes a generic agent URL, host path, filesystem flag, or arbitrary git/process escape hatch. Service routes `/internal/workspaces*` map CP-9 calls onto provider + `workspaces` table rows.
 
-The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and preserve its strict bodies/responses: `POST /internal/workspaces/:workspaceId/files/atomic-write`, `POST /internal/workspaces/:workspaceId/search`, `DELETE /internal/workspaces/:workspaceId/files?path=`, `POST /internal/workspaces/:workspaceId/files/rename`, `POST /internal/workspaces/:workspaceId/dev-server/start`, and `POST /internal/workspaces/:workspaceId/dev-server/restart`. The two dev-server routes accept exactly `{ contract: ExecutionContract }` and return the exact WS-3 supervisor response. The service resolves `workspaceId` to an attached provider sandbox; callers cannot supply provider IDs or agent origins.
+The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and preserve its strict bodies/responses: `GET /internal/workspaces/:workspaceId/files/update-snapshot?path=`, `POST /internal/workspaces/:workspaceId/files/atomic-write`, `POST /internal/workspaces/:workspaceId/search`, `DELETE /internal/workspaces/:workspaceId/files?path=`, `POST /internal/workspaces/:workspaceId/files/rename`, `POST /internal/workspaces/:workspaceId/dev-server/start`, and `POST /internal/workspaces/:workspaceId/dev-server/restart`. The two dev-server routes accept exactly `{ contract: ExecutionContract }` and return the exact WS-3 supervisor response. The service resolves `workspaceId` to an attached provider sandbox; callers cannot supply provider IDs or agent origins. Guarded snapshot/write routes return the typed atomic-write conflict unless the attached provider supplies the revision CAS bound by WS-1.
 **Effort:** XL → split at execution into 4a (create/terminate/status + DB rows), 4b (agent client proxying), 4c (attach/reattach recovery). **[expand-at-execution]** for 4b/4c.
 
 - [ ] **Step (4a) failing integration test:** create workspace (dev env, small profile) → row status walks `requested→provisioning→started→ready`; `getStatus` matches Modal; terminate → `terminated`, Modal sandbox gone. Idempotent create by `(runId, taskId, purpose)` key returns existing.
-- [ ] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared env-gated Modal conformance suite for atomic write (including alias, leaf-symlink, rollback, cleanup, and mode guarantees), search confinement/zero matches, repeated file-only deletion, rename replace/same-object rejection, and both managed dev-server start and restart. Start/restart responses must carry identical supervisor ownership/readiness evidence; the Modal and local HTTP adapters both reject an unrelated listener as readiness.
+- [ ] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared env-gated Modal conformance suite for atomic write (including guarded revision-CAS success, final-window conflict with zero target writes and preserved concurrent content, alias, leaf-symlink, rollback, cleanup, and mode guarantees), search confinement/zero matches, repeated file-only deletion, rename replace/same-object rejection, and both managed dev-server start and restart. The guarded suite must exercise mutation through exec, Git, another runtime attachment, and provider operations; any uncovered writer leaves WS-4 blocked rather than weakening the contract. Start/restart responses must carry identical supervisor ownership/readiness evidence; the Modal and local HTTP adapters both reject an unrelated listener as readiness.
 - [ ] Commit(s): `feat(sandbox-service): Modal workspace create/status/terminate`, `... agent proxy exec/files`, `... reattach recovery`
 
 ### Task WS-5: Git in sandbox
