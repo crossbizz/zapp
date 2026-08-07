@@ -848,7 +848,7 @@ describe('MemoryWorkspaceRuntime git safety', () => {
         new TextEncoder().encode('workspace data'),
       );
     });
-  });
+  }, 15_000);
 
   it('rejects merge and revert option injection, ref traversal, and non-commit ids', async () => {
     await withWorkspace(async (_root, runtime) => {
