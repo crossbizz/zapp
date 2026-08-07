@@ -33,6 +33,11 @@ interface TestAtomicFileOperations {
   remove(path: string): Promise<void>;
 }
 
+// This fixture runs a sequence of independently bounded real Git processes.
+// Its outer envelope must not preempt those per-command failure diagnostics
+// when the full cold gate is also building, browser-testing, and using Forgejo.
+const REAL_GIT_FIXTURE_TIMEOUT_MS = 60_000;
+
 const nodeAtomicFileOperations: TestAtomicFileOperations = {
   read: async (path) => new Uint8Array(await readFile(path)),
   metadata: async (path) => {
@@ -848,7 +853,7 @@ describe('MemoryWorkspaceRuntime git safety', () => {
         new TextEncoder().encode('workspace data'),
       );
     });
-  }, 15_000);
+  }, REAL_GIT_FIXTURE_TIMEOUT_MS);
 
   it('rejects merge and revert option injection, ref traversal, and non-commit ids', async () => {
     await withWorkspace(async (_root, runtime) => {
