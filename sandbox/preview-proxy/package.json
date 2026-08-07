@@ -1,0 +1,44 @@
+{
+  "name": "@zapp/preview-proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    },
+    "./capture": {
+      "types": "./dist/capture.d.ts",
+      "default": "./dist/capture.js"
+    },
+    "./inject/zapp-client.js": "./dist/inject/zapp-client.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && mkdir -p dist/inject && cp src/inject/zapp-client.js dist/inject/zapp-client.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "pnpm build && vitest run"
+  },
+  "dependencies": {
+    "@zapp/contracts": "workspace:*",
+    "http-proxy": "^1.18.1",
+    "parse5-html-rewriting-stream": "8.0.1",
+    "playwright-core": "1.62.1",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/http-proxy": "^1.17.16",
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.13",
+    "express": "^5.1.0",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.7"
+  }
+}

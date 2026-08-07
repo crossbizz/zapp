@@ -61,7 +61,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WS-7 Checkpoints + snapshot-free restore
 - [ ] WS-8 Resource profiles + cost recorder
 - [ ] WS-9 Cache volumes + branch locks
-- [ ] WS-10 Preview proxy + capture client
+- [x] WS-10 Preview proxy + capture client
 - [ ] WS-11 Secret injection + network profiles + redaction
 - [ ] WS-12 Preview tokens + share records
 ### Plan 06
