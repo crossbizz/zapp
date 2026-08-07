@@ -42,6 +42,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-1 Deterministic cold-state local validation (Turbo ordering + test isolation; CI billing-blocked)
 - [x] M1-GATE-2 Bound real-process test fixtures under full cold-gate contention (CI billing-blocked)
 - [x] M1-GATE-3 Bound workspace-runtime real-Git fixture under local Forgejo cold-gate load (CI billing-blocked)
+- [x] M1-GATE-4 Remove disposable upstream response from the allowed-model web fixture (CI billing-blocked)
 
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes

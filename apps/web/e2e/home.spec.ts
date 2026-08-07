@@ -179,34 +179,6 @@ async function mockCreation(
   return { projectRequests, runRequests };
 }
 
-async function mockAllowedModels(page: Page): Promise<void> {
-  await page.route(`${apiBaseUrl}/v1/me`, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json() as {
-      memberships: {
-        organization: { id: string };
-        role: string;
-        status: string;
-      }[];
-      user: unknown;
-    };
-    await route.fulfill({
-      response,
-      json: {
-        ...body,
-        memberships: body.memberships.map((membership) =>
-          membership.organization.id === 'org-alpha'
-            ? {
-                ...membership,
-                allowedModels: [explicitModel, 'openai:gpt_5.1-mini'],
-                role: 'builder',
-              }
-            : { ...membership, allowedModels: [] }),
-      },
-    });
-  });
-}
-
 async function enableMobileApp(page: Page): Promise<void> {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'posthog', {
@@ -398,7 +370,6 @@ test('exposes attachment, mode, model-policy, and advanced controls', async ({ p
 
 test('renders only valid policy model radios and submits the explicit generated-SDK model', async ({ page }) => {
   const observed = await mockCreation(page);
-  await mockAllowedModels(page);
   await signIn(page);
 
   await openModelControls(page);
@@ -675,7 +646,6 @@ test('surfaces failed creation with all four standard recovery actions', async (
 
 test('retries frozen appType and model with the original distinct idempotency keys', async ({ page }) => {
   const observed = await mockCreation(page, { failFirstRun: true });
-  await mockAllowedModels(page);
   await enableMobileApp(page);
   await signIn(page);
 
