@@ -1,0 +1,35 @@
+{
+  "name": "@zapp/agent-policies",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/approval.d.ts",
+      "default": "./dist/approval.js"
+    },
+    "./injection": {
+      "types": "./dist/injection.d.ts",
+      "default": "./dist/injection.js"
+    },
+    "./budgets": {
+      "types": "./dist/budgets.d.ts",
+      "default": "./dist/budgets.js"
+    },
+    "./prompts/*": "./prompts/*.md"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@zapp/contracts": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "vitest": "^3.2.7"
+  }
+}

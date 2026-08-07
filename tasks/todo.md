@@ -75,7 +75,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-2 Routing/retry/fallback
 - [ ] AR-3 Usage telemetry + budget cutoff
 - [x] AR-4 agent-tools registry (PRD §16.1 complete)
-- [ ] AR-5 agent-policies + injection defense + role prompts
+- [x] AR-5 agent-policies + injection defense + role prompts
 - [ ] AR-6 Session loop
 - [x] AR-7 Context builder + compaction
 - [ ] AR-8 M1 durable chat run on Temporal
