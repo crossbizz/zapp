@@ -1,7 +1,8 @@
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 const modalState = vi.hoisted(() => ({
   builtLayerCount: 0,
+  clientEnvironments: [] as string[],
   layers: [] as Array<{ commands: string[]; params: unknown }>,
   publishedLookups: 0,
   secretLookups: [] as Array<{ name: string; params: unknown }>,
@@ -29,6 +30,12 @@ vi.mock('modal', () => {
 
   return {
     ModalClient: class {
+      constructor(params: { environment?: string }) {
+        modalState.clientEnvironments.push(
+          params.environment ?? process.env.MODAL_ENVIRONMENT ?? '',
+        );
+      }
+
       readonly apps = {
         fromName: () => Promise.resolve({ appId: 'ap-test' }),
       };
@@ -58,9 +65,40 @@ import { createModalImagePublisher } from '../src/provider/modal.js';
 
 beforeEach(() => {
   modalState.builtLayerCount = 0;
+  modalState.clientEnvironments.length = 0;
   modalState.layers.length = 0;
   modalState.publishedLookups = 0;
   modalState.secretLookups.length = 0;
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+test('binds the SDK client to the physical environment instead of the logical profile default', async () => {
+  vi.stubEnv('MODAL_ENVIRONMENT', 'dev');
+  const publisher = createModalImagePublisher({
+    credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+  });
+
+  await publisher.publishImage({
+    environment: 'zapp-dev',
+    appName: 'zapp-workspaces',
+    imageName: 'forge-node-base',
+    tag: '2026-08-07-abcdef0',
+    publishedName: 'forge-node-base:2026-08-07-abcdef0',
+    recipe: {
+      imageName: 'forge-node-base',
+      base: {
+        kind: 'registry',
+        ref: 'node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3',
+      },
+      layers: [{ kind: 'plain', commands: ['RUN setup'] }],
+      files: [],
+    },
+  });
+
+  expect(modalState.clientEnvironments).toEqual(['zapp-dev']);
 });
 
 test('scopes the named source-read secret through partial-clone checkout and only its fetch layer', async () => {

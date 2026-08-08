@@ -16,6 +16,7 @@ import {
   VerifyPublishedImageInputSchema,
   type ImageRecipe,
   type ModalCredentials,
+  type ModalEnvironment,
   type ModalImagePublisher,
   type SandboxTags,
   type SourceFetchRevision,
@@ -97,7 +98,7 @@ export interface ModalSdkPort {
 
 interface ModalImagePublisherOptions {
   readonly credentials?: ModalCredentials;
-  readonly sdkFactory?: () => ModalSdkPort;
+  readonly sdkFactory?: (environment: ModalEnvironment) => ModalSdkPort;
 }
 
 function shellQuote(value: string): string {
@@ -172,11 +173,12 @@ function credentialsFromEnvironment(): ModalCredentials {
   });
 }
 
-function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
+function createSdkPort(credentials: ModalCredentials, environment: ModalEnvironment): ModalSdkPort {
   const parsedCredentials = ModalCredentialsSchema.parse(credentials);
   const client = new ModalClient({
     tokenId: parsedCredentials.tokenId,
     tokenSecret: parsedCredentials.tokenSecret,
+    environment,
   });
 
   return {
@@ -679,12 +681,13 @@ export function createModalImagePublisher(
 ): ModalImagePublisher {
   const sdkFactory =
     options.sdkFactory ??
-    (() => createSdkPort(options.credentials ?? credentialsFromEnvironment()));
+    ((environment) =>
+      createSdkPort(options.credentials ?? credentialsFromEnvironment(), environment));
 
   return {
     async publishImage(untrustedInput) {
       const input = PublishImageInputSchema.parse(untrustedInput);
-      const sdk = sdkFactory();
+      const sdk = sdkFactory(input.environment);
       try {
         const digest = ImageDigestSchema.parse(
           await sdk.buildImage({
@@ -722,9 +725,10 @@ export function createModalImagePublisher(
     },
 
     async smokeImage(untrustedInput) {
-      const sdk = sdkFactory();
+      const input = SmokeImageInputSchema.parse(untrustedInput);
+      const sdk = sdkFactory(input.environment);
       try {
-        return await runSmoke(sdk, untrustedInput);
+        return await runSmoke(sdk, input);
       } finally {
         sdk.close();
       }
@@ -732,7 +736,7 @@ export function createModalImagePublisher(
 
     async verifyPublishedImage(untrustedInput) {
       const input = VerifyPublishedImageInputSchema.parse(untrustedInput);
-      const sdk = sdkFactory();
+      const sdk = sdkFactory(input.environment);
       try {
         const resolved = await sdk.resolvePublishedImage({
           environment: input.environment,
