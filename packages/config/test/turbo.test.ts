@@ -24,6 +24,9 @@ const turboConfig = JSON.parse(
 const webManifest = JSON.parse(
   readFileSync(new URL('../../../apps/web/package.json', import.meta.url), 'utf8'),
 ) as PackageManifest;
+const rootManifest = JSON.parse(
+  readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+) as PackageManifest;
 
 describe('Turbo task graph', () => {
   it('runs each package build before its typecheck', () => {
@@ -43,6 +46,12 @@ describe('Turbo task graph', () => {
     expect(webManifest.scripts?.['test']).toBe('playwright test');
     expect(webManifest.scripts?.['test:e2e']).toBe(
       '../../node_modules/.bin/turbo run test --filter=@zapp/web',
+    );
+  });
+
+  it('serializes integration packages that reset the shared local database', () => {
+    expect(rootManifest.scripts?.['verify']).toContain(
+      'turbo run test:integration --filter=!@zapp/desktop --concurrency=1',
     );
   });
 });

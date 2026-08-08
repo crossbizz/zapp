@@ -285,7 +285,16 @@ North star (PRD §37.1): **verified production releases per active org per month
 
 ## Execution log
 
+### M1-GATE-7 — Serialize shared-database integration suites
+
+**Files:** `package.json`, `packages/config/test/turbo.test.ts`, `tasks/todo.md`, this plan
+
+- [x] **Step 1:** Failing wiring test: the local `pnpm verify` integration phase must run package suites one at a time because the DB and control-api suites both reset the same development database.
+- [ ] **Step 2:** Add the narrow Turbo concurrency bound, then run the focused config suite and the complete credentialed local gate.
+- [ ] **Step 3:** Commit: `fix(gate): serialize shared-database integration suites`
+
 - 2026-08-03: Plan set authored from PRD v1.1. Not yet executed.
+- 2026-08-07 M1-GATE-7 BLOCKED: serialization and its focused regression are green, but the complete local gate exposes a separate stale git-service unit assertion that still requires the disabled GitHub Actions live-backup job; M1-GATE-8 must move that proof to the local gate before this task can be signed off.
 - 2026-08-03: Stack decisions finalized by product owner: **Stytch** (auth, supersedes WorkOS rec), **Neon** (confirmed), **Stripe** (confirmed), **Flexprice** (metering/credits/rating), **OTel → Grafana Cloud** incl. Faro + OnCall (supersedes Sentry), **PostHog** (analytics + feature flags). Plans 00/01/02/03/04/05/07/08/10, README, and tracker updated accordingly.
 - 2026-08-07: M1-GATE-1 done — made the mandated cold local gate deterministic by ordering same-package build before typecheck, declaring web's control-api test dependency, keeping Turbo-internal web tests artifact-read-only, and bounding the real-Git empty-restore test; forced local gate 53/53, while GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-2 done — gave two real child-process fixtures finite 15-second test budgets while preserving five-second production Git deadlines; the combined WS-10 forced cold gate passed 57/57 locally, while GitHub Actions remains unverified because billing prevents job startup.
