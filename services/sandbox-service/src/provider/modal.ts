@@ -45,6 +45,7 @@ const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 const PreviewProxyHealthSchema = z.object({ status: z.literal('ok') }).strict();
 const ExplicitKillProbeFailurePhaseSchema = z.enum([
   'started_wait',
+  'request_completed_before_started',
   'identity_parse',
   'kill_request',
   'stream_completion',
@@ -61,6 +62,8 @@ type ExplicitKillProbeFailurePhase = z.infer<
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 const HEALTH_PROBE_INTERVAL_MS = 250;
+const SCRIPTED_EXECUTION_TIMEOUT_MS = 30_000;
+const EXPLICIT_KILL_START_POLL_INTERVAL_MS = 25;
 
 export interface ModalSdkBuildInput {
   readonly environment: 'zapp-dev' | 'zapp-staging' | 'zapp-prod';
@@ -485,14 +488,16 @@ function agentRequestScript(
   const detachedBody = JSON.stringify({
     cmd: 'sh',
     args: ['-lc', detachedChildCommand(`/tmp/zapp-${scenario}-escaped`)],
-    timeoutMs: 30_000,
+    timeoutMs: SCRIPTED_EXECUTION_TIMEOUT_MS,
     pty,
   });
   if (label === 'disconnect') {
     return `set -eu; rm -f ${output}; set +e; curl --max-time 0.25 --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output}; status=$?; set -e; test "$status" -ne 0`;
   }
 
-  return `set -eu; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; started=false; for _ in $(seq 1 200); do if grep -q '"type":"started"' ${output}; then started=true; break; fi; sleep 0.025; done; test "$started" = true || ${explicitKillPhaseFailure('started_wait')}; pid=$(jq -ser 'map(select(.type == "started"))[0].pid' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; generation=$(jq -ser 'map(select(.type == "started"))[0].executionId' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; test -n "$pid" || ${explicitKillPhaseFailure('identity_parse')}; test -n "$generation" || ${explicitKillPhaseFailure('identity_parse')}; kill_body=$(printf '{"executionId":"%s"}' "$generation"); kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST --data "$kill_body" "http://127.0.0.1:8877/exec/$pid/kill") || ${explicitKillPhaseFailure('kill_request')}; wait "$request_pid" || ${explicitKillPhaseFailure('stream_completion')}; test "$(printf %s "$kill_result" | jq -r .killed)" = 'true' || ${explicitKillPhaseFailure('kill_acknowledgement')}; exit_code=$(jq -ser 'map(select(.type == "exit"))[-1].exitCode' ${output}) || ${explicitKillPhaseFailure('exit_record')}; test "$exit_code" -ne 0 || ${explicitKillPhaseFailure('exit_code_validation')}`;
+  const pollIntervalSeconds = (EXPLICIT_KILL_START_POLL_INTERVAL_MS / 1_000).toFixed(3);
+  const executionTimeoutSeconds = SCRIPTED_EXECUTION_TIMEOUT_MS / 1_000;
+  return `set -eu; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; sleep ${String(executionTimeoutSeconds)} & start_deadline_pid=$!; started=false; request_completed=false; deadline_alive=true; while :; do if grep -q '"type":"started"' ${output}; then started=true; break; fi; request_alive=true; if ! kill -0 "$request_pid" 2>/dev/null; then request_alive=false; fi; deadline_alive=true; if ! kill -0 "$start_deadline_pid" 2>/dev/null; then deadline_alive=false; fi; if test "$request_alive" = false; then if grep -q '"type":"started"' ${output}; then started=true; elif test "$deadline_alive" = true; then request_completed=true; fi; break; fi; if test "$deadline_alive" = false; then break; fi; sleep ${pollIntervalSeconds}; done; if test "$deadline_alive" = true; then kill "$start_deadline_pid" 2>/dev/null || true; fi; wait "$start_deadline_pid" 2>/dev/null || true; test "$request_completed" = false || ${explicitKillPhaseFailure('request_completed_before_started')}; test "$started" = true || ${explicitKillPhaseFailure('started_wait')}; pid=$(jq -ser 'map(select(.type == "started"))[0].pid' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; generation=$(jq -ser 'map(select(.type == "started"))[0].executionId' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; test -n "$pid" || ${explicitKillPhaseFailure('identity_parse')}; test -n "$generation" || ${explicitKillPhaseFailure('identity_parse')}; kill_body=$(printf '{"executionId":"%s"}' "$generation"); kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST --data "$kill_body" "http://127.0.0.1:8877/exec/$pid/kill") || ${explicitKillPhaseFailure('kill_request')}; wait "$request_pid" || ${explicitKillPhaseFailure('stream_completion')}; test "$(printf %s "$kill_result" | jq -r .killed)" = 'true' || ${explicitKillPhaseFailure('kill_acknowledgement')}; exit_code=$(jq -ser 'map(select(.type == "exit"))[-1].exitCode' ${output}) || ${explicitKillPhaseFailure('exit_record')}; test "$exit_code" -ne 0 || ${explicitKillPhaseFailure('exit_code_validation')}`;
 }
 
 async function probeScriptedLifecycle(

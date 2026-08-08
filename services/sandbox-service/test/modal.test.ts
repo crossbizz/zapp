@@ -668,6 +668,195 @@ describe('Modal image provider facade', () => {
     }
   });
 
+  test('observes an explicit-kill started record after the old polling boundary', async () => {
+    const commands: string[][] = [];
+    const sandbox = successfulSandbox(commands, () => undefined);
+    const defaultExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      const script = command[2] ?? '';
+      if (
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        script.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        script.includes('request_pid=$!')
+      ) {
+        await defaultExec(command);
+        const fakeCommands = `
+poll_count=0
+curl() {
+  case "$*" in
+    */kill*) printf '%s\\n' '{"killed":true}' ;;
+  esac
+}
+sleep() {
+  poll_count=$((poll_count + 1))
+  if [ "$poll_count" -eq 201 ]; then
+    printf '%s\\n' '{"type":"started","pid":4242,"executionId":"execution-boundary-sentinel"}' '{"type":"exit","exitCode":143}' > /tmp/zapp-explicit-kill-buffered.ndjson
+  fi
+}
+kill() {
+  case "$1" in
+    -0) return 0 ;;
+    *) return 9 ;;
+  esac
+}
+jq() {
+  case "$*" in
+    *.pid*) printf '%s\\n' '4242' ;;
+    *.executionId*) printf '%s\\n' 'execution-boundary-sentinel' ;;
+    *.killed*) printf '%s\\n' 'true' ;;
+    *.exitCode*) printf '%s\\n' '143' ;;
+    *) return 9 ;;
+  esac
+}
+`;
+        const execution = spawnSync('/bin/dash', ['-c', `${fakeCommands}\n${script}`], {
+          encoding: 'utf8',
+        });
+        return {
+          exitCode: execution.status ?? 127,
+          stdout: execution.stdout,
+          stderr: execution.stderr,
+        };
+      }
+      return defaultExec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).resolves.toEqual(expect.objectContaining({ terminated: true }));
+  });
+
+  test('surfaces request completion before explicit-kill started observation', async () => {
+    const commands: string[][] = [];
+    const sandbox = successfulSandbox(commands, () => undefined);
+    const defaultExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      const script = command[2] ?? '';
+      if (
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        script.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        script.includes('request_pid=$!')
+      ) {
+        const fakeCommands = `
+curl() { return 0; }
+grep() { return 1; }
+kill() {
+  if [ "$1" = '-0' ]; then
+    test "$2" != "$request_pid"
+    return
+  fi
+  return 9
+}
+sleep() { return 77; }
+`;
+        const execution = spawnSync('/bin/dash', ['-c', `${fakeCommands}\n${script}`], {
+          encoding: 'utf8',
+        });
+        return {
+          exitCode: execution.status ?? 127,
+          stdout: execution.stdout,
+          stderr: execution.stderr,
+        };
+      }
+      return defaultExec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).rejects.toThrow(
+      'explicit-kill-buffered cleanup probe failed with exit code 1 (phase: request_completed_before_started)',
+    );
+  });
+
+  test('preserves started-wait when the explicit-kill request completes at the deadline', async () => {
+    const commands: string[][] = [];
+    const sandbox = successfulSandbox(commands, () => undefined);
+    const defaultExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      const script = command[2] ?? '';
+      if (
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        script.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        script.includes('request_pid=$!')
+      ) {
+        const fakeCommands = `
+poll_count=0
+curl() { return 0; }
+grep() { return 1; }
+seq() { printf '%s\\n' '0' '1200'; }
+kill() {
+  if [ "$1" = '-0' ]; then
+    test "$poll_count" -eq 0
+    return
+  fi
+  return 9
+}
+sleep() { poll_count=$((poll_count + 1)); }
+`;
+        const execution = spawnSync('/bin/dash', ['-c', `${fakeCommands}\n${script}`], {
+          encoding: 'utf8',
+        });
+        return {
+          exitCode: execution.status ?? 127,
+          stdout: execution.stdout,
+          stderr: execution.stderr,
+        };
+      }
+      return defaultExec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).rejects.toThrow(
+      'explicit-kill-buffered cleanup probe failed with exit code 1 (phase: started_wait)',
+    );
+  });
+
   test('surfaces the closed kill-acknowledgement phase from the explicit-kill dash script', async () => {
     const commands: string[][] = [];
     const sandbox = successfulSandbox(commands, () => undefined);
