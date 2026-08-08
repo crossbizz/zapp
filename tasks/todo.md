@@ -79,9 +79,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] AR-3 Usage telemetry + budget cutoff
 - [x] AR-4 agent-tools registry (PRD §16.1 complete)
 - [x] AR-5 agent-policies + injection defense + role prompts
-- [ ] AR-6 Session loop
+- [x] AR-6 Session loop
 - [x] AR-7 Context builder + compaction
-- [ ] AR-8 M1 durable chat run on Temporal
+- [x] AR-8 M1 durable chat run on Temporal
 ### Plan 08 — Web core
 - [x] WEB-1 Next scaffold + session + org context
 - [x] WEB-2 packages/ui design system (Next+Vite)
