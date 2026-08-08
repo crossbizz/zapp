@@ -1,6 +1,18 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  link,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -193,6 +205,65 @@ describe('descriptor-relative native workspace helpers', () => {
   test('build emits executable native helper and launcher binaries', async () => {
     await expect(access(PATH_HELPER, constants.X_OK)).resolves.toBeUndefined();
     await expect(access(EXEC_LAUNCHER, constants.X_OK)).resolves.toBeUndefined();
+  });
+
+  test.each([
+    {
+      name: 'lexical alias',
+      args: ['2', 'target.txt', '3', './target.txt', '3'],
+      input: 'onetwo',
+      exitCode: 66,
+    },
+    {
+      name: 'same-inode alias',
+      args: ['2', 'target.txt', '3', 'hard-alias.txt', '3'],
+      input: 'onetwo',
+      exitCode: 66,
+    },
+    {
+      name: 'canonical parent-symlink alias',
+      args: ['2', 'real/canonical.txt', '3', 'parent-alias/canonical.txt', '3'],
+      input: 'onetwo',
+      exitCode: process.platform === 'linux' ? 65 : 66,
+    },
+    {
+      name: 'leaf symlink',
+      args: ['1', 'leaf-alias.txt', '3'],
+      input: 'two',
+      exitCode: 66,
+    },
+  ])('returns a typed native exit for an atomic $name conflict', async ({ args, input, exitCode }) => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'zapp-native-atomic-alias-'));
+    const workspaceRoot = join(fixtureRoot, 'workspace');
+    await mkdir(join(workspaceRoot, 'real'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
+    await link(join(workspaceRoot, 'target.txt'), join(workspaceRoot, 'hard-alias.txt'));
+    await symlink('target.txt', join(workspaceRoot, 'leaf-alias.txt'));
+    await writeFile(join(workspaceRoot, 'real', 'canonical.txt'), 'canonical-before');
+    await symlink('real', join(workspaceRoot, 'parent-alias'));
+    const helper = runPathHelper(
+      ['atomic-write', workspaceRoot, ...args],
+      process.env,
+      Buffer.from(input),
+    );
+
+    try {
+      const result = await helper.completion;
+      expect(result.exitCode, result.stderr.toString('utf8')).toBe(exitCode);
+      expect(result.stderr).toEqual(Buffer.alloc(0));
+      expect(await readFile(join(workspaceRoot, 'target.txt'), 'utf8')).toBe('before');
+      expect(await readFile(join(workspaceRoot, 'real', 'canonical.txt'), 'utf8')).toBe(
+        'canonical-before',
+      );
+      expect((await lstat(join(workspaceRoot, 'target.txt'))).mode & 0o777).toBe(0o640);
+      expect((await lstat(join(workspaceRoot, 'leaf-alias.txt'))).isSymbolicLink()).toBe(true);
+      expect(
+        (await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-')),
+      ).toEqual([]);
+    } finally {
+      helper.kill();
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   test('reads from the pinned parent descriptor after its pathname is swapped to an outside symlink', async () => {

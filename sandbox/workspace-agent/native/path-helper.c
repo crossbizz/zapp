@@ -685,6 +685,7 @@ static int run_atomic_write(int argc, char **argv) {
     const char *path = argv[4 + index * 2];
     if (parse_size(argv[5 + index * 2], &entries[index].length) != 0 ||
         open_parent_beneath(root_fd, path, &entries[index].parent_fd, &entries[index].leaf, &path_violation) != 0) {
+      if (errno == ENOTDIR) path_violation = true;
       result = path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
       goto cleanup;
     }

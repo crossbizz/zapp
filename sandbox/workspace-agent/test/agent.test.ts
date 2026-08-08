@@ -640,33 +640,67 @@ describe('workspace-agent RPC daemon', () => {
     await expect(readFile(join(workspaceRoot, 'guarded.txt'), 'utf8')).resolves.toBe('before');
   });
 
-  test('rejects atomic aliases and leaf symlinks before staging while preserving file mode', async () => {
-    await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
-    await link(join(workspaceRoot, 'target.txt'), join(workspaceRoot, 'hard-alias.txt'));
-    await symlink('target.txt', join(workspaceRoot, 'leaf-alias.txt'));
-
-    for (const files of [
-      [
+  test.each([
+    {
+      name: 'lexical alias',
+      files: [
         { path: 'target.txt', dataBase64: Buffer.from('one').toString('base64') },
         { path: './target.txt', dataBase64: Buffer.from('two').toString('base64') },
       ],
-      [
+    },
+    {
+      name: 'same-inode alias',
+      files: [
         { path: 'target.txt', dataBase64: Buffer.from('one').toString('base64') },
         { path: 'hard-alias.txt', dataBase64: Buffer.from('two').toString('base64') },
       ],
-      [{ path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') }],
-    ]) {
-      const rejected = await requireApp().inject({
-        method: 'POST',
-        url: '/files/atomic-write',
-        headers: authorization(),
-        payload: { files },
-      });
-      expect(rejected.statusCode).toBe(400);
-      await expect(readFile(join(workspaceRoot, 'target.txt'), 'utf8')).resolves.toBe('before');
-      expect((await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
-    }
+    },
+    {
+      name: 'canonical parent-symlink alias',
+      files: [
+        { path: 'real/canonical.txt', dataBase64: Buffer.from('one').toString('base64') },
+        {
+          path: 'parent-alias/canonical.txt',
+          dataBase64: Buffer.from('two').toString('base64'),
+        },
+      ],
+    },
+    {
+      name: 'leaf symlink',
+      files: [
+        { path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') },
+      ],
+    },
+  ])('returns typed HTTP 400 for an atomic $name conflict with zero writes', async ({ files }) => {
+    await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
+    await link(join(workspaceRoot, 'target.txt'), join(workspaceRoot, 'hard-alias.txt'));
+    await symlink('target.txt', join(workspaceRoot, 'leaf-alias.txt'));
+    await mkdir(join(workspaceRoot, 'real'));
+    await writeFile(join(workspaceRoot, 'real', 'canonical.txt'), 'canonical-before');
+    await symlink('real', join(workspaceRoot, 'parent-alias'));
 
+    const rejected = await requireApp().inject({
+      method: 'POST',
+      url: '/files/atomic-write',
+      headers: authorization(),
+      payload: { files },
+    });
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: 'bad_request' });
+    await expect(readFile(join(workspaceRoot, 'target.txt'), 'utf8')).resolves.toBe('before');
+    await expect(readFile(join(workspaceRoot, 'real', 'canonical.txt'), 'utf8')).resolves.toBe(
+      'canonical-before',
+    );
+    expect((await lstat(join(workspaceRoot, 'target.txt'))).mode & 0o777).toBe(0o640);
+    expect((await lstat(join(workspaceRoot, 'leaf-alias.txt'))).isSymbolicLink()).toBe(true);
+    expect(
+      (await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-')),
+    ).toEqual([]);
+  });
+
+  test('preserves file mode on a successful atomic replacement', async () => {
+    await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
     const written = await requireApp().inject({
       method: 'POST',
       url: '/files/atomic-write',
@@ -705,6 +739,7 @@ describe('workspace-agent RPC daemon', () => {
       });
 
       expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: 'internal_error' });
       await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe('first-before');
       await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe('second-before');
       expect((await lstat(join(workspaceRoot, 'rollback-first.txt'))).mode & 0o777).toBe(0o640);
