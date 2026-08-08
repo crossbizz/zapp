@@ -3,8 +3,12 @@ import {
   ImageRecipeSchema,
   type ImageRecipe,
 } from '@zapp/sandbox-service/provider-types';
-import browserPackage from './browser/package.json' with { type: 'json' };
 import browserPackageLock from './browser/package-lock.json' with { type: 'json' };
+import {
+  IMAGE_BUILD_CONFIG,
+  ImageBuildConfigSchema,
+  type ImageBuildConfig,
+} from './config.js';
 
 const BROWSER_SIDECAR = `#!/usr/bin/env bash
 set -euo pipefail
@@ -55,8 +59,31 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
 }
 `;
 
-export function createForgeWebTestRecipe(untrustedBaseDigest: string): ImageRecipe {
+export function createForgeWebTestRecipe(
+  untrustedBaseDigest: string,
+  untrustedConfig: ImageBuildConfig = IMAGE_BUILD_CONFIG,
+): ImageRecipe {
   const baseDigest = ImageDigestSchema.parse(untrustedBaseDigest);
+  const config = ImageBuildConfigSchema.parse(untrustedConfig);
+  const lockRoot = browserPackageLock.packages[''];
+  const configuredDependencies = {
+    '@axe-core/cli': config.webTest.axeCoreCli,
+    playwright: config.webTest.playwright,
+  };
+  if (
+    lockRoot.name !== config.webTest.packageName ||
+    lockRoot.version !== config.webTest.packageVersion ||
+    lockRoot.dependencies.playwright !== configuredDependencies.playwright ||
+    lockRoot.dependencies['@axe-core/cli'] !== configuredDependencies['@axe-core/cli']
+  ) {
+    throw new Error('Browser package lock does not match image configuration');
+  }
+  const browserPackage = {
+    name: config.webTest.packageName,
+    version: config.webTest.packageVersion,
+    private: true,
+    dependencies: configuredDependencies,
+  };
 
   return ImageRecipeSchema.parse({
     imageName: 'forge-web-test',

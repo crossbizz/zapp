@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
-import { FORGE_NODE_BASE_IMAGE, createForgeNodeBaseRecipe } from '../images/forge-node-base.js';
+import { IMAGE_BUILD_CONFIG } from '../images/config.js';
+import { createForgeNodeBaseRecipe } from '../images/forge-node-base.js';
 import { createForgeWebTestRecipe } from '../images/forge-web-test.js';
 
 const SOURCE_REVISION = {
@@ -7,16 +8,67 @@ const SOURCE_REVISION = {
   commitSha: '0123456789abcdef0123456789abcdef01234567',
 } as const;
 
+const ALTERNATE_CONFIG = {
+  version: 1,
+  node: {
+    baseImage:
+      'node:22.24.0-bookworm-slim@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    debianSnapshot: '20260801T000000Z',
+    packageManagers: { pnpm: '9.16.0', yarn: '1.22.23' },
+  },
+  webTest: {
+    packageName: 'zapp-modal-browser-runtime-test',
+    packageVersion: '0.0.1',
+    playwright: '1.63.0',
+    axeCoreCli: '4.13.0',
+  },
+} as const;
+
 describe('forge-node-base image policy', () => {
+  test('validates configuration and consumes every pinned recipe assumption', () => {
+    const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION, ALTERNATE_CONFIG);
+    const commands = recipe.commands.join('\n');
+
+    expect(recipe.base).toEqual({ kind: 'registry', ref: ALTERNATE_CONFIG.node.baseImage });
+    expect(commands).toContain(ALTERNATE_CONFIG.node.debianSnapshot);
+    expect(commands).toContain(`pnpm@${ALTERNATE_CONFIG.node.packageManagers.pnpm}`);
+    expect(commands).toContain(`yarn@${ALTERNATE_CONFIG.node.packageManagers.yarn}`);
+
+    const invalidConfigs = [
+      {
+        ...ALTERNATE_CONFIG,
+        node: { ...ALTERNATE_CONFIG.node, debianSnapshot: 'rolling' },
+      },
+      {
+        ...ALTERNATE_CONFIG,
+        node: {
+          ...ALTERNATE_CONFIG.node,
+          baseImage: `node:${['latest'].join('')}@sha256:${'a'.repeat(64)}`,
+        },
+      },
+      {
+        ...ALTERNATE_CONFIG,
+        node: {
+          ...ALTERNATE_CONFIG.node,
+          packageManagers: { ...ALTERNATE_CONFIG.node.packageManagers, pnpm: '^9.16.0' },
+        },
+      },
+      {
+        ...ALTERNATE_CONFIG,
+        webTest: { ...ALTERNATE_CONFIG.webTest, playwright: '~1.63.0' },
+      },
+    ];
+    for (const invalidConfig of invalidConfigs) {
+      expect(() => createForgeNodeBaseRecipe(SOURCE_REVISION, invalidConfig as never)).toThrow();
+    }
+  });
+
   test('returns a pinned Node 22 recipe with the required build and runtime tools', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION);
     const commands = recipe.commands.join('\n');
 
-    expect(recipe.base).toEqual({ kind: 'registry', ref: FORGE_NODE_BASE_IMAGE });
-    expect(FORGE_NODE_BASE_IMAGE).toBe(
-      'node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3',
-    );
-    expect(FORGE_NODE_BASE_IMAGE).not.toMatch(/latest/iu);
+    expect(recipe.base).toEqual({ kind: 'registry', ref: IMAGE_BUILD_CONFIG.node.baseImage });
+    expect(IMAGE_BUILD_CONFIG.node.baseImage).not.toMatch(/latest/iu);
     for (const requiredPackage of [
       'git',
       'git-lfs',
@@ -31,9 +83,11 @@ describe('forge-node-base image policy', () => {
       expect(commands).toMatch(new RegExp(`(?:^|\\s)${requiredPackage}(?:\\s|$)`, 'u'));
     }
     expect(commands).toContain('corepack enable');
-    expect(commands).toContain('pnpm@9.15.0');
-    expect(commands).toContain('yarn@1.22.22');
-    expect(commands).toContain('snapshot.debian.org/archive/debian/20260714T000000Z');
+    expect(commands).toContain(`pnpm@${IMAGE_BUILD_CONFIG.node.packageManagers.pnpm}`);
+    expect(commands).toContain(`yarn@${IMAGE_BUILD_CONFIG.node.packageManagers.yarn}`);
+    expect(commands).toContain(
+      `snapshot.debian.org/archive/debian/${IMAGE_BUILD_CONFIG.node.debianSnapshot}`,
+    );
   });
 
   test('bootstraps trusted CAs from the signed snapshot before switching it to HTTPS', () => {
@@ -42,13 +96,15 @@ describe('forge-node-base image policy', () => {
       (command) => command.includes('apt-get install') && command.includes('ca-certificates'),
     );
     const httpsSnapshotIndex = commands.findIndex((command) =>
-      command.includes('https://snapshot.debian.org/archive/debian/20260714T000000Z'),
+      command.includes(
+        `https://snapshot.debian.org/archive/debian/${IMAGE_BUILD_CONFIG.node.debianSnapshot}`,
+      ),
     );
 
     expect(caBootstrapIndex).toBeGreaterThanOrEqual(0);
     expect(httpsSnapshotIndex).toBeGreaterThan(caBootstrapIndex);
     expect(commands.slice(0, caBootstrapIndex + 1).join('\n')).toContain(
-      'http://snapshot.debian.org/archive/debian/20260714T000000Z',
+      `http://snapshot.debian.org/archive/debian/${IMAGE_BUILD_CONFIG.node.debianSnapshot}`,
     );
     expect(commands.join('\n')).not.toMatch(/Verify-Peer.*false/iu);
   });
@@ -89,6 +145,12 @@ describe('forge-node-base image policy', () => {
 });
 
 describe('forge-web-test image policy', () => {
+  test('materializes pinned browser tools from the validated recipe configuration', () => {
+    expect(() =>
+      createForgeWebTestRecipe('im-base0123456789', ALTERNATE_CONFIG as never),
+    ).toThrow('Browser package lock does not match image configuration');
+  });
+
   test('extends the built base digest and pins browser, accessibility, and font tooling', () => {
     const recipe = createForgeWebTestRecipe('im-base0123456789');
     const commands = recipe.commands.join('\n');
@@ -114,13 +176,16 @@ describe('forge-web-test image policy', () => {
     expect(sidecar?.contents).toContain("browser.once('error'");
     expect(sidecar?.contents).toContain('process.exitCode = 1');
     expect(JSON.parse(packageJson?.contents ?? '{}')).toMatchObject({
-      dependencies: { playwright: '1.62.1', '@axe-core/cli': '4.12.1' },
+      dependencies: {
+        playwright: IMAGE_BUILD_CONFIG.webTest.playwright,
+        '@axe-core/cli': IMAGE_BUILD_CONFIG.webTest.axeCoreCli,
+      },
     });
     expect(JSON.parse(packageLock?.contents ?? '{}')).toMatchObject({
       lockfileVersion: 3,
       packages: {
-        'node_modules/playwright': { version: '1.62.1' },
-        'node_modules/@axe-core/cli': { version: '4.12.1' },
+        'node_modules/playwright': { version: IMAGE_BUILD_CONFIG.webTest.playwright },
+        'node_modules/@axe-core/cli': { version: IMAGE_BUILD_CONFIG.webTest.axeCoreCli },
       },
     });
     expect(`${launcher?.contents ?? ''}\n${sidecar?.contents ?? ''}`).not.toContain(

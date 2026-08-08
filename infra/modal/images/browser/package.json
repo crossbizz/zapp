@@ -1,9 +1,0 @@
-{
-  "name": "zapp-browser-image-runtime",
-  "version": "0.0.0",
-  "private": true,
-  "dependencies": {
-    "@axe-core/cli": "4.12.1",
-    "playwright": "1.62.1"
-  }
-}

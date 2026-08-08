@@ -1,6 +1,17 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
@@ -46,6 +57,10 @@ const PublishLockOwnerSchema = z
     hostname: z.string().min(1),
   })
   .strict();
+const PublishLockRecoveryClaimOwnerSchema = PublishLockOwnerSchema.extend({
+  acquiredAtMs: z.number().finite().nonnegative(),
+}).strict();
+const OwnedDirectoryTokenSchema = z.object({ token: z.string().uuid() }).passthrough();
 
 const LockedImageSchema = z
   .object({
@@ -135,6 +150,7 @@ export interface PublishLockTiming {
   readonly wait: (milliseconds: number) => Promise<void>;
   readonly timeoutMs: number;
   readonly beforeRecoveryStat?: () => Promise<void>;
+  readonly isProcessAlive?: (pid: number) => boolean;
 }
 
 interface PreflightInput {
@@ -148,7 +164,12 @@ interface PreflightInput {
 
 interface PublishLockRecoveryClaim {
   readonly directory: string;
-  readonly owner: z.infer<typeof PublishLockOwnerSchema>;
+  readonly owner: z.infer<typeof PublishLockRecoveryClaimOwnerSchema>;
+}
+
+interface ClaimedOwnedDirectory {
+  readonly movedDirectory: string;
+  readonly targetDirectory?: string;
 }
 
 export function parseModalPublishArgs(argv: readonly string[]): {
@@ -231,7 +252,9 @@ function isMissingFile(error: unknown): boolean {
 
 function isExistingFile(error: unknown): boolean {
   return (
-    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'EEXIST'
+    error instanceof Error &&
+    'code' in error &&
+    ['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')
   );
 }
 
@@ -248,57 +271,179 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-async function tryAcquirePublishLockRecoveryClaim(
-  lockDirectory: string,
-): Promise<PublishLockRecoveryClaim | undefined> {
-  const directory = `${lockDirectory}.recovery-claim`;
-  const owner = PublishLockOwnerSchema.parse({
-    token: randomUUID(),
-    pid: process.pid,
-    hostname: hostname(),
-  });
+async function initializeOwnedDirectory(
+  directory: string,
+  owner: z.infer<typeof PublishLockOwnerSchema>,
+): Promise<boolean> {
+  const initializingDirectory = `${directory}.owner.${owner.token}`;
+  await mkdir(initializingDirectory);
+  let published = false;
   try {
-    await mkdir(directory);
-  } catch (error) {
-    if (isExistingFile(error)) return undefined;
-    throw error;
-  }
-  try {
-    await writeFile(resolve(directory, 'owner.json'), JSON.stringify(owner), {
+    await writeFile(resolve(initializingDirectory, 'owner.json'), JSON.stringify(owner), {
       encoding: 'utf8',
       flag: 'wx',
     });
+    try {
+      await symlink(initializingDirectory, directory, 'dir');
+      published = true;
+      return true;
+    } catch (error) {
+      if (isExistingFile(error)) return false;
+      throw error;
+    }
+  } finally {
+    if (!published) await rm(initializingDirectory, { recursive: true, force: true });
+  }
+}
+
+async function restoreMovedDirectory(movedDirectory: string, directory: string): Promise<void> {
+  try {
+    await rename(movedDirectory, directory);
   } catch (error) {
-    await rm(directory, { recursive: true, force: true });
+    if (isExistingFile(error)) return;
     throw error;
   }
-  return { directory, owner };
+}
+
+async function claimOwnedDirectoryForRemoval(
+  directory: string,
+  expectedToken: string | undefined,
+  reason: string,
+): Promise<ClaimedOwnedDirectory | undefined> {
+  let currentToken: string | undefined;
+  try {
+    currentToken = OwnedDirectoryTokenSchema.parse(
+      JSON.parse(await readFile(resolve(directory, 'owner.json'), 'utf8')) as unknown,
+    ).token;
+  } catch (error) {
+    if (!isMissingFile(error)) return undefined;
+  }
+  if (currentToken !== expectedToken) return undefined;
+
+  let targetDirectory: string | undefined;
+  try {
+    if ((await lstat(directory)).isSymbolicLink()) {
+      targetDirectory = await readlink(directory);
+      if (
+        expectedToken === undefined ||
+        targetDirectory !== `${directory}.owner.${expectedToken}`
+      ) {
+        return undefined;
+      }
+    }
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+
+  const movedDirectory = `${directory}.${reason}.${randomUUID()}`;
+  try {
+    await rename(directory, movedDirectory);
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+  let movedToken: string | undefined;
+  try {
+    movedToken = OwnedDirectoryTokenSchema.parse(
+      JSON.parse(await readFile(resolve(movedDirectory, 'owner.json'), 'utf8')) as unknown,
+    ).token;
+  } catch (error) {
+    if (!isMissingFile(error)) {
+      await restoreMovedDirectory(movedDirectory, directory);
+      return undefined;
+    }
+  }
+  if (movedToken !== expectedToken) {
+    await restoreMovedDirectory(movedDirectory, directory);
+    return undefined;
+  }
+  return targetDirectory === undefined
+    ? { movedDirectory }
+    : { movedDirectory, targetDirectory };
+}
+
+async function removeClaimedOwnedDirectory(claimed: ClaimedOwnedDirectory): Promise<void> {
+  if (claimed.targetDirectory === undefined) {
+    await rm(claimed.movedDirectory, { recursive: true });
+    return;
+  }
+  await unlink(claimed.movedDirectory);
+  await rm(claimed.targetDirectory, { recursive: true });
+}
+
+async function releaseOwnedDirectory(
+  directory: string,
+  ownerToken: string,
+  ownershipError: string,
+): Promise<void> {
+  const releasedDirectory = await claimOwnedDirectoryForRemoval(directory, ownerToken, 'released');
+  if (releasedDirectory === undefined) throw new Error(ownershipError);
+  await removeClaimedOwnedDirectory(releasedDirectory);
+}
+
+async function recoverStalePublishLockRecoveryClaim(
+  directory: string,
+  timing: Pick<PublishLockTiming, 'isProcessAlive' | 'now'>,
+): Promise<boolean> {
+  let owner: z.infer<typeof PublishLockRecoveryClaimOwnerSchema> | undefined;
+  try {
+    owner = PublishLockRecoveryClaimOwnerSchema.parse(
+      JSON.parse(await readFile(resolve(directory, 'owner.json'), 'utf8')) as unknown,
+    );
+  } catch (error) {
+    if (!isMissingFile(error)) return false;
+  }
+  const isAlive = timing.isProcessAlive ?? processIsAlive;
+  if (owner !== undefined && (owner.hostname !== hostname() || isAlive(owner.pid))) return false;
+  let modifiedAt: number;
+  try {
+    modifiedAt = (await stat(directory)).mtimeMs;
+  } catch (error) {
+    if (isMissingFile(error)) return true;
+    throw error;
+  }
+  const leaseStart = Math.max(modifiedAt, owner?.acquiredAtMs ?? modifiedAt);
+  if (timing.now() - leaseStart < ABANDONED_LOCK_GRACE_MS) return false;
+  const staleDirectory = await claimOwnedDirectoryForRemoval(
+    directory,
+    owner?.token,
+    'abandoned',
+  );
+  if (staleDirectory === undefined) return false;
+  await removeClaimedOwnedDirectory(staleDirectory);
+  return true;
+}
+
+async function tryAcquirePublishLockRecoveryClaim(
+  lockDirectory: string,
+  timing: Pick<PublishLockTiming, 'isProcessAlive' | 'now'>,
+): Promise<PublishLockRecoveryClaim | undefined> {
+  const directory = `${lockDirectory}.recovery-claim`;
+  const owner = PublishLockRecoveryClaimOwnerSchema.parse({
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+    acquiredAtMs: timing.now(),
+  });
+  if (await initializeOwnedDirectory(directory, owner)) return { directory, owner };
+  if (!(await recoverStalePublishLockRecoveryClaim(directory, timing))) return undefined;
+  return (await initializeOwnedDirectory(directory, owner)) ? { directory, owner } : undefined;
 }
 
 async function releasePublishLockRecoveryClaim(claim: PublishLockRecoveryClaim): Promise<void> {
-  const ownerPath = resolve(claim.directory, 'owner.json');
-  const current = PublishLockOwnerSchema.parse(
-    JSON.parse(await readFile(ownerPath, 'utf8')) as unknown,
+  await releaseOwnedDirectory(
+    claim.directory,
+    claim.owner.token,
+    'Modal image publication recovery claim ownership changed',
   );
-  if (current.token !== claim.owner.token) {
-    throw new Error('Modal image publication recovery claim ownership changed');
-  }
-  const releasedDirectory = `${claim.directory}.released.${claim.owner.token}`;
-  await rename(claim.directory, releasedDirectory);
-  const released = PublishLockOwnerSchema.parse(
-    JSON.parse(await readFile(resolve(releasedDirectory, 'owner.json'), 'utf8')) as unknown,
-  );
-  if (released.token !== claim.owner.token) {
-    throw new Error('Modal image publication recovery claim ownership changed');
-  }
-  await rm(releasedDirectory, { recursive: true });
 }
 
 async function recoverAbandonedPublishLock(
   lockDirectory: string,
-  timing: Pick<PublishLockTiming, 'beforeRecoveryStat' | 'now'>,
+  timing: Pick<PublishLockTiming, 'beforeRecoveryStat' | 'isProcessAlive' | 'now'>,
 ): Promise<void> {
-  const recoveryClaim = await tryAcquirePublishLockRecoveryClaim(lockDirectory);
+  const recoveryClaim = await tryAcquirePublishLockRecoveryClaim(lockDirectory, timing);
   if (recoveryClaim === undefined) return;
   try {
     const ownerPath = resolve(lockDirectory, 'owner.json');
@@ -308,7 +453,8 @@ async function recoverAbandonedPublishLock(
     } catch (error) {
       if (!isMissingFile(error)) return;
     }
-    if (owner !== undefined && (owner.hostname !== hostname() || processIsAlive(owner.pid))) {
+    const isAlive = timing.isProcessAlive ?? processIsAlive;
+    if (owner !== undefined && (owner.hostname !== hostname() || isAlive(owner.pid))) {
       return;
     }
     await timing.beforeRecoveryStat?.();
@@ -323,14 +469,13 @@ async function recoverAbandonedPublishLock(
     if (age < ABANDONED_LOCK_GRACE_MS) {
       return;
     }
-    const quarantine = `${lockDirectory}.abandoned.${randomUUID()}`;
-    try {
-      await rename(lockDirectory, quarantine);
-    } catch (error) {
-      if (isMissingFile(error)) return;
-      throw error;
-    }
-    await rm(quarantine, { recursive: true, force: true });
+    const quarantine = await claimOwnedDirectoryForRemoval(
+      lockDirectory,
+      owner?.token,
+      'abandoned',
+    );
+    if (quarantine === undefined) return;
+    await removeClaimedOwnedDirectory(quarantine);
   } finally {
     await releasePublishLockRecoveryClaim(recoveryClaim);
   }
@@ -354,38 +499,22 @@ async function withPublishLock<T>(
   });
   const deadline = timing.now() + timing.timeoutMs;
   for (;;) {
-    try {
-      await mkdir(lockDirectory);
-      try {
-        await writeFile(resolve(lockDirectory, 'owner.json'), JSON.stringify(owner), {
-          encoding: 'utf8',
-          flag: 'wx',
-        });
-      } catch (error) {
-        await rm(lockDirectory, { recursive: true, force: true });
-        throw error;
-      }
-      break;
-    } catch (error) {
-      if (!isExistingFile(error)) throw error;
-      await recoverAbandonedPublishLock(lockDirectory, timing);
-      if (timing.now() >= deadline) {
-        throw new Error('Timed out waiting for Modal image publication lock');
-      }
-      await timing.wait(PUBLISH_LOCK_RETRY_MS);
+    if (await initializeOwnedDirectory(lockDirectory, owner)) break;
+    await recoverAbandonedPublishLock(lockDirectory, timing);
+    if (timing.now() >= deadline) {
+      throw new Error('Timed out waiting for Modal image publication lock');
     }
+    await timing.wait(PUBLISH_LOCK_RETRY_MS);
   }
 
   try {
     return await action();
   } finally {
-    const current = PublishLockOwnerSchema.parse(
-      JSON.parse(await readFile(resolve(lockDirectory, 'owner.json'), 'utf8')) as unknown,
+    await releaseOwnedDirectory(
+      lockDirectory,
+      owner.token,
+      'Modal image publication lock ownership changed',
     );
-    if (current.token !== owner.token) {
-      throw new Error('Modal image publication lock ownership changed');
-    }
-    await rm(lockDirectory, { recursive: true });
   }
 }
 

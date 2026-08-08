@@ -355,6 +355,15 @@ describe('Modal image provider facade', () => {
         encryptedPorts: [8877],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
         volumeMountPath: '/workspace-probe',
+        tags: {
+          org_id: 'smoke_org_ws_2',
+          project_id: 'smoke_project_ws_2',
+          branch_id: 'smoke_branch_ws_2',
+          run_id: 'smoke_run_ws_2',
+          task_id: 'smoke_task_ws_2',
+          purpose: 'image_smoke',
+          environment: 'zapp-dev',
+        },
       }),
     ]);
     const serializedCommands = commands.flat().join('\n');

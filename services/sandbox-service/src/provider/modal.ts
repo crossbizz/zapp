@@ -11,11 +11,13 @@ import {
   ModalCredentialsSchema,
   PublishImageInputSchema,
   PublishedImageSchema,
+  SandboxTagsSchema,
   SmokeImageInputSchema,
   VerifyPublishedImageInputSchema,
   type ImageRecipe,
   type ModalCredentials,
   type ModalImagePublisher,
+  type SandboxTags,
 } from './types.js';
 
 const ModalSdkRunResultSchema = z
@@ -53,6 +55,7 @@ export interface ModalSdkVmSandboxInput {
   readonly appName: 'zapp-workspaces';
   readonly digest: string;
   readonly publishedName: string;
+  readonly tags: SandboxTags;
   readonly environmentVariables: Readonly<Record<string, string>>;
   readonly experimentalOptions: Readonly<{ vm_runtime: true }>;
   readonly encryptedPorts: readonly [8877];
@@ -172,6 +175,7 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
         sandbox = await client.sandboxes.experimentalCreate(app, image, {
           command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
           env: { ...input.environmentVariables },
+          tags: { ...input.tags },
           volumes: { [input.volumeMountPath]: volume },
           encryptedPorts: [...input.encryptedPorts],
           readinessProbe: Probe.withTcp(input.readinessProbe.port, {
@@ -485,12 +489,22 @@ async function runSmoke(
   if (input.telemetryEndpoint !== undefined) {
     environmentVariables.ZAPP_TELEMETRY_ENDPOINT = input.telemetryEndpoint;
   }
+  const tags = SandboxTagsSchema.parse({
+    org_id: 'smoke_org_ws_2',
+    project_id: 'smoke_project_ws_2',
+    branch_id: 'smoke_branch_ws_2',
+    run_id: 'smoke_run_ws_2',
+    task_id: 'smoke_task_ws_2',
+    purpose: 'image_smoke',
+    environment: input.environment,
+  });
 
   const sandbox = await sdk.createVmSandbox({
     environment: input.environment,
     appName: input.appName,
     digest: input.digest,
     publishedName: input.publishedName,
+    tags,
     environmentVariables,
     experimentalOptions: { vm_runtime: true },
     encryptedPorts: [8877],

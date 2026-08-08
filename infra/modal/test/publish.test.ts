@@ -15,13 +15,24 @@ import {
 } from '../publish.js';
 
 const filesystemTestHooks = vi.hoisted(
-  (): { afterStat?: ((path: string) => Promise<void>) | undefined } => ({}),
+  (): {
+    afterStat?: ((path: string) => Promise<void>) | undefined;
+    beforeWriteFile?: ((path: string) => Promise<void>) | undefined;
+  } => ({}),
 );
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    async writeFile(
+      path: Parameters<typeof actual.writeFile>[0],
+      data: Parameters<typeof actual.writeFile>[1],
+      options?: Parameters<typeof actual.writeFile>[2],
+    ) {
+      if (typeof path === 'string') await filesystemTestHooks.beforeWriteFile?.(path);
+      return actual.writeFile(path, data, options);
+    },
     async stat(path: Parameters<typeof actual.stat>[0]) {
       const result = await actual.stat(path);
       await filesystemTestHooks.afterStat?.(String(path));
@@ -437,6 +448,112 @@ describe('Modal image publication transaction', () => {
     await expect(access(`${lockFilePath}.publish-lock`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  test('never removes a successor lock when initialization and recovery interleave', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    const ownerPath = join(lockDirectory, 'owner.json');
+    let releaseFirstOwnerWrite: () => void = () => undefined;
+    const firstOwnerWriteMayContinue = new Promise<void>((resolve) => {
+      releaseFirstOwnerWrite = resolve;
+    });
+    let firstOwnerWriteReached: () => void = () => undefined;
+    const firstOwnerWriteObserved = new Promise<void>((resolve) => {
+      firstOwnerWriteReached = resolve;
+    });
+    let ownerWriteCount = 0;
+    filesystemTestHooks.beforeWriteFile = async (path) => {
+      if (!/\.publish-lock(?:\.(?:initializing|owner)\.[^/]+)?\/owner\.json$/u.test(path)) {
+        return;
+      }
+      ownerWriteCount += 1;
+      if (ownerWriteCount === 1) {
+        firstOwnerWriteReached();
+        await firstOwnerWriteMayContinue;
+      }
+    };
+
+    let releaseFirstWait: () => void = () => undefined;
+    const firstWaitMayContinue = new Promise<void>((resolve) => {
+      releaseFirstWait = resolve;
+    });
+    let firstWaitReached: () => void = () => undefined;
+    const firstWaitObserved = new Promise<void>((resolve) => {
+      firstWaitReached = resolve;
+    });
+    const first = publishImagesTransaction({
+      ...transactionInput(lockFilePath, successfulPublisher([]), ['dev']),
+      lockTiming: {
+        now: Date.now,
+        async wait() {
+          firstWaitReached();
+          await firstWaitMayContinue;
+        },
+        timeoutMs: 5_000,
+      },
+    });
+    const firstOutcome = first.then(
+      () => 'resolved',
+      (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+    );
+
+    await firstOwnerWriteObserved;
+    let releaseSecondPublish: () => void = () => undefined;
+    const secondPublishMayContinue = new Promise<void>((resolve) => {
+      releaseSecondPublish = resolve;
+    });
+    let secondPublishStarted: () => void = () => undefined;
+    const secondPublishing = new Promise<void>((resolve) => {
+      secondPublishStarted = resolve;
+    });
+    const secondPublisher = successfulPublisher([]);
+    const publishSecond = secondPublisher.publishImage.bind(secondPublisher);
+    let secondPublishCalls = 0;
+    secondPublisher.publishImage = async (input) => {
+      secondPublishCalls += 1;
+      if (secondPublishCalls === 1) {
+        secondPublishStarted();
+        await secondPublishMayContinue;
+      }
+      return publishSecond(input);
+    };
+    const second = publishImagesTransaction({
+      ...transactionInput(lockFilePath, secondPublisher, ['staging']),
+      lockTiming: {
+        now: () => Date.now() + 60_000,
+        wait: () => Promise.resolve(),
+        timeoutMs: 5_000,
+      },
+    });
+    const secondOutcome = second.then(
+      () => 'resolved',
+      (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+    );
+
+    try {
+      await secondPublishing;
+      const successorOwner = await readFile(ownerPath, 'utf8');
+      releaseFirstOwnerWrite();
+      const firstProgress = await Promise.race([
+        firstWaitObserved.then(() => 'waited'),
+        firstOutcome,
+      ]);
+
+      expect(firstProgress).toBe('waited');
+      expect(await readFile(ownerPath, 'utf8')).toBe(successorOwner);
+      releaseSecondPublish();
+      expect(await secondOutcome).toBe('resolved');
+      releaseFirstWait();
+      expect(await firstOutcome).toBe('resolved');
+    } finally {
+      filesystemTestHooks.beforeWriteFile = undefined;
+      releaseFirstOwnerWrite();
+      releaseSecondPublish();
+      releaseFirstWait();
+      await Promise.all([firstOutcome, secondOutcome]);
+      await rm(lockDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('recovers an abandoned same-host writer lock', async () => {
     const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
     const lockDirectory = `${lockFilePath}.publish-lock`;
@@ -457,6 +574,47 @@ describe('Modal image publication transaction', () => {
     );
     expect(recovered.environments.dev?.modalEnvironment).toBe('zapp-dev');
     await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('recovers a stale dead recovery claim after its claimant crashes', async () => {
+    const lockFilePath = await createLockFixture('{"version":1,"environments":{}}\n');
+    const lockDirectory = `${lockFilePath}.publish-lock`;
+    const recoveryClaimDirectory = `${lockDirectory}.recovery-claim`;
+    let now = new Date('2026-08-05T12:00:00.000Z').valueOf();
+    const old = new Date(now - 60_000);
+    await mkdir(lockDirectory);
+    await writeFile(
+      join(lockDirectory, 'owner.json'),
+      JSON.stringify({ token: randomUUID(), pid: 2_147_483_647, hostname: hostname() }),
+    );
+    await utimes(lockDirectory, old, old);
+    await mkdir(recoveryClaimDirectory);
+    await writeFile(
+      join(recoveryClaimDirectory, 'owner.json'),
+      JSON.stringify({
+        token: randomUUID(),
+        pid: 2_147_483_647,
+        hostname: hostname(),
+        acquiredAtMs: old.valueOf(),
+      }),
+    );
+    await utimes(recoveryClaimDirectory, old, old);
+
+    const recovered = await publishImagesTransaction({
+      ...transactionInput(lockFilePath, successfulPublisher([]), ['dev']),
+      lockTiming: {
+        now: () => now,
+        wait(milliseconds: number) {
+          now += milliseconds;
+          return Promise.resolve();
+        },
+        timeoutMs: 50,
+      },
+    });
+
+    expect(recovered.environments.dev?.modalEnvironment).toBe('zapp-dev');
+    await expect(access(lockDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(recoveryClaimDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test('retries when a concurrently released writer lock disappears before recovery stat', async () => {

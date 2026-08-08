@@ -86,7 +86,7 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 
 ### Task WS-2: Modal images `forge-node-base` + `forge-web-test`
 
-**Files:** Create: `infra/modal/images/forge-node-base.ts`, `forge-web-test.ts`, `publish.ts`, `images.lock.json`; per ADR-0010, create the minimal `services/sandbox-service` package scaffolding and `src/provider/modal.ts` as the only Modal SDK import site, plus tests for the recipes and publication transaction
+**Files:** Create: `infra/modal/images/forge-node-base.ts`, `forge-web-test.ts`, `publish.ts`, `images.lock.json`; per ADR-0019, create the minimal `services/sandbox-service` package scaffolding and `src/provider/modal.ts` as the only Modal SDK import site, plus tests for the recipes and publication transaction
 **Effort:** L
 
 - [ ] **Step 1:** `forge-node-base` per PRD §18.5: node 22 LTS, npm/pnpm/yarn (corepack), git + git-lfs, ripgrep, curl, jq, unzip, build-essential, python3 (node-gyp), dumb-init; bakes `sandbox/workspace-agent` and `sandbox/preview-proxy` builds at `/opt/zapp/{agent,proxy}` with a boot script `/opt/zapp/boot.sh` (starts agent on :8877 with one-time token from env `ZAPP_AGENT_TOKEN`, proxy on :8080); lightweight OTel exporter relaying sandbox telemetry to the sandbox-service collector endpoint (sandboxes never hold Grafana credentials — PRD §18.5 "OpenTelemetry collector or lightweight exporter").

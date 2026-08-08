@@ -144,6 +144,19 @@ export const SmokeImageInputSchema = z
   .strict();
 export type SmokeImageInput = z.infer<typeof SmokeImageInputSchema>;
 
+export const SandboxTagsSchema = z
+  .object({
+    org_id: z.string().min(1),
+    project_id: z.string().min(1),
+    branch_id: z.string().min(1),
+    run_id: z.string().min(1),
+    task_id: z.string().min(1),
+    purpose: z.string().min(1),
+    environment: ModalEnvironmentSchema,
+  })
+  .strict();
+export type SandboxTags = z.infer<typeof SandboxTagsSchema>;
+
 export const AgentHealthSchema = z
   .object({
     ok: z.literal(true),

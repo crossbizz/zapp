@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { ImageRecipeSchema, type ImageRecipe } from '@zapp/sandbox-service/provider-types';
-
-export const FORGE_NODE_BASE_IMAGE =
-  'node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3';
+import {
+  IMAGE_BUILD_CONFIG,
+  ImageBuildConfigSchema,
+  type ImageBuildConfig,
+} from './config.js';
 
 export const SourceRevisionSchema = z
   .object({
@@ -98,19 +100,24 @@ for (;;) {
 }
 `;
 
-export function createForgeNodeBaseRecipe(untrustedSource: SourceRevision): ImageRecipe {
+export function createForgeNodeBaseRecipe(
+  untrustedSource: SourceRevision,
+  untrustedConfig: ImageBuildConfig = IMAGE_BUILD_CONFIG,
+): ImageRecipe {
   const source = SourceRevisionSchema.parse(untrustedSource);
+  const config = ImageBuildConfigSchema.parse(untrustedConfig);
   const sourceDirectory = '/tmp/zapp-src';
+  const snapshot = config.node.debianSnapshot;
 
   return ImageRecipeSchema.parse({
     imageName: 'forge-node-base',
-    base: { kind: 'registry', ref: FORGE_NODE_BASE_IMAGE },
+    base: { kind: 'registry', ref: config.node.baseImage },
     commands: [
-      'RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/20260714T000000Z|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/20260714T000000Z|g" /etc/apt/sources.list.d/debian.sources && printf \'Acquire::Check-Valid-Until "false";\\n\' > /etc/apt/apt.conf.d/99snapshot',
+      `RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources && printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99snapshot`,
       'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
-      'RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/20260714T000000Z|https://snapshot.debian.org/archive/debian-security/20260714T000000Z|g" -e "s|http://snapshot.debian.org/archive/debian/20260714T000000Z|https://snapshot.debian.org/archive/debian/20260714T000000Z|g" /etc/apt/sources.list.d/debian.sources',
+      `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
       'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
-      'RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && corepack prepare yarn@1.22.22 --activate',
+      `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
       `RUN git clone --filter=blob:none --no-checkout '${source.repositoryUrl}' ${sourceDirectory} && cd ${sourceDirectory} && git fetch --depth=1 origin '${source.commitSha}' && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = '${source.commitSha}'`,
       `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
       `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,

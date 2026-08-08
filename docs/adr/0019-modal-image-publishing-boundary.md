@@ -1,4 +1,4 @@
-# ADR-0010: Modal image publishing boundary
+# ADR-0019: Modal image publishing boundary
 
 - Status: Accepted — controller decision 2026-08-05
 - Date: 2026-08-05
