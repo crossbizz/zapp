@@ -971,13 +971,31 @@ importers:
 
   services/orchestrator-worker:
     dependencies:
+      '@zapp/agent-policies':
+        specifier: workspace:*
+        version: link:../../packages/agent-policies
+      '@zapp/agent-tools':
+        specifier: workspace:*
+        version: link:../../packages/agent-tools
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@zapp/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
       zod:
         specifier: ^3.23.8
         version: 3.25.76
+      zod-to-json-schema:
+        specifier: 3.25.2
+        version: 3.25.2(zod@3.25.76)
     devDependencies:
       '@types/node':
         specifier: ^22.9.0
         version: 22.20.1
+      '@zapp/workspace-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workspace-runtime
       vitest:
         specifier: ^3.2.7
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.23.5)(yaml@2.9.0)

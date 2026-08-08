@@ -10,3 +10,13 @@ export { createConfiguredCompletion } from './completion.js';
 export { loadModelGatewayEnv } from './env.js';
 export { loadModelsConfig, ModelsConfigSchema } from './models.js';
 export { configureProviders } from './providers/configure.js';
+export {
+  GatewayStreamEventSchema,
+  InputJsonSchema,
+  JsonValueSchema,
+  type ChatMessage,
+  type CompleteRequest,
+  type GatewayStreamEvent,
+  type JsonValue,
+  type NeutralTool,
+} from './schemas.js';
