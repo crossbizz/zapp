@@ -252,9 +252,9 @@ either task complete on fail-closed evidence alone.
   HTTP adapters must reject an unrelated listener. Add guarded snapshot/batch cases
   that expect the stable typed `atomic_write_conflict` with zero target writes while
   this provider has no approved CAS.
-- [ ] **4b RED run — prove the strict client/routes and conformance are absent.** Run
+- [x] **4b RED run — prove the strict client/routes and conformance are absent.** Run
   `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "agent proxy and unguarded conformance"`. Expected: FAIL on the first missing client/route or conformance behavior, not on fixture setup; the Modal-only matrix may skip only with an explicit named credential reason.
-- [ ] **4b minimal implementation.** Implement the private authenticated agent client
+- [x] **4b minimal implementation.** Implement the private authenticated agent client
   inside `src/provider/modal.ts`, the one-for-one internal route mapping in
   `src/routes/workspaces.ts`, and app registration in `src/app.ts`. Accept only WS-1
   typed inputs, resolve tenant-owned `workspaceId` server-side, preserve exact WS-3
@@ -266,11 +266,11 @@ either task complete on fail-closed evidence alone.
 - [ ] **4b GREEN — rerun the two 4b matrices.** Expected: strict proxy and unguarded
   conformance PASS; guarded unsupported cases return the typed conflict with zero
   writes. This GREEN is not guarded production acceptance.
-- [ ] **4b package verification.** Run
+- [x] **4b package verification.** Run
   `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
   Record trailing counts and visible skips; do not run or claim the guarded production
   matrix while the precondition above is unresolved.
-- [ ] **4b commit.** Commit only the 4b files and evidence with
+- [x] **4b commit.** Commit only the 4b files and evidence with
   `feat(sandbox-service): Modal agent proxy exec/files`. Leave WS-3 and WS-4 unchecked.
 
 ##### Guarded production acceptance — success and every-writer final-window conflict
@@ -504,3 +504,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-4 expansion/preflight — expanded 4a/4b/guarded-production/4c into binding TDD cycles; pinned Modal JS SDK 0.9.0 exposes no proven atomic revision-CAS primitive whose domain covers exec, Git, editor, other-runtime, and provider writers, so implementable slices may proceed while joint WS-3/WS-4 completion awaits the required approved architecture decision and real guarded proof.
 - 2026-08-08 WS-4 4a re-scope — at the 15-minute checkpoint, kept execution to the smallest load-bearing lifecycle contract: strict fake-provider and env-gated real-Modal create/status/terminate coverage through an injected workspace-row boundary; CP-9/schema expansion, proxying, and reattach remain outside Slice 4a.
 - 2026-08-08 WS-4 4a verified — deterministic lifecycle RED failed at the absent app boundary, then GREEN covered strict create/status/terminate, 30-second authenticated readiness, requested→provisioning→started→ready rows, concurrent tuple idempotency, failure compensation, and strict inputs; sandbox-service finished 33 passed with 1 explicit MODAL_TOKEN_ID/MODAL_TOKEN_SECRET skip plus lint/typecheck/build green, and the single SOL High review's five Important findings were fixed in one round.
+- 2026-08-08 WS-4 4b PARTIAL/BLOCKED — deterministic RED failed at absent `exec`, then strict authenticated client/internal routes, live abortable NDJSON, tenant-bound 404 routing, strict response/base64 validation, and guarded zero-request fail-closed behavior reached focused 3/3 plus sandbox-service 37/37 (including real Modal lifecycle) with lint/typecheck/build green; one SOL High review's Critical and four implementable Important findings were fixed in the single allowed round. The shared real-Modal unguarded conformance/4b GREEN remain blocked because immutable image `2026-08-08-c58a416` comes from source `c58a416cba65f57ea64ba3e3e90f3646efca9b62`, whose workspace-agent exposes only base exec/files/list/git/health/metrics and not the binding atomic/search/delete/rename/dev-server routes; no failing permanent test or forbidden WS-3 edit was added, and WS-3/WS-4 stay unchecked.

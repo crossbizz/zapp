@@ -12,7 +12,7 @@ import { z } from 'zod';
 
 import {
   registerWorkspaceRoutes,
-  type WorkspaceLifecycleProvider,
+  type WorkspaceAgentProvider,
   type WorkspaceRowBoundary,
 } from './routes/workspaces.js';
 
@@ -41,7 +41,7 @@ declare module 'fastify' {
 export type SandboxServiceApp = FastifyInstance;
 
 export interface BuildAppOptions {
-  readonly provider: WorkspaceLifecycleProvider;
+  readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
   readonly serviceTokens: SandboxServiceTokenVerifier;
   readonly now?: () => Date;
@@ -62,7 +62,21 @@ export function buildApp(options: BuildAppOptions) {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+  app.addContentTypeParser(
+    'application/octet-stream',
+    { parseAs: 'buffer' },
+    (_request, body, done) => {
+      done(null, body);
+    },
+  );
   app.setErrorHandler((error, _request, reply) => {
+    if ((error as { readonly code?: unknown }).code === 'atomic_write_conflict') {
+      void reply.status(409).send({
+        code: 'atomic_write_conflict',
+        message: 'Atomic file changed before commit.',
+      });
+      return;
+    }
     const fastifyError = error as { readonly statusCode?: number; readonly validation?: unknown };
     if (fastifyError.validation !== undefined || error instanceof z.ZodError) {
       void reply

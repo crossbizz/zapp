@@ -2,14 +2,19 @@ import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import process from 'node:process';
 import { posix } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { ModalClient, NotFoundError, Probe } from 'modal';
 import { z } from 'zod';
 import {
   CleanupFailureResponseSchema,
   CreateWorkspaceInputSchema,
+  ExecutionContractSchema,
+  ExecInputSchema,
   RESOURCE_PROFILES,
   WorkspaceHandleSchema,
   type CreateWorkspaceInput,
+  type ExecutionContract,
+  type ExecInput,
   type WorkspaceHandle,
   type WorkspaceStatus,
 } from '@zapp/contracts';
@@ -800,7 +805,30 @@ export interface ModalWorkspaceSandbox {
   readonly providerWorkspaceId: string;
   waitUntilReady(timeoutMs: number): Promise<void>;
   agentHealth(token: string): Promise<unknown>;
+  agentRequest(request: AgentHttpRequest): Promise<AgentHttpResponse>;
+  agentStream(request: AgentHttpRequest): Promise<AgentHttpStream>;
   terminate(): Promise<void>;
+}
+
+export interface AgentHttpRequest {
+  readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  readonly path: string;
+  readonly query?: Readonly<Record<string, string>>;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: Uint8Array;
+}
+
+export interface AgentHttpResponse {
+  readonly statusCode: number;
+  readonly contentType?: string;
+  readonly body: Uint8Array;
+}
+
+export interface AgentHttpStream {
+  readonly statusCode: number;
+  readonly contentType?: string;
+  readonly body: AsyncIterable<Uint8Array>;
+  cancel(): Promise<void>;
 }
 
 export interface ModalWorkspaceSdkPort {
@@ -825,6 +853,167 @@ const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPO
 const WorkspaceAgentHealthSchema = z
   .object({ ok: z.boolean(), details: z.string().min(1) })
   .strict();
+const WorkspaceAgentExecResultSchema = z
+  .object({
+    exitCode: z.number().int(),
+    stdout: z.string(),
+    stderr: z.string(),
+    durationMs: z.number().finite().nonnegative(),
+    truncated: z.boolean(),
+  })
+  .strict();
+export type WorkspaceAgentExecResult = z.infer<typeof WorkspaceAgentExecResultSchema>;
+const WorkspaceAgentStreamRecordSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('started'),
+      pid: z.number().int().positive(),
+      executionId: z.string().uuid(),
+      at: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({ type: z.enum(['stdout', 'stderr']), data: z.string(), at: z.string().datetime() })
+    .strict(),
+  z
+    .object({
+      type: z.literal('exit'),
+      exitCode: z.number().int(),
+      durationMs: z.number().finite().nonnegative(),
+      truncated: z.boolean(),
+      at: z.string().datetime(),
+    })
+    .strict(),
+]);
+export type WorkspaceAgentStreamRecord = z.infer<typeof WorkspaceAgentStreamRecordSchema>;
+const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
+const FileEntrySchema = z
+  .object({ path: z.string(), type: z.enum(['file', 'directory', 'symlink']) })
+  .strict();
+const FileListSchema = z.array(FileEntrySchema);
+const GitInputSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      operation: z.enum(['status', 'diff', 'log', 'show', 'push', 'checkout', 'branch', 'restore']),
+      args: z.array(z.string()).optional(),
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal('add_commit'), paths: z.array(z.string()).min(1), message: z.string().min(1) })
+    .strict(),
+]);
+const GitResultSchema = z
+  .object({ exitCode: z.number().int(), stdout: z.string(), stderr: z.string() })
+  .strict();
+const DevServerEvidenceSchema = z
+  .object({
+    port: z.number().int().min(1).max(65_535),
+    pid: z.number().int().positive(),
+    supervisorId: z.string().min(1),
+    owned: z.boolean(),
+    httpReady: z.boolean(),
+  })
+  .strict();
+const HealthResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    details: z.string(),
+    devServer: DevServerEvidenceSchema.nullable(),
+  })
+  .strict();
+const MetricsResponseSchema = z
+  .object({
+    at: z.string().datetime(),
+    activeChildren: z.number().int().nonnegative(),
+    cpu: z
+      .object({ userMicros: z.number().nonnegative(), systemMicros: z.number().nonnegative() })
+      .strict(),
+    memory: z
+      .object({
+        rssBytes: z.number().nonnegative(),
+        heapTotalBytes: z.number().nonnegative(),
+        heapUsedBytes: z.number().nonnegative(),
+        externalBytes: z.number().nonnegative(),
+        arrayBuffersBytes: z.number().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+const AtomicFileWriteSchema = z
+  .object({
+    path: z.string().min(1),
+    data: z.instanceof(Uint8Array),
+    expectedRevision: z.string().min(1).optional(),
+  })
+  .strict();
+const SearchInputSchema = z
+  .object({
+    pattern: z.string(),
+    path: z.string().min(1),
+    glob: z.string().min(1).optional(),
+    fixedStrings: z.boolean().optional(),
+    ignoreCase: z.boolean().optional(),
+  })
+  .strict();
+const RenameInputSchema = z
+  .object({ source: z.string().min(1), destination: z.string().min(1), overwrite: z.literal('replace') })
+  .strict();
+const OkResponseSchema = z.object({ ok: z.literal(true) }).strict();
+const DeleteResponseSchema = z
+  .object({ ok: z.literal(true), alreadyAbsent: z.boolean() })
+  .strict();
+const DevServerResponseSchema = z
+  .object({
+    port: z.number().int().min(1).max(65_535),
+    pid: z.number().int().positive(),
+    supervisorId: z.string().min(1),
+    ownership: z.enum(['process', 'process_group']),
+  })
+  .strict();
+const AtomicConflictResponseSchema = z
+  .object({ error: z.literal('atomic_write_conflict') })
+  .strict();
+
+export class ModalAtomicWriteConflictError extends Error {
+  readonly code = 'atomic_write_conflict' as const;
+
+  constructor() {
+    super('Atomic file changed before commit');
+    this.name = 'AtomicWriteConflictError';
+  }
+}
+
+function jsonAgentBody(response: AgentHttpResponse): unknown {
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`Workspace agent rejected the request with status ${String(response.statusCode)}`);
+  }
+  if (!response.contentType?.startsWith('application/json')) {
+    throw new Error('Workspace agent returned an unexpected content type');
+  }
+  try {
+    return JSON.parse(Buffer.from(response.body).toString('utf8')) as unknown;
+  } catch {
+    throw new Error('Workspace agent returned malformed JSON');
+  }
+}
+
+function jsonAgentBodyWithConflict(response: AgentHttpResponse): unknown {
+  if (response.statusCode === 409 && response.contentType?.startsWith('application/json')) {
+    try {
+      AtomicConflictResponseSchema.parse(JSON.parse(Buffer.from(response.body).toString('utf8')));
+    } catch {
+      throw new Error('Workspace agent returned an invalid conflict response');
+    }
+    throw new ModalAtomicWriteConflictError();
+  }
+  return jsonAgentBody(response);
+}
+
+function expectNoContent(response: AgentHttpResponse): void {
+  if (response.statusCode !== 204 || response.body.byteLength !== 0) {
+    throw new Error('Workspace agent returned an invalid empty response');
+  }
+}
 
 function createModalWorkspaceSdk(
   credentials: ModalCredentials,
@@ -871,6 +1060,107 @@ function createModalWorkspaceSdk(
           return { ok: false, details: 'workspace agent returned an invalid health response' };
         }
       },
+      async agentRequest(request) {
+        const query = new URLSearchParams(request.query).toString();
+        const url = `http://127.0.0.1:8877${request.path}${query === '' ? '' : `?${query}`}`;
+        const encoded = Buffer.from(
+          JSON.stringify({
+            method: request.method,
+            url,
+            headers: request.headers,
+            bodyBase64:
+              request.body === undefined ? undefined : Buffer.from(request.body).toString('base64'),
+          }),
+        ).toString('base64');
+        const script = [
+          "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
+          'const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, \'base64\') });',
+          'const body = Buffer.from(await response.arrayBuffer());',
+          "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined, bodyBase64: body.toString('base64') }));",
+        ].join('\n');
+        const process = await sandbox.exec(['node', '--input-type=module', '-e', script, encoded], {
+          mode: 'text',
+          timeoutMs: 30_000,
+        });
+        const [stdout, exitCode] = await Promise.all([process.stdout.readText(), process.wait()]);
+        if (exitCode !== 0) throw new Error('Workspace agent request failed');
+        const response = z
+          .object({
+            statusCode: z.number().int().min(100).max(599),
+            contentType: z.string().optional(),
+            bodyBase64: z.string(),
+          })
+          .strict()
+          .parse(JSON.parse(stdout) as unknown);
+        return {
+          statusCode: response.statusCode,
+          ...(response.contentType === undefined ? {} : { contentType: response.contentType }),
+          body: Buffer.from(response.bodyBase64, 'base64'),
+        };
+      },
+      async agentStream(request) {
+        const query = new URLSearchParams(request.query).toString();
+        const url = `http://127.0.0.1:8877${request.path}${query === '' ? '' : `?${query}`}`;
+        const encoded = Buffer.from(
+          JSON.stringify({
+            method: request.method,
+            url,
+            headers: request.headers,
+            bodyBase64:
+              request.body === undefined ? undefined : Buffer.from(request.body).toString('base64'),
+          }),
+        ).toString('base64');
+        const script = [
+          "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
+          'const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, \'base64\') });',
+          "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined }) + '\\n');",
+          'if (response.body !== null) for await (const chunk of response.body) process.stdout.write(Buffer.from(chunk));',
+        ].join('\n');
+        const process = await sandbox.exec(['node', '--input-type=module', '-e', script, encoded], {
+          mode: 'text',
+          timeoutMs: WORKSPACE_TIMEOUT_MS,
+        });
+        const reader = process.stdout.getReader();
+        let buffered = '';
+        while (!buffered.includes('\n')) {
+          const next = await reader.read();
+          if (next.done) throw new Error('Workspace agent stream ended before metadata');
+          buffered += next.value;
+        }
+        const newline = buffered.indexOf('\n');
+        const metadata = z
+          .object({
+            statusCode: z.number().int().min(100).max(599),
+            contentType: z.string().optional(),
+          })
+          .strict()
+          .parse(JSON.parse(buffered.slice(0, newline)) as unknown);
+        let remainder = buffered.slice(newline + 1);
+        let cancelled = false;
+        return {
+          statusCode: metadata.statusCode,
+          ...(metadata.contentType === undefined ? {} : { contentType: metadata.contentType }),
+          body: {
+            async *[Symbol.asyncIterator]() {
+              if (remainder !== '') {
+                yield Buffer.from(remainder);
+                remainder = '';
+              }
+              for (;;) {
+                const next = await reader.read();
+                if (next.done) break;
+                yield Buffer.from(next.value);
+              }
+              const exitCode = await process.wait();
+              if (exitCode !== 0 && !cancelled) throw new Error('Workspace agent stream failed');
+            },
+          },
+          async cancel() {
+            cancelled = true;
+            await reader.cancel();
+          },
+        };
+      },
       async terminate() {
         await sandbox.terminate();
       },
@@ -903,7 +1193,9 @@ function createModalWorkspaceSdk(
     },
     async getWorkspace(providerWorkspaceId) {
       try {
-        return adapt(await client.sandboxes.fromId(providerWorkspaceId));
+        const sandbox = await client.sandboxes.fromId(providerWorkspaceId);
+        if ((await sandbox.poll()) !== null) return undefined;
+        return adapt(sandbox);
       } catch (error) {
         if (error instanceof NotFoundError) return undefined;
         throw error;
@@ -1072,6 +1364,354 @@ export class ModalSandboxProvider {
     } finally {
       if (sdkOwnership.closeHere) sdk.close();
     }
+  }
+
+  private async requestAgent(
+    providerWorkspaceId: string,
+    request: Omit<AgentHttpRequest, 'headers'> & {
+      readonly idempotencyKey?: string;
+      readonly contentType?: string;
+    },
+  ): Promise<AgentHttpResponse> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) throw new Error('Workspace sandbox was not found');
+      return await sandbox.agentRequest({
+        method: request.method,
+        path: z.string().startsWith('/').parse(request.path),
+        ...(request.query === undefined ? {} : { query: request.query }),
+        headers: {
+          authorization: `Bearer ${this.agentToken}`,
+          ...(request.contentType === undefined ? {} : { 'content-type': request.contentType }),
+          ...(request.idempotencyKey === undefined
+            ? {}
+            : { 'idempotency-key': request.idempotencyKey }),
+        },
+        ...(request.body === undefined ? {} : { body: request.body }),
+      });
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async exec(untrustedInput: ExecInput, idempotencyKey = randomUUID()): Promise<WorkspaceAgentExecResult> {
+    const input = ExecInputSchema.strict().parse(untrustedInput);
+    const body = z
+      .object({
+        cmd: z.string().min(1),
+        args: z.array(z.string()),
+        cwd: z.string().optional(),
+        env: z.record(z.string()).optional(),
+        timeoutMs: z.number().int().positive(),
+        pty: z.boolean().optional(),
+      })
+      .strict()
+      .parse({
+        cmd: input.command,
+        args: input.args,
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input.env === undefined ? {} : { env: input.env }),
+        timeoutMs: input.timeoutMs,
+        ...(input.pty === undefined ? {} : { pty: input.pty }),
+      });
+    const response = await this.requestAgent(input.providerWorkspaceId, {
+      method: 'POST',
+      path: '/exec',
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(body)),
+    });
+    return WorkspaceAgentExecResultSchema.parse(jsonAgentBody(response));
+  }
+
+  async *execStream(
+    untrustedInput: ExecInput,
+    idempotencyKey = randomUUID(),
+    signal?: AbortSignal,
+  ): AsyncIterable<WorkspaceAgentStreamRecord> {
+    const input = ExecInputSchema.strict().parse(untrustedInput);
+    const body = {
+      cmd: input.command,
+      args: input.args,
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.env === undefined ? {} : { env: input.env }),
+      timeoutMs: input.timeoutMs,
+      ...(input.pty === undefined ? {} : { pty: input.pty }),
+    };
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    let stream: AgentHttpStream | undefined;
+    let abortStream: (() => void) | undefined;
+    let active: Extract<WorkspaceAgentStreamRecord, { type: 'started' }> | undefined;
+    let exited = false;
+    try {
+      const sandbox = await sdk.getWorkspace(input.providerWorkspaceId);
+      if (sandbox === undefined) throw new Error('Workspace sandbox was not found');
+      stream = await sandbox.agentStream({
+        method: 'POST',
+        path: '/exec',
+        query: { stream: '1' },
+        headers: {
+          authorization: `Bearer ${this.agentToken}`,
+          'content-type': 'application/json',
+          'idempotency-key': idempotencyKey,
+        },
+        body: Buffer.from(JSON.stringify(body)),
+      });
+      abortStream = () => {
+        void stream?.cancel();
+      };
+      if (signal?.aborted === true) abortStream();
+      else if (signal !== undefined) signal.addEventListener('abort', abortStream, { once: true });
+      if (
+        stream.statusCode !== 200 ||
+        !stream.contentType?.startsWith('application/x-ndjson')
+      ) {
+        throw new Error('Workspace agent returned an invalid execution stream');
+      }
+      const decoder = new StringDecoder('utf8');
+      let pending = '';
+      const parsePendingRecords = function* (): Generator<WorkspaceAgentStreamRecord> {
+        for (;;) {
+          const newline = pending.indexOf('\n');
+          if (newline < 0) return;
+          const line = pending.slice(0, newline);
+          pending = pending.slice(newline + 1);
+          if (line !== '') {
+            yield WorkspaceAgentStreamRecordSchema.parse(JSON.parse(line) as unknown);
+          }
+        }
+      };
+      for await (const chunk of stream.body) {
+        pending += decoder.write(Buffer.from(chunk));
+        for (const record of parsePendingRecords()) {
+          if (record.type === 'started') active = record;
+          if (record.type === 'exit') exited = true;
+          yield record;
+        }
+      }
+      pending += decoder.end();
+      for (const record of parsePendingRecords()) {
+        if (record.type === 'started') active = record;
+        if (record.type === 'exit') exited = true;
+        yield record;
+      }
+      if (pending !== '') throw new Error('Workspace agent stream ended with a partial record');
+      if (!exited) throw new Error('Workspace agent stream ended without an exit record');
+    } finally {
+      if (signal !== undefined && abortStream !== undefined) {
+        signal.removeEventListener('abort', abortStream);
+      }
+      if (active !== undefined && !exited) {
+        await this.killExec(input.providerWorkspaceId, active.pid, active.executionId);
+      }
+      await stream?.cancel();
+      sdk.close();
+    }
+  }
+
+  async killExec(providerWorkspaceId: string, pid: number, executionId: string, idempotencyKey = randomUUID()) {
+    const parsed = z
+      .object({ pid: z.number().int().positive(), executionId: z.string().uuid() })
+      .strict()
+      .parse({ pid, executionId });
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: `/exec/${String(parsed.pid)}/kill`,
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify({ executionId: parsed.executionId })),
+    });
+    return KillResponseSchema.parse(jsonAgentBody(response));
+  }
+
+  async readFile(providerWorkspaceId: string, path: string): Promise<Uint8Array> {
+    const parsedPath = z.string().min(1).parse(path);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'GET',
+      path: '/files',
+      query: { path: parsedPath },
+    });
+    if (
+      response.statusCode !== 200 ||
+      !response.contentType?.startsWith('application/octet-stream')
+    ) {
+      throw new Error('Workspace agent returned an invalid file response');
+    }
+    return response.body;
+  }
+
+  async writeFile(providerWorkspaceId: string, path: string, data: Uint8Array, idempotencyKey = randomUUID()): Promise<void> {
+    const input = z
+      .object({ path: z.string().min(1), data: z.instanceof(Uint8Array) })
+      .strict()
+      .parse({ path, data });
+    expectNoContent(
+      await this.requestAgent(providerWorkspaceId, {
+        method: 'PUT',
+        path: '/files',
+        query: { path: input.path },
+        idempotencyKey,
+        contentType: 'application/octet-stream',
+        body: input.data,
+      }),
+    );
+  }
+
+  async listFiles(
+    providerWorkspaceId: string,
+    path: string,
+    options: { readonly glob?: string; readonly maxDepth?: number } = {},
+  ) {
+    const input = z
+      .object({ path: z.string().min(1), glob: z.string().min(1).optional(), maxDepth: z.number().int().min(0).max(100).optional() })
+      .strict()
+      .parse({ path, ...options });
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'GET',
+      path: '/files/list',
+      query: {
+        path: input.path,
+        ...(input.glob === undefined ? {} : { glob: input.glob }),
+        ...(input.maxDepth === undefined ? {} : { maxDepth: String(input.maxDepth) }),
+      },
+    });
+    return FileListSchema.parse(jsonAgentBody(response));
+  }
+
+  async git(providerWorkspaceId: string, untrustedInput: unknown, idempotencyKey = randomUUID()) {
+    const input = GitInputSchema.parse(untrustedInput);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: '/git',
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(input)),
+    });
+    return GitResultSchema.parse(jsonAgentBody(response));
+  }
+
+  async health(providerWorkspaceId: string) {
+    const response = await this.requestAgent(providerWorkspaceId, { method: 'GET', path: '/healthz' });
+    return HealthResponseSchema.parse(jsonAgentBody(response));
+  }
+
+  async metrics(providerWorkspaceId: string) {
+    const response = await this.requestAgent(providerWorkspaceId, { method: 'GET', path: '/metrics' });
+    return MetricsResponseSchema.parse(jsonAgentBody(response));
+  }
+
+  readFileForUpdate(providerWorkspaceId: string, path: string): Promise<never> {
+    z.object({ providerWorkspaceId: z.string().min(1), path: z.string().min(1) })
+      .strict()
+      .parse({ providerWorkspaceId, path });
+    return Promise.reject(new ModalAtomicWriteConflictError());
+  }
+
+  async writeFilesAtomically(
+    providerWorkspaceId: string,
+    untrustedFiles: readonly {
+      readonly path: string;
+      readonly data: Uint8Array;
+      readonly expectedRevision?: string;
+    }[],
+    idempotencyKey = randomUUID(),
+  ): Promise<void> {
+    const files = z.array(AtomicFileWriteSchema).min(1).parse(untrustedFiles);
+    if (files.some((file) => file.expectedRevision !== undefined)) {
+      throw new ModalAtomicWriteConflictError();
+    }
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: '/files/atomic-write',
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(
+        JSON.stringify({
+          files: files.map((file) => ({
+            path: file.path,
+            dataBase64: Buffer.from(file.data).toString('base64'),
+            ...(file.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: file.expectedRevision }),
+          })),
+        }),
+      ),
+    });
+    OkResponseSchema.parse(jsonAgentBodyWithConflict(response));
+  }
+
+  async search(providerWorkspaceId: string, untrustedInput: unknown) {
+    const input = SearchInputSchema.parse(untrustedInput);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: '/search',
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(input)),
+    });
+    return WorkspaceAgentExecResultSchema.parse(jsonAgentBody(response));
+  }
+
+  async deleteFile(providerWorkspaceId: string, path: string, idempotencyKey = randomUUID()) {
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'DELETE',
+      path: '/files',
+      query: { path: z.string().min(1).parse(path) },
+      idempotencyKey,
+    });
+    const parsed = DeleteResponseSchema.parse(jsonAgentBody(response));
+    return { alreadyAbsent: parsed.alreadyAbsent };
+  }
+
+  async renameFile(providerWorkspaceId: string, untrustedInput: unknown, idempotencyKey = randomUUID()): Promise<void> {
+    const input = RenameInputSchema.parse(untrustedInput);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: '/files/rename',
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(input)),
+    });
+    OkResponseSchema.parse(jsonAgentBody(response));
+  }
+
+  private async manageDevServer(
+    providerWorkspaceId: string,
+    action: 'start' | 'restart',
+    untrustedContract: ExecutionContract,
+    idempotencyKey: string,
+  ) {
+    const contract = ExecutionContractSchema.parse(untrustedContract);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'POST',
+      path: `/dev-server/${action}`,
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify({ contract })),
+    });
+    const started = DevServerResponseSchema.parse(jsonAgentBody(response));
+    const health = await this.health(providerWorkspaceId);
+    if (
+      !health.ok ||
+      health.devServer === null ||
+      !health.devServer.owned ||
+      !health.devServer.httpReady ||
+      health.devServer.port !== started.port ||
+      health.devServer.pid !== started.pid ||
+      health.devServer.supervisorId !== started.supervisorId
+    ) {
+      throw new Error('Workspace dev server readiness is not supervisor-owned');
+    }
+    return started;
+  }
+
+  async startDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey = randomUUID()) {
+    return this.manageDevServer(providerWorkspaceId, 'start', contract, idempotencyKey);
+  }
+
+  async restartDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey = randomUUID()) {
+    return this.manageDevServer(providerWorkspaceId, 'restart', contract, idempotencyKey);
   }
 
   async getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus> {
