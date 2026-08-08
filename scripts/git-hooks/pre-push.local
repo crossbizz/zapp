@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# zapp local verification gate.
+# zapp local verification gate (fast pre-flight).
 #
-# GitHub Actions is intentionally disabled (private repo, metered minutes, no
-# spending limit). This hook is the gate. It runs the same suites CI ran.
+# GitHub Actions was re-enabled 2026-08-08 (repo is public; ADR-0022) and is the
+# authoritative gate. This hook stays as a fast local pre-flight so broken pushes
+# rarely reach CI. It runs the same suites CI runs.
 #
 # Source of truth: scripts/git-hooks/pre-push.local — installed into
 # .git/hooks/ by scripts/dev-up.sh (.git/hooks is untracked, so a fresh clone

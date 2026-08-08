@@ -129,17 +129,17 @@ return the typed conflict for guarded snapshot/write requests when its backing
 provider cannot enforce the CAS. The strict revision fields exist only for guarded
 batch writes and do not expose a generic filesystem operation.
 
-**Blocking guarded-write acceptance:** fail-closed behavior is the safe unsupported
-fallback, not proof of production patch capability. WS-3/WS-4 cannot be marked
-complete until at least one production cloud runtime proves successful guarded patch
-commit plus deterministic final-window conflict/zero-write preservation while its
-revision domain covers exec, Git, editor, other-runtime, and provider mutations. If
-the selected provider exposes no such primitive, record WS-3 as blocked and obtain an
-approved architecture decision; do not substitute compare-then-rename or a
-non-compulsory lock.
+**Guarded-write acceptance (re-scoped by ADR-0022):** WS-3's contract is the
+fail-closed typed atomic-write conflict whenever its backing provider cannot enforce
+the revision CAS — proven in the shared conformance suite. The production proof
+(successful guarded patch commit plus deterministic final-window conflict/zero-write
+preservation across the exec/Git/editor/other-runtime/provider writer domain) is
+WS-4 step 4b's acceptance, where the production cloud runtime exists; it no longer
+blocks WS-3. Compare-then-rename and non-compulsory locks remain forbidden
+substitutes.
 **Effort:** L
 
-- [ ] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for unguarded `writeFilesAtomically`, search, delete, rename, and unsupported guarded-write fail-closed behavior against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter; the blocking production-provider suite separately proves guarded revision CAS success and final-window conflict with zero target writes → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
+- [x] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for unguarded `writeFilesAtomically`, search, delete, rename, and unsupported guarded-write fail-closed behavior against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter; the production-provider guarded revision-CAS suite is WS-4 step 4b acceptance (ADR-0022) → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
 
@@ -308,3 +308,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-2 BLOCKED — one clean-HEAD tracked local gate under Node 22.23.1 and pinned pnpm 9.15.0 exited 1 in its concurrent unit phase: sandbox-service's explicit-kill old-boundary test timed out (1 failed, 25 passed), Modal infra's injected-clock writer-lock test lost its 100 ms wall-clock race (1 failed, 22 passed), and workspace-agent's 256-entry replay-pressure test timed out (1 failed, 90 passed). Turbo finished 67/70 tasks in 3m20.311s; the subsequent integration, isolation, and Gate-5 phases did not run. The failures are load-sensitive verification-boundary defects rather than demonstrated runtime regressions, but the failed required gate remains failed; no retry, production fix, or completion bookkeeping followed, and WS-2/WS-3 stay unchecked for a fresh fix task.
 - 2026-08-08 WS-2 done — real Modal dev publish and standalone smoke at source `c58a416cba65f57ea64ba3e3e90f3646efca9b62` exited 0 with immutable tag `2026-08-08-c58a416`, base digest `im-9NCxx8merCgh67jj0YLM84`, web-test digest `im-eVxjg43Gv7bQrkH0CbwrrX`, and all strict VM/lifecycle/credential-absence/volume/snapshot/tunnel/readiness evidence; after the three bounded test-stability repairs and one clean SOL High review, exact advertised SHA `90305ed8fef549998555e8b027dcb9e3f24d0f8a` passed the one-shot locked local gate under Node 22.23.1/pnpm 9.15.0: concurrent 70/70, integration 15/15 (DB 48/48, Git 16/16, control API 236/236), isolation 54/54, and Gate 5 1/1. WS-3 remains unchecked.
 - 2026-08-08 WS-3 BLOCKED — the reviewed workspace-agent implementation and current published image passed focused daemon/auth checks 7/7, the dependency-built full suite 91/91, WS-1 conformance 35/35, package lint/typecheck/build 5/5, and one real Modal standalone smoke against tag `2026-08-08-c58a416` with strict authenticated VM/lifecycle/containment and capability evidence. WS-3 remains unchecked only because its binding guarded-write acceptance requires WS-4's production cloud runtime to prove successful revision-CAS commit plus deterministic final-window conflict with zero target writes across every writer domain; that provider/conformance path does not exist yet.
+- 2026-08-08 WS-3 done — ADR-0022 (product-owner approved) moved the production guarded-write CAS proof to WS-4 step 4b; accepted on recorded evidence (daemon 7/7, suite 91/91, WS-1 conformance 35/35, one real Modal smoke vs tag `2026-08-08-c58a416`) with workspace-agent and workspace-runtime suites re-run green this session.

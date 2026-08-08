@@ -95,7 +95,7 @@ Master plan §Global Constraints, plus:
 - [ ] Binding behavior (PRD §29.1): every service: OTel SDK (traces + metrics + logs) with resource attrs (service.name, env) + context propagation (control-api → temporal → sandbox-service chain), exported via OTLP to **Grafana Cloud** (Tempo traces, Mimir metrics, Loki logs — stack per env: zapp-dev/staging/prod); instrument the PRD list: API latency/errors (route histograms), Temporal workflow/activity latency + failure counters (interceptors), agent step + tool call latency (AR-6 spans), model latency/tokens/cost (AR-3), sandbox lifecycle timings (WS-6), preview readiness, deployment success, queue delay, event-stream lag (CP-15 sequence age gauge); frontend/desktop errors + web vitals via **Grafana Faro** SDK with sourcemap upload in CI and release tagging; error alerting via Grafana Alerting rules (5xx bursts, unhandled-exception log matches); **sandbox telemetry is relayed through a sandbox-service collector endpoint — sandboxes never hold Grafana credentials** (Global Constraint 5); logs: pino → OTLP with central redaction serializers (test: logging an object containing a vault value emits `[secret:*]`).
 - [ ] Commit: `feat(observability): otel→grafana cloud with faro frontend + tenant-safe logging`
 
-### Task OPS-9 [M5]: SLO dashboards + load tests + capacity model
+### Task OPS-9 [Deferred post-P0 — ADR-0022]: SLO dashboards + load tests + capacity model
 
 **Files:** Create: `infra/observability/dashboards/*.json`, `test/load/k6/*.js`, `docs/capacity-model.md`
 **Effort:** L
@@ -143,7 +143,7 @@ Master plan §Global Constraints, plus:
 - [ ] Binding behavior (PRD §31.4, master §5.2): monthly `agent_events` partitions > 90 d → R2 JSONL archive (readable by support tooling) → partition drop; artifact TTLs by class via R2 lifecycle rules (test 30 d, diagnostics 7 d, evidence retained); Modal snapshot TTL enforcement audit (WS-7 classes); restore-from-archive utility (support tool: rehydrate a run's events read-only).
 - [ ] Commit: `feat(ops): retention archival with rehydration tooling`
 
-### Task OPS-15 [M5]: Backup/DR + drills
+### Task OPS-15 [Deferred post-P0 — ADR-0022]: Backup/DR + drills
 
 **Files:** Create: `docs/runbooks/{dr-restore,git-restore,neon-pitr}.md`, drill automation script
 **Effort:** M
@@ -151,7 +151,7 @@ Master plan §Global Constraints, plus:
 - [ ] Binding behavior: verified restore paths: Neon PITR (control DB), nightly logical dumps to R2 (secondary), Forgejo bundles (GIT-4), R2 artifact durability review; quarterly drill script: restore staging from backups → run smoke (targets: RPO ≤ 24 h, RTO ≤ 4 h documented in master §6); drill results recorded in ops log (SOC2 evidence, OPS-16).
 - [ ] Commit: `docs(ops): DR runbooks + automated quarterly drill`
 
-### Task OPS-16 [M5]: SOC 2 Type I readiness pack
+### Task OPS-16 [Deferred post-P0 — ADR-0022]: SOC 2 Type I readiness pack
 
 **Files:** Create: `docs/compliance/{soc2-readiness.md,vendor-register.md,access-review.md,change-management.md}`
 **Effort:** M
@@ -168,7 +168,7 @@ Master plan §Global Constraints, plus:
 - [ ] Failing tests: staff route 403 for normal users; impersonation without reason → 422; every admin mutation audited.
 - [ ] Commit: `feat(admin): audited support console with termination controls`
 
-### Task OPS-18 [M5]: Incident response + status page
+### Task OPS-18 [Deferred post-P0 — ADR-0022]: Incident response + status page
 
 **Files:** Create: `docs/runbooks/incident-response.md`, status page setup (BetterStack or equivalent), alert routing
 **Effort:** S
@@ -181,15 +181,16 @@ Master plan §Global Constraints, plus:
 ## Testing strategy
 - Billing: Stripe test clocks for subscription lifecycles; ledger math is pure-function table tests.
 - Security suites are CI-permanent from creation (start M3, complete M5); nightly abuse tests run against real dev sandboxes.
-- Load: k6 at 10× targets is the M5 gate; soak before beta invite wave.
+- Load: k6 at 10× targets — deferred post-P0 with OPS-9 (ADR-0022); soak runs before public beta.
 
 ## Scalability notes
 - Ledger writes are the highest-frequency control-plane inserts after events: batched (collectors flush ≤ 5 s), indexed for the two real queries (org-window aggregate, run rollup); Redis counters absorb read load.
 
 ## Security & tenancy notes
-- This plan owns the permanent proof that master §6 promises hold: every enterprise-readiness row maps to a suite or runbook here (isolation → OPS-12, audit → CP-5+OPS-17 tests, lifecycle → OPS-14/CP-17, DR → OPS-15, program → OPS-16/18).
+- This plan owns the permanent proof that master §6 promises hold: every enterprise-readiness row maps to a suite or runbook here (isolation → OPS-12, audit → CP-5+OPS-17 tests, lifecycle → OPS-14/CP-17, DR → OPS-15, program → OPS-16/18). OPS-9/15/16/18 are deferred post-P0 by ADR-0022 and return before public beta.
 
 ## Execution log
 
 - (empty)
 - 2026-08-04: DEPLOYMENT NOTE (from CP-5 fix): rate-limit proxy trust defaults to NONE. Any deploy behind an edge proxy MUST set `proxy.trustedHops` (or trustedProxies) in config/rate-limits.json in the same change, or ip-scoped classes bucket by the ingress. The plugin warns at boot naming the field; setting both fields refuses to boot. Owner: OPS deploy runbook.
+- 2026-08-08 ADR-0022: OPS-9, OPS-15, OPS-16, OPS-18 deferred post-P0 — no P0 PRD basis (PRD §5 non-goals exclude custom compliance programs); all four return before public beta. Backups themselves (Neon PITR, logical dumps, nightly Git bundles) stay in P0.

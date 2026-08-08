@@ -22,7 +22,8 @@ Read master plan **§Global Constraints** (all 20) before your first task. The m
 - Every mutating API/activity is idempotent or keyed. Cross-tenant reads return 404, never 403.
 - No code derived from Dyad `src/pro`, ever.
 - A failed check can never be reported as success — not by generated code, and **not by you** (see §5).
-- **Structural over heuristic (ADR-0016/0017).** A guarantee lives in a structural control (credential scope, sandbox/network profile, approval gate, tool allowlist, a declarative lint rule) — never in a string/NL/AST/HTML heuristic's completeness. A demonstrated bypass of a heuristic the architecture does not rely on for containment is at most a Minor review finding; block only on a structural-control gap or a real correctness/security defect. Prefer maintained OSS for solved problems (HTML rewriting, import bans, unused-dep/empty-catch/duplication detection, DAG scheduling, attack corpora) — build custom only for genuinely zapp-specific value. On a five-round review cap, re-scope and escalate; never grind another round on an undecidable problem.
+- **Structural over heuristic (ADR-0016/0017).** A guarantee lives in a structural control (credential scope, sandbox/network profile, approval gate, tool allowlist, a declarative lint rule) — never in a string/NL/AST/HTML heuristic's completeness. A demonstrated bypass of a heuristic the architecture does not rely on for containment is at most a Minor review finding; block only on a structural-control gap or a real correctness/security defect. Prefer maintained OSS for solved problems (HTML rewriting, import bans, unused-dep/empty-catch/duplication detection, DAG scheduling, attack corpora) — build custom only for genuinely zapp-specific value. Reviews cap at **two rounds per task** with the exit condition declared before round 1 (ADR-0022); at the cap, re-scope and escalate; never grind another round on an undecidable problem.
+- **Real-provider verification runs once per task, at its final acceptance gate — never per review round** (ADR-0022). Review rounds re-run local suites only. Consume published immutable images from `images.lock.json`; don't rebuild them.
 - **API first** (product-owner directive 2026-08-03): every capability ships as a versioned `/v1` API (+ generated SDK) before or alongside any UI; clients only ever consume the public API/SDK — no UI-private backdoors.
 
 ## 3. The task loop (one task at a time)
@@ -33,7 +34,7 @@ Read master plan **§Global Constraints** (all 20) before your first task. The m
 4. **TDD**: write the failing test named in the task first; run it and confirm it fails for the right reason; implement minimally; run again and confirm green.
 5. **Verify**: run the task's verify commands (and `pnpm lint && pnpm typecheck` on touched packages). Show real output.
 6. **Commit** with the task's specified commit message (one task = one commit unless the task defines per-step commits).
-7. **Record**: check the box in the plan file **and** `tasks/todo.md`; append one line to the plan's `## Execution log`: `YYYY-MM-DD <TASK-ID> done — <one-line note / deviation>`.
+7. **Record, inside the task's own commit**: check the box in `tasks/todo.md` (the single authoritative tracker; plan-file boxes are optional) and append one line to the plan's `## Execution log`: `YYYY-MM-DD <TASK-ID> done — <one-line note incl. blockers hit / deviations>`. No standalone bookkeeping commits (ADR-0022).
 8. **Report** (see §7), then move to the next task with fresh context (start a new session/subagent per task if your harness supports it).
 
 ## 4. Definition of done (per task)
@@ -43,22 +44,22 @@ A task is done only when ALL of these are true — otherwise it stays unchecked 
 - [ ] Every step in the task checked off, tests written before implementation
 - [ ] Verify commands pass with output shown (paste the trailing lines, not "tests pass")
 - [ ] No files touched outside the task's Files list except imports/exports it explicitly requires
-- [ ] Committed with the prescribed message; boxes checked in plan + tracker; execution log line appended
+- [ ] Committed with the prescribed message; tracker box checked and execution log line appended in that same commit
 - [ ] No TODO/FIXME/placeholder/`skip`ped test introduced (the platform's own anti-slop rules apply to you)
 
 ## 5. Honesty rules
 
 - Never mark a box, write "done", or claim green without having run the command in this session.
-- **`pnpm verify` is the gate — GitHub Actions is disabled.** This private repo meters
-  Actions minutes and the owner has chosen not to raise the spending limit, so no workflow
-  runs automatically. Before pushing to `main`, run `pnpm verify` (turbo caches per package,
-  so only what you touched actually executes); use `pnpm verify:cold` before a push that
-  changes build wiring, since a stale `dist/` has hidden a real cold-checkout failure here
-  before. The pre-push hook (source: `scripts/git-hooks/pre-push.local`, installed into
-  `.git/hooks/` by `scripts/dev-up.sh`) enforces this and **fails closed if the dev stack is
-  down** — integration and isolation suites would otherwise skip, and a skip is not a pass.
-  On a fresh clone, run `./scripts/dev-up.sh` before your first push — until it runs, no gate exists.
-  Never bypass with `ZAPP_SKIP_VERIFY=1` without saying so plainly in your report.
+- **GitHub Actions is the authoritative gate — re-enabled 2026-08-08** (the repo is public,
+  minutes are free; ADR-0022). A push to `main` must come out green in CI; if local and CI
+  disagree, CI (a clean cold machine) wins and the fix is a normal task. The pre-push hook
+  (source: `scripts/git-hooks/pre-push.local`, installed into `.git/hooks/` by
+  `scripts/dev-up.sh`) still runs `pnpm verify` as a fast local pre-flight and **fails closed
+  if the dev stack is down** — keep it, but build or repair no further local gate machinery.
+  Use `pnpm verify:cold` before a push that changes build wiring (a stale `dist/` has hidden
+  a real cold-checkout failure here before). On a fresh clone, run `./scripts/dev-up.sh`
+  before your first push. Never bypass with `ZAPP_SKIP_VERIFY=1` without saying so plainly
+  in your report.
 - If a test can't run (missing external credential), it must **skip visibly** (env-gated per the plan), and your report must say "skipped: no `STYTCH_SECRET`" — never convert a skip into a pass claim.
 - If you wrote code you couldn't verify, say exactly that and list what's unverified.
 
@@ -89,7 +90,7 @@ At each milestone boundary, STOP feature work and run the milestone's exit check
 
 ## 9. Git
 
-- Trunk-based. Serial execution commits directly to `main` (controller decision 2026-08-03); `task/<TASK-ID>` branches become mandatory once parallel agents start. `pnpm verify` must be green before any push to `main` — the pre-push hook enforces it (GitHub Actions is parked; see §5).
+- Trunk-based. Serial execution commits directly to `main` (controller decision 2026-08-03); `task/<TASK-ID>` branches become mandatory once parallel agents start. `pnpm verify` must be green before any push to `main` — the pre-push hook enforces it locally, and GitHub Actions verifies it authoritatively on push (see §5).
 - Small commits, prescribed messages. Never rewrite published history. Never commit `.env`, keys, or generated secrets.
 
 ## 10. External credentials by milestone
