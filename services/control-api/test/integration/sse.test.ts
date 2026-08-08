@@ -685,6 +685,24 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     }
   });
 
+  it('does not let an aborted replay cancel a later stream lookup', async () => {
+    // Break caught: releasing the replay's reserved PostgreSQL connection before
+    // its CancelRequest settles lets that request cancel a later run lookup on
+    // the same backend, turning a valid rapid reconnect into HTTP 500.
+    await startApp({
+      concurrencyLimits: { perUser: 100, perOrganization: 100, perProcess: 100 },
+    });
+    for (let attempt = 1; attempt <= 40; attempt += 1) {
+      const controller = new AbortController();
+      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        headers: requestHeaders(),
+        signal: controller.signal,
+      });
+      expect(response.status, `rapid reconnect ${String(attempt)}`).toBe(200);
+      controller.abort();
+    }
+  });
+
   it.each([
     'text/event-stream;q=wat',
     'text/event-stream;q=1.001',

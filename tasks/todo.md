@@ -45,6 +45,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-4 Remove disposable upstream response from the allowed-model web fixture (CI billing-blocked)
 - [x] M1-GATE-5 Construct preview redaction credential fixtures at runtime (pre-push guard; CI billing-blocked)
 - [x] M1-GATE-6 Let bounded real-Git child deadlines govern the aggregate fixture (CI billing-blocked)
+- [x] M1-GATE-7 Serialize local integration packages that reset the shared database
+- [x] M1-GATE-8 Arm the live Git backup proof in local verification
+- [x] M1-GATE-9 Await cancelled SSE replay before connection reuse
 
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes

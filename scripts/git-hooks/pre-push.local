@@ -55,8 +55,53 @@ set -a
 [ -f .env.local.forgejo ] && . ./.env.local.forgejo
 set +a
 
-# This hook is the CI now; arm the suites' refuse-to-skip guards.
-export CI="${CI:-zapp-prepush}"
+# Pin the gate to the LOCAL compose stack, whatever .env currently says. These
+# are docker-compose.dev.yml literals, pinned here for the reason dev-up.sh
+# pins the MinIO literals. .env is live developer config, not a hermetic test
+# env — on 2026-08-07 it held a Neon DATABASE_URL, so the gate ran every suite
+# against a shared remote database where concurrent agents' runs truncate each
+# other's rows: deadlocks, vanishing orgs, and a different failure set every
+# run. The pg_isready probe above guards localhost, so the suites must test
+# localhost — a guard that probes one database while the tests hit another is
+# no guard at all.
+export DATABASE_URL="postgres://zapp:zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"
+export REDIS_URL="redis://localhost:${ZAPP_REDIS_PORT:-6379}"
+export ARTIFACT_ENDPOINT="http://localhost:${ZAPP_MINIO_PORT:-9000}"
+export ARTIFACT_KEY="minioadmin"
+export ARTIFACT_SECRET="minioadmin"
+export ARTIFACT_BUCKET="zapp-artifacts"
+
+# Arm the live backup/delete/restore/clone proof and every integration suite's
+# refuse-to-skip guard. Pinning CI prevents a caller's CI=false or CI=0 from
+# silently disarming the local gate; ZAPP_SKIP_VERIFY is the explicit bypass.
+export GIT_BACKUP_LIVE="1"
+export CI="zapp-prepush"
+
+# One gate at a time per machine. Concurrent verifies collide on fixed test
+# ports (the web e2e server binds 3100) and on the per-service `_test`
+# databases on the local postgres — which reproduces, one layer down, exactly
+# the cross-run chaos the localhost pin above exists to prevent. mkdir is
+# atomic; a lock whose recorded pid is dead is stale and reclaimed.
+lock_dir="${TMPDIR:-/tmp}/zapp-verify-gate.lock"
+waited=0
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  holder="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$lock_dir"
+    continue
+  fi
+  if [ "$waited" -ge 1800 ]; then
+    echo "zapp: another verify gate (pid ${holder:-unknown}) has held the lock for 30 min — giving up." >&2
+    exit 1
+  fi
+  if [ $((waited % 60)) -eq 0 ]; then
+    echo "zapp: waiting for another verify gate (pid ${holder:-unknown}) to finish…" >&2
+  fi
+  sleep 5
+  waited=$((waited + 5))
+done
+printf '%s\n' "$$" > "$lock_dir/pid"
+trap 'rm -rf "$lock_dir"' EXIT
 
 echo "zapp: running pnpm verify before pushing to main…" >&2
 pnpm verify
