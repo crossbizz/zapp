@@ -5,12 +5,12 @@
   "type": "module",
   "exports": {
     "./provider/modal": {
-      "types": "./dist/modal.d.ts",
-      "default": "./dist/modal.js"
+      "types": "./dist/provider/modal.d.ts",
+      "default": "./dist/provider/modal.js"
     },
     "./provider-types": {
-      "types": "./dist/types.d.ts",
-      "default": "./dist/types.js"
+      "types": "./dist/provider/types.d.ts",
+      "default": "./dist/provider/types.js"
     }
   },
   "scripts": {
