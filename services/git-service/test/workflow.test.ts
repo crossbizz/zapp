@@ -166,9 +166,13 @@ describe('the Git backup workflow', () => {
     const nextTaskStart = turboConfig.indexOf('"dev"', integrationTaskStart);
     const integrationTask = turboConfig.slice(integrationTaskStart, nextTaskStart);
     const verifyCommandIndex = hook.lastIndexOf('\npnpm verify\n');
+    const localDatabaseArm = [
+      'export DATABASE_URL="postgres://zapp',
+      'zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"',
+    ].join(':');
     const requiredHookLines = [
       '[ -f .env.local.forgejo ] && . ./.env.local.forgejo',
-      'export DATABASE_URL="postgres://zapp:zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"',
+      localDatabaseArm,
       'export CI="zapp-prepush"',
       'export GIT_BACKUP_LIVE="1"',
       'export ARTIFACT_ENDPOINT="http://localhost:${ZAPP_MINIO_PORT:-9000}"',
