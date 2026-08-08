@@ -153,6 +153,199 @@ The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and
 - [ ] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared env-gated Modal conformance suite for atomic write (including guarded revision-CAS success, final-window conflict with zero target writes and preserved concurrent content, alias, leaf-symlink, rollback, cleanup, and mode guarantees), search confinement/zero matches, repeated file-only deletion, rename replace/same-object rejection, and both managed dev-server start and restart. The guarded suite must exercise mutation through exec, Git, another runtime attachment, and provider operations; any uncovered writer leaves WS-4 blocked rather than weakening the contract. Start/restart responses must carry identical supervisor ownership/readiness evidence; the Modal and local HTTP adapters both reject an unrelated listener as readiness.
 - [ ] Commit(s): `feat(sandbox-service): Modal workspace create/status/terminate`, `... agent proxy exec/files`, `... reattach recovery`
 
+#### Binding execution expansion (2026-08-08)
+
+The Files, Interfaces produced, route names, and acceptance statements above remain
+verbatim and authoritative. This expansion orders their execution; it does not add a
+generic filesystem/process API or relax the guarded-write contract. The public product
+entry points remain the existing versioned control-plane `/v1` APIs and generated SDK.
+The service-token-only `/internal/workspaces*` API is the provider boundary consumed by
+those APIs and by trusted runtimes; no UI-private path may bypass either boundary.
+
+**Execution precondition — pinned Modal revision CAS:** `services/sandbox-service`
+pins `modal@0.9.0` (`services/sandbox-service/package.json` and `pnpm-lock.yaml`). An
+inspection of that exact package's local `dist/index.d.ts` and `dist/index.js` found no
+qualifying primitive:
+
+- `SandboxFilesystem` exposes individual `readBytes`, `writeBytes`, `remove`, `stat`,
+  `watch`, and related calls. It exposes neither an opaque revision read nor an atomic
+  multi-file compare-and-swap. The implementation of `writeBytes` streams one target
+  through `modal-sandbox-fs-tools`; it accepts no expected revision.
+- `Sandbox.snapshotFilesystem` accepts only timeout/TTL options. Its implementation
+  creates an idempotency UUID and returns an image, but does not compare an expected
+  filesystem revision or commit a guarded batch.
+- `Volume` exposes mount options and ephemeral close only. Sandbox create/attach,
+  exec, tags, snapshots, and filesystem watches also expose no revision domain that
+  structurally encloses workspace-agent exec/Git, editor writes, another attachment,
+  and direct provider mutations.
+- The existing local SDK boundary in
+  `services/sandbox-service/src/provider/modal.ts` exposes image build/resolve/publish
+  and sandbox create/exec/readiness/tunnel/snapshot/terminate operations, with no
+  revision CAS.
+
+Therefore a qualifying production primitive is absent or unproven in the pinned SDK.
+Snapshots after comparison, watches/polling, tags, advisory locks, in-process queues,
+compare-then-rename, and a broker that any named writer can bypass remain
+non-qualifying. Slices 4a, unguarded 4b (including guarded fail-closed behavior), and
+4c may execute. The guarded production suite and joint WS-3/WS-4 completion
+bookkeeping remain blocked until the plan-required architecture decision is approved
+and implemented. Do not substitute a provider, invent an unapproved broker, or mark
+either task complete on fail-closed evidence alone.
+
+##### Slice 4a — create, status, terminate, readiness, and row idempotency
+
+- [ ] **4a RED — write the failing integration cases.** In
+  `test/integration/modal-provider.test.ts`, add strict fake-provider cases plus the
+  env-gated real-Modal case for: immutable lock-file image selection; the exact seven
+  required tags; resource-profile limits; env allowlisting; boot command; agent
+  `/healthz` readiness before `ready`; the row sequence
+  `requested -> provisioning -> started -> ready`; provider `getStatus` agreement;
+  terminate-to-`terminated` with the sandbox absent; and duplicate
+  `(runId, taskId, purpose)` create returning the first row/provider ID without a
+  second provider mutation. Assert every mutating internal request carries its
+  idempotency key, malformed/extra boundary fields fail Zod validation, and a missing
+  real credential skips visibly by its env name rather than passing.
+- [ ] **4a RED run — prove the new behavior is absent for the intended reason.** Run
+  `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "create status terminate and idempotency"`. Expected: FAIL because the provider/app/workspace routes do not yet implement the lifecycle; an env-gated real case may report only its explicit credential skip in addition to that failure.
+- [ ] **4a minimal implementation.** In the listed files only, implement
+  `ModalSandboxProvider.createWorkspace`, `getStatus`, and idempotent
+  `terminateWorkspace`; the strict service app and workspace lifecycle routes; and the
+  injected workspace-row boundary used by CP-9. Persist every legal transition in
+  order, leave `providerWorkspaceId` null while requested, bind the returned opaque ID
+  before started/ready, poll the authenticated agent health endpoint within the
+  30-second readiness budget, and reconcile create/terminate failures without
+  reporting ready/terminated falsely. Reuse the pinned image lock data and
+  `RESOURCE_PROFILES`; accept only contract-derived values and never expose a Modal
+  object, agent origin, or credential.
+- [ ] **4a GREEN — rerun the exact RED command.** Expected: all non-credential cases
+  PASS and the real case either PASSes against Modal or names its credential skip;
+  idempotent replay shows one provider mutation and one workspace identity.
+- [ ] **4a package verification.** Run
+  `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
+  Record the trailing counts and any visible credential-gated skip. A failure or skip
+  is never reported as a pass.
+- [ ] **4a commit.** Commit only the 4a files and evidence with
+  `feat(sandbox-service): Modal workspace create/status/terminate`. Do not check WS-3
+  or WS-4 boxes.
+
+##### Slice 4b — strict authenticated agent client, internal routes, and unguarded conformance
+
+- [ ] **4b RED — write the failing proxy and conformance cases.** In the same test
+  file, drive a strict fake agent through every named WS-3 API: buffered and NDJSON
+  streaming `POST /exec`, `POST /exec/:pid/kill`, `GET/PUT /files?path=`,
+  `GET /files/list`, `POST /git`, `GET /healthz`, `GET /metrics`,
+  `GET /files/update-snapshot`, `POST /files/atomic-write`, `POST /search`,
+  `DELETE /files`, `POST /files/rename`, and the managed dev-server start/restart
+  APIs. Assert constant bearer authentication, idempotency keys on mutations, exact
+  query/body encoding (including base64 atomic bytes), strict response validation,
+  stream cancellation/kill propagation, and rejection of extra or malformed fields.
+  Through the exact service-token-authenticated routes named above, assert
+  `workspaceId` resolves to the attached sandbox, cross-tenant or unknown ownership is
+  a 404, and request bodies cannot supply a provider ID, agent origin, host path,
+  filesystem flag, arbitrary Git command, or arbitrary process escape hatch.
+- [ ] **4b RED — add the shared unguarded conformance matrix.** Run unguarded atomic
+  writes, ordinary-write serialization, lexical/canonical/same-inode and absent-name
+  case/Unicode alias rejection, leaf-symlink rejection, rollback/cleanup/mode
+  preservation, confined search including zero matches, repeated absent file deletion,
+  file-only directory rejection, rename replace and same-object rejection, and managed
+  start/restart ownership/readiness against the Modal adapter. Both Modal and local
+  HTTP adapters must reject an unrelated listener. Add guarded snapshot/batch cases
+  that expect the stable typed `atomic_write_conflict` with zero target writes while
+  this provider has no approved CAS.
+- [ ] **4b RED run — prove the strict client/routes and conformance are absent.** Run
+  `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "agent proxy and unguarded conformance"`. Expected: FAIL on the first missing client/route or conformance behavior, not on fixture setup; the Modal-only matrix may skip only with an explicit named credential reason.
+- [ ] **4b minimal implementation.** Implement the private authenticated agent client
+  inside `src/provider/modal.ts`, the one-for-one internal route mapping in
+  `src/routes/workspaces.ts`, and app registration in `src/app.ts`. Accept only WS-1
+  typed inputs, resolve tenant-owned `workspaceId` server-side, preserve exact WS-3
+  payloads/responses through strict Zod schemas, and map stable typed failures without
+  parsing free-form text. Implement unguarded operations minimally through the agent.
+  Until an approved qualifying CAS exists, both `readFileForUpdate` and any batch
+  carrying `expectedRevision` fail closed with `AtomicWriteConflictError`; unguarded
+  batches retain the WS-3 atomic/rollback guarantees.
+- [ ] **4b GREEN — rerun the two 4b matrices.** Expected: strict proxy and unguarded
+  conformance PASS; guarded unsupported cases return the typed conflict with zero
+  writes. This GREEN is not guarded production acceptance.
+- [ ] **4b package verification.** Run
+  `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
+  Record trailing counts and visible skips; do not run or claim the guarded production
+  matrix while the precondition above is unresolved.
+- [ ] **4b commit.** Commit only the 4b files and evidence with
+  `feat(sandbox-service): Modal agent proxy exec/files`. Leave WS-3 and WS-4 unchecked.
+
+##### Guarded production acceptance — success and every-writer final-window conflict
+
+- [ ] **Guarded RED prerequisite.** Begin only after an approved ADR identifies a
+  production primitive that atomically validates opaque revisions and commits the
+  complete batch at one linearization point, and proves that exec, Git, editor,
+  another attachment/runtime, and provider mutations cannot bypass its revision
+  domain. Cite the exact provider type/method and approved interface change in this
+  task before coding; an application convention or optional broker is insufficient.
+- [ ] **Guarded RED — write the env-gated production matrix.** For a fresh real Modal
+  workspace, prove a snapshot revision can commit a multi-file guarded batch. Then,
+  for each writer independently — workspace-agent exec, workspace-agent Git, editor
+  `writeFile`, a separately constructed runtime attachment after service restart, and
+  a direct provider filesystem mutation — deterministically place the concurrent
+  mutation in the final window before guarded commit. Assert the stable typed
+  conflict, zero writes to every batch target, preservation of the concurrent
+  writer's bytes/mode, and cleanup of all staging artifacts. The test must fail if any
+  writer is removed from the CAS domain.
+- [ ] **Guarded RED run.** Run
+  `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "production guarded revision CAS"` with the required real credential gate armed. Expected before implementation: FAIL on guarded success or the first uncovered writer; a skip is unverified, never acceptance.
+- [ ] **Guarded minimal implementation.** Implement only the approved structural CAS
+  boundary. Do not use snapshot-after-compare, polling/watch, tags, advisory locks,
+  in-process queues, compare-then-rename, or a non-compulsory broker as the guarantee.
+- [ ] **Guarded GREEN and package verification.** Rerun the exact guarded command,
+  then the 4b conformance command, then
+  `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
+  All five writer conflicts and guarded success must PASS against the real production
+  cloud runtime; otherwise WS-3 and WS-4 remain unchecked.
+- [ ] **Guarded commit.** Commit the approved implementation and its proof using the
+  commit message prescribed by that ADR/task. This step supplies acceptance evidence
+  only; final task bookkeeping still waits for 4c.
+
+##### Slice 4c — attach/reattach recovery, ownership, and failure reconciliation
+
+- [ ] **4c RED — write the failing restart/recovery cases.** Create a workspace, close
+  the first provider/service instance without terminating the sandbox, construct a
+  fresh instance with no in-memory attachment state, and attach by the stored opaque
+  provider ID. Assert strict handle/status reconstruction, authenticated agent
+  readiness, and unguarded exec/file behavior after reattach. Cover unknown/terminated
+  provider IDs, mismatched required tags, cross-tenant/project lookup returning 404,
+  concurrent repeated attach, service restart during provisioning, readiness timeout,
+  provider disappearance, and row/provider disagreement. Each failure must reconcile
+  the row to a truthful legal state without creating a replacement sandbox or exposing
+  provider IDs/origins to callers.
+- [ ] **4c RED run — prove restart recovery is absent.** Run
+  `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "attach reattach recovery and ownership"`. Expected: FAIL because attach/recovery is not implemented; a real-Modal case may only skip with its explicit named credential reason.
+- [ ] **4c minimal implementation.** Implement `attachWorkspace` through the pinned
+  SDK's `client.sandboxes.fromId`, rebuild the private authenticated agent binding from
+  persisted server-side data, validate provider tags against the tenant-owned row,
+  make repeated attach idempotent, and reconcile missing/terminated/unready provider
+  state without last-writer-wins. Never accept a caller-supplied agent origin or use
+  process-local attachment state as durability.
+- [ ] **4c GREEN — rerun the exact RED command.** Expected: restart/reattach and
+  ownership cases PASS, with provider disappearance and readiness failures reconciled
+  to their asserted truthful states.
+- [ ] **4c package verification.** Run
+  `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
+  Record trailing counts and visible skips.
+- [ ] **4c commit.** Commit only the 4c files and evidence with
+  `feat(sandbox-service): Modal reattach recovery`. If guarded production acceptance
+  is still unresolved, stop implementation bookkeeping here with WS-3/WS-4 unchecked.
+
+##### Joint completion bookkeeping
+
+- [ ] Only after 4a, 4b, guarded production acceptance, and 4c are all verified in the
+  same current implementation lineage, rerun the WS-3 focused daemon/auth suite, the
+  shared WS-1 conformance suite, the complete sandbox-service suite, and touched
+  package lint/typecheck/build. Record exact trailing output and visible skips.
+- [ ] Check WS-3 and WS-4 in this plan and in `tasks/todo.md`, and append separate
+  dated `done` execution-log lines citing the real guarded success plus all five
+  final-window conflict cases. Commit that bookkeeping with the implementation commit
+  that first makes every acceptance criterion true; never check either box merely
+  because unsupported guarded calls fail closed.
+
 ### Task WS-5: Git in sandbox
 
 **Files:** Create: `src/provider/git-bootstrap.ts`, `test/integration/git-clone.test.ts`
@@ -308,3 +501,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-2 BLOCKED — one clean-HEAD tracked local gate under Node 22.23.1 and pinned pnpm 9.15.0 exited 1 in its concurrent unit phase: sandbox-service's explicit-kill old-boundary test timed out (1 failed, 25 passed), Modal infra's injected-clock writer-lock test lost its 100 ms wall-clock race (1 failed, 22 passed), and workspace-agent's 256-entry replay-pressure test timed out (1 failed, 90 passed). Turbo finished 67/70 tasks in 3m20.311s; the subsequent integration, isolation, and Gate-5 phases did not run. The failures are load-sensitive verification-boundary defects rather than demonstrated runtime regressions, but the failed required gate remains failed; no retry, production fix, or completion bookkeeping followed, and WS-2/WS-3 stay unchecked for a fresh fix task.
 - 2026-08-08 WS-2 done — real Modal dev publish and standalone smoke at source `c58a416cba65f57ea64ba3e3e90f3646efca9b62` exited 0 with immutable tag `2026-08-08-c58a416`, base digest `im-9NCxx8merCgh67jj0YLM84`, web-test digest `im-eVxjg43Gv7bQrkH0CbwrrX`, and all strict VM/lifecycle/credential-absence/volume/snapshot/tunnel/readiness evidence; after the three bounded test-stability repairs and one clean SOL High review, exact advertised SHA `90305ed8fef549998555e8b027dcb9e3f24d0f8a` passed the one-shot locked local gate under Node 22.23.1/pnpm 9.15.0: concurrent 70/70, integration 15/15 (DB 48/48, Git 16/16, control API 236/236), isolation 54/54, and Gate 5 1/1. WS-3 remains unchecked.
 - 2026-08-08 WS-3 BLOCKED — the reviewed workspace-agent implementation and current published image passed focused daemon/auth checks 7/7, the dependency-built full suite 91/91, WS-1 conformance 35/35, package lint/typecheck/build 5/5, and one real Modal standalone smoke against tag `2026-08-08-c58a416` with strict authenticated VM/lifecycle/containment and capability evidence. WS-3 remains unchecked only because its binding guarded-write acceptance requires WS-4's production cloud runtime to prove successful revision-CAS commit plus deterministic final-window conflict with zero target writes across every writer domain; that provider/conformance path does not exist yet.
+- 2026-08-08 WS-4 expansion/preflight — expanded 4a/4b/guarded-production/4c into binding TDD cycles; pinned Modal JS SDK 0.9.0 exposes no proven atomic revision-CAS primitive whose domain covers exec, Git, editor, other-runtime, and provider writers, so implementable slices may proceed while joint WS-3/WS-4 completion awaits the required approved architecture decision and real guarded proof.
