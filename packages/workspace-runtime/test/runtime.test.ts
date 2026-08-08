@@ -543,15 +543,24 @@ describe('MemoryWorkspaceRuntime path safety', () => {
     }
   });
 
-  it('owns ripgrep path validation and execution in one typed search operation', async () => {
+  it('owns packaged ripgrep path validation and execution without a host PATH', async () => {
     await withWorkspace(async (_root, runtime) => {
       await runtime.writeFile('inside.txt', new TextEncoder().encode('inside marker\n'));
 
-      const result = await runtime.search({
-        pattern: 'inside',
-        path: 'inside.txt',
-        fixedStrings: true,
-      });
+      const previousPath = process.env.PATH;
+      const result = await (async () => {
+        try {
+          process.env.PATH = '';
+          return await runtime.search({
+            pattern: 'inside',
+            path: 'inside.txt',
+            fixedStrings: true,
+          });
+        } finally {
+          if (previousPath === undefined) delete process.env.PATH;
+          else process.env.PATH = previousPath;
+        }
+      })();
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('inside marker');
       await expect(

@@ -15,6 +15,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { rgPath } from '@vscode/ripgrep';
 import type { ExecutionContract, ExecInput } from '@zapp/contracts';
 
 export const MAX_EXEC_OUTPUT_BYTES = 1_024 * 1_024;
@@ -841,7 +842,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     if (input.fixedStrings === true) args.push('--fixed-strings');
     if (input.ignoreCase === true) args.push('--ignore-case');
     args.push('--', input.pattern, searchPath);
-    return this.exec({ cmd: 'rg', args, timeoutMs: 30_000 });
+    return this.exec({ cmd: rgPath, args, timeoutMs: 30_000 });
   }
 
   async listFiles(

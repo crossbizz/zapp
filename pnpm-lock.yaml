@@ -778,6 +778,9 @@ importers:
 
   packages/workspace-runtime:
     dependencies:
+      '@vscode/ripgrep':
+        specifier: ^1.17.0
+        version: 1.18.0
       '@zapp/contracts':
         specifier: workspace:*
         version: link:../contracts

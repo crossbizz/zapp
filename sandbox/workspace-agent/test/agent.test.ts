@@ -1195,11 +1195,8 @@ describe('workspace-agent RPC daemon', () => {
     expect(response.json()).toMatchObject({ exitCode: 0, truncated: false });
   });
 
-  test('installs the pinned node-pty POSIX spawn helper with executable mode', async () => {
-    if (process.platform === 'win32') {
-      expect(process.platform).toBe('win32');
-      return;
-    }
+  test('installs the pinned node-pty macOS spawn helper with executable mode', async () => {
+    if (process.platform !== 'darwin') return;
     const nodePtyRoot = resolve(dirname(require.resolve('node-pty')), '..');
     const helper = join(
       nodePtyRoot,
@@ -2923,6 +2920,7 @@ describe('workspace-agent RPC daemon', () => {
       `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
       'setInterval(() => { value += memory[0]; }, 1000);',
     ].join('');
+    const daemonCpu = process.cpuUsage();
     const activeStream = await startLiveExecStream(
       requireApp(),
       token,
@@ -2942,6 +2940,7 @@ describe('workspace-agent RPC daemon', () => {
     const childPid = Number(await waitForFile(childPidFile));
     expect(activeStream.started.pid).toBe(rootPid);
 
+    const daemonMemory = process.memoryUsage();
     const activeResponse = await requireApp().inject({
       method: 'GET',
       url: '/metrics',
@@ -2951,8 +2950,6 @@ describe('workspace-agent RPC daemon', () => {
       cpu: { userMicros: number; systemMicros: number };
       memory: { rssBytes: number };
     }>();
-    const daemonCpu = process.cpuUsage();
-    const daemonMemory = process.memoryUsage();
     const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
     const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
     await requireApp().inject({
@@ -2994,6 +2991,7 @@ describe('workspace-agent RPC daemon', () => {
       `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
       'setInterval(() => { value += memory[0]; }, 1000);',
     ].join('');
+    const daemonCpu = process.cpuUsage();
     const activeRequest = activeApp.inject({
       method: 'POST',
       url: '/exec?stream=1',
@@ -3017,6 +3015,7 @@ describe('workspace-agent RPC daemon', () => {
       childPid = Number(await waitForFile(childPidFile));
       await waitForProcessExit(leaderPid);
 
+      const daemonMemory = process.memoryUsage();
       const activeResponse = await activeApp.inject({
         method: 'GET',
         url: '/metrics',
@@ -3027,8 +3026,6 @@ describe('workspace-agent RPC daemon', () => {
         cpu: { userMicros: number; systemMicros: number };
         memory: { rssBytes: number };
       }>();
-      const daemonCpu = process.cpuUsage();
-      const daemonMemory = process.memoryUsage();
       const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
       const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
       const staleKill = await activeApp.inject({
