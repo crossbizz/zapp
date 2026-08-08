@@ -62,7 +62,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-1 workspace-runtime interface + path safety
 - [x] WS-2 Modal images (forge-node-base, forge-web-test)
 - [x] WS-3 workspace-agent daemon
-- [ ] WS-4 Modal provider create/exec/terminate/attach
+- [x] WS-4 Modal provider create/exec/terminate/attach
 - [ ] WS-5 Scoped-token git clone/push
 - [ ] WS-6 Lifecycle state machine + reaper + reconciler
 - [ ] WS-7 Checkpoints + snapshot-free restore

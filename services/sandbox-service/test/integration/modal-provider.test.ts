@@ -89,6 +89,7 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   readonly healthTokens: string[] = [];
   terminateCalls = 0;
   healthResults = [false, true];
+  legacyHealthPayload = false;
   readonly agentRequests: AgentRequest[] = [];
   agentResponder: (request: AgentRequest) => AgentResponse = strictAgentResponse;
   private devServerEvidence:
@@ -122,7 +123,11 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     const ok = this.healthResults.shift() ?? true;
     return Promise.resolve(
       ok
-        ? { ok: true, details: 'workspace agent ready', devServer: null }
+        ? {
+            ok: true,
+            details: 'workspace agent ready',
+            ...(this.legacyHealthPayload ? {} : { devServer: null }),
+          }
         : { ok: false, details: 'workspace agent not ready' },
     );
   }
@@ -1009,6 +1014,26 @@ describe('create status terminate and idempotency', () => {
     await provider.terminateWorkspace(handle.providerWorkspaceId);
     expect(sdk.sandbox.terminateCalls).toBe(1);
     expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('terminated');
+  });
+
+  it('accepts the locked c58 image health payload without managed-dev-server evidence', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.sandbox.healthResults = [true];
+    sdk.sandbox.legacyHealthPayload = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: 'agent-test-token',
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    const handle = await provider.createWorkspace(createInput());
+
+    expect(handle.status).toBe('ready');
+    await provider.terminateWorkspace(handle.providerWorkspaceId);
   });
 
   it('rejects an unlocked image and non-allowlisted environment before mutating Modal', async () => {

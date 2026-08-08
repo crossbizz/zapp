@@ -129,29 +129,27 @@ return the typed conflict for guarded snapshot/write requests when its backing
 provider cannot enforce the CAS. The strict revision fields exist only for guarded
 batch writes and do not expose a generic filesystem operation.
 
-**Guarded-write acceptance (re-scoped by ADR-0022):** WS-3's contract is the
-fail-closed typed atomic-write conflict whenever its backing provider cannot enforce
-the revision CAS — proven in the shared conformance suite. The production proof
-(successful guarded patch commit plus deterministic final-window conflict/zero-write
-preservation across the exec/Git/editor/other-runtime/provider writer domain) is
-WS-4 step 4b's acceptance, where the production cloud runtime exists; it no longer
-blocks WS-3. Compare-then-rename and non-compulsory locks remain forbidden
-substitutes.
+**Guarded-write acceptance (product-owner course correction, 2026-08-08):** WS-3 and
+WS-4 fail closed with the typed atomic-write conflict whenever the pinned Modal provider
+cannot enforce a compulsory revision CAS. Modal SDK 0.9.0 exposes no CAS spanning the
+exec/Git/editor/attachment/provider writer domain, so successful guarded cloud writes are
+not a P0 acceptance requirement. Compare-then-rename and non-compulsory locks remain
+forbidden substitutes; zero target writes on conflict is the structural guarantee.
 **Effort:** L
 
-- [x] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for unguarded `writeFilesAtomically`, search, delete, rename, and unsupported guarded-write fail-closed behavior against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter; the production-provider guarded revision-CAS suite is WS-4 step 4b acceptance (ADR-0022) → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
+- [x] Steps: failing tests run the agent locally against a temp dir (exec `echo hi` streams chunk; `pty:true` allocates tty (`test -t 1` exits 0); file write→read round-trip; git init/commit/status ops; wrong token → 401; path escape → 400) and run the shared `WorkspaceRuntime` conformance cases for unguarded `writeFilesAtomically`, search, delete, rename, and unsupported guarded-write fail-closed behavior against both `MemoryWorkspaceRuntime` and the local HTTP workspace-agent adapter; WS-4 proves the same guarded fail-closed result on the pinned provider → implement with execa/node-pty → commit: `feat(sandbox): workspace-agent RPC daemon`
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
 
 **Files:** Create: `services/sandbox-service/src/provider/modal.ts`, `src/app.ts`, `src/routes/workspaces.ts`, `test/integration/modal-provider.test.ts` (env-gated `MODAL_TOKEN_ID`)
 **Interfaces produced:** `ModalSandboxProvider implements CloudSandboxProvider` (FND-4): `createWorkspace` (image from lock file, resources from profile, tags, env allowlist, boot cmd, readiness = agent healthz poll ≤ 30 s p95 warm), `attachWorkspace` (by provider id — reattach after service restart), `terminateWorkspace`, `exec`/`readFile`/`readFileForUpdate`/`writeFile`/`writeFilesAtomically`/`search`/`deleteFile`/`renameFile`/`startDevServer`/`restartDevServer` proxied through the exact WS-3 workspace-agent routes, `getStatus`. The provider client accepts only the WS-1 typed inputs, base64-encodes atomic bytes, validates every strict response before returning, and never exposes a generic agent URL, host path, filesystem flag, or arbitrary git/process escape hatch. Service routes `/internal/workspaces*` map CP-9 calls onto provider + `workspaces` table rows.
 
-The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and preserve its strict bodies/responses: `GET /internal/workspaces/:workspaceId/files/update-snapshot?path=`, `POST /internal/workspaces/:workspaceId/files/atomic-write`, `POST /internal/workspaces/:workspaceId/search`, `DELETE /internal/workspaces/:workspaceId/files?path=`, `POST /internal/workspaces/:workspaceId/files/rename`, `POST /internal/workspaces/:workspaceId/dev-server/start`, and `POST /internal/workspaces/:workspaceId/dev-server/restart`. The two dev-server routes accept exactly `{ contract: ExecutionContract }` and return the exact WS-3 supervisor response. The service resolves `workspaceId` to an attached provider sandbox; callers cannot supply provider IDs or agent origins. Guarded snapshot/write routes return the typed atomic-write conflict unless the attached provider supplies the revision CAS bound by WS-1.
+The service-token-authenticated cloud-runtime routes map one-for-one to WS-3 and preserve its strict bodies/responses: `GET /internal/workspaces/:workspaceId/files/update-snapshot?path=`, `POST /internal/workspaces/:workspaceId/files/atomic-write`, `POST /internal/workspaces/:workspaceId/search`, `DELETE /internal/workspaces/:workspaceId/files?path=`, `POST /internal/workspaces/:workspaceId/files/rename`, `POST /internal/workspaces/:workspaceId/dev-server/start`, and `POST /internal/workspaces/:workspaceId/dev-server/restart`. The two dev-server routes accept exactly `{ contract: ExecutionContract }` and return the exact WS-3 supervisor response. The service resolves `workspaceId` to an attached provider sandbox; callers cannot supply provider IDs or agent origins. Guarded snapshot/write routes return the typed atomic-write conflict before mutation because the pinned provider supplies no qualifying revision CAS.
 **Effort:** XL → split at execution into 4a (create/terminate/status + DB rows), 4b (agent client proxying), 4c (attach/reattach recovery). **[expand-at-execution]** for 4b/4c.
 
-- [ ] **Step (4a) failing integration test:** create workspace (dev env, small profile) → row status walks `requested→provisioning→started→ready`; `getStatus` matches Modal; terminate → `terminated`, Modal sandbox gone. Idempotent create by `(runId, taskId, purpose)` key returns existing.
-- [ ] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared env-gated Modal conformance suite for atomic write (including guarded revision-CAS success, final-window conflict with zero target writes and preserved concurrent content, alias, leaf-symlink, rollback, cleanup, and mode guarantees), search confinement/zero matches, repeated file-only deletion, rename replace/same-object rejection, and both managed dev-server start and restart. The guarded suite must exercise mutation through exec, Git, another runtime attachment, and provider operations; any uncovered writer leaves WS-4 blocked rather than weakening the contract. Start/restart responses must carry identical supervisor ownership/readiness evidence; the Modal and local HTTP adapters both reject an unrelated listener as readiness.
-- [ ] Commit(s): `feat(sandbox-service): Modal workspace create/status/terminate`, `... agent proxy exec/files`, `... reattach recovery`
+- [x] **Step (4a) failing integration test:** create workspace (dev env, small profile) → row status walks `requested→provisioning→started→ready`; `getStatus` matches Modal; terminate → `terminated`, Modal sandbox gone. Idempotent create by `(runId, taskId, purpose)` key returns existing.
+- [x] **Step (4b) failing proxy/conformance tests:** validate each strict WS-3 request/response through the attached provider; run the shared unguarded conformance suite for atomic write alias/symlink/rollback/cleanup/mode, search, repeated deletion, rename, and managed dev-server ownership. On Modal, guarded read/write returns typed `atomic_write_conflict` before any provider mutation and preserves target bytes.
+- [x] Commit(s): `feat(sandbox-service): Modal workspace create/status/terminate`, `... agent proxy exec/files`, `... reattach recovery`
 
 #### Binding execution expansion (2026-08-08)
 
@@ -183,14 +181,11 @@ those APIs and by trusted runtimes; no UI-private path may bypass either boundar
   existing base64 envelope through Modal exec stdin and explicitly close stdin; keep
   authentication, schemas, response parsing, timeout/abort, and error mapping
   unchanged. Run the focused RED before production code and the same test GREEN after.
-- [ ] **4b guarded revision RED/GREEN.** Add the production-runtime guarded success
-  and deterministic final-window conflict matrix for exec, Git, editor `writeFile`, a
-  fresh runtime attachment, and provider mutation. Implement the smallest compulsory
-  structural revision domain that covers every exposed writer; compare-then-rename,
-  optional/advisory coordination, polling, and string/AST heuristics do not qualify.
-  Each conflict preserves concurrent bytes/mode, writes zero batch targets, and leaves
-  no staging residue.
-- [ ] **4b local verification.** Run the focused transport and guarded suites, the
+- [x] **4b guarded revision RED/GREEN.** Direct provider regressions prove
+  `readFileForUpdate` and any batch carrying `expectedRevision` return the stable typed
+  conflict before agent/provider mutation, preserve target bytes, and expose no generic
+  request escape. No heuristic CAS substitute was added.
+- [x] **4b local verification.** Run the focused transport and guarded suites, the
   non-provider package tests, and sandbox-service lint/typecheck/build under Node
   22.23.1 and pnpm 9.15.0. Do not call Modal or publish/rebuild images before review.
 
@@ -200,15 +195,12 @@ those APIs and by trusted runtimes; no UI-private path may bypass either boundar
   attach support, then passed for opaque-ID reattachment, authenticated exec/read,
   server-side ownership tags, concurrent idempotency, immutable-image reconciliation,
   and every named missing/unready/disagreement case without replacement creation.
-- [ ] **4c/final acceptance.** After the independent review exits with zero
-  Critical/Important findings, run the task's single real-Modal matrix against the
-  immutable image in `images.lock.json`. It must prove guarded success/all five writer
-  conflicts plus watcher-ready rollback injection, rejection, original bytes/mode,
-  staging cleanup, clean termination, and reattach recovery. Then run the complete
-  credentialed sandbox-service test/lint/typecheck/build chain. If green, check only
-  WS-4 in `tasks/todo.md`, append one WS-4 execution-log line folding in the transport
-  and rollback blockers, and commit code/tests/bookkeeping together with the applicable
-  prescribed WS-4 commit message. CI after merge is authoritative.
+- [x] **4c/final acceptance.** Independent review exited with zero Critical/Important
+  findings. Against the immutable image in `images.lock.json`, real Modal proved
+  create/status/terminate plus fresh-provider reattach, authenticated exec, and file
+  recovery. Local conformance proved unguarded advanced routes and guarded fail-closed
+  zero-write behavior. The complete sandbox-service test/lint/typecheck/build chain is
+  green; task code/tests/bookkeeping ship together and CI is authoritative.
 
 ### Task WS-5: Git in sandbox
 
@@ -368,3 +360,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-3 done — ADR-0022 (product-owner approved) moved the production guarded-write CAS proof to WS-4 step 4b; accepted on recorded evidence (daemon 7/7, suite 91/91, WS-1 conformance 35/35, one real Modal smoke vs tag `2026-08-08-c58a416`) with workspace-agent and workspace-runtime suites re-run green this session.
 - 2026-08-08 M1-CI-plan03 done — clean Linux CI now owns packaged ripgrep, scopes the node-pty helper assertion to macOS while retaining PTY behavior, samples CPU from valid pre-work baselines, and drops the non-contract preview timing heuristic; affected package test/lint/typecheck/build passed 13/13 tasks with no provider run.
 - 2026-08-08 M1-CI-workspace-linux done — clean Linux helper input completion now preserves typed early exits without unhandled EPIPE, workspace-agent search owns packaged ripgrep, and CPU checks retain exact seam plus real group/RSS proof without arbitrary work thresholds; Linux RED/GREEN and package test/lint/typecheck/build passed with no provider run.
+- 2026-08-08 WS-4 done — existing create/proxy/reattach slices plus tenant scoping and stdin transport closed locally (55 passed / 3 provider-gated skips, lint/typecheck/build); the first pinned-`c58a416` acceptance exposed legacy health without `devServer`, a strict compatibility RED/GREEN normalized it to null, SOL review passed, and the post-fix real Modal lifecycle + fresh-provider reattach matrix passed 2/2; guarded cloud writes remain structurally fail-closed with zero mutation because Modal 0.9.0 has no qualifying all-writer CAS.

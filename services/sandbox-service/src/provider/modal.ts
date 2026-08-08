@@ -864,6 +864,10 @@ const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
 const WorkspaceAgentHealthSchema = z.union([
   AgentHealthSchema,
+  z
+    .object({ ok: z.literal(true), details: z.string().min(1) })
+    .strict()
+    .transform((health) => ({ ...health, devServer: null })),
   z.object({ ok: z.literal(false), details: z.string().min(1) }).strict(),
 ]);
 const WorkspaceAgentExecResultSchema = z
