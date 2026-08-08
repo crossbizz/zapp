@@ -37,11 +37,12 @@ type Workflow = {
 const workflowPath = fileURLToPath(
   new URL('../../../.github/workflows/git-backups.yml', import.meta.url),
 );
-const hookPath = fileURLToPath(
+const prePushHookPath = fileURLToPath(
   new URL('../../../scripts/git-hooks/pre-push.local', import.meta.url),
 );
+const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+const gitServicePackagePath = fileURLToPath(new URL('../package.json', import.meta.url));
 const turboConfigPath = fileURLToPath(new URL('../../../turbo.json', import.meta.url));
-const rootManifestPath = fileURLToPath(new URL('../../../package.json', import.meta.url));
 const execute = promisify(execFile);
 
 const secretEnvironment = {
@@ -152,32 +153,62 @@ describe('the Git backup workflow', () => {
     expect(containsSecretReference({ ...operation, env: undefined })).toBe(false);
   });
 
-  it('the push gate runs the live backup/delete/restore/clone proof with every declared dependency', async () => {
-    // GitHub Actions is parked (owner decision, 2026-08-07) and the pre-push
-    // hook is the gate, so the never-silently-vanish property this test held
-    // over ci.yml's `git-backup-live` job now attaches to the hook chain: the
-    // hook arms GIT_BACKUP_LIVE and pins the local stack, turbo's strict
-    // envMode admits the flag into test:integration, and `pnpm verify` runs
-    // that task. Sever any link and this fails, exactly as the job variant
-    // did — and backup.test.ts itself throws when the flag is armed while a
-    // dependency is missing, so the proof cannot quietly degrade to a skip.
-    const hook = await readFile(hookPath, 'utf8');
-    expect(hook, 'gate no longer arms the live backup proof').toContain(
-      'export GIT_BACKUP_LIVE=1',
-    );
-    expect(hook).toMatch(
-      /^export DATABASE_URL="postgres:\/\/zapp:zapp@localhost:\$\{ZAPP_POSTGRES_PORT:-5432\}\/zapp"$/m,
-    );
-    expect(hook).toContain('pnpm verify');
-
-    const turbo = JSON.parse(
-      (await readFile(turboConfigPath, 'utf8')).replace(/^\s*\/\/.*$/gmu, ''),
-    ) as { tasks?: Record<string, { env?: readonly string[] }> };
-    expect(turbo.tasks?.['test:integration']?.env).toContain('GIT_BACKUP_LIVE');
-
-    const manifest = JSON.parse(await readFile(rootManifestPath, 'utf8')) as {
-      scripts?: Record<string, string>;
+  it('the local pre-push gate runs the live backup proof with pinned dependencies', async () => {
+    const hook = await readFile(prePushHookPath, 'utf8');
+    const rootPackage = JSON.parse(await readFile(rootPackagePath, 'utf8')) as {
+      readonly scripts?: Readonly<Record<string, string>>;
     };
-    expect(manifest.scripts?.['verify']).toContain('turbo run test:integration');
+    const gitServicePackage = JSON.parse(await readFile(gitServicePackagePath, 'utf8')) as {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+    const turboConfig = await readFile(turboConfigPath, 'utf8');
+    const integrationTaskStart = turboConfig.indexOf('"test:integration"');
+    const nextTaskStart = turboConfig.indexOf('"dev"', integrationTaskStart);
+    const integrationTask = turboConfig.slice(integrationTaskStart, nextTaskStart);
+    const verifyCommandIndex = hook.lastIndexOf('\npnpm verify\n');
+    const requiredHookLines = [
+      '[ -f .env.local.forgejo ] && . ./.env.local.forgejo',
+      'export DATABASE_URL="postgres://zapp:zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"',
+      'export CI="zapp-prepush"',
+      'export GIT_BACKUP_LIVE="1"',
+      'export ARTIFACT_ENDPOINT="http://localhost:${ZAPP_MINIO_PORT:-9000}"',
+      'export ARTIFACT_KEY="minioadmin"',
+      'export ARTIFACT_SECRET="minioadmin"',
+      'export ARTIFACT_BUCKET="zapp-artifacts"',
+    ] as const;
+
+    expect(verifyCommandIndex, 'pre-push does not invoke the root verification gate').toBeGreaterThan(
+      0,
+    );
+    for (const line of requiredHookLines) {
+      const lineIndex = hook.indexOf(line);
+      expect(lineIndex, `missing pre-push arm: ${line}`).toBeGreaterThanOrEqual(0);
+      expect(lineIndex, `pre-push arm runs after pnpm verify: ${line}`).toBeLessThan(
+        verifyCommandIndex,
+      );
+    }
+    expect(rootPackage.scripts?.['verify']).toContain(
+      'turbo run test:integration --filter=!@zapp/desktop --concurrency=1',
+    );
+    expect(gitServicePackage.scripts?.['test:integration']).toBe(
+      'node --env-file-if-exists=../../.env.local.forgejo ./node_modules/vitest/vitest.mjs run --dir test/integration --no-file-parallelism',
+    );
+    expect(integrationTaskStart).toBeGreaterThanOrEqual(0);
+    expect(nextTaskStart).toBeGreaterThan(integrationTaskStart);
+    for (const variable of [
+      'CI',
+      'GIT_BACKUP_LIVE',
+      'DATABASE_URL',
+      'FORGEJO_URL',
+      'FORGEJO_ADMIN_TOKEN',
+      'ARTIFACT_ENDPOINT',
+      'ARTIFACT_KEY',
+      'ARTIFACT_SECRET',
+      'ARTIFACT_BUCKET',
+    ]) {
+      expect(integrationTask, `Turbo strips ${variable} from test:integration`).toContain(
+        `"${variable}"`,
+      );
+    }
   });
 });
