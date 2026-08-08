@@ -1818,36 +1818,41 @@ describe('agent proxy and unguarded conformance', () => {
         await expect(run('chmod', ['640', `/workspace/${rollbackPath}`])).resolves.toMatchObject({
           exitCode: 0,
         });
-        let resolveFlipperStarted = (): void => undefined;
-        const flipperStarted = new Promise<void>((resolveStarted) => {
-          resolveFlipperStarted = resolveStarted;
+        let resolveFlipperReady = (): void => undefined;
+        const flipperReady = new Promise<void>((resolveReady) => {
+          resolveFlipperReady = resolveReady;
         });
+        let flipperOutput = '';
         const flipper = (async () => {
           for await (const record of provider.execStream({
             providerWorkspaceId,
             command: 'sh',
             args: [
               '-lc',
-              `while ! find /workspace -maxdepth 1 -name '.zapp-atomic-*.stage' -print -quit | grep -q .; do :; done; mkdir /workspace/${rollbackBlocker}`,
+              `printf 'rollback-watcher-ready\n'; while ! find /workspace -maxdepth 1 -name '.zapp-atomic-*-0.stage' -print -quit | grep -q .; do :; done; mkdir /workspace/${rollbackBlocker} && printf 'rollback-injected\n'`,
             ],
             timeoutMs: 30_000,
           })) {
-            if (record.type === 'started') resolveFlipperStarted();
+            if (record.type === 'stdout') {
+              flipperOutput += record.data;
+              if (flipperOutput.includes('rollback-watcher-ready\n')) resolveFlipperReady();
+            }
           }
         })();
-        await flipperStarted;
-        const rollbackFillers = Array.from({ length: 500 }, (_, index) => ({
-          path: `${prefix}-rollback-filler-${String(index)}`,
-          data: Buffer.alloc(0),
-        }));
-        await expect(
-          provider.writeFilesAtomically(providerWorkspaceId, [
-            { path: rollbackPath, data: Buffer.from('rollback after\n') },
-            ...rollbackFillers,
+        await flipperReady;
+        let rollbackError: unknown;
+        const rollbackRequest = provider
+          .writeFilesAtomically(providerWorkspaceId, [
+            { path: rollbackPath, data: Buffer.alloc(8 * 1_024 * 1_024, 'a') },
             { path: rollbackBlocker, data: Buffer.from('blocked\n') },
-          ]),
-        ).rejects.toThrow();
+          ])
+          .catch((error: unknown) => {
+            rollbackError = error;
+          });
         await flipper;
+        expect(flipperOutput).toContain('rollback-injected\n');
+        await rollbackRequest;
+        expect(rollbackError).toBeInstanceOf(Error);
         await expect(provider.readFile(providerWorkspaceId, rollbackPath)).resolves.toEqual(
           Buffer.from('rollback before\n'),
         );
@@ -1863,13 +1868,6 @@ describe('agent proxy and unguarded conformance', () => {
             maxDepth: 1,
           }),
         ).resolves.toEqual([]);
-        await expect(
-          provider.listFiles(providerWorkspaceId, '.', {
-            glob: `${prefix}-rollback-filler-*`,
-            maxDepth: 1,
-          }),
-        ).resolves.toEqual([]);
-
         await expect(
           provider.search(providerWorkspaceId, {
             pattern: 'not present',
