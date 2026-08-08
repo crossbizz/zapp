@@ -226,7 +226,7 @@ describe('agent session loop', () => {
     ]);
     const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
     expect(saved?.turns).toBe(2);
-    expect(saved?.tokensUsed).toBe(100);
+    expect(saved?.tokensUsed).toBe(500);
     expect(saved?.completedToolCallIds).toEqual(['call-write']);
   });
 
@@ -510,6 +510,59 @@ describe('agent session loop', () => {
       code: 'ENOENT',
     });
   });
+
+  it.each([
+    { label: 'absent', usage: [] },
+    {
+      label: 'understated',
+      usage: [{ type: 'usage' as const, outputTokens: 1 }],
+    },
+  ])(
+    'does not let $label provider output usage release a reserved allowance to the next turn',
+    async ({ usage }) => {
+      const { registry } = await memoryRegistry();
+      const transcripts = new MemoryTranscriptStore();
+      const scripted = scriptedGateway([
+        [
+          {
+            type: 'tool-call',
+            toolCallId: `call-${usage.length === 0 ? 'absent' : 'understated'}-usage`,
+            toolName: 'read_logs',
+            input: { cursor: null, limit: 10 },
+          },
+          ...usage,
+          { type: 'done' },
+        ],
+        [{ type: 'text-delta', text: 'Finished within the reserved budget.' }, { type: 'done' }],
+      ]);
+      const session = createSessionLoop({
+        gateway: scripted.gateway,
+        tools: registry,
+        transcripts,
+        events: { emit: () => undefined },
+        approvals: { status: () => Promise.resolve('pending') },
+        prompts: {
+          builder: 'builder',
+          planner: 'planner',
+          verifier: 'verifier',
+          summarizer: 'summary',
+        },
+        redact: (value) => value,
+        countRequestTokens,
+      });
+
+      const result = await session.run({
+        ...input(['read_logs']),
+        budgets: { maxTurns: 2, maxTokens: 12, maxWallClockMs: 30_000 },
+      });
+
+      expect(result.status).toBe('completed');
+      expect(scripted.requests.map((request) => request.maxOutputTokens)).toEqual([5, 5]);
+      expect(scripted.requests).toHaveLength(2);
+      const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+      expect(saved?.tokensUsed).toBe(12);
+    },
+  );
 
   it('aborts a blocked gateway when the wall-clock budget expires', async () => {
     vi.useFakeTimers();

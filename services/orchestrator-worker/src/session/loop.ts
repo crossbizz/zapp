@@ -522,18 +522,26 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             } catch {
               return await finish('failed', 'Request token counting failed.', 'token_count_failed');
             }
-            const remainingOutputTokens =
+            const remainingOutputBudget =
               input.budgets.maxTokens - transcript.tokensUsed - requestTokens;
-            if (remainingOutputTokens <= 0) {
+            if (remainingOutputBudget <= 0) {
               return await finish('budget_exhausted', transcript.summary, 'token_budget_exhausted');
             }
+            const remainingTurnSlots = input.budgets.maxTurns - transcript.turns;
+            const outputTokenAllowance = Math.max(
+              1,
+              Math.floor(remainingOutputBudget / remainingTurnSlots),
+            );
+            const reservedTurnTokens = requestTokens + outputTokenAllowance;
+            transcript.tokensUsed += reservedTurnTokens;
+            await save();
             const request: CompleteRequest = {
               ...requestBase,
-              maxOutputTokens: remainingOutputTokens,
+              maxOutputTokens: outputTokenAllowance,
             };
             const text: string[] = [];
             const calls: SessionToolCall[] = [];
-            let turnTokens = 0;
+            let accountedTurnTokens = reservedTurnTokens;
             let streamCompleted = false;
             let iterator: AsyncIterator<GatewayStreamEvent> | undefined;
             try {
@@ -555,11 +563,23 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 const event = GatewayStreamEventSchema.parse(next.value);
                 if (event.type === 'text-delta') text.push(dependencies.redact(event.text));
                 if (event.type === 'usage') {
-                  turnTokens = Math.max(
-                    turnTokens,
+                  const observedTurnTokens = Math.max(
                     usedBy(event),
                     requestTokens + (event.outputTokens ?? 0),
                   );
+                  if (observedTurnTokens > accountedTurnTokens) {
+                    transcript.tokensUsed += observedTurnTokens - accountedTurnTokens;
+                    accountedTurnTokens = observedTurnTokens;
+                    await save();
+                    if (transcript.tokensUsed > input.budgets.maxTokens) {
+                      closeIterator(iterator);
+                      return await finish(
+                        'budget_exhausted',
+                        transcript.summary,
+                        'token_budget_exhausted',
+                      );
+                    }
+                  }
                 }
                 if (event.type === 'tool-call') {
                   if (!isToolName(event.toolName)) {
@@ -630,10 +650,6 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               return await finish('failed', 'The model gateway stream ended before completion.');
             }
             transcript.turns += 1;
-            transcript.tokensUsed += Math.max(turnTokens, requestTokens);
-            if (transcript.tokensUsed > input.budgets.maxTokens) {
-              return await finish('budget_exhausted', transcript.summary);
-            }
             const content: Array<
               | { type: 'text'; text: string }
               | {
