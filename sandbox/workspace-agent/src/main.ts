@@ -4,8 +4,8 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z, ZodError } from 'zod';
-import { CleanupFailureResponseSchema } from '@zapp/contracts';
-import { PathViolationError } from '@zapp/workspace-runtime';
+import { CleanupFailureResponseSchema, ExecutionContractSchema } from '@zapp/contracts';
+import { AtomicWriteConflictError, PathViolationError } from '@zapp/workspace-runtime';
 import {
   ContainmentCleanupError,
   ContainmentUnavailableError,
@@ -21,12 +21,13 @@ import {
 } from './exec.js';
 import {
   BinaryBodySchema,
+  FileOperationValidationError,
   FileListSchema,
   FileQuerySchema,
   ListQuerySchema,
+  WorkspaceFileManager,
   listWorkspaceFiles,
   readWorkspaceFile,
-  writeWorkspaceFile,
 } from './fs.js';
 import { GitRequestSchema, GitResultSchema, runGit } from './git.js';
 import {
@@ -36,6 +37,7 @@ import {
   getMetrics,
   type MetricsSource,
 } from './health.js';
+import { DevServerSupervisor } from './dev-server.js';
 
 const MetricsSourceSchema = z.custom<MetricsSource>((value) => {
   if (typeof value !== 'object' || value === null) {
@@ -73,6 +75,61 @@ const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const CleanupParamsSchema = z.object({ cleanupId: CleanupIdSchema }).strict();
 const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 const ErrorResponseSchema = z.object({ error: z.string() }).strict();
+const AtomicConflictResponseSchema = z.object({ error: z.literal('atomic_write_conflict') }).strict();
+const OkResponseSchema = z.object({ ok: z.literal(true) }).strict();
+const Base64Schema = z
+  .string()
+  .refine(
+    (value) =>
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value),
+    'Invalid base64',
+  );
+const AtomicWriteBodySchema = z
+  .object({
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+            dataBase64: Base64Schema,
+            expectedRevision: z.string().min(1).optional(),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+const SearchBodySchema = z
+  .object({
+    pattern: z.string(),
+    path: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    glob: z.string().min(1).optional(),
+    fixedStrings: z.boolean().optional(),
+    ignoreCase: z.boolean().optional(),
+  })
+  .strict();
+const RenameBodySchema = z
+  .object({
+    source: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    destination: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    overwrite: z.literal('replace'),
+  })
+  .strict();
+const DeleteResponseSchema = z
+  .object({ ok: z.literal(true), alreadyAbsent: z.boolean() })
+  .strict();
+const DevServerBodySchema = z.object({ contract: ExecutionContractSchema }).strict();
+const DevServerResponseSchema = z
+  .object({
+    port: z.number().int().min(1).max(65_535),
+    pid: z.number().int().positive(),
+    supervisorId: z.string().min(1),
+    ownership: z.literal('process_group'),
+  })
+  .strict();
 const IdempotencyKeySchema = z
   .string()
   .min(1)
@@ -82,6 +139,11 @@ const IDEMPOTENCY_REQUIRED_ROUTES = new Set([
   'POST /exec',
   'POST /exec/:pid/kill',
   'PUT /files',
+  'POST /files/atomic-write',
+  'DELETE /files',
+  'POST /files/rename',
+  'POST /dev-server/start',
+  'POST /dev-server/restart',
   'POST /git',
 ]);
 const MAX_IDEMPOTENCY_ENTRIES = 256;
@@ -399,6 +461,8 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   });
   const expectedDigest = tokenDigest(parsed.token);
   const execManager = new ExecManager(workspaceRoot, parsed.containment);
+  const fileManager = new WorkspaceFileManager(workspaceRoot);
+  const devServerSupervisor = new DevServerSupervisor(workspaceRoot);
   const idempotency = new IdempotencyStore();
   const activeStreamWriters = new Set<ActiveStreamWriter>();
   const idempotencyKeys = new WeakMap<FastifyRequest, string>();
@@ -483,7 +547,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
         writer.destroy();
       }
     }
-    await execManager.killAll();
+    await Promise.all([execManager.killAll(), devServerSupervisor.close()]);
   });
   app.setErrorHandler(async (error, _request, reply) => {
     if (error instanceof ContainmentCleanupError) {
@@ -501,9 +565,16 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       await reply.code(503).send(ErrorResponseSchema.parse({ error: 'containment_unavailable' }));
       return;
     }
+    if (error instanceof AtomicWriteConflictError) {
+      await reply
+        .code(409)
+        .send(AtomicConflictResponseSchema.parse({ error: 'atomic_write_conflict' }));
+      return;
+    }
     if (
       error instanceof ZodError ||
       error instanceof PathViolationError ||
+      error instanceof FileOperationValidationError ||
       error instanceof ExecPreflightError ||
       (error instanceof Error && error.message.startsWith('Unsafe git'))
     ) {
@@ -656,9 +727,69 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   app.put('/files', async (request, reply) => {
     const { path } = FileQuerySchema.parse(request.query);
     const body = BinaryBodySchema.parse(request.body);
-    await writeWorkspaceFile(workspaceRoot, path, body);
+    await fileManager.write(path, body);
     return reply.code(204).send();
   });
+
+  app.get('/files/update-snapshot', async (request) => {
+    EmptyBodySchema.parse(request.body);
+    const { path } = FileQuerySchema.parse(request.query);
+    return fileManager.validateGuardedSnapshotPath(path);
+  });
+
+  app.post('/files/atomic-write', async (request) => {
+    EmptyQuerySchema.parse(request.query);
+    const body = AtomicWriteBodySchema.parse(request.body);
+    await fileManager.writeAtomically(
+      body.files.map((file) => ({
+        path: file.path,
+        data: Buffer.from(file.dataBase64, 'base64'),
+        ...(file.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: file.expectedRevision }),
+      })),
+    );
+    return OkResponseSchema.parse({ ok: true });
+  });
+
+  app.post('/search', async (request) => {
+    EmptyQuerySchema.parse(request.query);
+    const input = SearchBodySchema.parse(request.body);
+    return ExecResultSchema.parse(
+      await fileManager.search({
+        pattern: input.pattern,
+        path: input.path,
+        ...(input.glob === undefined ? {} : { glob: input.glob }),
+        ...(input.fixedStrings === undefined ? {} : { fixedStrings: input.fixedStrings }),
+        ...(input.ignoreCase === undefined ? {} : { ignoreCase: input.ignoreCase }),
+      }),
+    );
+  });
+
+  app.delete('/files', async (request) => {
+    EmptyBodySchema.parse(request.body);
+    const { path } = FileQuerySchema.parse(request.query);
+    const result = await fileManager.deleteFile(path);
+    return DeleteResponseSchema.parse({ ok: true, alreadyAbsent: result.alreadyAbsent });
+  });
+
+  app.post('/files/rename', async (request) => {
+    EmptyQuerySchema.parse(request.query);
+    await fileManager.renameFile(RenameBodySchema.parse(request.body));
+    return OkResponseSchema.parse({ ok: true });
+  });
+
+  for (const action of ['start', 'restart'] as const) {
+    app.post(`/dev-server/${action}`, async (request) => {
+      EmptyQuerySchema.parse(request.query);
+      const { contract } = DevServerBodySchema.parse(request.body);
+      return DevServerResponseSchema.parse(
+        action === 'start'
+          ? await devServerSupervisor.start(contract)
+          : await devServerSupervisor.restart(contract),
+      );
+    });
+  }
 
   app.post('/git', async (request) => {
     EmptyQuerySchema.parse(request.query);
@@ -669,7 +800,8 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   app.get('/healthz', async (request) => {
     EmptyQuerySchema.parse(request.query);
     EmptyBodySchema.parse(request.body);
-    return HealthResponseSchema.parse(await getHealth(parsed.devServerPort));
+    const evidence = await devServerSupervisor.evidence();
+    return HealthResponseSchema.parse(await getHealth(evidence ?? parsed.devServerPort));
   });
 
   app.get('/metrics', async (request) => {

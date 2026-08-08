@@ -4,8 +4,12 @@ import { EventEmitter, once as onceEvent } from 'node:events';
 import { createRequire } from 'node:module';
 import {
   access,
+  chmod,
+  link,
+  lstat,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -14,6 +18,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -420,6 +425,24 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+async function availablePort(): Promise<number> {
+  const server = createServer();
+  const port = await listen(server);
+  await closeServer(server);
+  return port;
+}
+
+function executionContract(command: string, port: number) {
+  return {
+    version: 1 as const,
+    package_manager: 'pnpm' as const,
+    workspace_root: '.',
+    install: { command: 'true' },
+    develop: { command, port },
+    health: { path: '/' },
+  };
+}
+
 async function serverConnectionCount(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.getConnections((error, count) => {
@@ -566,6 +589,431 @@ describe('workspace-agent RPC daemon', () => {
     }
     return app;
   }
+
+  test('atomically writes an unguarded file batch through the advanced route', async () => {
+    await mkdir(join(workspaceRoot, 'nested'));
+    const response = await requireApp().inject({
+      method: 'POST',
+      url: '/files/atomic-write',
+      headers: authorization(),
+      payload: {
+        files: [
+          { path: 'first.txt', dataBase64: Buffer.from('first').toString('base64') },
+          { path: 'nested/second.txt', dataBase64: Buffer.from('second').toString('base64') },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    await expect(readFile(join(workspaceRoot, 'first.txt'), 'utf8')).resolves.toBe('first');
+    await expect(readFile(join(workspaceRoot, 'nested/second.txt'), 'utf8')).resolves.toBe('second');
+  });
+
+  test('fails guarded snapshots and batches closed without changing the target', async () => {
+    await writeFile(join(workspaceRoot, 'guarded.txt'), 'before');
+
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=guarded.txt',
+      headers: authorization(),
+    });
+    const batch = await requireApp().inject({
+      method: 'POST',
+      url: '/files/atomic-write',
+      headers: authorization(),
+      payload: {
+        files: [
+          {
+            path: 'guarded.txt',
+            dataBase64: Buffer.from('after').toString('base64'),
+            expectedRevision: 'unavailable-revision',
+          },
+        ],
+      },
+    });
+
+    expect(snapshot.statusCode).toBe(409);
+    expect(snapshot.json()).toEqual({ error: 'atomic_write_conflict' });
+    expect(batch.statusCode).toBe(409);
+    expect(batch.json()).toEqual({ error: 'atomic_write_conflict' });
+    await expect(readFile(join(workspaceRoot, 'guarded.txt'), 'utf8')).resolves.toBe('before');
+  });
+
+  test('rejects atomic aliases and leaf symlinks before staging while preserving file mode', async () => {
+    await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
+    await link(join(workspaceRoot, 'target.txt'), join(workspaceRoot, 'hard-alias.txt'));
+    await symlink('target.txt', join(workspaceRoot, 'leaf-alias.txt'));
+
+    for (const files of [
+      [
+        { path: 'target.txt', dataBase64: Buffer.from('one').toString('base64') },
+        { path: './target.txt', dataBase64: Buffer.from('two').toString('base64') },
+      ],
+      [
+        { path: 'target.txt', dataBase64: Buffer.from('one').toString('base64') },
+        { path: 'hard-alias.txt', dataBase64: Buffer.from('two').toString('base64') },
+      ],
+      [{ path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') }],
+    ]) {
+      const rejected = await requireApp().inject({
+        method: 'POST',
+        url: '/files/atomic-write',
+        headers: authorization(),
+        payload: { files },
+      });
+      expect(rejected.statusCode).toBe(400);
+      await expect(readFile(join(workspaceRoot, 'target.txt'), 'utf8')).resolves.toBe('before');
+      expect((await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+    }
+
+    const written = await requireApp().inject({
+      method: 'POST',
+      url: '/files/atomic-write',
+      headers: authorization(),
+      payload: {
+        files: [{ path: 'target.txt', dataBase64: Buffer.from('after').toString('base64') }],
+      },
+    });
+    expect(written.statusCode).toBe(200);
+    expect((await lstat(join(workspaceRoot, 'target.txt'))).mode & 0o777).toBe(0o640);
+    await chmod(join(workspaceRoot, 'target.txt'), 0o600);
+  });
+
+  test('rolls every target back with modes preserved when a later atomic commit fails', async () => {
+    await writeFile(join(workspaceRoot, 'rollback-first.txt'), 'first-before', { mode: 0o640 });
+    await writeFile(join(workspaceRoot, 'rollback-second.txt'), 'second-before', { mode: 0o600 });
+    const previousFailureIndex = process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX;
+    process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX = '1';
+    try {
+      const response = await requireApp().inject({
+        method: 'POST',
+        url: '/files/atomic-write',
+        headers: authorization(),
+        payload: {
+          files: [
+            {
+              path: 'rollback-first.txt',
+              dataBase64: Buffer.from('first-after').toString('base64'),
+            },
+            {
+              path: 'rollback-second.txt',
+              dataBase64: Buffer.from('second-after').toString('base64'),
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe('first-before');
+      await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe('second-before');
+      expect((await lstat(join(workspaceRoot, 'rollback-first.txt'))).mode & 0o777).toBe(0o640);
+      expect((await lstat(join(workspaceRoot, 'rollback-second.txt'))).mode & 0o777).toBe(0o600);
+      expect((await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+    } finally {
+      if (previousFailureIndex === undefined) {
+        delete process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX;
+      } else {
+        process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX = previousFailureIndex;
+      }
+    }
+  });
+
+  test('searches only the confined target and reports zero matches as an exec result', async () => {
+    await mkdir(join(workspaceRoot, 'src'));
+    await writeFile(join(workspaceRoot, 'src', 'match.ts'), 'Needle marker\n');
+    await writeFile(join(workspaceRoot, 'src', 'ignored.txt'), 'Needle ignored\n');
+
+    const matched = await requireApp().inject({
+      method: 'POST',
+      url: '/search',
+      headers: authorization(),
+      payload: {
+        pattern: 'needle',
+        path: 'src',
+        glob: '*.ts',
+        fixedStrings: true,
+        ignoreCase: true,
+      },
+    });
+    const absent = await requireApp().inject({
+      method: 'POST',
+      url: '/search',
+      headers: authorization(),
+      payload: { pattern: 'not-present', path: 'src', fixedStrings: true },
+    });
+    const escaped = await requireApp().inject({
+      method: 'POST',
+      url: '/search',
+      headers: authorization(),
+      payload: { pattern: 'outside', path: '../outside' },
+    });
+
+    expect(matched.statusCode).toBe(200);
+    expect(matched.json()).toMatchObject({ exitCode: 0, stderr: '', truncated: false });
+    expect(matched.json<{ stdout: string }>().stdout).toContain('match.ts');
+    expect(matched.json<{ stdout: string }>().stdout).not.toContain('ignored.txt');
+    expect(absent.statusCode).toBe(200);
+    expect(absent.json()).toMatchObject({ exitCode: 1, stdout: '', truncated: false });
+    expect(escaped.statusCode).toBe(400);
+  });
+
+  test('deletes files idempotently, rejects directories, and renames with atomic replace', async () => {
+    await writeFile(join(workspaceRoot, 'delete.txt'), 'delete');
+    await mkdir(join(workspaceRoot, 'keep-dir'));
+    const deleted = await requireApp().inject({
+      method: 'DELETE',
+      url: '/files?path=delete.txt',
+      headers: authorization(),
+    });
+    const repeated = await requireApp().inject({
+      method: 'DELETE',
+      url: '/files?path=delete.txt',
+      headers: authorization(),
+    });
+    const directory = await requireApp().inject({
+      method: 'DELETE',
+      url: '/files?path=keep-dir',
+      headers: authorization(),
+    });
+
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ ok: true, alreadyAbsent: false });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toEqual({ ok: true, alreadyAbsent: true });
+    expect(directory.statusCode).toBe(400);
+    await expect(lstat(join(workspaceRoot, 'keep-dir'))).resolves.toMatchObject({});
+
+    await writeFile(join(workspaceRoot, 'source.txt'), 'source');
+    await writeFile(join(workspaceRoot, 'destination.txt'), 'destination');
+    const renamed = await requireApp().inject({
+      method: 'POST',
+      url: '/files/rename',
+      headers: authorization(),
+      payload: { source: 'source.txt', destination: 'destination.txt', overwrite: 'replace' },
+    });
+    const same = await requireApp().inject({
+      method: 'POST',
+      url: '/files/rename',
+      headers: authorization(),
+      payload: { source: 'destination.txt', destination: './destination.txt', overwrite: 'replace' },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ ok: true });
+    await expect(readFile(join(workspaceRoot, 'destination.txt'), 'utf8')).resolves.toBe('source');
+    await expect(access(join(workspaceRoot, 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(same.statusCode).toBe(400);
+  });
+
+  test('starts and restarts one supervisor-owned HTTP dev server with matching health evidence', async () => {
+    const port = await availablePort();
+    const script = `require('node:http').createServer((_request, response) => { response.end('ready'); }).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
+    const contract = executionContract(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      port,
+    );
+
+    const started = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(),
+      payload: { contract },
+    });
+    expect(started.statusCode).toBe(200);
+    const first = started.json<{
+      port: number;
+      pid: number;
+      supervisorId: string;
+      ownership: string;
+    }>();
+    expect(first).toMatchObject({ port, ownership: 'process_group' });
+    expect(first.pid).toBeGreaterThan(0);
+    expect(first.supervisorId).not.toBe('');
+
+    const initialHealth = await requireApp().inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: authorization(),
+    });
+    expect(initialHealth.json()).toMatchObject({
+      ok: true,
+      devServer: {
+        port,
+        pid: first.pid,
+        supervisorId: first.supervisorId,
+        owned: true,
+        httpReady: true,
+      },
+    });
+
+    const restarted = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/restart',
+      headers: authorization(),
+      payload: { contract },
+    });
+    expect(restarted.statusCode).toBe(200);
+    const second = restarted.json<typeof first>();
+    expect(second).toMatchObject({ port, ownership: 'process_group' });
+    expect(second.pid).not.toBe(first.pid);
+    expect(second.supervisorId).not.toBe(first.supervisorId);
+    await waitForProcessExit(first.pid);
+  });
+
+  test('rejects an unrelated ready listener as managed dev-server readiness', async () => {
+    const unrelated = createHttpServer((_request, response) => response.end('unrelated'));
+    const port = await listen(unrelated);
+    const contract = executionContract(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify('setInterval(() => {}, 1000);')}`,
+      port,
+    );
+    try {
+      const response = await requireApp().inject({
+        method: 'POST',
+        url: '/dev-server/start',
+        headers: authorization(),
+        payload: { contract },
+      });
+      expect(response.statusCode).toBe(500);
+      const health = await requireApp().inject({
+        method: 'GET',
+        url: '/healthz',
+        headers: authorization(),
+      });
+      expect(health.json()).toMatchObject({ ok: true, devServer: null });
+    } finally {
+      await closeServer(unrelated);
+    }
+  }, 8_000);
+
+  test('pins advanced filesystem operations across a parent swap', async () => {
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'zapp-workspace-agent-advanced-outside-'));
+    const cases = [
+      { action: 'atomic', initial: 'atomic-before', after: 'atomic-after' },
+      { action: 'delete', initial: 'delete-before', after: undefined },
+      { action: 'rename', initial: 'rename-before', after: 'rename-before' },
+      { action: 'search', initial: 'pinned-search-marker', after: 'pinned-search-marker' },
+    ] as const;
+
+    try {
+      for (const operation of cases) {
+        const parent = join(workspaceRoot, `advanced-${operation.action}`);
+        const pinnedParent = `${parent}-pinned`;
+        const readyPath = join(workspaceRoot, `${operation.action}-ready`);
+        const continuePath = join(workspaceRoot, `${operation.action}-continue`);
+        await mkdir(parent);
+        await writeFile(join(parent, 'target.txt'), operation.initial);
+        await mkdir(join(outsideRoot, operation.action));
+        await writeFile(join(outsideRoot, operation.action, 'target.txt'), 'outside-marker');
+        if (operation.action === 'rename') {
+          await writeFile(join(parent, 'destination.txt'), 'destination-before');
+          await writeFile(join(outsideRoot, operation.action, 'destination.txt'), 'outside-destination');
+        }
+        const restorePause = configureNativePause(readyPath, continuePath);
+        try {
+          const request =
+            operation.action === 'atomic'
+              ? requireApp().inject({
+                  method: 'POST',
+                  url: '/files/atomic-write',
+                  headers: authorization(),
+                  payload: {
+                    files: [
+                      {
+                        path: `advanced-${operation.action}/target.txt`,
+                        dataBase64: Buffer.from(operation.after).toString('base64'),
+                      },
+                    ],
+                  },
+                })
+              : operation.action === 'delete'
+                ? requireApp().inject({
+                    method: 'DELETE',
+                    url: `/files?path=advanced-${operation.action}%2Ftarget.txt`,
+                    headers: authorization(),
+                  })
+                : operation.action === 'rename'
+                  ? requireApp().inject({
+                      method: 'POST',
+                      url: '/files/rename',
+                      headers: authorization(),
+                      payload: {
+                        source: `advanced-${operation.action}/target.txt`,
+                        destination: `advanced-${operation.action}/destination.txt`,
+                        overwrite: 'replace',
+                      },
+                    })
+                  : requireApp().inject({
+                      method: 'POST',
+                      url: '/search',
+                      headers: authorization(),
+                      payload: {
+                        pattern: 'pinned-search-marker',
+                        path: `advanced-${operation.action}/target.txt`,
+                        fixedStrings: true,
+                      },
+                    });
+          await requireNativePause(request, readyPath);
+          await rename(parent, pinnedParent);
+          await symlink(join(outsideRoot, operation.action), parent, 'dir');
+          await writeFile(continuePath, 'continue');
+
+          const response = await request;
+          expect(response.statusCode, operation.action).toBe(200);
+          if (operation.action === 'delete') {
+            await expect(access(join(pinnedParent, 'target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+          } else if (operation.action === 'rename') {
+            await expect(readFile(join(pinnedParent, 'destination.txt'), 'utf8')).resolves.toBe(operation.after);
+          } else if (operation.action === 'search') {
+            expect(response.json<{ stdout: string }>().stdout).toContain('pinned-search-marker');
+          } else {
+            await expect(readFile(join(pinnedParent, 'target.txt'), 'utf8')).resolves.toBe(operation.after);
+          }
+          await expect(
+            readFile(
+              join(
+                outsideRoot,
+                operation.action,
+                operation.action === 'rename' ? 'destination.txt' : 'target.txt',
+              ),
+              'utf8',
+            ),
+          ).resolves.toMatch(/^outside/u);
+        } finally {
+          restorePause();
+        }
+      }
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('serializes concurrent dev-server starts so every spawned process remains owned', async () => {
+    const ports = await Promise.all([availablePort(), availablePort()]);
+    const contracts = ports.map((port) => {
+      const script = `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
+      return executionContract(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, port);
+    });
+    const responses = await Promise.all(
+      contracts.map((contract, index) =>
+        requireApp().inject({
+          method: 'POST',
+          url: '/dev-server/start',
+          headers: authorization(token, `concurrent-start-${String(index)}`),
+          payload: { contract },
+        }),
+      ),
+    );
+    const started = responses.filter((response) => response.statusCode === 200);
+    const rejected = responses.filter((response) => response.statusCode !== 200);
+    expect(started).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const pid = started[0]?.json<{ pid: number }>().pid;
+    expect(pid).toBeGreaterThan(0);
+    await requireApp().close();
+    app = undefined;
+    if (pid !== undefined) await waitForProcessExit(pid);
+  });
 
   test('streams a real PID, ordered output, and one exit record as validated NDJSON', async () => {
     const response = await requireApp().inject({
@@ -853,6 +1301,27 @@ describe('workspace-agent RPC daemon', () => {
         method: 'POST' as const,
         url: '/git',
         payload: { operation: 'status', args: ['--short'] },
+      },
+      {
+        method: 'POST' as const,
+        url: '/files/atomic-write',
+        payload: { files: [{ path: 'idempotency.txt', dataBase64: '' }] },
+      },
+      { method: 'DELETE' as const, url: '/files?path=idempotency.txt' },
+      {
+        method: 'POST' as const,
+        url: '/files/rename',
+        payload: { source: 'a', destination: 'b', overwrite: 'replace' },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/start',
+        payload: { contract: executionContract('true', 4173) },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/restart',
+        payload: { contract: executionContract('true', 4173) },
       },
     ];
 
@@ -2027,6 +2496,37 @@ describe('workspace-agent RPC daemon', () => {
 
     expect(missing.statusCode).toBe(401);
     expect(wrong.statusCode).toBe(401);
+    for (const request of [
+      { method: 'GET' as const, url: '/files/update-snapshot?path=unauthorized' },
+      {
+        method: 'POST' as const,
+        url: '/files/atomic-write',
+        payload: { files: [{ path: 'unauthorized', dataBase64: '' }] },
+      },
+      { method: 'POST' as const, url: '/search', payload: { pattern: 'x', path: '.' } },
+      { method: 'DELETE' as const, url: '/files?path=unauthorized' },
+      {
+        method: 'POST' as const,
+        url: '/files/rename',
+        payload: { source: 'a', destination: 'b', overwrite: 'replace' },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/start',
+        payload: { contract: executionContract('true', 4173) },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/restart',
+        payload: { contract: executionContract('true', 4173) },
+      },
+    ]) {
+      const response = await requireApp().inject({
+        ...request,
+        headers: { authorization: `Bearer ${wrongToken}`, 'idempotency-key': 'wrong-token' },
+      });
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(401);
+    }
     await expect(access(join(workspaceRoot, 'unauthorized'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
@@ -2108,6 +2608,41 @@ describe('workspace-agent RPC daemon', () => {
     expect(unsafeFlag.statusCode).toBe(400);
     expect(unsafePath.statusCode).toBe(400);
     expect(unknownKillBody.statusCode).toBe(400);
+    for (const request of [
+      {
+        method: 'GET' as const,
+        url: '/files/update-snapshot?path=file&unexpected=true',
+      },
+      {
+        method: 'POST' as const,
+        url: '/files/atomic-write',
+        payload: { files: [{ path: 'file', dataBase64: '', unexpected: true }] },
+      },
+      {
+        method: 'POST' as const,
+        url: '/search',
+        payload: { pattern: 'x', path: '.', unexpected: true },
+      },
+      { method: 'DELETE' as const, url: '/files?path=file&unexpected=true' },
+      {
+        method: 'POST' as const,
+        url: '/files/rename',
+        payload: { source: 'a', destination: 'b', overwrite: 'replace', unexpected: true },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/start',
+        payload: { contract: executionContract('true', 4173), unexpected: true },
+      },
+      {
+        method: 'POST' as const,
+        url: '/dev-server/restart',
+        payload: { contract: executionContract('true', 4173), unexpected: true },
+      },
+    ]) {
+      const response = await requireApp().inject({ ...request, headers: authorization() });
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(400);
+    }
   });
 
   test('rejects NUL in every OS and path boundary with 400', async () => {
@@ -2216,7 +2751,13 @@ describe('workspace-agent RPC daemon', () => {
     expect(committedMessage.trim()).toBe(message);
   });
 
-  test.each(['/files?path=missing', '/files/list?path=.', '/healthz', '/metrics'])(
+  test.each([
+    '/files?path=missing',
+    '/files/list?path=.',
+    '/files/update-snapshot?path=missing',
+    '/healthz',
+    '/metrics',
+  ])(
     'rejects a request body on GET %s',
     async (url) => {
       const response = await requireApp().inject({

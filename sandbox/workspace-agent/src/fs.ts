@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
+import { AtomicWriteConflictError, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
 
 const NonEmptyNoNulStringSchema = z
   .string()
@@ -29,6 +29,35 @@ export const BinaryBodySchema = z.instanceof(Buffer);
 
 export type ListQuery = z.infer<typeof ListQuerySchema>;
 export type FileEntry = z.infer<typeof FileEntrySchema>;
+
+export interface AtomicWorkspaceFile {
+  readonly path: string;
+  readonly data: Uint8Array;
+  readonly expectedRevision?: string;
+}
+
+export interface WorkspaceSearchInput {
+  readonly pattern: string;
+  readonly path: string;
+  readonly glob?: string;
+  readonly fixedStrings?: boolean;
+  readonly ignoreCase?: boolean;
+}
+
+export interface WorkspaceSearchResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+  readonly truncated: boolean;
+}
+
+export class FileOperationValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FileOperationValidationError';
+  }
+}
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATH_HELPER = join(PACKAGE_ROOT, 'dist', 'native', 'path-helper');
@@ -71,6 +100,76 @@ function runPathHelper(args: readonly string[], input?: Buffer): Promise<Buffer>
       stdinStream?.end(input);
     }
   });
+}
+
+interface NativeHelperResult {
+  readonly exitCode: number;
+  readonly stdout: Buffer;
+  readonly stderr: Buffer;
+  readonly truncated: boolean;
+}
+
+function runNativeHelper(
+  args: readonly string[],
+  input: Buffer | undefined,
+  acceptedExitCodes: ReadonlySet<number>,
+  outputLimit = Number.POSITIVE_INFINITY,
+): Promise<NativeHelperResult> {
+  return new Promise((resolveResult, rejectResult) => {
+    const child = spawn(PATH_HELPER, args, {
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    if (child.stdout === null || child.stderr === null || (input !== undefined && child.stdin === null)) {
+      child.kill('SIGKILL');
+      rejectResult(new NativePathHelperError(null));
+      return;
+    }
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let capturedBytes = 0;
+    let truncated = false;
+    const capture = (target: Buffer[], chunk: Buffer): void => {
+      const remaining = outputLimit - capturedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      const accepted = chunk.subarray(0, remaining);
+      target.push(accepted);
+      capturedBytes += accepted.length;
+      if (accepted.length !== chunk.length) truncated = true;
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      capture(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      capture(stderr, chunk);
+    });
+    child.once('error', rejectResult);
+    child.once('close', (exitCode) => {
+      if (exitCode !== null && acceptedExitCodes.has(exitCode)) {
+        resolveResult({
+          exitCode,
+          stdout: Buffer.concat(stdout),
+          stderr: Buffer.concat(stderr),
+          truncated,
+        });
+      } else {
+        rejectResult(new NativePathHelperError(exitCode));
+      }
+    });
+    if (input !== undefined) child.stdin?.end(input);
+  });
+}
+
+function translateAdvancedHelperError(error: unknown, path: string): never {
+  if (error instanceof NativePathHelperError && error.exitCode === 65) {
+    throw new PathViolationError(path);
+  }
+  if (error instanceof NativePathHelperError && error.exitCode === 66) {
+    throw new FileOperationValidationError('Workspace file operation rejected');
+  }
+  throw error;
 }
 
 async function runPathOperation(
@@ -125,6 +224,119 @@ export async function readWorkspaceFile(root: string, path: string): Promise<Buf
 export async function writeWorkspaceFile(root: string, path: string, body: Buffer): Promise<void> {
   await resolveInRoot(root, path);
   await runPathOperation('write', root, path, body);
+}
+
+export class WorkspaceFileManager {
+  private atomicCommitTail: Promise<void> = Promise.resolve();
+
+  constructor(private readonly root: string) {}
+
+  private async serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.atomicCommitTail;
+    let release: () => void = () => undefined;
+    this.atomicCommitTail = new Promise<void>((resolveNext) => {
+      release = resolveNext;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async write(path: string, body: Buffer): Promise<void> {
+    await this.serialize(() => writeWorkspaceFile(this.root, path, body));
+  }
+
+  async validateGuardedSnapshotPath(path: string): Promise<never> {
+    await resolveInRoot(this.root, path);
+    throw new AtomicWriteConflictError();
+  }
+
+  async writeAtomically(files: readonly AtomicWorkspaceFile[]): Promise<void> {
+    if (files.some((file) => file.expectedRevision !== undefined)) {
+      throw new AtomicWriteConflictError();
+    }
+    for (const file of files) await resolveInRoot(this.root, file.path);
+    const args = [
+      'atomic-write',
+      this.root,
+      String(files.length),
+      ...files.flatMap((file) => [file.path, String(file.data.byteLength)]),
+    ];
+    try {
+      await this.serialize(() =>
+        runNativeHelper(
+          args,
+          Buffer.concat(files.map((file) => Buffer.from(file.data))),
+          new Set([0]),
+        ),
+      );
+    } catch (error: unknown) {
+      translateAdvancedHelperError(error, files[0]?.path ?? '.');
+    }
+  }
+
+  async search(input: WorkspaceSearchInput): Promise<WorkspaceSearchResult> {
+    await resolveInRoot(this.root, input.path);
+    const args = [
+      'search',
+      this.root,
+      input.path,
+      input.pattern,
+      input.glob ?? '',
+      input.fixedStrings === true ? '1' : '0',
+      input.ignoreCase === true ? '1' : '0',
+    ];
+    const startedAt = Date.now();
+    try {
+      const result = await runNativeHelper(args, undefined, new Set([0, 1, 2]), 1_024 * 1_024);
+      return {
+        exitCode: result.exitCode,
+        stdout: result.stdout.toString('utf8'),
+        stderr: result.stderr.toString('utf8'),
+        durationMs: Date.now() - startedAt,
+        truncated: result.truncated,
+      };
+    } catch (error: unknown) {
+      translateAdvancedHelperError(error, input.path);
+    }
+  }
+
+  async deleteFile(path: string): Promise<{ alreadyAbsent: boolean }> {
+    await resolveInRoot(this.root, path);
+    try {
+      const result = await this.serialize(() =>
+        runNativeHelper(['delete', this.root, path], undefined, new Set([0])),
+      );
+      return { alreadyAbsent: result.stdout.toString('utf8') === '1' };
+    } catch (error: unknown) {
+      translateAdvancedHelperError(error, path);
+    }
+  }
+
+  async renameFile(input: {
+    readonly source: string;
+    readonly destination: string;
+    readonly overwrite: 'replace';
+  }): Promise<void> {
+    await Promise.all([
+      resolveInRoot(this.root, input.source),
+      resolveInRoot(this.root, input.destination),
+    ]);
+    try {
+      await this.serialize(() =>
+        runNativeHelper(
+          ['rename', this.root, input.source, input.destination],
+          undefined,
+          new Set([0]),
+        ),
+      );
+    } catch (error: unknown) {
+      translateAdvancedHelperError(error, input.source);
+    }
+  }
 }
 
 export async function listWorkspaceFiles(root: string, query: ListQuery): Promise<FileEntry[]> {

@@ -38,6 +38,7 @@
 enum {
   PATH_HELPER_USAGE = 64,
   PATH_HELPER_PATH_VIOLATION = 65,
+  PATH_HELPER_VALIDATION_FAILURE = 66,
   PATH_HELPER_IO_FAILURE = 74,
   PATH_HELPER_CONTAINMENT_FAILURE = 75,
 };
@@ -326,6 +327,23 @@ static int copy_stream(int input_fd, int output_fd) {
   }
 }
 
+static int read_exact(int input_fd, char *buffer, size_t length) {
+  size_t offset = 0;
+  while (offset < length) {
+    ssize_t bytes_read = read(input_fd, buffer + offset, length - offset);
+    if (bytes_read == 0) {
+      errno = EIO;
+      return -1;
+    }
+    if (bytes_read < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    offset += (size_t)bytes_read;
+  }
+  return 0;
+}
+
 int join_cgroup(const char *procs_path) {
   if (procs_path == NULL || procs_path[0] != '/') {
     errno = EINVAL;
@@ -570,6 +588,325 @@ static int run_list(const char *root, const char *path, const char *depth_value)
   return 0;
 }
 
+typedef struct {
+  int parent_fd;
+  char *leaf;
+  size_t length;
+  bool exists;
+  mode_t mode;
+  dev_t device;
+  ino_t inode;
+  char stage[96];
+  char backup[96];
+  bool backed_up;
+  bool committed;
+} atomic_entry;
+
+static void close_atomic_entries(atomic_entry *entries, size_t count) {
+  for (size_t index = 0; index < count; index += 1) {
+    if (entries[index].parent_fd >= 0) close(entries[index].parent_fd);
+    free(entries[index].leaf);
+  }
+  free(entries);
+}
+
+static int parse_size(const char *value, size_t *result) {
+  errno = 0;
+  char *end = NULL;
+  unsigned long long parsed = strtoull(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed > SIZE_MAX) return -1;
+  *result = (size_t)parsed;
+  return 0;
+}
+
+static bool same_parent(int left_fd, int right_fd) {
+  struct stat left;
+  struct stat right;
+  return fstat(left_fd, &left) == 0 && fstat(right_fd, &right) == 0 &&
+      left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+}
+
+static int probe_absent_aliases(atomic_entry *entries, size_t count) {
+  for (size_t left = 0; left < count; left += 1) {
+    if (entries[left].exists) continue;
+    for (size_t right = left + 1; right < count; right += 1) {
+      if (entries[right].exists || !same_parent(entries[left].parent_fd, entries[right].parent_fd)) {
+        continue;
+      }
+      char probe[96];
+      (void)snprintf(probe, sizeof(probe), ".zapp-name-probe-%ld-%zu-%zu", (long)getpid(), left, right);
+      if (mkdirat(entries[left].parent_fd, probe, 0700) != 0) return -1;
+      int probe_fd = openat(entries[left].parent_fd, probe, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+      if (probe_fd < 0) {
+        (void)unlinkat(entries[left].parent_fd, probe, AT_REMOVEDIR);
+        return -1;
+      }
+      int first_fd = openat(probe_fd, entries[left].leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+      int first_error = errno;
+      if (first_fd >= 0) close(first_fd);
+      int second_fd = first_fd < 0 ? -1 : openat(probe_fd, entries[right].leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+      int second_error = errno;
+      if (second_fd >= 0) close(second_fd);
+      (void)unlinkat(probe_fd, entries[left].leaf, 0);
+      (void)unlinkat(probe_fd, entries[right].leaf, 0);
+      close(probe_fd);
+      (void)unlinkat(entries[left].parent_fd, probe, AT_REMOVEDIR);
+      if (first_fd < 0) {
+        errno = first_error;
+        return -1;
+      }
+      if (second_fd < 0) {
+        if (second_error == EEXIST) return PATH_HELPER_VALIDATION_FAILURE;
+        errno = second_error;
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
+static int run_atomic_write(int argc, char **argv) {
+  size_t count = 0;
+  if (argc < 6 || ((argc - 4) % 2) != 0 || parse_size(argv[3], &count) != 0 ||
+      count == 0 || (size_t)(argc - 4) != count * 2) {
+    return PATH_HELPER_USAGE;
+  }
+  bool path_violation = false;
+  int root_fd = open_workspace_root(argv[2], &path_violation);
+  if (root_fd < 0) return report_failure("path-helper", path_violation);
+  atomic_entry *entries = calloc(count, sizeof(*entries));
+  if (entries == NULL) {
+    close(root_fd);
+    return PATH_HELPER_IO_FAILURE;
+  }
+  for (size_t index = 0; index < count; index += 1) entries[index].parent_fd = -1;
+  int result = PATH_HELPER_IO_FAILURE;
+  for (size_t index = 0; index < count; index += 1) {
+    const char *path = argv[4 + index * 2];
+    if (parse_size(argv[5 + index * 2], &entries[index].length) != 0 ||
+        open_parent_beneath(root_fd, path, &entries[index].parent_fd, &entries[index].leaf, &path_violation) != 0) {
+      result = path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
+      goto cleanup;
+    }
+  }
+  if (pause_after_pinned_descriptor() != 0) goto cleanup;
+  for (size_t index = 0; index < count; index += 1) {
+    struct stat metadata;
+    if (fstatat(entries[index].parent_fd, entries[index].leaf, &metadata, AT_SYMLINK_NOFOLLOW) == 0) {
+      if (!S_ISREG(metadata.st_mode)) {
+        result = PATH_HELPER_VALIDATION_FAILURE;
+        goto cleanup;
+      }
+      entries[index].exists = true;
+      entries[index].mode = metadata.st_mode & 07777;
+      entries[index].device = metadata.st_dev;
+      entries[index].inode = metadata.st_ino;
+    } else if (errno != ENOENT) {
+      if (is_path_violation_errno(errno)) result = PATH_HELPER_PATH_VIOLATION;
+      goto cleanup;
+    }
+    for (size_t prior = 0; prior < index; prior += 1) {
+      bool same_name = same_parent(entries[index].parent_fd, entries[prior].parent_fd) &&
+          strcmp(entries[index].leaf, entries[prior].leaf) == 0;
+      bool same_object = entries[index].exists && entries[prior].exists &&
+          entries[index].device == entries[prior].device && entries[index].inode != 0 &&
+          entries[index].inode == entries[prior].inode;
+      if (same_name || same_object) {
+        result = PATH_HELPER_VALIDATION_FAILURE;
+        goto cleanup;
+      }
+    }
+  }
+  result = probe_absent_aliases(entries, count);
+  if (result != 0) goto cleanup;
+  for (size_t index = 0; index < count; index += 1) {
+    (void)snprintf(entries[index].stage, sizeof(entries[index].stage), ".zapp-atomic-%ld-%zu.stage", (long)getpid(), index);
+    (void)snprintf(entries[index].backup, sizeof(entries[index].backup), ".zapp-atomic-%ld-%zu.backup", (long)getpid(), index);
+    int stage_fd = openat(entries[index].parent_fd, entries[index].stage, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, entries[index].exists ? entries[index].mode : 0666);
+    if (stage_fd < 0) goto rollback;
+    char buffer[64 * 1024];
+    size_t remaining = entries[index].length;
+    while (remaining > 0) {
+      size_t chunk = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+      if (read_exact(STDIN_FILENO, buffer, chunk) != 0 || write_all(stage_fd, buffer, chunk) != 0) {
+        close(stage_fd);
+        goto rollback;
+      }
+      remaining -= chunk;
+    }
+    if (entries[index].exists && fchmod(stage_fd, entries[index].mode) != 0) {
+      close(stage_fd);
+      goto rollback;
+    }
+    close(stage_fd);
+  }
+  for (size_t index = 0; index < count; index += 1) {
+    if (entries[index].exists) {
+      if (renameat(entries[index].parent_fd, entries[index].leaf, entries[index].parent_fd, entries[index].backup) != 0) goto rollback;
+      entries[index].backed_up = true;
+    }
+    const char *failure_index = getenv("ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX");
+    if (failure_index != NULL) {
+      size_t parsed_failure_index = 0;
+      if (parse_size(failure_index, &parsed_failure_index) == 0 && parsed_failure_index == index) {
+        errno = EIO;
+        goto rollback;
+      }
+    }
+    if (renameat(entries[index].parent_fd, entries[index].stage, entries[index].parent_fd, entries[index].leaf) != 0) goto rollback;
+    entries[index].committed = true;
+  }
+  result = 0;
+  goto cleanup;
+
+rollback:
+  for (size_t reverse = count; reverse > 0; reverse -= 1) {
+    atomic_entry *entry = &entries[reverse - 1];
+    if (entry->committed) (void)unlinkat(entry->parent_fd, entry->leaf, 0);
+    if (entry->backed_up) (void)renameat(entry->parent_fd, entry->backup, entry->parent_fd, entry->leaf);
+  }
+  result = PATH_HELPER_IO_FAILURE;
+
+cleanup:
+  for (size_t index = 0; index < count; index += 1) {
+    if (entries[index].parent_fd >= 0) {
+      if (entries[index].stage[0] != '\0') (void)unlinkat(entries[index].parent_fd, entries[index].stage, 0);
+      if (entries[index].backup[0] != '\0') (void)unlinkat(entries[index].parent_fd, entries[index].backup, 0);
+    }
+  }
+  close(root_fd);
+  close_atomic_entries(entries, count);
+  return result;
+}
+
+static int run_delete(const char *root, const char *path) {
+  bool path_violation = false;
+  int root_fd = open_workspace_root(root, &path_violation);
+  int parent_fd = -1;
+  char *leaf = NULL;
+  if (root_fd < 0 || open_parent_beneath(root_fd, path, &parent_fd, &leaf, &path_violation) != 0 ||
+      pause_after_pinned_descriptor() != 0) {
+    int result = path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
+    if (parent_fd >= 0) close(parent_fd);
+    if (root_fd >= 0) close(root_fd);
+    free(leaf);
+    return result;
+  }
+  struct stat metadata;
+  int result = 0;
+  if (fstatat(parent_fd, leaf, &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno == ENOENT) {
+      (void)write_all(STDOUT_FILENO, "1", 1);
+    } else {
+      result = PATH_HELPER_IO_FAILURE;
+    }
+  } else if (!S_ISREG(metadata.st_mode)) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+  } else if (unlinkat(parent_fd, leaf, 0) != 0) {
+    result = PATH_HELPER_IO_FAILURE;
+  } else {
+    (void)write_all(STDOUT_FILENO, "0", 1);
+  }
+  close(parent_fd);
+  close(root_fd);
+  free(leaf);
+  return result;
+}
+
+static int run_rename(const char *root, const char *source, const char *destination) {
+  bool path_violation = false;
+  int root_fd = open_workspace_root(root, &path_violation);
+  int source_parent = -1;
+  int destination_parent = -1;
+  char *source_leaf = NULL;
+  char *destination_leaf = NULL;
+  int result = PATH_HELPER_IO_FAILURE;
+  if (root_fd < 0 ||
+      open_parent_beneath(root_fd, source, &source_parent, &source_leaf, &path_violation) != 0 ||
+      open_parent_beneath(root_fd, destination, &destination_parent, &destination_leaf, &path_violation) != 0 ||
+      pause_after_pinned_descriptor() != 0) {
+    result = path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
+    goto rename_cleanup;
+  }
+  struct stat source_metadata;
+  struct stat destination_metadata;
+  if (fstatat(source_parent, source_leaf, &source_metadata, AT_SYMLINK_NOFOLLOW) != 0) goto rename_cleanup;
+  if (!S_ISREG(source_metadata.st_mode)) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+    goto rename_cleanup;
+  }
+  bool destination_exists = fstatat(destination_parent, destination_leaf, &destination_metadata, AT_SYMLINK_NOFOLLOW) == 0;
+  if (!destination_exists && errno != ENOENT) goto rename_cleanup;
+  if (destination_exists && (!S_ISREG(destination_metadata.st_mode) ||
+      (source_metadata.st_dev == destination_metadata.st_dev && source_metadata.st_ino != 0 && source_metadata.st_ino == destination_metadata.st_ino))) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+    goto rename_cleanup;
+  }
+  if (same_parent(source_parent, destination_parent) && strcmp(source_leaf, destination_leaf) == 0) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+    goto rename_cleanup;
+  }
+  if (renameat(source_parent, source_leaf, destination_parent, destination_leaf) == 0) result = 0;
+
+rename_cleanup:
+  if (source_parent >= 0) close(source_parent);
+  if (destination_parent >= 0) close(destination_parent);
+  if (root_fd >= 0) close(root_fd);
+  free(source_leaf);
+  free(destination_leaf);
+  return result;
+}
+
+static int run_search(int argc, char **argv) {
+  if (argc != 8) return PATH_HELPER_USAGE;
+  bool path_violation = false;
+  int root_fd = open_workspace_root(argv[2], &path_violation);
+  int parent_fd = -1;
+  int target_fd = -1;
+  char *leaf = NULL;
+  if (root_fd < 0 || open_parent_beneath(root_fd, argv[3], &parent_fd, &leaf, &path_violation) != 0 ||
+      (target_fd = open_final_beneath(parent_fd, leaf, O_RDONLY, 0, &path_violation)) < 0 ||
+      pause_after_pinned_descriptor() != 0) {
+    if (target_fd >= 0) close(target_fd);
+    if (parent_fd >= 0) close(parent_fd);
+    if (root_fd >= 0) close(root_fd);
+    free(leaf);
+    return path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
+  }
+  (void)fcntl(target_fd, F_SETFD, 0);
+  char descriptor_path[64];
+  struct stat target_metadata;
+  if (fstat(target_fd, &target_metadata) != 0) return PATH_HELPER_IO_FAILURE;
+  if (S_ISDIR(target_metadata.st_mode)) {
+    if (fchdir(target_fd) != 0) return PATH_HELPER_IO_FAILURE;
+    (void)snprintf(descriptor_path, sizeof(descriptor_path), ".");
+  } else {
+#if defined(__linux__)
+    (void)snprintf(descriptor_path, sizeof(descriptor_path), "/proc/self/fd/%d", target_fd);
+#else
+    (void)snprintf(descriptor_path, sizeof(descriptor_path), "/dev/fd/%d", target_fd);
+#endif
+  }
+  char *arguments[16];
+  size_t next = 0;
+  arguments[next++] = "rg";
+  arguments[next++] = "--no-heading";
+  arguments[next++] = "--line-number";
+  arguments[next++] = "--color=never";
+  if (argv[5][0] != '\0') {
+    arguments[next++] = "--glob";
+    arguments[next++] = argv[5];
+  }
+  if (strcmp(argv[6], "1") == 0) arguments[next++] = "--fixed-strings";
+  if (strcmp(argv[7], "1") == 0) arguments[next++] = "--ignore-case";
+  arguments[next++] = "--";
+  arguments[next++] = argv[4];
+  arguments[next++] = descriptor_path;
+  arguments[next] = NULL;
+  execvp("rg", arguments);
+  return PATH_HELPER_IO_FAILURE;
+}
+
 int path_helper_main(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "read") == 0) {
     return run_read(argv[2], argv[3]);
@@ -579,6 +916,18 @@ int path_helper_main(int argc, char **argv) {
   }
   if (argc == 5 && strcmp(argv[1], "list") == 0) {
     return run_list(argv[2], argv[3], argv[4]);
+  }
+  if (argc >= 6 && strcmp(argv[1], "atomic-write") == 0) {
+    return run_atomic_write(argc, argv);
+  }
+  if (argc == 4 && strcmp(argv[1], "delete") == 0) {
+    return run_delete(argv[2], argv[3]);
+  }
+  if (argc == 5 && strcmp(argv[1], "rename") == 0) {
+    return run_rename(argv[2], argv[3], argv[4]);
+  }
+  if (argc == 8 && strcmp(argv[1], "search") == 0) {
+    return run_search(argc, argv);
   }
   (void)fprintf(stderr, "path-helper: invalid invocation\n");
   return PATH_HELPER_USAGE;

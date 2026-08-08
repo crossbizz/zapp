@@ -3,16 +3,26 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
 import { z } from 'zod';
+import type { DevServerEvidence } from './dev-server.js';
 
-const DevServerHealthSchema = z
+const LegacyDevServerHealthSchema = z
   .object({ port: z.number().int().min(1).max(65_535), ready: z.boolean() })
+  .strict();
+const ManagedDevServerHealthSchema = z
+  .object({
+    port: z.number().int().min(1).max(65_535),
+    pid: z.number().int().positive(),
+    supervisorId: z.string().min(1),
+    owned: z.boolean(),
+    httpReady: z.boolean(),
+  })
   .strict();
 
 export const HealthResponseSchema = z
   .object({
     ok: z.boolean(),
     details: z.string(),
-    devServer: DevServerHealthSchema.optional(),
+    devServer: z.union([LegacyDevServerHealthSchema, ManagedDevServerHealthSchema]).nullable(),
   })
   .strict();
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
@@ -123,15 +133,29 @@ async function portIsReady(port: number): Promise<boolean> {
   });
 }
 
-export async function getHealth(devServerPort?: number): Promise<HealthResponse> {
-  if (devServerPort === undefined) {
-    return HealthResponseSchema.parse({ ok: true, details: 'workspace-agent ready' });
+export async function getHealth(
+  devServer?: number | DevServerEvidence | null,
+): Promise<HealthResponse> {
+  if (devServer === undefined || devServer === null) {
+    return HealthResponseSchema.parse({
+      ok: true,
+      details: 'workspace-agent ready',
+      devServer: null,
+    });
   }
-  const ready = await portIsReady(devServerPort);
+  if (typeof devServer !== 'number') {
+    const ready = devServer.owned && devServer.httpReady;
+    return HealthResponseSchema.parse({
+      ok: ready,
+      details: ready ? 'workspace-agent ready' : 'workspace-agent ready; dev server not ready',
+      devServer,
+    });
+  }
+  const ready = await portIsReady(devServer);
   return HealthResponseSchema.parse({
     ok: ready,
     details: ready ? 'workspace-agent ready' : 'workspace-agent ready; dev server not ready',
-    devServer: { port: devServerPort, ready },
+    devServer: { port: devServer, ready },
   });
 }
 
