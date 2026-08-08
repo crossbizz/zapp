@@ -112,7 +112,7 @@ function baseRecipe() {
 }
 
 interface StatefulSandboxOptions {
-  readonly cleanupFailure?: boolean;
+  readonly cleanupFailureStage?: 'kill' | 'populated_wait' | 'remove';
 }
 
 function successfulSandbox(
@@ -148,10 +148,13 @@ function successfulSandbox(
       }
       if (command[0] === 'curl' && url.includes('/exec/cleanup/')) {
         const cleanupId = url.split('/').at(-1) ?? '';
-        if (options.cleanupFailure === true || !cleanupIds.has(cleanupId)) {
+        if (options.cleanupFailureStage !== undefined || !cleanupIds.has(cleanupId)) {
           return Promise.resolve({
             exitCode: 22,
-            stdout: JSON.stringify({ error: 'containment_cleanup_failed' }),
+            stdout: JSON.stringify({
+              error: 'containment_cleanup_failed',
+              stage: options.cleanupFailureStage ?? 'remove',
+            }),
             stderr: '',
           });
         }
@@ -691,7 +694,9 @@ describe('Modal image provider facade', () => {
     expect(createCount).toBe(0);
   });
 
-  test('fails closed when an exact execution cleanup acknowledgement reports failure', async () => {
+  test.each(['kill', 'populated_wait', 'remove'] as const)(
+    'fails closed while surfacing the exact %s cleanup stage',
+    async (stage) => {
     const sdk: ModalSdkPort = {
       buildImage() {
         return Promise.reject(new Error('not used'));
@@ -703,7 +708,9 @@ describe('Modal image provider facade', () => {
         return Promise.reject(new Error('not used'));
       },
       createVmSandbox() {
-        return Promise.resolve(successfulSandbox([], () => undefined, { cleanupFailure: true }));
+        return Promise.resolve(
+          successfulSandbox([], () => undefined, { cleanupFailureStage: stage }),
+        );
       },
       close() {},
     };
@@ -718,8 +725,9 @@ describe('Modal image provider facade', () => {
         agentToken: randomUUID(),
         telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
       }),
-    ).rejects.toThrow('containment cleanup acknowledgement failed');
-  });
+    ).rejects.toThrow(`containment cleanup acknowledgement failed (stage: ${stage})`);
+    },
+  );
 
   test('retries the authenticated health probe while the baked agent is starting', async () => {
     let healthAttempts = 0;

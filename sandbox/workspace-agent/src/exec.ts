@@ -399,8 +399,10 @@ export class ExecManager {
     try {
       await receipt.completion;
       return true;
-    } catch {
-      throw new ContainmentCleanupError();
+    } catch (error) {
+      throw error instanceof ContainmentCleanupError
+        ? error
+        : new ContainmentCleanupError('shutdown');
     }
   }
 
@@ -419,8 +421,11 @@ export class ExecManager {
       child.kill('shutdown');
     }
     const outcomes = await Promise.allSettled(active.map(async (child) => child.done));
-    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
-      throw new ContainmentCleanupError();
+    const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+    if (failure?.status === 'rejected') {
+      throw failure.reason instanceof ContainmentCleanupError
+        ? failure.reason
+        : new ContainmentCleanupError('shutdown');
     }
   }
 
@@ -494,14 +499,30 @@ export class ExecManager {
           try {
             await containment.waitForEmpty();
           } catch {
-            await containment.kill();
-            await containment.waitForEmpty();
+            try {
+              await containment.kill();
+            } catch {
+              throw new ContainmentCleanupError('kill');
+            }
+            try {
+              await containment.waitForEmpty();
+            } catch {
+              throw new ContainmentCleanupError('populated_wait');
+            }
           }
-          await containment.remove();
+          try {
+            await containment.remove();
+          } catch {
+            throw new ContainmentCleanupError('remove');
+          }
           this.owned.delete(active);
           resolveDone();
         } catch (error) {
-          rejectDone(error instanceof Error ? error : new Error('Containment cleanup failed'));
+          rejectDone(
+            error instanceof ContainmentCleanupError
+              ? error
+              : new ContainmentCleanupError('shutdown'),
+          );
         }
       })();
     };
@@ -514,7 +535,9 @@ export class ExecManager {
           return;
         }
         state.termination = reason;
-        killPromise = containment.kill();
+        killPromise = containment.kill().catch(() => {
+          throw new ContainmentCleanupError('kill');
+        });
         void killPromise.catch(() => undefined);
       },
       done,

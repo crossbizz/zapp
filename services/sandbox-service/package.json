@@ -20,6 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@zapp/contracts": "workspace:*",
     "modal": "0.9.0",
     "zod": "3.25.76"
   },

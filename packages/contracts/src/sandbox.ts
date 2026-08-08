@@ -2,6 +2,22 @@ import { z } from 'zod';
 import { idSchema } from './ids.js';
 import { EnvVarsSchema, HttpsUrlSchema } from './primitives.js';
 
+export const CleanupFailureStageSchema = z.enum([
+  'kill',
+  'populated_wait',
+  'remove',
+  'shutdown',
+]);
+export type CleanupFailureStage = z.infer<typeof CleanupFailureStageSchema>;
+
+export const CleanupFailureResponseSchema = z
+  .object({
+    error: z.literal('containment_cleanup_failed'),
+    stage: CleanupFailureStageSchema,
+  })
+  .strict();
+export type CleanupFailureResponse = z.infer<typeof CleanupFailureResponseSchema>;
+
 /**
  * PRD §18.9, in order. Both the membership and the order are contractual: plan 03's
  * lifecycle manager (WS-6) derives its legal-transition table from this list.

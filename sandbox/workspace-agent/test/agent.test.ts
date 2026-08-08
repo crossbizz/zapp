@@ -331,6 +331,45 @@ class MacosCgroupDouble implements Containment {
   }
 }
 
+class CleanupStageFailureContainment implements Containment {
+  private nextId = 0;
+
+  constructor(
+    private readonly root: string,
+    private readonly stage: 'kill' | 'populated_wait' | 'remove',
+  ) {}
+
+  async create(): Promise<ExecutionContainment> {
+    const id = `cleanup-stage-${String((this.nextId += 1))}`;
+    const directory = join(this.root, id);
+    const procsPath = join(directory, 'cgroup.procs');
+    let waitCalls = 0;
+    await mkdir(directory);
+    await writeFile(procsPath, '');
+    return {
+      id,
+      procsPath,
+      kill: () =>
+        this.stage === 'kill'
+          ? Promise.reject(new Error('controlled kill failure'))
+          : Promise.resolve(),
+      waitForEmpty: () => {
+        waitCalls += 1;
+        if (this.stage === 'kill' && waitCalls === 1) {
+          return Promise.reject(new Error('enter kill recovery'));
+        }
+        return this.stage === 'populated_wait'
+          ? Promise.reject(new Error('controlled populated wait failure'))
+          : Promise.resolve();
+      },
+      remove: () =>
+        this.stage === 'remove'
+          ? Promise.reject(new Error('controlled remove failure'))
+          : Promise.resolve(),
+    };
+  }
+}
+
 async function waitForProcessExit(pid: number): Promise<void> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
@@ -1360,6 +1399,43 @@ describe('workspace-agent RPC daemon', () => {
     expect(acknowledged.statusCode).toBe(200);
     expect(acknowledged.json()).toEqual({ cleaned: true });
   });
+
+  test.each(['kill', 'populated_wait', 'remove'] as const)(
+    'returns the closed %s diagnostic stage for authenticated cleanup failure',
+    async (stage) => {
+      const failureRoot = await mkdtemp(join(tmpdir(), 'zapp-cleanup-stage-route-'));
+      const failureApp = await buildWorkspaceAgent({
+        workspaceRoot,
+        token,
+        containment: new CleanupStageFailureContainment(failureRoot, stage),
+      });
+      const cleanupId = randomUUID();
+
+      try {
+        const execution = await failureApp.inject({
+          method: 'POST',
+          url: `/exec?cleanupId=${cleanupId}`,
+          headers: authorization(),
+          payload: { cmd: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 2_000 },
+        });
+        const acknowledgement = await failureApp.inject({
+          method: 'GET',
+          url: `/exec/cleanup/${cleanupId}`,
+          headers: authorization(),
+        });
+
+        expect(execution.statusCode).toBe(200);
+        expect(acknowledgement.statusCode).toBe(503);
+        expect(acknowledgement.json()).toEqual({
+          error: 'containment_cleanup_failed',
+          stage,
+        });
+      } finally {
+        await failureApp.close().catch(() => undefined);
+        await rm(failureRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('requests containment kill for a detached setsid descendant on buffered timeout', async () => {
     const fixture = createDetachedSetsidFixture(workspaceRoot, 'timeout-setsid');

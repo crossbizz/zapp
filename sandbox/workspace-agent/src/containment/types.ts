@@ -20,8 +20,9 @@ export class ContainmentUnavailableError extends Error {
 }
 
 export class ContainmentCleanupError extends Error {
-  constructor() {
+  constructor(readonly stage: CleanupFailureStage) {
     super('Execution containment cleanup failed');
     this.name = 'ContainmentCleanupError';
   }
 }
+import type { CleanupFailureStage } from '@zapp/contracts';

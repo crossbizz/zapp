@@ -4,6 +4,7 @@ import process from 'node:process';
 import { posix } from 'node:path';
 import { ModalClient, NotFoundError, Probe } from 'modal';
 import { z } from 'zod';
+import { CleanupFailureResponseSchema } from '@zapp/contracts';
 import {
   AgentHealthSchema,
   ImageDigestSchema,
@@ -366,13 +367,27 @@ async function acknowledgeCleanup(
   token: string,
   cleanupId: string,
 ): Promise<void> {
-  const response = await execOrThrow(
-    sandbox,
-    authenticatedCurlTo(token, authenticatedAgentUrl(`/exec/cleanup/${cleanupId}`)),
-    'containment cleanup acknowledgement',
-  ).catch(() => {
+  const response = ModalSdkRunResultSchema.parse(
+    await sandbox.exec(
+      authenticatedCurlTo(token, authenticatedAgentUrl(`/exec/cleanup/${cleanupId}`)),
+    ),
+  );
+  if (response.exitCode !== 0) {
+    let diagnostic = undefined;
+    try {
+      diagnostic = CleanupFailureResponseSchema.safeParse(
+        JSON.parse(response.stdout) as unknown,
+      );
+    } catch {
+      // Only the closed diagnostic schema may cross this boundary.
+    }
+    if (diagnostic?.success === true) {
+      throw new Error(
+        `containment cleanup acknowledgement failed (stage: ${diagnostic.data.stage})`,
+      );
+    }
     throw new Error('containment cleanup acknowledgement failed');
-  });
+  }
   CleanupResponseSchema.parse(JSON.parse(response.stdout) as unknown);
 }
 

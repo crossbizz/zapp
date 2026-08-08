@@ -185,6 +185,61 @@ class CleanupRecoveryContainment implements Containment {
   }
 }
 
+type CleanupFailureStageFixture = 'kill' | 'populated_wait' | 'remove';
+
+class StagedCleanupFailureExecution implements ExecutionContainment {
+  readonly id = 'staged-cleanup-failure';
+  readonly procsPath: string;
+  private waitCalls = 0;
+
+  constructor(
+    root: string,
+    private readonly stage: CleanupFailureStageFixture,
+  ) {
+    this.procsPath = join(root, this.id, 'cgroup.procs');
+  }
+
+  async initialize(): Promise<void> {
+    await mkdir(join(this.procsPath, '..'));
+    await writeFile(this.procsPath, '');
+  }
+
+  kill(): Promise<void> {
+    return this.stage === 'kill'
+      ? Promise.reject(new Error('controlled kill failure'))
+      : Promise.resolve();
+  }
+
+  waitForEmpty(): Promise<void> {
+    this.waitCalls += 1;
+    if (this.stage === 'kill' && this.waitCalls === 1) {
+      return Promise.reject(new Error('enter kill recovery'));
+    }
+    return this.stage === 'populated_wait'
+      ? Promise.reject(new Error('controlled populated wait failure'))
+      : Promise.resolve();
+  }
+
+  remove(): Promise<void> {
+    return this.stage === 'remove'
+      ? Promise.reject(new Error('controlled remove failure'))
+      : Promise.resolve();
+  }
+}
+
+class StagedCleanupFailureContainment implements Containment {
+  constructor(
+    private readonly root: string,
+    private readonly stage: CleanupFailureStageFixture,
+  ) {}
+
+  async create(): Promise<ExecutionContainment> {
+    const execution = new StagedCleanupFailureExecution(this.root, this.stage);
+    await execution.initialize();
+    return execution;
+  }
+}
+
 describe('cgroup-v2 containment', () => {
   test('fails closed when the delegated cgroup v2 root is unavailable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-cgroup-unavailable-'));
@@ -303,6 +358,35 @@ describe('cgroup-v2 containment', () => {
       );
       expect(containment.executions[0]?.removeCalls).toBe(0);
       expect(manager.activeContainmentCount()).toBe(1);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ['kill', 'kill'],
+    ['populated wait', 'populated_wait'],
+    ['remove', 'remove'],
+  ] as const)('preserves the %s stage on an exact cleanup receipt rejection', async (_label, stage) => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-stage-'));
+    const manager = new ExecManager(
+      workspaceRoot,
+      new StagedCleanupFailureContainment(workspaceRoot, stage),
+    );
+    const cleanupId = randomUUID();
+
+    try {
+      await manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'process.exit(0)'],
+          timeoutMs: 2_000,
+        },
+        undefined,
+        cleanupId,
+      );
+
+      await expect(manager.acknowledgeCleanup(cleanupId)).rejects.toMatchObject({ stage });
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

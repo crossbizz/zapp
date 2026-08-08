@@ -837,6 +837,9 @@ importers:
 
   sandbox/workspace-agent:
     dependencies:
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@zapp/workspace-runtime':
         specifier: workspace:*
         version: link:../../packages/workspace-runtime
@@ -1061,6 +1064,9 @@ importers:
 
   services/sandbox-service:
     dependencies:
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       modal:
         specifier: 0.9.0
         version: 0.9.0

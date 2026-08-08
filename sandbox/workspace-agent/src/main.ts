@@ -4,6 +4,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z, ZodError } from 'zod';
+import { CleanupFailureResponseSchema } from '@zapp/contracts';
 import { PathViolationError } from '@zapp/workspace-runtime';
 import {
   ContainmentCleanupError,
@@ -488,7 +489,12 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     if (error instanceof ContainmentCleanupError) {
       await reply
         .code(503)
-        .send(ErrorResponseSchema.parse({ error: 'containment_cleanup_failed' }));
+        .send(
+          CleanupFailureResponseSchema.parse({
+            error: 'containment_cleanup_failed',
+            stage: error.stage,
+          }),
+        );
       return;
     }
     if (error instanceof ContainmentUnavailableError) {
