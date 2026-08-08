@@ -1,3 +1,6 @@
+#if defined(__linux__)
+#define _DEFAULT_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include <dirent.h>
@@ -252,11 +255,11 @@ static int open_final_beneath(
   }
 #endif
 
-  int descriptor = openat(parent_fd, leaf, flags | O_NOFOLLOW | O_CLOEXEC, mode);
-  if (descriptor < 0 && is_path_violation_errno(errno)) {
+  int fallback_descriptor = openat(parent_fd, leaf, flags | O_NOFOLLOW | O_CLOEXEC, mode);
+  if (fallback_descriptor < 0 && is_path_violation_errno(errno)) {
     *path_violation = true;
   }
-  return descriptor;
+  return fallback_descriptor;
 }
 
 static int pause_after_pinned_descriptor(void) {

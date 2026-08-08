@@ -177,6 +177,19 @@ describe('descriptor-relative native workspace helpers', () => {
     expect(result.exitCode, result.stderr.toString('utf8')).toBe(0);
   });
 
+  test('compiles both native helpers with the repository compiler flags', async () => {
+    const build = runNative(
+      process.execPath,
+      [join(PACKAGE_ROOT, 'scripts', 'build-native.mjs')],
+      process.env,
+    );
+
+    const result = await build.completion;
+    expect(result.exitCode, result.stderr.toString('utf8')).toBe(0);
+    await expect(access(PATH_HELPER, constants.X_OK)).resolves.toBeUndefined();
+    await expect(access(EXEC_LAUNCHER, constants.X_OK)).resolves.toBeUndefined();
+  });
+
   test('build emits executable native helper and launcher binaries', async () => {
     await expect(access(PATH_HELPER, constants.X_OK)).resolves.toBeUndefined();
     await expect(access(EXEC_LAUNCHER, constants.X_OK)).resolves.toBeUndefined();
