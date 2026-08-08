@@ -109,6 +109,17 @@ jobs:
           key: turbo-${{ runner.os }}-${{ github.sha }}
           restore-keys: turbo-${{ runner.os }}-
 
+      - name: Restore Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # Run the CLI resolved from apps/web so the downloaded browser revision
+      # always matches the workspace lockfile used by both web and Storybook.
+      - name: Install Chromium
+        run: pnpm --filter @zapp/web exec playwright install --with-deps chromium
+
       - name: Seed the Forgejo admin token
         id: forgejo
         run: |

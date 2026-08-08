@@ -25,6 +25,10 @@ function readPackageScripts(): Record<string, string> {
   return commands;
 }
 
+function readCiWorkflowLines(): string[] {
+  return readFileSync(resolve(process.cwd(), '../../.github/workflows/ci.yml'), 'utf8').split('\n');
+}
+
 const scripts = readPackageScripts();
 
 function expandScript(name: string, ancestors: readonly string[] = []): string {
@@ -55,5 +59,21 @@ describe('@zapp/ui CI script wiring', () => {
 
   it('routes the normal test through Storybook axe', () => {
     expect(expandScript('test')).toContain('test-storybook --url http://127.0.0.1:6006');
+  });
+
+  it('installs the workspace-pinned Chromium before Turbo runs browser tests', () => {
+    const workflowLines = readCiWorkflowLines();
+    const installStep = workflowLines.findIndex(
+      (line) =>
+        line.trim() === 'run: pnpm --filter @zapp/web exec playwright install --with-deps chromium',
+    );
+    const turboStep = workflowLines.findIndex(
+      (line) =>
+        line.trim() ===
+        'run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}',
+    );
+
+    expect(installStep).toBeGreaterThan(-1);
+    expect(turboStep).toBeGreaterThan(installStep);
   });
 });
