@@ -821,18 +821,21 @@ describe('Modal image provider facade', () => {
       ) {
         await defaultExec(command);
         const fakeCommands = `
-poll_count=0
+observation_count=0
 curl() {
   case "$*" in
     */kill*) printf '%s\\n' '{"killed":true}' ;;
   esac
 }
-sleep() {
-  poll_count=$((poll_count + 1))
-  if [ "$poll_count" -eq 201 ]; then
+grep() {
+  observation_count=$((observation_count + 1))
+  if [ "$observation_count" -eq 201 ]; then
     printf '%s\\n' '{"type":"started","pid":4242,"executionId":"execution-boundary-sentinel"}' '{"type":"exit","exitCode":143}' > /tmp/zapp-explicit-kill-buffered.ndjson
+    return 0
   fi
+  return 1
 }
+sleep() { :; }
 kill() {
   case "$1" in
     -0) return 0 ;;

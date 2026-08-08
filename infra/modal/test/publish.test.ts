@@ -848,24 +848,13 @@ describe('Modal image publication transaction', () => {
         timeoutMs: 50,
       },
     });
-    const outcome = await Promise.race([
-      transaction.then(
-        () => 'resolved',
-        (error: unknown) => {
-          return error instanceof Error ? error.message : String(error);
-        },
-      ),
-      new Promise<string>((resolveOutcome) => {
-        setTimeout(() => {
-          resolveOutcome('still waiting after injected timeout');
-        }, 100);
-      }),
-    ]);
+    const outcome = await transaction.then(
+      () => 'resolved',
+      (error: unknown) => {
+        return error instanceof Error ? error.message : String(error);
+      },
+    );
 
-    if (outcome === 'still waiting after injected timeout') {
-      await rm(lockDirectory, { recursive: true, force: true });
-      await transaction.catch(() => undefined);
-    }
     expect(outcome).toBe('Timed out waiting for Modal image publication lock');
     expect(waits).toEqual([25, 25]);
   });
