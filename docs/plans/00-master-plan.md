@@ -290,17 +290,17 @@ North star (PRD §37.1): **verified production releases per active org per month
 **Files:** `package.json`, `packages/config/test/turbo.test.ts`, `tasks/todo.md`, this plan
 
 - [x] **Step 1:** Failing wiring test: the local `pnpm verify` integration phase must run package suites one at a time because the DB and control-api suites both reset the same development database.
-- [ ] **Step 2:** Add the narrow Turbo concurrency bound, then run the focused config suite and the complete credentialed local gate.
-- [ ] **Step 3:** Commit: `fix(gate): serialize shared-database integration suites`
+- [x] **Step 2:** Add the narrow Turbo concurrency bound, then run the focused config suite and the complete credentialed local gate.
+- [x] **Step 3:** Commit: `fix(gate): serialize shared-database integration suites`
 
 ### M1-GATE-8 — Arm the live Git backup proof in local verification
 
 **Files:** `services/git-service/test/workflow.test.ts`, `scripts/git-hooks/pre-push.local`, `turbo.json`, `docs/plans/00-master-plan.md`, `tasks/todo.md`
 
-- [ ] **Step 1:** Preserve the focused RED from the stale workflow assertion, then rewrite it to validate the production local pre-push path: refuse-to-skip mode is armed, local PostgreSQL and Forgejo inputs are sourced or pinned, fixed local MinIO inputs and `GIT_BACKUP_LIVE=1` are exported, root verification serializes integration packages, and git-service integration runs the backup proof.
-- [ ] **Step 2:** Minimally pin the local MinIO endpoint, throwaway credentials, bucket, and `GIT_BACKUP_LIVE=1` in `scripts/git-hooks/pre-push.local`; do not add or re-enable a GitHub Actions trigger or job.
-- [ ] **Step 3:** Run the focused GREEN, git-service lint/typecheck/build, the complete credentialed local `pnpm verify`, and one adversarial review with at most one fix round.
-- [ ] **Step 4:** Commit: `fix(gate): arm live git backup in local verification`
+- [x] **Step 1:** Preserve the focused RED from the stale workflow assertion, then rewrite it to validate the production local pre-push path: refuse-to-skip mode is armed, local PostgreSQL and Forgejo inputs are sourced or pinned, fixed local MinIO inputs and `GIT_BACKUP_LIVE=1` are exported, root verification serializes integration packages, and git-service integration runs the backup proof.
+- [x] **Step 2:** Minimally pin the local MinIO endpoint, throwaway credentials, bucket, and `GIT_BACKUP_LIVE=1` in `scripts/git-hooks/pre-push.local`; do not add or re-enable a GitHub Actions trigger or job.
+- [x] **Step 3:** Run the focused GREEN, git-service lint/typecheck/build, the complete credentialed local `pnpm verify`, and one adversarial review with at most one fix round.
+- [x] **Step 4:** Commit: `fix(gate): arm live git backup in local verification`
 
 ### M1-GATE-9 — Await cancelled SSE replay before connection reuse
 
@@ -315,6 +315,8 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-07 M1-GATE-7 BLOCKED: serialization and its focused regression are green, but the complete local gate exposes a separate stale git-service unit assertion that still requires the disabled GitHub Actions live-backup job; M1-GATE-8 must move that proof to the local gate before this task can be signed off.
 - 2026-08-07 M1-GATE-8 BLOCKED: the structural local-gate repair, focused workflow test, git-service static checks, one adversarial fix round, and an earlier complete local gate are green; the final uncontaminated tracked-hook gate ran the live backup proof (1/1) and git-service integration (16/16) without skips, then exposed an unrelated deterministic control-api SSE failure where `uses matching media parameters before q as Accept specificity` received HTTP 500 instead of 200 (1 failed, 234 passed), so the task and tracker remain unchecked. Paper trail: `turbo.json` was added to Files during the review fix to prove every backup input crosses Turbo strict env mode; its existing declarations were sufficient, and the already-landed machine lock was retained while fixing inherited `CI=false`/`0` and pinning MinIO.
 - 2026-08-07 M1-GATE-9 done — Awaited active postgres.js cancellation plus a same-backend ReadyForQuery fence before replay connection reuse; deterministic cancellation/fallback/inactive/fence tests, control-api integration (236/236), and the uncontaminated tracked pre-push gate are green, with an independent clean review and no timing inflation.
+- 2026-08-07 M1-GATE-7 done — Serialized shared-database integration packages; the config regression is 4/4 and the final uncontaminated tracked pre-push gate completed all 11 integration tasks plus isolation 54/54 and Gate-5 1/1.
+- 2026-08-07 M1-GATE-8 done — Moved the live backup proof to the local hook, pinned its local MinIO and refuse-to-skip inputs, verified strict Turbo propagation, and completed the final tracked pre-push gate with backup 1/1 and git-service integration 16/16.
 - 2026-08-03: Stack decisions finalized by product owner: **Stytch** (auth, supersedes WorkOS rec), **Neon** (confirmed), **Stripe** (confirmed), **Flexprice** (metering/credits/rating), **OTel → Grafana Cloud** incl. Faro + OnCall (supersedes Sentry), **PostHog** (analytics + feature flags). Plans 00/01/02/03/04/05/07/08/10, README, and tracker updated accordingly.
 - 2026-08-07: M1-GATE-1 done — made the mandated cold local gate deterministic by ordering same-package build before typecheck, declaring web's control-api test dependency, keeping Turbo-internal web tests artifact-read-only, and bounding the real-Git empty-restore test; forced local gate 53/53, while GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-2 done — gave two real child-process fixtures finite 15-second test budgets while preserving five-second production Git deadlines; the combined WS-10 forced cold gate passed 57/57 locally, while GitHub Actions remains unverified because billing prevents job startup.
