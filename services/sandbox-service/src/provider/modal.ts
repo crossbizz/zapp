@@ -1128,10 +1128,15 @@ function createModalWorkspaceSdk(
           mode: 'text',
           timeoutMs: 30_000,
         });
+        const writer = process.stdin.getWriter();
         try {
-          await process.stdin.writeText(encoded);
+          await writer.write(encoded);
+          await writer.close();
+        } catch (error) {
+          await process.closeStdin().catch(() => undefined);
+          throw error;
         } finally {
-          await process.closeStdin();
+          writer.releaseLock();
         }
         const [stdout, exitCode] = await Promise.all([process.stdout.readText(), process.wait()]);
         if (exitCode !== 0) throw new Error('Workspace agent request failed');
@@ -1172,10 +1177,15 @@ function createModalWorkspaceSdk(
           mode: 'text',
           timeoutMs: WORKSPACE_TIMEOUT_MS,
         });
+        const writer = process.stdin.getWriter();
         try {
-          await process.stdin.writeText(encoded);
+          await writer.write(encoded);
+          await writer.close();
+        } catch (error) {
+          await process.closeStdin().catch(() => undefined);
+          throw error;
         } finally {
-          await process.closeStdin();
+          writer.releaseLock();
         }
         const reader = process.stdout.getReader();
         let buffered = '';

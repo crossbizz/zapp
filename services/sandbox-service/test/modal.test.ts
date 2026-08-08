@@ -269,6 +269,9 @@ describe('Modal workspace agent adapter', () => {
     let command: string[] = [];
     let stdin = '';
     let stdinClosed = false;
+    let stdinClosedAt = -1;
+    let writerLockReleased = false;
+    let errorRecoveryCloseCalls = 0;
     const responseBody = Buffer.from(JSON.stringify({ ok: true }));
     modalSdkState.sandbox = {
       sandboxId: 'sb-envelope-stdin',
@@ -286,10 +289,26 @@ describe('Modal workspace agent adapter', () => {
               stdin = value;
               return Promise.resolve();
             },
+            getWriter() {
+              return {
+                write(value: string) {
+                  stdin += value;
+                  return Promise.resolve();
+                },
+                close() {
+                  stdinClosedAt = Buffer.byteLength(stdin);
+                  stdinClosed = true;
+                  return Promise.resolve();
+                },
+                releaseLock() {
+                  writerLockReleased = true;
+                },
+              };
+            },
           },
           closeStdin() {
-            stdinClosed = true;
-            return Promise.resolve();
+            errorRecoveryCloseCalls += 1;
+            return Promise.reject(new Error('closeStdin is error recovery only'));
           },
           stdout: {
             readText: () =>
@@ -346,6 +365,9 @@ describe('Modal workspace agent adapter', () => {
       128 * 1_024,
     );
     expect(stdinClosed).toBe(true);
+    expect(stdinClosedAt).toBe(Buffer.byteLength(stdin));
+    expect(writerLockReleased).toBe(true);
+    expect(errorRecoveryCloseCalls).toBe(0);
     const envelope = JSON.parse(Buffer.from(stdin, 'base64').toString('utf8')) as {
       method: string;
       url: string;
