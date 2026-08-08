@@ -206,12 +206,12 @@ P0 targets (PRD §36.3): 100 orgs, 1,000 projects, 100 concurrent sandboxes, 25 
 4. **Hot counters in Redis, attribution truth in Postgres, rating in Flexprice.** Budgets, rate limits, and live cost tickers use Redis atomic counters; raw usage appends to the local `usage_ledger` (attribution/audit truth, corrections as compensating entries) and streams to Flexprice (idempotent by ledger row id) for rating, credit wallets, and entitlements; three-way reconciliation (Redis/ledger/Flexprice) alerts on >1% drift. (OPS-1..OPS-3)
 5. **Temporal owns durability.** One workflow per run; child workflow per task; activities idempotent with idempotency keys; `continueAsNew` per phase bounds history; workers scale horizontally per task queue (`agent-runs`, `verification`, `releases`). Worker restart mid-run is a CI-tested scenario. (AR-9..AR-12)
 6. **Sandbox economics.** Warm versioned images, pnpm-store volume per project, snapshot resume, idle reaper (15/30 min), 24 h hard replacement, per-plan concurrency governor with a global cap circuit-breaker in sandbox-service; requested vs observed resources recorded per sandbox for right-sizing. (WS-6..WS-9, OPS-2)
-7. **Postgres capacity.** Neon with pgbouncer-mode pooling; all list endpoints keyset-paginated; no N+1 (dataloader pattern in repos); slow-query budget: dashboard p95 < 500 ms is a CI-enforced k6 check at M5. (CP-6, OPS-9)
+7. **Postgres capacity.** Neon with pgbouncer-mode pooling; all list endpoints keyset-paginated; no N+1 (dataloader pattern in repos); slow-query budget: dashboard p95 < 500 ms, k6-checked post-P0 (OPS-9 deferred — ADR-0022). (CP-6, OPS-9)
 8. **Object storage layout.** `org/{orgId}/project/{projectId}/{class}/...` tenant-prefixed keys; signed URLs with short TTL; lifecycle rules per artifact class (test artifacts 30 d, diagnostics 7 d, release evidence retained). (FND-7, OPS-14)
 9. **Model gateway throughput.** Streaming pass-through (no buffering), per-org concurrency semaphores, provider retry/fallback with jittered backoff, token telemetry per call; provider outage degrades to alternate provider by policy. (AR-2..AR-4)
 10. **No unbounded work.** Every loop the platform runs (repair, interview, agent turns) carries an explicit budget (iterations, tokens, wall-clock, credits) checked outside the model. (AR-14, VF-13, OPS-3)
 
-Capacity model and load-test plan live in plan 10 (OPS-9), run at M5 against staging with synthetic tenants.
+Capacity model and load-test plan live in plan 10 (OPS-9) — deferred post-P0 by ADR-0022; run before public beta against staging with synthetic tenants.
 
 ---
 
@@ -228,8 +228,8 @@ P0 explicitly excludes SSO/SCIM/custom compliance (PRD §5) — but nothing may 
 | Secrets | Envelope encryption (AES-256-GCM, per-secret DEK, KMS master key); decrypt only in sandbox-service/release-service at injection; global redaction registry scrubs logs/events/model context | BYO-KMS later; same interface |
 | Encryption | TLS everywhere; at-rest via Neon/R2 defaults + application-layer secret encryption | — |
 | Data lifecycle | Retention config per class (events 90 d, test artifacts 30 d, diagnostics 7 d, evidence = release lifetime); deletion pipeline across Postgres/R2/Git/Modal with completion verification; export APIs (repo, spec, plan, evidence, env names, audit) | Residency options = per-region stacks; US-only stated in P0 |
-| Reliability | Idempotency keys, outbox events, Temporal durability, PG PITR + nightly logical dumps to R2, nightly Git bundles, restore runbook. Targets: RPO ≤ 24 h (git: ≤ 24 h, control DB: PITR), RTO ≤ 4 h | Multi-region later |
-| Security program | Threat model (PRD §31.1) tracked as test suites: sandbox abuse (fork bomb, OOM, egress), path traversal, secret redaction, prompt-injection eval set; gitleaks + osv-scanner + Semgrep in CI; pen test before public beta | SOC 2 Type I readiness checklist maintained from M0 (change mgmt = PR + CI evidence; access reviews quarterly; vendor register: Modal, Neon, Upstash, Cloudflare, Stytch, Stripe, Flexprice, Temporal, Vercel, Fly, Grafana Cloud, PostHog, AWS) |
+| Reliability | Idempotency keys, outbox events, Temporal durability, PG PITR + nightly logical dumps to R2, nightly Git bundles (restore runbooks + drills deferred post-P0 — ADR-0022). Targets: RPO ≤ 24 h (git: ≤ 24 h, control DB: PITR), RTO ≤ 4 h | Multi-region later |
+| Security program | Threat model (PRD §31.1) tracked as test suites: sandbox abuse (fork bomb, OOM, egress), path traversal, secret redaction, prompt-injection eval set; gitleaks + osv-scanner + Semgrep in CI; pen test before public beta | SOC 2 Type I readiness pack assembled post-P0, before auditor engagement (ADR-0022) (change mgmt = PR + CI evidence; access reviews quarterly; vendor register: Modal, Neon, Upstash, Cloudflare, Stytch, Stripe, Flexprice, Temporal, Vercel, Fly, Grafana Cloud, PostHog, AWS) |
 | Abuse/limits | Per-org rate limits, plan quotas (runs, sandboxes, budgets), runaway-compute governor with support kill-switch | IP allowlists, egress policies per org later |
 | Support ops | Reason-gated, audited impersonation; `visibility: support` event channel; admin console with resource termination | Customer-visible support-access log later |
 
@@ -258,7 +258,7 @@ How these plans get executed later (the "execute" phase the user will trigger):
 
 1. **Init repo first.** `git init` + first commit of docs/plans + tasks/todo.md is task FND-0. Everything after follows per-task commits.
 2. **One task = one subagent session** (superpowers:subagent-driven-development): the subagent receives the task block + Global Constraints + its plan's header only. Tasks are written to be executable with zero conversation context.
-3. **Task protocol:** red test → green → verify command → commit (message format in each task) → check the box in the plan file **and** `tasks/todo.md` → append one line to the plan's `## Execution log`.
+3. **Task protocol:** red test → green → verify command → commit (message format in each task) → in that same commit, check the box in `tasks/todo.md` (single authoritative tracker) and append one line to the plan's `## Execution log`. Reviews cap at two rounds with a pre-declared exit condition; real-provider smokes run once per task at final acceptance (ADR-0022).
 4. **Interface-level tasks** (marked `[expand-at-execution]`) must be expanded into full TDD steps by the executing agent using superpowers:writing-plans *before* coding; the task's Files / Interfaces / Acceptance criteria are binding contracts for that expansion.
 5. **Milestone gates:** at each M-exit, run the milestone's exit-criteria checklist (above) as an explicit verification session; failures become tasks before new milestone work starts.
 6. **Deviations:** any deviation from a locked decision (§2) or interface requires an ADR in `docs/adr/` and a note in the execution log — never a silent change.

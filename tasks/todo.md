@@ -61,13 +61,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
 - [x] WS-2 Modal images (forge-node-base, forge-web-test)
-- [ ] WS-3 workspace-agent daemon
-- [x] WS-3-FIX-1 Advanced workspace-agent routes required by WS-4
-- [x] WS-3-FIX-2 Correct sandbox-service package exports for cold publisher build
-- [x] WS-3-FIX-3 Align publisher health schema with workspace-agent devServer evidence
-- [x] WS-3-FIX-4 Preserve typed atomic-alias rejection on locked Modal
-- [ ] WS-4-FIX-1 Stabilize live rollback failure injection
-- [ ] WS-4-FIX-2 Stream Modal agent request envelope over stdin
+- [x] WS-3 workspace-agent daemon
 - [ ] WS-4 Modal provider create/exec/terminate/attach
 - [ ] WS-5 Scoped-token git clone/push
 - [ ] WS-6 Lifecycle state machine + reaper + reconciler
@@ -188,16 +182,12 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-6 PostHog analytics + feature flags + dashboards
 - [ ] OPS-7 Notification service
 - [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
-- [ ] OPS-9 SLO dashboards + k6 at 10× + capacity model
 - [ ] OPS-10 Managed-app observability templates
 - [ ] OPS-11 Incident → Fix run closed loop
 - [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
 - [ ] OPS-13 Injection evals + policy scans blocking
 - [ ] OPS-14 Retention archival + rehydration
-- [ ] OPS-15 Backup/DR runbooks + drills
-- [ ] OPS-16 SOC 2 Type I readiness pack
 - [ ] OPS-17 Support/admin console
-- [ ] OPS-18 Incident response + status page
 - [ ] CP-17 Retention & deletion pipeline
 - [ ] CP-18 Export APIs
 - [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
@@ -211,6 +201,13 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links
 - [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4)
 - [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/
+
+## Deferred post-P0 (ADR-0022) — return before public beta
+
+- OPS-9 SLO dashboards + k6 at 10× + capacity model
+- OPS-15 Backup/DR runbooks + drills
+- OPS-16 SOC 2 Type I readiness pack
+- OPS-18 Incident response + status page
 
 ## Review
 
