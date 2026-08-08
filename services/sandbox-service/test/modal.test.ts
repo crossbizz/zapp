@@ -1,7 +1,93 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+interface ModalSdkState {
+  createCalls: unknown[][];
+  experimentalCreateCalls: unknown[][];
+  sandbox: unknown;
+  volumeCloseCount: number;
+}
+
+const modalSdkState = vi.hoisted<ModalSdkState>(() => ({
+  createCalls: [],
+  experimentalCreateCalls: [],
+  sandbox: undefined,
+  volumeCloseCount: 0,
+}));
+
+vi.mock('modal', async (importOriginal) => {
+  const actual = await importOriginal();
+  if (typeof actual !== 'object' || actual === null) {
+    throw new Error('Modal SDK mock could not load the real module');
+  }
+  const actualModule = actual as Record<string, unknown>;
+  const ActualModalClient = actualModule.ModalClient;
+  if (typeof ActualModalClient !== 'function') {
+    throw new Error('Modal SDK mock could not load ModalClient');
+  }
+  const ModalClientConstructor = ActualModalClient as new (options: {
+    tokenId: string;
+    tokenSecret: string;
+  }) => unknown;
+
+  class MockModalClient {
+    readonly apps = {
+      fromName: () => Promise.resolve({ appId: 'ap-test' }),
+    };
+
+    readonly images = {
+      fromId: (imageId: string) =>
+        Promise.resolve({
+          imageId,
+          build: () => Promise.resolve(),
+        }),
+      fromName: () => Promise.resolve({ imageId: 'im-built0123' }),
+    };
+
+    readonly volumes = {
+      ephemeral: () =>
+        Promise.resolve({
+          closeEphemeral() {
+            modalSdkState.volumeCloseCount += 1;
+          },
+        }),
+    };
+
+    readonly sandboxes = {
+      create: (...args: unknown[]) => {
+        modalSdkState.createCalls.push(args);
+        return Promise.resolve(modalSdkState.sandbox);
+      },
+      experimentalCreate: async (...args: unknown[]) => {
+        modalSdkState.experimentalCreateCalls.push(args);
+        const untrustedClient = new ModalClientConstructor({
+          tokenId: 'test-modal-id',
+          tokenSecret: 'test-modal-secret',
+        });
+        const client = untrustedClient as {
+          sandboxes: {
+            experimentalCreate: (...parameters: unknown[]) => Promise<unknown>;
+          };
+          close(): void;
+        };
+        try {
+          return await client.sandboxes.experimentalCreate(...args);
+        } finally {
+          client.close();
+        }
+      },
+    };
+
+    close() {}
+  }
+
+  return {
+    ...actualModule,
+    ModalClient: MockModalClient,
+  };
+});
 import {
   createModalImagePublisher,
   imageDockerfileCommands,
@@ -117,7 +203,68 @@ function successfulSandbox(
   };
 }
 
+function sdkSandbox(sandbox: ModalSdkSandboxPort) {
+  return {
+    async exec(command: string[]) {
+      const result = await sandbox.exec(command);
+      return {
+        stdout: { readText: () => Promise.resolve(result.stdout) },
+        stderr: { readText: () => Promise.resolve(result.stderr) },
+        wait: () => Promise.resolve(result.exitCode),
+      };
+    },
+    waitUntilReady: (timeoutMs: number) => sandbox.waitUntilReady(timeoutMs),
+    tunnels: (timeoutMs: number) => sandbox.tunnels(timeoutMs),
+    async snapshotFilesystem(input: { timeoutMs: number; ttlMs: number }) {
+      return { imageId: await sandbox.snapshotFilesystem(input) };
+    },
+    terminate: () => sandbox.terminate(),
+  };
+}
+
+beforeEach(() => {
+  modalSdkState.createCalls.length = 0;
+  modalSdkState.experimentalCreateCalls.length = 0;
+  modalSdkState.sandbox = undefined;
+  modalSdkState.volumeCloseCount = 0;
+});
+
 describe('Modal image provider facade', () => {
+  test('creates the VM-runtime sandbox atomically with all seven tags', async () => {
+    const commands: string[][] = [];
+    modalSdkState.sandbox = sdkSandbox(successfulSandbox(commands, () => undefined));
+    const publisher = createModalImagePublisher({
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+
+    await publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+      telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
+    });
+
+    expect(modalSdkState.experimentalCreateCalls).toHaveLength(0);
+    expect(modalSdkState.createCalls).toHaveLength(1);
+    expect(modalSdkState.createCalls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        tags: {
+          org_id: 'smoke_org_ws_2',
+          project_id: 'smoke_project_ws_2',
+          branch_id: 'smoke_branch_ws_2',
+          run_id: 'smoke_run_ws_2',
+          task_id: 'smoke_task_ws_2',
+          purpose: 'image_smoke',
+          environment: 'zapp-dev',
+        },
+        experimentalOptions: { vm_runtime: true },
+      }),
+    );
+    expect(modalSdkState.volumeCloseCount).toBe(1);
+  });
+
   test('rejects telemetry endpoints that can carry credentials into a sandbox', () => {
     const base = {
       environment: 'zapp-dev',

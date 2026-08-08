@@ -233,9 +233,9 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
       // switch the image between verification and sandbox creation.
       const image = await client.images.fromId(input.digest);
       const volume = await client.volumes.ephemeral({ environment: input.environment });
-      let sandbox: Awaited<ReturnType<typeof client.sandboxes.experimentalCreate>>;
+      let sandbox: Awaited<ReturnType<typeof client.sandboxes.create>>;
       try {
-        sandbox = await client.sandboxes.experimentalCreate(app, image, {
+        sandbox = await client.sandboxes.create(app, image, {
           command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
           env: { ...input.environmentVariables },
           tags: { ...input.tags },
