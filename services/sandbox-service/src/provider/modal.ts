@@ -11,6 +11,7 @@ import {
   ExecutionContractSchema,
   ExecInputSchema,
   RESOURCE_PROFILES,
+  ResourceProfileSchema,
   WorkspaceHandleSchema,
   type CreateWorkspaceInput,
   type ExecutionContract,
@@ -803,6 +804,7 @@ export interface ModalWorkspaceCreateOptions {
 
 export interface ModalWorkspaceSandbox {
   readonly providerWorkspaceId: string;
+  getTags(): Promise<Readonly<Record<string, string>>>;
   waitUntilReady(timeoutMs: number): Promise<void>;
   agentHealth(token: string): Promise<unknown>;
   agentRequest(request: AgentHttpRequest): Promise<AgentHttpResponse>;
@@ -847,6 +849,16 @@ export interface ModalSandboxProviderOptions {
   readonly clockMs?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
+
+const ModalWorkspaceAttachmentSchema = z
+  .object({
+    resourceProfile: ResourceProfileSchema,
+    imageTag: PublishedImageNameSchema,
+    createdAt: z.coerce.date(),
+    requiredTags: SandboxTagsSchema,
+  })
+  .strict();
+export type ModalWorkspaceAttachment = z.infer<typeof ModalWorkspaceAttachmentSchema>;
 
 const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
@@ -990,6 +1002,27 @@ export class ModalAtomicWriteConflictError extends Error {
   }
 }
 
+export class ModalWorkspaceNotFoundError extends Error {
+  constructor() {
+    super('Workspace sandbox was not found');
+    this.name = 'ModalWorkspaceNotFoundError';
+  }
+}
+
+export class ModalWorkspaceTagMismatchError extends Error {
+  constructor() {
+    super('Workspace sandbox tags do not match the persisted workspace');
+    this.name = 'ModalWorkspaceTagMismatchError';
+  }
+}
+
+export class ModalWorkspaceReadinessError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Workspace sandbox did not become ready', options);
+    this.name = 'ModalWorkspaceReadinessError';
+  }
+}
+
 function jsonAgentBody(response: AgentHttpResponse): unknown {
   if (response.statusCode < 200 || response.statusCode >= 300) {
     throw new Error(
@@ -1040,6 +1073,9 @@ function createModalWorkspaceSdk(
   ): ModalWorkspaceSandbox {
     return {
       providerWorkspaceId: sandbox.sandboxId,
+      async getTags() {
+        return sandbox.getTags();
+      },
       async waitUntilReady(timeoutMs) {
         await sandbox.waitUntilReady(timeoutMs);
       },
@@ -1234,6 +1270,7 @@ function workspaceEnvironmentVariables(
 
 export class ModalSandboxProvider {
   readonly lockedImageTag: string;
+  readonly attachmentEnvironment: ModalEnvironment;
   private readonly environment: WorkspaceEnvironmentName;
   private readonly modalEnvironment: ModalEnvironment;
   private readonly image: {
@@ -1255,6 +1292,7 @@ export class ModalSandboxProvider {
       throw new Error(`No Modal image lock exists for ${this.environment}`);
     }
     this.modalEnvironment = lockedEnvironment.modalEnvironment;
+    this.attachmentEnvironment = this.modalEnvironment;
     this.image = lockedEnvironment.images['forge-node-base'];
     this.lockedImageTag = this.image.publishedName;
     this.agentToken = z.string().min(1).parse(options.agentToken);
@@ -1267,7 +1305,10 @@ export class ModalSandboxProvider {
         createModalWorkspaceSdk(options.credentials ?? credentialsFromEnvironment(), environment));
   }
 
-  async createWorkspace(untrustedInput: CreateWorkspaceInput): Promise<WorkspaceHandle> {
+  async createWorkspace(
+    untrustedInput: CreateWorkspaceInput,
+    onAllocated?: (providerWorkspaceId: string) => Promise<void>,
+  ): Promise<WorkspaceHandle> {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
     if (input.imageTag !== this.lockedImageTag || input.imageTag.includes(':latest')) {
       throw new Error('Workspace image must match the immutable image lock');
@@ -1344,6 +1385,7 @@ export class ModalSandboxProvider {
           },
         );
       });
+      await onAllocated?.(sandbox.providerWorkspaceId);
       if (this.clockMs() >= deadline) throw new Error('workspace agent readiness timed out');
       await sandbox.waitUntilReady(Math.max(1, deadline - this.clockMs()));
       for (;;) {
@@ -1372,6 +1414,58 @@ export class ModalSandboxProvider {
       throw error;
     } finally {
       if (sdkOwnership.closeHere) sdk.close();
+    }
+  }
+
+  async attachWorkspace(
+    providerWorkspaceId: string,
+    untrustedAttachment: ModalWorkspaceAttachment,
+  ): Promise<WorkspaceHandle> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const attachment = ModalWorkspaceAttachmentSchema.parse(untrustedAttachment);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    const deadline = this.clockMs() + HEALTH_PROBE_TIMEOUT_MS;
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      let untrustedTags: unknown;
+      try {
+        untrustedTags = await sandbox.getTags();
+      } catch (error) {
+        if ((await sdk.getWorkspace(id)) === undefined) throw new ModalWorkspaceNotFoundError();
+        throw error;
+      }
+      const tags = SandboxTagsSchema.parse(untrustedTags);
+      const requiredTagNames = Object.keys(
+        attachment.requiredTags,
+      ) as Array<keyof SandboxTags>;
+      if (requiredTagNames.some((name) => tags[name] !== attachment.requiredTags[name])) {
+        throw new ModalWorkspaceTagMismatchError();
+      }
+      try {
+        await sandbox.waitUntilReady(Math.max(1, deadline - this.clockMs()));
+        for (;;) {
+          if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
+          const health = WorkspaceAgentHealthSchema.parse(await sandbox.agentHealth(this.agentToken));
+          if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
+          if (health.ok) break;
+          await this.sleep(Math.min(HEALTH_PROBE_INTERVAL_MS, deadline - this.clockMs()));
+        }
+      } catch (error) {
+        throw new ModalWorkspaceReadinessError({
+          cause: error instanceof Error ? error : new Error('Unknown readiness failure'),
+        });
+      }
+      return WorkspaceHandleSchema.parse({
+        providerWorkspaceId: sandbox.providerWorkspaceId,
+        status: 'ready',
+        resourceProfile: attachment.resourceProfile,
+        imageTag: attachment.imageTag,
+        createdAt: attachment.createdAt.toISOString(),
+        expiresAt: new Date(attachment.createdAt.getTime() + WORKSPACE_TIMEOUT_MS).toISOString(),
+      });
+    } finally {
+      sdk.close();
     }
   }
 

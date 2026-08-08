@@ -349,7 +349,7 @@ either task complete on fail-closed evidence alone.
 
 ##### Slice 4c — attach/reattach recovery, ownership, and failure reconciliation
 
-- [ ] **4c RED — write the failing restart/recovery cases.** Create a workspace, close
+- [x] **4c RED — write the failing restart/recovery cases.** Create a workspace, close
   the first provider/service instance without terminating the sandbox, construct a
   fresh instance with no in-memory attachment state, and attach by the stored opaque
   provider ID. Assert strict handle/status reconstruction, authenticated agent
@@ -359,15 +359,15 @@ either task complete on fail-closed evidence alone.
   provider disappearance, and row/provider disagreement. Each failure must reconcile
   the row to a truthful legal state without creating a replacement sandbox or exposing
   provider IDs/origins to callers.
-- [ ] **4c RED run — prove restart recovery is absent.** Run
+- [x] **4c RED run — prove restart recovery is absent.** Run
   `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "attach reattach recovery and ownership"`. Expected: FAIL because attach/recovery is not implemented; a real-Modal case may only skip with its explicit named credential reason.
-- [ ] **4c minimal implementation.** Implement `attachWorkspace` through the pinned
+- [x] **4c minimal implementation.** Implement `attachWorkspace` through the pinned
   SDK's `client.sandboxes.fromId`, rebuild the private authenticated agent binding from
   persisted server-side data, validate provider tags against the tenant-owned row,
   make repeated attach idempotent, and reconcile missing/terminated/unready provider
   state without last-writer-wins. Never accept a caller-supplied agent origin or use
   process-local attachment state as durability.
-- [ ] **4c GREEN — rerun the exact RED command.** Expected: restart/reattach and
+- [x] **4c GREEN — rerun the exact RED command.** Expected: restart/reattach and
   ownership cases PASS, with provider disappearance and readiness failures reconciled
   to their asserted truthful states.
 - [ ] **4c package verification.** Run
@@ -562,3 +562,5 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-3-FIX-4 Modal publication verified / live gate pending — exact clean local/tracking/origin-live/upstream-live SHA `7eef3dadca46bfcf07013531f6db70bfc886602b` included code commit `17cc2364c54b7588b87f91afb0fbe268c5647511` as an ancestor; freshly sourced root credentials were present at lengths 25/25 and `modal token info` authenticated only the expected workspace `yosemitemountain62`. After an initial local guard stopped before build/provider mutation because the default shell exposed Node 26/pnpm 11, the corrected single shell pinned Node 22.23.1/pnpm 9.15.0, passed the publication-lock check, exact Modal-infra dependency build 3/3, and compiled-import/schema preflight; the sole provider-reaching `pnpm modal:publish --env dev` and the one `pnpm modal:smoke --env dev` both exited 0. The atomic dev lock now records source `7eef3dadca46bfcf07013531f6db70bfc886602b`, tag `2026-08-08-7eef3da`, base `im-W3QI7kvWQ8KY2hqQmpkws4`, and web-test `im-ZQYAF8HUf6p0lPVSgYOvPU`, with no publication-lock or temporary-lock residue. No full verify, bypass, CI, production edit, or exact WS-4 4b live/package rerun followed; WS-3-FIX-4, WS-3, WS-4, and 4b remain unchecked pending that literal bundled acceptance.
 - 2026-08-08 WS-3-FIX-4 done — exact pushed HEAD `7329be70882e66b5c5d48a2dcc2bff41d08898eb` consumed immutable dev image `2026-08-08-7eef3da` from source `7eef3dadca46bfcf07013531f6db70bfc886602b`; the exact credentialed 4b focus passed 4/4 in 99.64s, including canonical-parent and leaf-symlink HTTP 400 rejection with preserved targets, strict proxying, stream cancellation/kill propagation, and managed dev-server evidence. The full credentialed sandbox-service package gate passed 41/41, including real Modal lifecycle and the live unguarded matrix, followed by lint/typecheck/build exit 0. No retry, production edit, new review, publish/smoke, full verify, bypass, CI, or main operation ran; guarded production acceptance, WS-3, and WS-4 remain unchecked.
 - 2026-08-08 WS-4 4b verified — the previously reviewed strict client/routes and shared unguarded conformance cases are recorded complete after the locked-image live matrix passed against `2026-08-08-7eef3da`; guarded revisions remain typed fail-closed with zero writes and are not guarded production acceptance. Slice 4c and the approved every-writer CAS proof remain outstanding, so WS-3 and WS-4 remain unchecked.
+- 2026-08-08 WS-4 4c 15-minute re-scope — reduced the first RED to the load-bearing restart contract: a fresh provider attaches the first provider's persisted opaque ID and proves authenticated exec/read without replacement creation; the remaining work stayed capped to the named reconciliation cases.
+- 2026-08-08 WS-4 4c PARTIAL/BLOCKED — restart reattach, server-side ownership metadata/tags, allocation-before-readiness persistence, concurrent idempotency, immutable-image reconciliation, and all named missing/unready/disagreement cases passed the exact credentialed focus 7/7, with lint/typecheck/build exit 0; the one SOL High review's three Critical/Important-level P1 findings and one P2 were fixed in the single allowed round. The required credentialed full package finished 47/48 because the pre-existing Slice 4b live rollback-race assertion resolved instead of rejecting, followed by its cleanup kill observing the disappeared Modal sandbox. Per controller re-scope no 4b retry or edit followed; 4c package/commit completion, guarded acceptance, WS-3, and WS-4 remain unchecked pending a separate live-test determinism fix and fresh package gate.

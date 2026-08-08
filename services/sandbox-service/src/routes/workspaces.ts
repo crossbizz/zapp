@@ -20,6 +20,12 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { SandboxServiceApp } from '../app.js';
+import {
+  ModalWorkspaceNotFoundError,
+  ModalWorkspaceReadinessError,
+  ModalWorkspaceTagMismatchError,
+  type ModalWorkspaceAttachment,
+} from '../provider/modal.js';
 
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -65,23 +71,48 @@ export interface WorkspaceRowClaim {
   readonly row: WorkspaceLifecycleRow;
 }
 
+export interface WorkspaceAttachmentRecord {
+  readonly row: WorkspaceLifecycleRow;
+  readonly attachment: ModalWorkspaceAttachment;
+}
+
 /** Durable row operations are injected so CP-9's tenant repository remains the row owner. */
 export interface WorkspaceRowBoundary {
   claimCreate(
     row: WorkspaceLifecycleRow,
     key: WorkspaceRowIdempotencyKey,
+    attachment: ModalWorkspaceAttachment,
   ): Promise<WorkspaceRowClaim>;
+  bindProviderWorkspaceId(
+    workspaceId: string,
+    providerWorkspaceId: string,
+    expectedStatus: 'provisioning',
+  ): Promise<WorkspaceLifecycleRow>;
   get(workspaceId: string, organizationId?: string): Promise<WorkspaceLifecycleRow | undefined>;
+  getAttachment(
+    workspaceId: string,
+    organizationId: string,
+    projectId: string,
+  ): Promise<WorkspaceAttachmentRecord | undefined>;
   transition(
     workspaceId: string,
     status: WorkspaceStatus,
     patch?: { readonly providerWorkspaceId?: string; readonly terminatedAt?: Date },
+    expectedStatus?: WorkspaceStatus,
   ): Promise<WorkspaceLifecycleRow>;
 }
 
 export interface WorkspaceLifecycleProvider {
   readonly lockedImageTag: string;
-  createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceHandle>;
+  readonly attachmentEnvironment: ModalWorkspaceAttachment['requiredTags']['environment'];
+  createWorkspace(
+    input: CreateWorkspaceInput,
+    onAllocated?: (providerWorkspaceId: string) => Promise<void>,
+  ): Promise<WorkspaceHandle>;
+  attachWorkspace(
+    providerWorkspaceId: string,
+    attachment: ModalWorkspaceAttachment,
+  ): Promise<WorkspaceHandle>;
   terminateWorkspace(providerWorkspaceId: string): Promise<void>;
   getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus>;
 }
@@ -126,7 +157,14 @@ const CreateWorkspaceBodySchema = z
   .strict();
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
 const TerminateBodySchema = z.object({ operationKey: OperationKeySchema }).strict();
+const AttachBodySchema = TerminateBodySchema;
 const WorkspaceResponseSchema = z.object({ workspace: WorkspaceLifecycleRowSchema }).strict();
+const PublicWorkspaceLifecycleRowSchema = WorkspaceLifecycleRowSchema.omit({
+  providerWorkspaceId: true,
+}).strip();
+const AttachedWorkspaceResponseSchema = z
+  .object({ workspace: PublicWorkspaceLifecycleRowSchema })
+  .strict();
 const StatusResponseSchema = z
   .object({ workspace: WorkspaceLifecycleRowSchema, providerStatus: WorkspaceStatusSchema })
   .strict();
@@ -330,7 +368,20 @@ export function registerWorkspaceRoutes(
         purpose: body.purpose,
       });
       const input = createInputFor(body.workspace, body, deps.provider.lockedImageTag);
-      const claim = await deps.rows.claimCreate(body.workspace, key);
+      const claim = await deps.rows.claimCreate(body.workspace, key, {
+        resourceProfile: body.workspace.resourceProfile,
+        imageTag: deps.provider.lockedImageTag,
+        createdAt: body.workspace.createdAt,
+        requiredTags: {
+          org_id: body.workspace.organizationId,
+          project_id: body.workspace.projectId,
+          branch_id: body.workspace.branchId,
+          run_id: body.runId,
+          task_id: body.taskId,
+          purpose: body.purpose,
+          environment: deps.provider.attachmentEnvironment,
+        },
+      });
       if (!claim.created) {
         if (claim.row.providerWorkspaceId === null) {
           throw Object.assign(new Error('Original workspace creation did not resolve.'), {
@@ -341,7 +392,9 @@ export function registerWorkspaceRoutes(
       }
 
       await deps.rows.transition(claim.row.id, 'provisioning');
-      const untrustedHandle = await deps.provider.createWorkspace(input);
+      const untrustedHandle = await deps.provider.createWorkspace(input, async (providerWorkspaceId) => {
+        await deps.rows.bindProviderWorkspaceId(claim.row.id, providerWorkspaceId, 'provisioning');
+      });
       const providerWorkspaceId = z
         .object({ providerWorkspaceId: z.string().min(1) })
         .passthrough()
@@ -380,6 +433,113 @@ export function registerWorkspaceRoutes(
           statusCode: 502,
           cause: error,
         });
+      }
+    },
+  );
+
+  app.post(
+    '/internal/workspaces/:workspaceId/attach',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        body: AttachBodySchema,
+        response: { 200: AttachedWorkspaceResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const body = AttachBodySchema.parse(request.body);
+      requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
+      const organizationId = idSchema('org').parse(request.headers['x-zapp-organization-id']);
+      const projectId = idSchema('proj').parse(request.headers['x-zapp-project-id']);
+      const record = await deps.rows.getAttachment(workspaceId, organizationId, projectId);
+      if (record === undefined) {
+        throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+      }
+      let row = record.row;
+      if (row.providerWorkspaceId === null) {
+        row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+        throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+      }
+      const providerWorkspaceId = row.providerWorkspaceId;
+      if (row.status === 'terminated') {
+        if ((await deps.provider.getStatus(providerWorkspaceId)) !== 'terminated') {
+          await deps.provider.terminateWorkspace(providerWorkspaceId);
+        }
+        throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+      }
+      try {
+        const handle = WorkspaceHandleSchema.strict().parse(
+          await deps.provider.attachWorkspace(providerWorkspaceId, record.attachment),
+        );
+        if (
+          handle.providerWorkspaceId !== providerWorkspaceId ||
+          handle.status !== 'ready' ||
+          handle.resourceProfile !== row.resourceProfile ||
+          handle.imageTag !== record.attachment.imageTag
+        ) {
+          throw new ModalWorkspaceTagMismatchError();
+        }
+        const providerStatus = await deps.provider.getStatus(providerWorkspaceId);
+        if (providerStatus === 'terminated') {
+          row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        if (providerStatus !== 'ready') {
+          await deps.provider.terminateWorkspace(providerWorkspaceId);
+          if ((await deps.provider.getStatus(providerWorkspaceId)) !== 'terminated') {
+            throw Object.assign(new Error('Workspace readiness compensation was not confirmed.'), {
+              statusCode: 502,
+            });
+          }
+          row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          throw Object.assign(new Error('Workspace did not remain ready.'), { statusCode: 502 });
+        }
+        const progression: Partial<Record<WorkspaceStatus, WorkspaceStatus>> = {
+          requested: 'provisioning',
+          provisioning: 'started',
+          started: 'ready',
+        };
+        for (;;) {
+          const nextStatus = progression[row.status];
+          if (nextStatus === undefined) break;
+          row = await deps.rows.transition(row.id, nextStatus, undefined, row.status);
+        }
+        if (row.status === 'terminated') {
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        return { workspace: PublicWorkspaceLifecycleRowSchema.parse(row) };
+      } catch (error) {
+        if (error instanceof ModalWorkspaceTagMismatchError) {
+          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          throw Object.assign(new Error('Workspace was not found.'), {
+            statusCode: 404,
+            cause: error,
+          });
+        }
+        if (error instanceof ModalWorkspaceNotFoundError) {
+          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          throw Object.assign(new Error('Workspace was not found.'), {
+            statusCode: 404,
+            cause: error,
+          });
+        }
+        if (error instanceof ModalWorkspaceReadinessError) {
+          await deps.provider.terminateWorkspace(providerWorkspaceId);
+          if ((await deps.provider.getStatus(providerWorkspaceId)) !== 'terminated') {
+            throw Object.assign(new Error('Workspace readiness compensation was not confirmed.'), {
+              statusCode: 502,
+              cause: error,
+            });
+          }
+          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          throw Object.assign(new Error('Workspace did not become ready.'), {
+            statusCode: 502,
+            cause: error,
+          });
+        }
+        throw error;
       }
     },
   );

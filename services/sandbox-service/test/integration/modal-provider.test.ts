@@ -86,18 +86,33 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   readonly readinessTimeouts: number[] = [];
   readonly healthTokens: string[] = [];
   terminateCalls = 0;
-  private healthResults = [false, true];
+  healthResults = [false, true];
   readonly agentRequests: AgentRequest[] = [];
   agentResponder: (request: AgentRequest) => AgentResponse = strictAgentResponse;
   private devServerEvidence:
     { port: number; pid: number; supervisorId: string; owned: true; httpReady: true } | undefined;
   streamCancelCalls = 0;
+  tags: Readonly<Record<string, string>> = createInputTags();
+  waitUntilReadyError: Error | undefined;
+  disappearAfterTags = false;
+  disappearDuringTags = false;
 
   constructor(private readonly owner: FakeModalWorkspaceSdk) {}
 
+  getTags(): Promise<Readonly<Record<string, string>>> {
+    if (this.disappearDuringTags) {
+      this.owner.present = false;
+      return Promise.reject(new Error('sandbox disappeared during tag lookup'));
+    }
+    if (this.disappearAfterTags) this.owner.present = false;
+    return Promise.resolve({ ...this.tags });
+  }
+
   waitUntilReady(timeoutMs: number): Promise<void> {
     this.readinessTimeouts.push(timeoutMs);
-    return Promise.resolve();
+    return this.waitUntilReadyError === undefined
+      ? Promise.resolve()
+      : Promise.reject(this.waitUntilReadyError);
   }
 
   agentHealth(token: string): Promise<unknown> {
@@ -178,6 +193,18 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
       },
     });
   }
+}
+
+function createInputTags() {
+  return {
+    org_id: IDS.organizationId,
+    project_id: IDS.projectId,
+    branch_id: IDS.branchId,
+    run_id: IDS.runId,
+    task_id: IDS.taskId,
+    purpose: 'builder',
+    environment: 'zapp-dev',
+  } as const;
 }
 
 interface AgentRequest {
@@ -310,6 +337,7 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   readonly sandbox = new FakeModalWorkspaceSandbox(this);
   readonly creates: ModalWorkspaceCreateOptions[] = [];
   closeCalls = 0;
+  getWorkspaceCalls = 0;
   present = false;
   private createBarrier: Promise<void> = Promise.resolve();
 
@@ -330,8 +358,12 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   }
 
   getWorkspace(providerWorkspaceId: string): Promise<ModalWorkspaceSandbox | undefined> {
-    expect(providerWorkspaceId).toBe(this.sandbox.providerWorkspaceId);
-    return Promise.resolve(this.present ? this.sandbox : undefined);
+    this.getWorkspaceCalls += 1;
+    return Promise.resolve(
+      this.present && providerWorkspaceId === this.sandbox.providerWorkspaceId
+        ? this.sandbox
+        : undefined,
+    );
   }
 
   close(): void {
@@ -361,11 +393,23 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
   private readonly rows = new Map<string, WorkspaceLifecycleRow>();
   private readonly idempotency = new Map<string, string>();
   private readonly createWaiters = new Map<string, Array<(row: WorkspaceLifecycleRow) => void>>();
+  private readonly attachments = new Map<string, Parameters<WorkspaceRowBoundary['claimCreate']>[2]>();
   failTransitionStatus: WorkspaceStatus | undefined;
+
+  seed(row: WorkspaceLifecycleRow): void {
+    this.rows.set(row.id, row);
+    this.attachments.set(row.id, {
+      resourceProfile: row.resourceProfile,
+      imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+      createdAt: row.createdAt,
+      requiredTags: createInputTags(),
+    });
+  }
 
   claimCreate(
     row: WorkspaceLifecycleRow,
     key: WorkspaceRowIdempotencyKey,
+    attachment: Parameters<WorkspaceRowBoundary['claimCreate']>[2],
   ): Promise<WorkspaceRowClaim> {
     const serialized = `${key.runId}:${key.taskId}:${key.purpose}`;
     const existingId = this.idempotency.get(serialized);
@@ -384,9 +428,25 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
       return Promise.resolve({ created: false, row: existing });
     }
     this.rows.set(row.id, row);
+    this.attachments.set(row.id, attachment);
     this.idempotency.set(serialized, row.id);
     this.transitions.push({ status: row.status, providerWorkspaceId: row.providerWorkspaceId });
     return Promise.resolve({ created: true, row });
+  }
+
+  bindProviderWorkspaceId(
+    workspaceId: string,
+    providerWorkspaceId: string,
+    expectedStatus: 'provisioning',
+  ): Promise<WorkspaceLifecycleRow> {
+    const row = this.rows.get(workspaceId);
+    if (row === undefined) throw new Error('workspace missing');
+    if (row.status !== expectedStatus) return Promise.resolve(row);
+    const next = { ...row, providerWorkspaceId };
+    this.rows.set(workspaceId, next);
+    for (const resolve of this.createWaiters.get(workspaceId) ?? []) resolve(next);
+    this.createWaiters.delete(workspaceId);
+    return Promise.resolve(next);
   }
 
   get(workspaceId: string, organizationId?: string): Promise<WorkspaceLifecycleRow | undefined> {
@@ -398,10 +458,23 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     );
   }
 
+  async getAttachment(
+    workspaceId: string,
+    organizationId: string,
+    projectId: string,
+  ) {
+    const row = await this.get(workspaceId, organizationId);
+    const attachment = this.attachments.get(workspaceId);
+    return row === undefined || row.projectId !== projectId || attachment === undefined
+      ? undefined
+      : { row, attachment };
+  }
+
   transition(
     workspaceId: string,
     status: WorkspaceStatus,
     patch: { providerWorkspaceId?: string; terminatedAt?: Date } = {},
+    expectedStatus?: WorkspaceStatus,
   ): Promise<WorkspaceLifecycleRow> {
     if (this.failTransitionStatus === status) {
       this.failTransitionStatus = undefined;
@@ -409,6 +482,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     }
     const row = this.rows.get(workspaceId);
     if (row === undefined) throw new Error('workspace missing');
+    if (expectedStatus !== undefined && row.status !== expectedStatus) return Promise.resolve(row);
     const next = {
       ...row,
       status,
@@ -426,6 +500,414 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     return Promise.resolve(next);
   }
 }
+
+describe('attach reattach recovery and ownership', () => {
+  const apps: Array<{ close(): Promise<unknown> }> = [];
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('reattaches from persisted provider identity after a fresh provider instance and preserves exec/file access', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const firstProvider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const created = await firstProvider.createWorkspace(createInput());
+
+    const restartedProvider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const attached = await restartedProvider.attachWorkspace(created.providerWorkspaceId, {
+      resourceProfile: 'small',
+      imageTag: created.imageTag,
+      createdAt: NOW,
+      requiredTags: {
+        org_id: IDS.organizationId,
+        project_id: IDS.projectId,
+        branch_id: IDS.branchId,
+        run_id: IDS.runId,
+        task_id: IDS.taskId,
+        purpose: 'builder',
+        environment: 'zapp-dev',
+      },
+    });
+
+    expect(attached).toEqual(created);
+    await expect(
+      restartedProvider.exec({
+        providerWorkspaceId: attached.providerWorkspaceId,
+        command: 'printf',
+        args: ['hello'],
+        timeoutMs: 1_000,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0, stdout: 'hello' });
+    await expect(restartedProvider.readFile(attached.providerWorkspaceId, 'src/index.ts')).resolves.toEqual(
+      Buffer.from('file bytes'),
+    );
+    expect(sdk.creates).toHaveLength(1);
+  });
+
+  it('rejects unknown and mismatched provider identity and keeps repeated attach read-only', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const firstProvider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const created = await firstProvider.createWorkspace(createInput());
+    const attachment = {
+      resourceProfile: 'small' as const,
+      imageTag: created.imageTag,
+      createdAt: NOW,
+      requiredTags: createInputTags(),
+    };
+    const restartedProvider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(restartedProvider.attachWorkspace('sb-unknown', attachment)).rejects.toMatchObject({
+      name: 'ModalWorkspaceNotFoundError',
+    });
+    sdk.sandbox.tags = { ...createInputTags(), project_id: `${IDS.projectId}-wrong` };
+    await expect(
+      restartedProvider.attachWorkspace(created.providerWorkspaceId, attachment),
+    ).rejects.toMatchObject({ name: 'ModalWorkspaceTagMismatchError' });
+
+    sdk.sandbox.tags = createInputTags();
+    const [first, second] = await Promise.all([
+      restartedProvider.attachWorkspace(created.providerWorkspaceId, attachment),
+      restartedProvider.attachWorkspace(created.providerWorkspaceId, attachment),
+    ]);
+    expect(first).toEqual(created);
+    expect(second).toEqual(created);
+    expect(sdk.creates).toHaveLength(1);
+    expect(sdk.sandbox.terminateCalls).toBe(0);
+  });
+
+  it('persists the opaque provider identity before waiting for agent readiness', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    let releaseHealth = (): void => undefined;
+    const healthBarrier = new Promise<void>((resolve) => {
+      releaseHealth = resolve;
+    });
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => healthBarrier,
+    });
+    const rows = new MemoryWorkspaceRows();
+    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    apps.push(app);
+    await app.ready();
+
+    const creation = app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+    await vi.waitFor(async () => {
+      await expect(rows.get(IDS.workspaceId)).resolves.toMatchObject({
+        status: 'provisioning',
+        providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      });
+    });
+    releaseHealth();
+    expect((await creation).statusCode).toBe(201);
+  });
+
+  it('reattaches a workspace from its persisted immutable image after the service lock advances', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const nextLock = structuredClone(IMAGE_LOCK) as unknown as {
+      version: 1;
+      environments: Record<string, unknown>;
+    };
+    nextLock.environments.dev = {
+      ...IMAGE_LOCK.environments.dev,
+      sourceRevision: 'b'.repeat(40),
+      tag: '2026-08-09-bbbbbbb',
+      images: {
+        ...IMAGE_LOCK.environments.dev.images,
+        'forge-node-base': {
+          ...IMAGE_LOCK.environments.dev.images['forge-node-base'],
+          digest: 'im-next-immutable',
+          publishedName: 'forge-node-base:2026-08-09-bbbbbbb',
+        },
+      },
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: nextLock,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(
+      provider.attachWorkspace(sdk.sandbox.providerWorkspaceId, {
+        resourceProfile: 'small',
+        imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+        createdAt: NOW,
+        requiredTags: createInputTags(),
+      }),
+    ).resolves.toMatchObject({
+      imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+      status: 'ready',
+    });
+  });
+
+  it('reattaches a provisioning row server-side, enforces tenant/project ownership, and hides provider identity', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const created = await provider.createWorkspace(createInput());
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: created.providerWorkspaceId,
+      status: 'provisioning',
+    });
+    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    apps.push(app);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+
+    const crossTenant = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+      headers: { ...headers, 'x-zapp-organization-id': 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NZ' },
+      payload: { operationKey: OPERATION_KEY },
+    });
+    expect(crossTenant.statusCode).toBe(404);
+    const crossProject = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+      headers: { ...headers, 'x-zapp-project-id': 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NZ' },
+      payload: { operationKey: OPERATION_KEY },
+    });
+    expect(crossProject.statusCode).toBe(404);
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+        headers,
+        payload: { operationKey: OPERATION_KEY },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+        headers,
+        payload: { operationKey: OPERATION_KEY },
+      }),
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    for (const response of [first, second]) {
+      const body = response.json<{ workspace: Record<string, unknown> }>();
+      expect(body.workspace.status).toBe('ready');
+      expect(body.workspace).not.toHaveProperty('providerWorkspaceId');
+      expect(JSON.stringify(body)).not.toContain(created.providerWorkspaceId);
+      expect(JSON.stringify(body)).not.toContain('127.0.0.1');
+    }
+    expect(rows.transitions.map(({ status }) => status)).toEqual(['started', 'ready']);
+    expect(sdk.creates).toHaveLength(1);
+
+    const exec = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/exec`,
+      headers,
+      payload: { command: 'printf', args: ['hello'], timeoutMs: 1_000 },
+    });
+    expect(exec.statusCode).toBe(200);
+    expect(exec.json()).toMatchObject({ exitCode: 0, stdout: 'hello' });
+    const file = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/files?path=src/index.ts`,
+      headers,
+    });
+    expect(file.statusCode).toBe(200);
+    expect(file.rawPayload).toEqual(Buffer.from('file bytes'));
+  });
+
+  it('reconciles unknown, terminated, unready, disappeared, and mismatched provider state without replacement', async () => {
+    const cases = [
+      { name: 'unknown provider', mode: 'unknown', expectedStatus: 404 },
+      { name: 'required tag mismatch', mode: 'tags', expectedStatus: 404 },
+      { name: 'readiness timeout', mode: 'timeout', expectedStatus: 502 },
+      { name: 'provider disappearance', mode: 'disappear', expectedStatus: 404 },
+      { name: 'provider disappearance during tags', mode: 'tags-disappear', expectedStatus: 404 },
+      { name: 'post-attach unready provider', mode: 'started', expectedStatus: 502 },
+      { name: 'terminated row disagreement', mode: 'terminated-row', expectedStatus: 404 },
+    ] as const;
+
+    for (const testCase of cases) {
+      const sdk = new FakeModalWorkspaceSdk();
+      sdk.present = testCase.mode !== 'unknown';
+      if (testCase.mode === 'tags') {
+        sdk.sandbox.tags = { ...createInputTags(), org_id: `${IDS.organizationId}-wrong` };
+      }
+      if (testCase.mode === 'timeout') {
+        sdk.sandbox.waitUntilReadyError = new Error('readiness deadline exceeded');
+      }
+      if (testCase.mode === 'disappear') sdk.sandbox.disappearAfterTags = true;
+      if (testCase.mode === 'tags-disappear') sdk.sandbox.disappearDuringTags = true;
+      if (testCase.mode === 'started') sdk.sandbox.healthResults = [true, false];
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => sdk,
+        now: () => NOW,
+        sleep: () => Promise.resolve(),
+      });
+      const rows = new MemoryWorkspaceRows();
+      rows.seed({
+        ...requestedRow(),
+        providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+        status: testCase.mode === 'terminated-row' ? 'terminated' : 'ready',
+        terminatedAt: testCase.mode === 'terminated-row' ? NOW : null,
+      });
+      const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+      apps.push(app);
+      await app.ready();
+      const response = await app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+        headers: {
+          'x-zapp-service-token': SERVICE_TOKEN,
+          'x-zapp-organization-id': IDS.organizationId,
+          'x-zapp-project-id': IDS.projectId,
+          'idempotency-key': OPERATION_KEY,
+        },
+        payload: { operationKey: OPERATION_KEY },
+      });
+
+      expect(response.statusCode, testCase.name).toBe(testCase.expectedStatus);
+      await expect(rows.get(IDS.workspaceId)).resolves.toMatchObject({
+        status: 'terminated',
+        terminatedAt: NOW,
+      });
+      expect(sdk.creates, testCase.name).toHaveLength(0);
+      if (testCase.mode === 'tags') expect(sdk.sandbox.terminateCalls).toBe(0);
+      if (testCase.mode === 'terminated-row') expect(sdk.sandbox.terminateCalls).toBe(1);
+    }
+  });
+
+  const hasModalCredentials =
+    typeof process.env.MODAL_TOKEN_ID === 'string' &&
+    process.env.MODAL_TOKEN_ID !== '' &&
+    typeof process.env.MODAL_TOKEN_SECRET === 'string' &&
+    process.env.MODAL_TOKEN_SECRET !== '';
+
+  it.skipIf(!hasModalCredentials)(
+    'reattaches a real Modal sandbox after provider restart [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const agentToken = `ws4c-${Date.now().toString(36)}`;
+      const firstProvider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken,
+      });
+      let created: WorkspaceHandle | undefined;
+      try {
+        created = await firstProvider.createWorkspace({
+          ...createInput(),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        await firstProvider.writeFile(
+          created.providerWorkspaceId,
+          'ws4c-reattach.txt',
+          Buffer.from('reattached\n'),
+        );
+
+        const restartedProvider = createModalSandboxProvider({
+          environment: 'dev',
+          imageLock: lock,
+          agentToken,
+        });
+        const attached = await restartedProvider.attachWorkspace(created.providerWorkspaceId, {
+          resourceProfile: 'small',
+          imageTag: created.imageTag,
+          createdAt: new Date(created.createdAt),
+          requiredTags: createInputTags(),
+        });
+        expect(attached).toEqual(created);
+        await expect(
+          restartedProvider.exec({
+            providerWorkspaceId: attached.providerWorkspaceId,
+            command: 'printf',
+            args: ['reattached'],
+            timeoutMs: 5_000,
+          }),
+        ).resolves.toMatchObject({ exitCode: 0, stdout: 'reattached' });
+        await expect(
+          restartedProvider.readFile(attached.providerWorkspaceId, 'ws4c-reattach.txt'),
+        ).resolves.toEqual(Buffer.from('reattached\n'));
+      } finally {
+        if (created !== undefined) {
+          await firstProvider.terminateWorkspace(created.providerWorkspaceId);
+        }
+      }
+      expect(await firstProvider.getStatus(created.providerWorkspaceId)).toBe('terminated');
+    },
+    120_000,
+  );
+});
 
 const serviceTokens = {
   verifyServiceToken(token: string) {
@@ -1046,6 +1528,11 @@ describe('agent proxy and unguarded conformance', () => {
       runId: IDS.runId,
       taskId: IDS.taskId,
       purpose: 'builder',
+    }, {
+      resourceProfile: 'small',
+      imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+      createdAt: NOW,
+      requiredTags: createInputTags(),
     });
     await rows.transition(IDS.workspaceId, 'started', {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
