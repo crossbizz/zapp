@@ -850,9 +850,10 @@ export interface ModalSandboxProviderOptions {
 
 const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
-const WorkspaceAgentHealthSchema = z
-  .object({ ok: z.boolean(), details: z.string().min(1) })
-  .strict();
+const WorkspaceAgentHealthSchema = z.union([
+  AgentHealthSchema,
+  z.object({ ok: z.literal(false), details: z.string().min(1) }).strict(),
+]);
 const WorkspaceAgentExecResultSchema = z
   .object({
     exitCode: z.number().int(),
@@ -899,7 +900,11 @@ const GitInputSchema = z.discriminatedUnion('operation', [
     })
     .strict(),
   z
-    .object({ operation: z.literal('add_commit'), paths: z.array(z.string()).min(1), message: z.string().min(1) })
+    .object({
+      operation: z.literal('add_commit'),
+      paths: z.array(z.string()).min(1),
+      message: z.string().min(1),
+    })
     .strict(),
 ]);
 const GitResultSchema = z
@@ -956,12 +961,14 @@ const SearchInputSchema = z
   })
   .strict();
 const RenameInputSchema = z
-  .object({ source: z.string().min(1), destination: z.string().min(1), overwrite: z.literal('replace') })
+  .object({
+    source: z.string().min(1),
+    destination: z.string().min(1),
+    overwrite: z.literal('replace'),
+  })
   .strict();
 const OkResponseSchema = z.object({ ok: z.literal(true) }).strict();
-const DeleteResponseSchema = z
-  .object({ ok: z.literal(true), alreadyAbsent: z.boolean() })
-  .strict();
+const DeleteResponseSchema = z.object({ ok: z.literal(true), alreadyAbsent: z.boolean() }).strict();
 const DevServerResponseSchema = z
   .object({
     port: z.number().int().min(1).max(65_535),
@@ -985,7 +992,9 @@ export class ModalAtomicWriteConflictError extends Error {
 
 function jsonAgentBody(response: AgentHttpResponse): unknown {
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`Workspace agent rejected the request with status ${String(response.statusCode)}`);
+    throw new Error(
+      `Workspace agent rejected the request with status ${String(response.statusCode)}`,
+    );
   }
   if (!response.contentType?.startsWith('application/json')) {
     throw new Error('Workspace agent returned an unexpected content type');
@@ -1074,7 +1083,7 @@ function createModalWorkspaceSdk(
         ).toString('base64');
         const script = [
           "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
-          'const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, \'base64\') });',
+          "const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, 'base64') });",
           'const body = Buffer.from(await response.arrayBuffer());',
           "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined, bodyBase64: body.toString('base64') }));",
         ].join('\n');
@@ -1112,7 +1121,7 @@ function createModalWorkspaceSdk(
         ).toString('base64');
         const script = [
           "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
-          'const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, \'base64\') });',
+          "const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, 'base64') });",
           "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined }) + '\\n');",
           'if (response.body !== null) for await (const chunk of response.body) process.stdout.write(Buffer.from(chunk));',
         ].join('\n');
@@ -1396,7 +1405,10 @@ export class ModalSandboxProvider {
     }
   }
 
-  async exec(untrustedInput: ExecInput, idempotencyKey = randomUUID()): Promise<WorkspaceAgentExecResult> {
+  async exec(
+    untrustedInput: ExecInput,
+    idempotencyKey = randomUUID(),
+  ): Promise<WorkspaceAgentExecResult> {
     const input = ExecInputSchema.strict().parse(untrustedInput);
     const body = z
       .object({
@@ -1464,10 +1476,7 @@ export class ModalSandboxProvider {
       };
       if (signal?.aborted === true) abortStream();
       else if (signal !== undefined) signal.addEventListener('abort', abortStream, { once: true });
-      if (
-        stream.statusCode !== 200 ||
-        !stream.contentType?.startsWith('application/x-ndjson')
-      ) {
+      if (stream.statusCode !== 200 || !stream.contentType?.startsWith('application/x-ndjson')) {
         throw new Error('Workspace agent returned an invalid execution stream');
       }
       const decoder = new StringDecoder('utf8');
@@ -1498,7 +1507,9 @@ export class ModalSandboxProvider {
         yield record;
       }
       if (pending !== '') throw new Error('Workspace agent stream ended with a partial record');
-      if (!exited) throw new Error('Workspace agent stream ended without an exit record');
+      if (!exited && signal?.aborted !== true) {
+        throw new Error('Workspace agent stream ended without an exit record');
+      }
     } finally {
       if (signal !== undefined && abortStream !== undefined) {
         signal.removeEventListener('abort', abortStream);
@@ -1511,7 +1522,12 @@ export class ModalSandboxProvider {
     }
   }
 
-  async killExec(providerWorkspaceId: string, pid: number, executionId: string, idempotencyKey = randomUUID()) {
+  async killExec(
+    providerWorkspaceId: string,
+    pid: number,
+    executionId: string,
+    idempotencyKey = randomUUID(),
+  ) {
     const parsed = z
       .object({ pid: z.number().int().positive(), executionId: z.string().uuid() })
       .strict()
@@ -1542,7 +1558,12 @@ export class ModalSandboxProvider {
     return response.body;
   }
 
-  async writeFile(providerWorkspaceId: string, path: string, data: Uint8Array, idempotencyKey = randomUUID()): Promise<void> {
+  async writeFile(
+    providerWorkspaceId: string,
+    path: string,
+    data: Uint8Array,
+    idempotencyKey = randomUUID(),
+  ): Promise<void> {
     const input = z
       .object({ path: z.string().min(1), data: z.instanceof(Uint8Array) })
       .strict()
@@ -1565,7 +1586,11 @@ export class ModalSandboxProvider {
     options: { readonly glob?: string; readonly maxDepth?: number } = {},
   ) {
     const input = z
-      .object({ path: z.string().min(1), glob: z.string().min(1).optional(), maxDepth: z.number().int().min(0).max(100).optional() })
+      .object({
+        path: z.string().min(1),
+        glob: z.string().min(1).optional(),
+        maxDepth: z.number().int().min(0).max(100).optional(),
+      })
       .strict()
       .parse({ path, ...options });
     const response = await this.requestAgent(providerWorkspaceId, {
@@ -1593,12 +1618,18 @@ export class ModalSandboxProvider {
   }
 
   async health(providerWorkspaceId: string) {
-    const response = await this.requestAgent(providerWorkspaceId, { method: 'GET', path: '/healthz' });
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'GET',
+      path: '/healthz',
+    });
     return HealthResponseSchema.parse(jsonAgentBody(response));
   }
 
   async metrics(providerWorkspaceId: string) {
-    const response = await this.requestAgent(providerWorkspaceId, { method: 'GET', path: '/metrics' });
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'GET',
+      path: '/metrics',
+    });
     return MetricsResponseSchema.parse(jsonAgentBody(response));
   }
 
@@ -1664,7 +1695,11 @@ export class ModalSandboxProvider {
     return { alreadyAbsent: parsed.alreadyAbsent };
   }
 
-  async renameFile(providerWorkspaceId: string, untrustedInput: unknown, idempotencyKey = randomUUID()): Promise<void> {
+  async renameFile(
+    providerWorkspaceId: string,
+    untrustedInput: unknown,
+    idempotencyKey = randomUUID(),
+  ): Promise<void> {
     const input = RenameInputSchema.parse(untrustedInput);
     const response = await this.requestAgent(providerWorkspaceId, {
       method: 'POST',
@@ -1706,11 +1741,19 @@ export class ModalSandboxProvider {
     return started;
   }
 
-  async startDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey = randomUUID()) {
+  async startDevServer(
+    providerWorkspaceId: string,
+    contract: ExecutionContract,
+    idempotencyKey = randomUUID(),
+  ) {
     return this.manageDevServer(providerWorkspaceId, 'start', contract, idempotencyKey);
   }
 
-  async restartDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey = randomUUID()) {
+  async restartDevServer(
+    providerWorkspaceId: string,
+    contract: ExecutionContract,
+    idempotencyKey = randomUUID(),
+  ) {
     return this.manageDevServer(providerWorkspaceId, 'restart', contract, idempotencyKey);
   }
 

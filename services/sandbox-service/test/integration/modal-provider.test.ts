@@ -90,8 +90,7 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   readonly agentRequests: AgentRequest[] = [];
   agentResponder: (request: AgentRequest) => AgentResponse = strictAgentResponse;
   private devServerEvidence:
-    | { port: number; pid: number; supervisorId: string; owned: true; httpReady: true }
-    | undefined;
+    { port: number; pid: number; supervisorId: string; owned: true; httpReady: true } | undefined;
   streamCancelCalls = 0;
 
   constructor(private readonly owner: FakeModalWorkspaceSdk) {}
@@ -103,10 +102,12 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
 
   agentHealth(token: string): Promise<unknown> {
     this.healthTokens.push(token);
-    return Promise.resolve({
-      ok: this.healthResults.shift() ?? true,
-      details: 'workspace agent ready',
-    });
+    const ok = this.healthResults.shift() ?? true;
+    return Promise.resolve(
+      ok
+        ? { ok: true, details: 'workspace agent ready', devServer: null }
+        : { ok: false, details: 'workspace agent not ready' },
+    );
   }
 
   terminate(): Promise<void> {
@@ -117,7 +118,11 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
 
   agentRequest(request: AgentRequest): Promise<AgentResponse> {
     this.agentRequests.push(request);
-    if (request.method === 'GET' && request.path === '/healthz' && this.devServerEvidence !== undefined) {
+    if (
+      request.method === 'GET' &&
+      request.path === '/healthz' &&
+      this.devServerEvidence !== undefined
+    ) {
       return Promise.resolve(
         jsonResponse({
           ok: true,
@@ -202,7 +207,12 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
   if (key === 'POST /exec') {
     if (request.query?.stream === '1') {
       const records = [
-        { type: 'started', pid: 41, executionId: '123e4567-e89b-42d3-a456-426614174000', at: NOW.toISOString() },
+        {
+          type: 'started',
+          pid: 41,
+          executionId: '123e4567-e89b-42d3-a456-426614174000',
+          at: NOW.toISOString(),
+        },
         { type: 'stdout', data: 'hello', at: NOW.toISOString() },
         { type: 'exit', exitCode: 0, durationMs: 1, truncated: false, at: NOW.toISOString() },
       ];
@@ -212,11 +222,21 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
         body: Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n'),
       };
     }
-    return jsonResponse({ exitCode: 0, stdout: 'hello', stderr: '', durationMs: 1, truncated: false });
+    return jsonResponse({
+      exitCode: 0,
+      stdout: 'hello',
+      stderr: '',
+      durationMs: 1,
+      truncated: false,
+    });
   }
   if (key === 'POST /exec/41/kill') return jsonResponse({ killed: true });
   if (key === 'GET /files') {
-    return { statusCode: 200, contentType: 'application/octet-stream', body: Buffer.from('file bytes') };
+    return {
+      statusCode: 200,
+      contentType: 'application/octet-stream',
+      body: Buffer.from('file bytes'),
+    };
   }
   if (key === 'PUT /files') return { statusCode: 204, body: Buffer.alloc(0) };
   if (key === 'GET /files/list') {
@@ -243,7 +263,10 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
     });
   }
   if (key === 'GET /files/update-snapshot') {
-    return jsonResponse({ dataBase64: Buffer.from('before').toString('base64'), revision: 'rev-1' });
+    return jsonResponse({
+      dataBase64: Buffer.from('before').toString('base64'),
+      revision: 'rev-1',
+    });
   }
   if (key === 'POST /files/atomic-write') {
     const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
@@ -254,15 +277,31 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
       : jsonResponse({ ok: true });
   }
   if (key === 'POST /search') {
-    return jsonResponse({ exitCode: 0, stdout: 'src/index.ts:1:needle\n', stderr: '', durationMs: 2, truncated: false });
+    return jsonResponse({
+      exitCode: 0,
+      stdout: 'src/index.ts:1:needle\n',
+      stderr: '',
+      durationMs: 2,
+      truncated: false,
+    });
   }
   if (key === 'DELETE /files') return jsonResponse({ ok: true, alreadyAbsent: false });
   if (key === 'POST /files/rename') return jsonResponse({ ok: true });
   if (key === 'POST /dev-server/start') {
-    return jsonResponse({ port: 4173, pid: 71, supervisorId: 'supervisor-start', ownership: 'process_group' });
+    return jsonResponse({
+      port: 4173,
+      pid: 71,
+      supervisorId: 'supervisor-start',
+      ownership: 'process_group',
+    });
   }
   if (key === 'POST /dev-server/restart') {
-    return jsonResponse({ port: 4173, pid: 72, supervisorId: 'supervisor-restart', ownership: 'process_group' });
+    return jsonResponse({
+      port: 4173,
+      pid: 72,
+      supervisorId: 'supervisor-restart',
+      ownership: 'process_group',
+    });
   }
   throw new Error(`unexpected fake-agent request: ${key}`);
 }
@@ -803,6 +842,12 @@ describe('create status terminate and idempotency', () => {
 });
 
 describe('agent proxy and unguarded conformance', () => {
+  const hasModalCredentials =
+    typeof process.env.MODAL_TOKEN_ID === 'string' &&
+    process.env.MODAL_TOKEN_ID !== '' &&
+    typeof process.env.MODAL_TOKEN_SECRET === 'string' &&
+    process.env.MODAL_TOKEN_SECRET !== '';
+
   it('proxies every strict agent endpoint with authentication, keys, encoding, and response validation', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     sdk.present = true;
@@ -835,11 +880,7 @@ describe('agent proxy and unguarded conformance', () => {
       'exit',
     ]);
     await expect(
-      provider.killExec(
-        providerWorkspaceId,
-        41,
-        '123e4567-e89b-42d3-a456-426614174000',
-      ),
+      provider.killExec(providerWorkspaceId, 41, '123e4567-e89b-42d3-a456-426614174000'),
     ).resolves.toEqual({ killed: true });
     await expect(provider.readFile(providerWorkspaceId, 'src/space name.ts')).resolves.toEqual(
       Buffer.from('file bytes'),
@@ -848,15 +889,21 @@ describe('agent proxy and unguarded conformance', () => {
     await expect(
       provider.listFiles(providerWorkspaceId, '.', { glob: '*.ts', maxDepth: 2 }),
     ).resolves.toEqual([{ path: 'src/index.ts', type: 'file' }]);
-    await expect(provider.git(providerWorkspaceId, { operation: 'status', args: ['--short'] })).resolves.toEqual({
+    await expect(
+      provider.git(providerWorkspaceId, { operation: 'status', args: ['--short'] }),
+    ).resolves.toEqual({
       exitCode: 0,
       stdout: 'clean',
       stderr: '',
     });
     await expect(provider.health(providerWorkspaceId)).resolves.toMatchObject({ ok: true });
-    await expect(provider.metrics(providerWorkspaceId)).resolves.toMatchObject({ activeChildren: 0 });
+    await expect(provider.metrics(providerWorkspaceId)).resolves.toMatchObject({
+      activeChildren: 0,
+    });
     const beforeGuardedSnapshot = sdk.sandbox.agentRequests.length;
-    await expect(provider.readFileForUpdate(providerWorkspaceId, 'src/index.ts')).rejects.toMatchObject({
+    await expect(
+      provider.readFileForUpdate(providerWorkspaceId, 'src/index.ts'),
+    ).rejects.toMatchObject({
       name: 'AtomicWriteConflictError',
       code: 'atomic_write_conflict',
     });
@@ -882,13 +929,17 @@ describe('agent proxy and unguarded conformance', () => {
       destination: 'src/b.ts',
       overwrite: 'replace',
     });
-    await expect(provider.startDevServer(providerWorkspaceId, EXECUTION_CONTRACT)).resolves.toEqual({
-      port: 4173,
-      pid: 71,
-      supervisorId: 'supervisor-start',
-      ownership: 'process_group',
-    });
-    await expect(provider.restartDevServer(providerWorkspaceId, EXECUTION_CONTRACT)).resolves.toEqual({
+    await expect(provider.startDevServer(providerWorkspaceId, EXECUTION_CONTRACT)).resolves.toEqual(
+      {
+        port: 4173,
+        pid: 71,
+        supervisorId: 'supervisor-start',
+        ownership: 'process_group',
+      },
+    );
+    await expect(
+      provider.restartDevServer(providerWorkspaceId, EXECUTION_CONTRACT),
+    ).resolves.toEqual({
       port: 4173,
       pid: 72,
       supervisorId: 'supervisor-restart',
@@ -964,7 +1015,10 @@ describe('agent proxy and unguarded conformance', () => {
 
     sdk.sandbox.agentResponder = (request) =>
       request.path === '/metrics'
-        ? jsonResponse({ ...JSON.parse(Buffer.from(strictAgentResponse(request).body).toString('utf8')), extra: true })
+        ? jsonResponse({
+            ...JSON.parse(Buffer.from(strictAgentResponse(request).body).toString('utf8')),
+            extra: true,
+          })
         : strictAgentResponse(request);
     await expect(provider.metrics(sdk.sandbox.providerWorkspaceId)).rejects.toThrow();
     const requestCount = sdk.sandbox.agentRequests.length;
@@ -1076,26 +1130,429 @@ describe('agent proxy and unguarded conformance', () => {
         payload: { pattern: 'needle', path: 'src', providerWorkspaceId: 'attacker-chosen' },
       });
       expect(forged.statusCode).toBe(400);
-      expect(sdk.sandbox.agentRequests.some((request) => request.path.includes('attacker'))).toBe(false);
+      expect(sdk.sandbox.agentRequests.some((request) => request.path.includes('attacker'))).toBe(
+        false,
+      );
     } finally {
       await app.close();
     }
   });
 
+  it.skipIf(!hasModalCredentials)(
+    'runs the live Modal unguarded conformance matrix [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ws4b-${Date.now().toString(36)}`,
+      });
+      const prefix = `ws4b-${Date.now().toString(36)}`;
+      let handle: WorkspaceHandle | undefined;
+
+      try {
+        handle = await provider.createWorkspace({
+          ...createInput(),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        const providerWorkspaceId = handle.providerWorkspaceId;
+        const run = (command: string, args: string[], timeoutMs = 10_000) =>
+          provider.exec({ providerWorkspaceId, command, args, timeoutMs });
+        const atomicPath = `${prefix}-atomic.txt`;
+        const sourcePath = `${prefix}-source.txt`;
+        const destinationPath = `${prefix}-destination.txt`;
+
+        await provider.writeFilesAtomically(providerWorkspaceId, [
+          { path: atomicPath, data: Buffer.from('live atomic marker\n') },
+          { path: sourcePath, data: Buffer.from('live rename marker\n') },
+          { path: destinationPath, data: Buffer.from('replace me\n') },
+        ]);
+        await expect(provider.readFile(providerWorkspaceId, atomicPath)).resolves.toEqual(
+          Buffer.from('live atomic marker\n'),
+        );
+        await expect(
+          provider.search(providerWorkspaceId, {
+            pattern: 'live atomic marker',
+            path: atomicPath,
+            fixedStrings: true,
+          }),
+        ).resolves.toMatchObject({ exitCode: 0, stderr: '', truncated: false });
+        await provider.renameFile(providerWorkspaceId, {
+          source: sourcePath,
+          destination: destinationPath,
+          overwrite: 'replace',
+        });
+        await expect(provider.readFile(providerWorkspaceId, destinationPath)).resolves.toEqual(
+          Buffer.from('live rename marker\n'),
+        );
+        await expect(provider.deleteFile(providerWorkspaceId, atomicPath)).resolves.toEqual({
+          alreadyAbsent: false,
+        });
+        await expect(provider.deleteFile(providerWorkspaceId, atomicPath)).resolves.toEqual({
+          alreadyAbsent: true,
+        });
+
+        const serializedPath = `${prefix}-serialized.txt`;
+        await provider.writeFile(providerWorkspaceId, serializedPath, Buffer.from('before\n'));
+        const serializationFillers = Array.from({ length: 500 }, (_, index) => ({
+          path: `${prefix}-serialization-filler-${String(index)}`,
+          data: Buffer.alloc(0),
+        }));
+        let resolveSerializationWatcherStarted = (): void => undefined;
+        let resolveSerializationStageSeen = (): void => undefined;
+        const serializationWatcherStarted = new Promise<void>((resolveStarted) => {
+          resolveSerializationWatcherStarted = resolveStarted;
+        });
+        const serializationStageSeen = new Promise<void>((resolveSeen) => {
+          resolveSerializationStageSeen = resolveSeen;
+        });
+        const serializationWatcher = (async () => {
+          for await (const record of provider.execStream({
+            providerWorkspaceId,
+            command: 'sh',
+            args: [
+              '-lc',
+              "while ! find /workspace -maxdepth 1 -name '.zapp-atomic-*.stage' -print -quit | grep -q .; do :; done; printf 'stage-seen\\n'",
+            ],
+            timeoutMs: 30_000,
+          })) {
+            if (record.type === 'started') resolveSerializationWatcherStarted();
+            if (record.type === 'stdout' && record.data.includes('stage-seen')) {
+              resolveSerializationStageSeen();
+            }
+          }
+        })();
+        await serializationWatcherStarted;
+        const atomicWrite = provider.writeFilesAtomically(providerWorkspaceId, [
+          ...serializationFillers,
+          { path: serializedPath, data: Buffer.from('atomic\n') },
+        ]);
+        await serializationStageSeen;
+        const ordinaryWrite = provider.writeFile(
+          providerWorkspaceId,
+          serializedPath,
+          Buffer.from('ordinary\n'),
+        );
+        await Promise.all([atomicWrite, ordinaryWrite, serializationWatcher]);
+        await expect(provider.readFile(providerWorkspaceId, serializedPath)).resolves.toEqual(
+          Buffer.from('ordinary\n'),
+        );
+        await expect(
+          run('sh', ['-lc', `rm -f /workspace/${prefix}-serialization-filler-*`]),
+        ).resolves.toMatchObject({ exitCode: 0 });
+
+        const modePath = `${prefix}-mode.sh`;
+        await provider.writeFile(providerWorkspaceId, modePath, Buffer.from('before\n'));
+        await expect(run('chmod', ['640', `/workspace/${modePath}`])).resolves.toMatchObject({
+          exitCode: 0,
+        });
+        await provider.writeFilesAtomically(providerWorkspaceId, [
+          { path: modePath, data: Buffer.from('after\n') },
+        ]);
+        await expect(run('stat', ['-c', '%a', `/workspace/${modePath}`])).resolves.toMatchObject({
+          exitCode: 0,
+          stdout: '640\n',
+        });
+
+        const aliasTarget = `${prefix}-alias-target.txt`;
+        const hardAlias = `${prefix}-hard-alias.txt`;
+        const leafAlias = `${prefix}-leaf-alias.txt`;
+        const realParent = `${prefix}-real`;
+        const aliasParent = `${prefix}-parent-alias`;
+        await provider.writeFile(providerWorkspaceId, aliasTarget, Buffer.from('alias before\n'));
+        await expect(
+          run('sh', [
+            '-lc',
+            `ln /workspace/${aliasTarget} /workspace/${hardAlias} && ln -s ${aliasTarget} /workspace/${leafAlias} && mkdir /workspace/${realParent} && ln -s ${realParent} /workspace/${aliasParent} && printf canonical > /workspace/${realParent}/canonical.txt`,
+          ]),
+        ).resolves.toMatchObject({ exitCode: 0 });
+        for (const files of [
+          [
+            { path: aliasTarget, data: Buffer.from('lexical one\n') },
+            { path: `./${aliasTarget}`, data: Buffer.from('lexical two\n') },
+          ],
+          [
+            { path: aliasTarget, data: Buffer.from('inode one\n') },
+            { path: hardAlias, data: Buffer.from('inode two\n') },
+          ],
+          [
+            { path: `${realParent}/canonical.txt`, data: Buffer.from('canonical one\n') },
+            { path: `${aliasParent}/canonical.txt`, data: Buffer.from('canonical two\n') },
+          ],
+          [{ path: leafAlias, data: Buffer.from('leaf mutation\n') }],
+        ]) {
+          await expect(provider.writeFilesAtomically(providerWorkspaceId, files)).rejects.toThrow(
+            'Workspace agent rejected the request with status 400',
+          );
+        }
+        await expect(provider.readFile(providerWorkspaceId, aliasTarget)).resolves.toEqual(
+          Buffer.from('alias before\n'),
+        );
+        await expect(run('readlink', [`/workspace/${leafAlias}`])).resolves.toMatchObject({
+          exitCode: 0,
+          stdout: `${aliasTarget}\n`,
+        });
+
+        const caseUpper = `${prefix}-CaseFold.txt`;
+        const caseLower = `${prefix}-casefold.txt`;
+        const composed = `${prefix}-caf\u00e9.txt`;
+        const decomposed = `${prefix}-cafe\u0301.txt`;
+        await provider.writeFilesAtomically(providerWorkspaceId, [
+          { path: caseUpper, data: Buffer.from('upper\n') },
+          { path: caseLower, data: Buffer.from('lower\n') },
+          { path: composed, data: Buffer.from('composed\n') },
+          { path: decomposed, data: Buffer.from('decomposed\n') },
+        ]);
+        await expect(provider.readFile(providerWorkspaceId, caseUpper)).resolves.toEqual(
+          Buffer.from('upper\n'),
+        );
+        await expect(provider.readFile(providerWorkspaceId, caseLower)).resolves.toEqual(
+          Buffer.from('lower\n'),
+        );
+        await expect(provider.readFile(providerWorkspaceId, composed)).resolves.toEqual(
+          Buffer.from('composed\n'),
+        );
+        await expect(provider.readFile(providerWorkspaceId, decomposed)).resolves.toEqual(
+          Buffer.from('decomposed\n'),
+        );
+
+        const rollbackPath = `${prefix}-rollback.txt`;
+        const rollbackBlocker = `${prefix}-rollback-blocker`;
+        await provider.writeFile(
+          providerWorkspaceId,
+          rollbackPath,
+          Buffer.from('rollback before\n'),
+        );
+        await expect(run('chmod', ['640', `/workspace/${rollbackPath}`])).resolves.toMatchObject({
+          exitCode: 0,
+        });
+        let resolveFlipperStarted = (): void => undefined;
+        const flipperStarted = new Promise<void>((resolveStarted) => {
+          resolveFlipperStarted = resolveStarted;
+        });
+        const flipper = (async () => {
+          for await (const record of provider.execStream({
+            providerWorkspaceId,
+            command: 'sh',
+            args: [
+              '-lc',
+              `while ! find /workspace -maxdepth 1 -name '.zapp-atomic-*.stage' -print -quit | grep -q .; do :; done; mkdir /workspace/${rollbackBlocker}`,
+            ],
+            timeoutMs: 30_000,
+          })) {
+            if (record.type === 'started') resolveFlipperStarted();
+          }
+        })();
+        await flipperStarted;
+        const rollbackFillers = Array.from({ length: 500 }, (_, index) => ({
+          path: `${prefix}-rollback-filler-${String(index)}`,
+          data: Buffer.alloc(0),
+        }));
+        await expect(
+          provider.writeFilesAtomically(providerWorkspaceId, [
+            { path: rollbackPath, data: Buffer.from('rollback after\n') },
+            ...rollbackFillers,
+            { path: rollbackBlocker, data: Buffer.from('blocked\n') },
+          ]),
+        ).rejects.toThrow();
+        await flipper;
+        await expect(provider.readFile(providerWorkspaceId, rollbackPath)).resolves.toEqual(
+          Buffer.from('rollback before\n'),
+        );
+        await expect(
+          run('stat', ['-c', '%a', `/workspace/${rollbackPath}`]),
+        ).resolves.toMatchObject({
+          exitCode: 0,
+          stdout: '640\n',
+        });
+        await expect(
+          provider.listFiles(providerWorkspaceId, '.', {
+            glob: '.zapp-atomic-*',
+            maxDepth: 1,
+          }),
+        ).resolves.toEqual([]);
+        await expect(
+          provider.listFiles(providerWorkspaceId, '.', {
+            glob: `${prefix}-rollback-filler-*`,
+            maxDepth: 1,
+          }),
+        ).resolves.toEqual([]);
+
+        await expect(
+          provider.search(providerWorkspaceId, {
+            pattern: 'not present',
+            path: destinationPath,
+            fixedStrings: true,
+          }),
+        ).resolves.toMatchObject({ exitCode: 1, stdout: '', truncated: false });
+        await expect(
+          provider.search(providerWorkspaceId, { pattern: 'outside', path: '../outside' }),
+        ).rejects.toThrow();
+
+        await expect(provider.deleteFile(providerWorkspaceId, rollbackBlocker)).rejects.toThrow();
+        await expect(run('rmdir', [`/workspace/${rollbackBlocker}`])).resolves.toMatchObject({
+          exitCode: 0,
+        });
+        const absentPath = `${prefix}-absent.txt`;
+        await expect(provider.deleteFile(providerWorkspaceId, absentPath)).resolves.toEqual({
+          alreadyAbsent: true,
+        });
+        await expect(provider.deleteFile(providerWorkspaceId, absentPath)).resolves.toEqual({
+          alreadyAbsent: true,
+        });
+
+        await expect(
+          provider.renameFile(providerWorkspaceId, {
+            source: aliasTarget,
+            destination: hardAlias,
+            overwrite: 'replace',
+          }),
+        ).rejects.toThrow();
+        await expect(
+          provider.renameFile(providerWorkspaceId, {
+            source: destinationPath,
+            destination: `./${destinationPath}`,
+            overwrite: 'replace',
+          }),
+        ).rejects.toThrow();
+
+        const guardedPath = `${prefix}-guarded.txt`;
+        await provider.writeFile(providerWorkspaceId, guardedPath, Buffer.from('guarded before\n'));
+        await expect(
+          provider.readFileForUpdate(providerWorkspaceId, guardedPath),
+        ).rejects.toMatchObject({
+          name: 'AtomicWriteConflictError',
+          code: 'atomic_write_conflict',
+          message: 'Atomic file changed before commit',
+        });
+        await expect(
+          provider.writeFilesAtomically(providerWorkspaceId, [
+            {
+              path: guardedPath,
+              data: Buffer.from('guarded after\n'),
+              expectedRevision: 'unsupported-live-revision',
+            },
+          ]),
+        ).rejects.toMatchObject({
+          name: 'AtomicWriteConflictError',
+          code: 'atomic_write_conflict',
+          message: 'Atomic file changed before commit',
+        });
+        await expect(provider.readFile(providerWorkspaceId, guardedPath)).resolves.toEqual(
+          Buffer.from('guarded before\n'),
+        );
+
+        const managedPort = 43_173;
+        const managedScript = `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(managedPort)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
+        const managedContract: ExecutionContract = {
+          ...EXECUTION_CONTRACT,
+          install: { command: 'true' },
+          develop: {
+            command: `node -e ${JSON.stringify(managedScript)}`,
+            port: managedPort,
+          },
+        };
+        const started = await provider.startDevServer(providerWorkspaceId, managedContract);
+        expect(started).toMatchObject({ port: managedPort, ownership: 'process_group' });
+        const restarted = await provider.restartDevServer(providerWorkspaceId, managedContract);
+        expect(restarted).toMatchObject({ port: managedPort, ownership: 'process_group' });
+        expect(restarted.pid).not.toBe(started.pid);
+        expect(restarted.supervisorId).not.toBe(started.supervisorId);
+
+        const unrelatedPort = 43_174;
+        const abortListener = new AbortController();
+        let resolveListenerStarted = (): void => undefined;
+        let resolveListenerReady = (): void => undefined;
+        const listenerStarted = new Promise<void>((resolveStarted) => {
+          resolveListenerStarted = resolveStarted;
+        });
+        const listenerReady = new Promise<void>((resolveReady) => {
+          resolveListenerReady = resolveReady;
+        });
+        let unrelatedPid: number | undefined;
+        const unrelatedListener = (async () => {
+          for await (const record of provider.execStream(
+            {
+              providerWorkspaceId,
+              command: 'node',
+              args: [
+                '-e',
+                `require('node:http').createServer((_request, response) => response.end('unrelated')).listen(${String(unrelatedPort)}, '127.0.0.1', () => console.log('listener-ready')); setInterval(() => {}, 1000);`,
+              ],
+              timeoutMs: 30_000,
+            },
+            undefined,
+            abortListener.signal,
+          )) {
+            if (record.type === 'started') {
+              unrelatedPid = record.pid;
+              resolveListenerStarted();
+            }
+            if (record.type === 'stdout' && record.data.includes('listener-ready')) {
+              resolveListenerReady();
+            }
+          }
+        })();
+        await Promise.all([listenerStarted, listenerReady]);
+        const unrelatedContract: ExecutionContract = {
+          ...EXECUTION_CONTRACT,
+          install: { command: 'true' },
+          develop: {
+            command: `node -e ${JSON.stringify('setInterval(() => {}, 1000);')}`,
+            port: unrelatedPort,
+          },
+        };
+        await expect(
+          provider.startDevServer(providerWorkspaceId, unrelatedContract),
+        ).rejects.toThrow();
+        abortListener.abort();
+        await expect(unrelatedListener).resolves.toBeUndefined();
+        expect(unrelatedPid).toBeGreaterThan(0);
+        await expect(
+          run('sh', ['-lc', `kill -0 ${String(unrelatedPid)} 2>/dev/null`]),
+        ).resolves.toMatchObject({ exitCode: 1 });
+      } finally {
+        if (handle !== undefined) await provider.terminateWorkspace(handle.providerWorkspaceId);
+      }
+    },
+    240_000,
+  );
 });
 
 interface AgentProxyProvider {
-  exec(input: { providerWorkspaceId: string; command: string; args: string[]; timeoutMs: number }): Promise<unknown>;
-  execStream(input: { providerWorkspaceId: string; command: string; args: string[]; timeoutMs: number }): AsyncIterable<unknown>;
+  exec(input: {
+    providerWorkspaceId: string;
+    command: string;
+    args: string[];
+    timeoutMs: number;
+  }): Promise<unknown>;
+  execStream(input: {
+    providerWorkspaceId: string;
+    command: string;
+    args: string[];
+    timeoutMs: number;
+  }): AsyncIterable<unknown>;
   killExec(providerWorkspaceId: string, pid: number, executionId: string): Promise<unknown>;
   readFile(providerWorkspaceId: string, path: string): Promise<Uint8Array>;
   writeFile(providerWorkspaceId: string, path: string, data: Uint8Array): Promise<void>;
-  listFiles(providerWorkspaceId: string, path: string, options?: { glob?: string; maxDepth?: number }): Promise<unknown>;
+  listFiles(
+    providerWorkspaceId: string,
+    path: string,
+    options?: { glob?: string; maxDepth?: number },
+  ): Promise<unknown>;
   git(providerWorkspaceId: string, input: unknown): Promise<unknown>;
   health(providerWorkspaceId: string): Promise<unknown>;
   metrics(providerWorkspaceId: string): Promise<unknown>;
   readFileForUpdate(providerWorkspaceId: string, path: string): Promise<unknown>;
-  writeFilesAtomically(providerWorkspaceId: string, files: readonly { path: string; data: Uint8Array; expectedRevision?: string }[]): Promise<void>;
+  writeFilesAtomically(
+    providerWorkspaceId: string,
+    files: readonly { path: string; data: Uint8Array; expectedRevision?: string }[],
+  ): Promise<void>;
   search(providerWorkspaceId: string, input: unknown): Promise<unknown>;
   deleteFile(providerWorkspaceId: string, path: string): Promise<{ alreadyAbsent: boolean }>;
   renameFile(providerWorkspaceId: string, input: unknown): Promise<void>;
