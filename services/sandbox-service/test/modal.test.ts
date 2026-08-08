@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -569,7 +570,7 @@ describe('Modal image provider facade', () => {
       const activeAssertion = script.indexOf('kill -0 "$request_pid"');
       const shutdownSignal = script.indexOf('kill -TERM "$agent_pid"');
       expect(startedAssertion).toBeGreaterThan(-1);
-      expect(script.match(/jq -er/gu)?.length).toBeGreaterThanOrEqual(2);
+      expect(script.match(/jq -ser/gu)?.length).toBeGreaterThanOrEqual(2);
       expect(activeAssertion).toBeGreaterThan(startedAssertion);
       expect(shutdownSignal).toBeGreaterThan(activeAssertion);
     }
@@ -608,6 +609,44 @@ describe('Modal image provider facade', () => {
       terminated: true,
     });
     expect(terminationCount).toBe(1);
+  });
+
+  test('emits fail-fast smoke scripts that execute under Debian dash', async () => {
+    const commands: string[][] = [];
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () =>
+        Promise.resolve(successfulSandbox(commands, () => undefined)),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+    });
+
+    const scripts = commands.filter(
+      (command) => command[0] === 'sh' && command[1] === '-lc' && command[2]?.startsWith('set -'),
+    );
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const command of scripts) {
+      const script = command[2] ?? '';
+      const syntax = spawnSync('/bin/dash', ['-n', '-c', script], { encoding: 'utf8' });
+      expect(syntax.status, syntax.stderr).toBe(0);
+      expect(script).not.toMatch(/\bjq\b[^;]*\|\s*(?:head|tail)\b/u);
+
+      const failFastPreamble = script.slice(0, script.indexOf(';'));
+      const execution = spawnSync('/bin/dash', ['-c', `${failFastPreamble}; exit 0`], {
+        encoding: 'utf8',
+      });
+      expect(execution.status, execution.stderr).toBe(0);
+    }
   });
 
   test('rejects a smoke when the immutable name does not resolve to the lock digest', async () => {
