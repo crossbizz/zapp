@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   evaluateToolCall,
   PolicyDecisionSchema,
@@ -39,7 +41,7 @@ const BudgetsSchema = z
   .object({
     maxTurns: z.number().int().positive().safe(),
     maxTokens: z.number().int().positive().safe(),
-    maxWallClockMs: z.number().int().positive().safe(),
+    maxWallClockMs: z.number().int().positive().max(2_147_483_647).safe(),
   })
   .strict();
 
@@ -131,7 +133,30 @@ export interface SessionLoopDependencies {
   };
   readonly prompts: Readonly<Record<AgentRole, string>>;
   readonly redact: (value: string) => string;
+  readonly countRequestTokens: (request: CompleteRequest) => number;
+  readonly results?: {
+    collect(input: {
+      tool: ToolName;
+      input: Readonly<Record<string, JsonValue>>;
+      output: unknown;
+    }): unknown;
+  };
+  readonly workerId?: string;
+  readonly executionLeaseMs?: number;
   readonly now?: () => number;
+}
+
+const ApprovalStatusSchema = z.enum(['pending', 'approved', 'denied']);
+const ResultReferencesSchema = z
+  .object({ commits: z.array(z.string()), artifacts: z.array(z.string()) })
+  .strict();
+const ArtifactResultSchema = z.object({ artifactId: z.string().min(1) }).passthrough();
+
+export class SessionLeaseBusyError extends Error {
+  constructor() {
+    super('Session tool execution is owned by another live worker');
+    this.name = 'SessionLeaseBusyError';
+  }
 }
 
 const UNTRUSTED_CONTEXT_KINDS = new Set<AssembledContext['sections'][number]['kind']>([
@@ -170,12 +195,13 @@ function redactJson(value: unknown, redact: (value: string) => string): JsonValu
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
   if (Array.isArray(value)) return value.map((entry) => redactJson(entry, redact));
   if (typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-        key,
-        redactJson(entry, redact),
-      ]),
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, entry]) => [redact(key), redactJson(entry, redact)] as const,
     );
+    if (new Set(entries.map(([key]) => key)).size !== entries.length) {
+      throw new Error('Redaction produced duplicate object keys');
+    }
+    return Object.fromEntries(entries);
   }
   throw new Error('Tool output is not JSON serializable');
 }
@@ -204,22 +230,70 @@ function usedBy(event: Extract<GatewayStreamEvent, { type: 'usage' }>): number {
   return Math.max(event.totalTokens ?? 0, (event.inputTokens ?? 0) + (event.outputTokens ?? 0));
 }
 
-function terminal(
-  status: SessionResult['status'],
-  summary: string,
-  pendingApproval?: ApprovalRequest,
-): SessionResult {
+function terminal(transcript: SessionTranscript, pendingApproval?: ApprovalRequest): SessionResult {
   return SessionResultSchema.parse({
-    status,
-    commits: [],
-    artifacts: [],
-    summary,
+    status: transcript.terminalStatus ?? 'needs_approval',
+    commits: transcript.commits,
+    artifacts: transcript.artifacts,
+    summary: transcript.summary,
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
   });
 }
 
+const ABORTED = Symbol('aborted');
+
+function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (value: T | typeof ABORTED): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = (): void => {
+      settle(ABORTED);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void operation.then(settle, (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      reject(error instanceof Error ? error : new Error('Operation failed'));
+    });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function closeIterator(iterator: AsyncIterator<unknown>): void {
+  try {
+    if (iterator.return !== undefined) {
+      void Promise.resolve(iterator.return()).catch(() => undefined);
+    }
+  } catch {
+    return;
+  }
+}
+
+function appendUnique(target: string[], values: readonly string[]): void {
+  for (const value of values) if (!target.includes(value)) target.push(value);
+}
+
+function registryResultReferences(output: unknown): z.infer<typeof ResultReferencesSchema> {
+  const artifact = ArtifactResultSchema.safeParse(output);
+  return { commits: [], artifacts: artifact.success ? [artifact.data.artifactId] : [] };
+}
+
 export function createSessionLoop(dependencies: SessionLoopDependencies) {
   const now = dependencies.now ?? Date.now;
+  const workerId = dependencies.workerId ?? randomUUID();
+  const executionLeaseMs = z
+    .number()
+    .int()
+    .positive()
+    .max(2_147_483_647)
+    .parse(dependencies.executionLeaseMs ?? 30_000);
 
   return {
     async run(inputValue: SessionInput, callerSignal?: AbortSignal): Promise<SessionResult> {
@@ -229,6 +303,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       const key = TranscriptKeySchema.parse({ runId: input.runId, taskId });
       const loaded = await dependencies.transcripts.load(key);
       let provenance: ContentProvenance[] = [];
+      const rawInputs = new Map<string, Readonly<Record<string, JsonValue>>>();
       let transcript: SessionTranscript;
       if (loaded === undefined) {
         const initial = initialMessages(input);
@@ -248,8 +323,14 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           completedToolCallIds: [],
           pendingToolCalls: [],
           activeToolCallId: null,
+          executionLease: null,
+          nextFence: 1,
+          eventOutbox: [],
+          commits: [],
+          artifacts: [],
           summary: '',
           terminalStatus: null,
+          terminalErrorCode: null,
         });
       } else {
         transcript = loaded;
@@ -261,9 +342,6 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         ) {
           throw new Error('Session input does not match its durable transcript');
         }
-        if (transcript.terminalStatus !== null) {
-          return terminal(transcript.terminalStatus, transcript.summary);
-        }
         provenance = [...transcript.provenance];
       }
 
@@ -274,10 +352,17 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
       if (callerSignal?.aborted === true) onCallerAbort();
       const startedAt = transcript.startedAtMs;
-      const remainingWallClockMs = Math.max(1, input.budgets.maxWallClockMs - (now() - startedAt));
+      const remainingWallClockMs = Math.min(
+        2_147_483_647,
+        Math.max(1, input.budgets.maxWallClockMs - (now() - startedAt)),
+      );
       const timer = setTimeout(() => {
         controller.abort(new Error('session_wall_clock_budget'));
       }, remainingWallClockMs);
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        callerSignal?.removeEventListener('abort', onCallerAbort);
+      };
 
       const save = async (): Promise<void> => {
         transcript = await dependencies.transcripts.save(
@@ -288,34 +373,72 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       const finish = async (
         status: Exclude<SessionResult['status'], 'needs_approval'>,
         summary: string,
+        errorCode: string | null = null,
       ): Promise<SessionResult> => {
-        transcript.summary = summary;
+        transcript.summary = dependencies.redact(summary);
         transcript.terminalStatus = status;
+        transcript.terminalErrorCode = errorCode;
         await save();
-        return terminal(status, summary);
+        await flushOutbox();
+        return terminal(transcript);
       };
-      const emit = async (
+      const eventFor = (
         type: SessionEvent['type'],
         call: SessionToolCall,
         suffix: string,
         payload: Record<string, unknown>,
-      ): Promise<void> => {
-        await dependencies.events.emit(
-          SessionEventSchema.parse({
-            eventKey: `${input.runId}:${taskId}:${call.toolCallId}:${suffix}`,
-            runId: input.runId,
-            taskId,
-            type,
-            occurredAt: new Date(now()).toISOString(),
-            payload: { toolCallId: call.toolCallId, tool: call.toolName, ...payload },
-          }),
-        );
+      ): SessionEvent =>
+        SessionEventSchema.parse({
+          eventKey: `${input.runId}:${taskId}:${call.toolCallId}:${suffix}`,
+          runId: input.runId,
+          taskId,
+          type,
+          occurredAt: new Date(now()).toISOString(),
+          payload: redactJson(
+            { toolCallId: call.toolCallId, tool: call.toolName, ...payload },
+            dependencies.redact,
+          ),
+        });
+      const enqueue = (event: SessionEvent): void => {
+        if (!transcript.eventOutbox.some((entry) => entry.event.eventKey === event.eventKey)) {
+          transcript.eventOutbox.push({ event, delivered: false });
+        }
       };
+      const flushOutbox = async (): Promise<void> => {
+        for (;;) {
+          const entry = transcript.eventOutbox.find((candidate) => !candidate.delivered);
+          if (entry === undefined) return;
+          await dependencies.events.emit(SessionEventSchema.parse(entry.event));
+          entry.delivered = true;
+          await save();
+        }
+      };
+
+      try {
+        await flushOutbox();
+      } catch (error: unknown) {
+        cleanup();
+        throw error;
+      }
+      if (transcript.terminalStatus !== null) {
+        cleanup();
+        return terminal(transcript);
+      }
 
       if (transcript.activeToolCallId !== null) {
         const active = transcript.pendingToolCalls[0];
-        if (active === undefined || active.toolCallId !== transcript.activeToolCallId) {
+        const lease = transcript.executionLease;
+        if (
+          active === undefined ||
+          active.toolCallId !== transcript.activeToolCallId ||
+          lease === null
+        ) {
+          cleanup();
           throw new Error('Durable transcript has an invalid active tool call');
+        }
+        if (lease.expiresAtMs > now()) {
+          cleanup();
+          throw new SessionLeaseBusyError();
         }
         transcript.messages.push({
           role: 'tool',
@@ -331,10 +454,19 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             },
           ],
         });
-        transcript.pendingToolCalls.shift();
+        transcript.pendingToolCalls.splice(0);
         transcript.activeToolCallId = null;
+        transcript.executionLease = null;
+        transcript.summary = 'A tool outcome is unknown; the session stopped without replaying it.';
+        transcript.terminalStatus = 'failed';
+        transcript.terminalErrorCode = 'tool_outcome_unknown';
+        enqueue(
+          eventFor('tool.failed', active, 'outcome-unknown', { code: 'tool_outcome_unknown' }),
+        );
         await save();
-        await emit('tool.failed', active, 'outcome-unknown', { code: 'tool_outcome_unknown' });
+        await flushOutbox();
+        cleanup();
+        return terminal(transcript);
       }
 
       try {
@@ -369,7 +501,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 inputJsonSchema: InputJsonSchema.parse(inputJsonSchema),
               };
             });
-            const request: CompleteRequest = {
+            const requestBase: CompleteRequest = {
               organizationId: input.context.scope.organizationId,
               projectId: input.context.scope.projectId,
               runId: input.runId,
@@ -377,30 +509,115 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               agentRole: input.role,
               messages: structuredClone(transcript.messages),
               tools,
-              maxOutputTokens: Math.max(1, input.budgets.maxTokens - transcript.tokensUsed),
+              maxOutputTokens: 1,
+            };
+            let requestTokens: number;
+            try {
+              requestTokens = z
+                .number()
+                .int()
+                .nonnegative()
+                .safe()
+                .parse(dependencies.countRequestTokens(requestBase));
+            } catch {
+              return await finish('failed', 'Request token counting failed.', 'token_count_failed');
+            }
+            const remainingOutputTokens =
+              input.budgets.maxTokens - transcript.tokensUsed - requestTokens;
+            if (remainingOutputTokens <= 0) {
+              return await finish('budget_exhausted', transcript.summary, 'token_budget_exhausted');
+            }
+            const request: CompleteRequest = {
+              ...requestBase,
+              maxOutputTokens: remainingOutputTokens,
             };
             const text: string[] = [];
             const calls: SessionToolCall[] = [];
             let turnTokens = 0;
             let streamCompleted = false;
-            for await (const rawEvent of dependencies.gateway.stream(request, controller.signal)) {
-              const event = GatewayStreamEventSchema.parse(rawEvent);
-              if (event.type === 'text-delta') text.push(event.text);
-              if (event.type === 'usage') turnTokens += usedBy(event);
-              if (event.type === 'tool-call') {
-                if (!isToolName(event.toolName)) {
-                  return await finish('failed', 'The model requested an unknown tool.');
+            let iterator: AsyncIterator<GatewayStreamEvent> | undefined;
+            try {
+              iterator = dependencies.gateway
+                .stream(request, controller.signal)
+                [Symbol.asyncIterator]();
+              for (;;) {
+                const next = await raceWithAbort(iterator.next(), controller.signal);
+                if (next === ABORTED) {
+                  closeIterator(iterator);
+                  const wallClockExceeded = now() - startedAt >= input.budgets.maxWallClockMs;
+                  return await finish(
+                    wallClockExceeded ? 'budget_exhausted' : 'cancelled',
+                    transcript.summary,
+                    wallClockExceeded ? 'wall_clock_budget_exhausted' : 'cancelled',
+                  );
                 }
-                calls.push(
-                  SessionToolCallSchema.parse({
-                    toolCallId: event.toolCallId,
+                if (next.done) break;
+                const event = GatewayStreamEventSchema.parse(next.value);
+                if (event.type === 'text-delta') text.push(dependencies.redact(event.text));
+                if (event.type === 'usage') {
+                  turnTokens = Math.max(
+                    turnTokens,
+                    usedBy(event),
+                    requestTokens + (event.outputTokens ?? 0),
+                  );
+                }
+                if (event.type === 'tool-call') {
+                  if (!isToolName(event.toolName)) {
+                    closeIterator(iterator);
+                    return await finish(
+                      'failed',
+                      'The model requested an unknown tool.',
+                      'unknown_tool',
+                    );
+                  }
+                  const sanitizedId = dependencies.redact(event.toolCallId);
+                  const sanitizedInput = redactJson(event.input, dependencies.redact);
+                  if (
+                    sanitizedInput === null ||
+                    Array.isArray(sanitizedInput) ||
+                    typeof sanitizedInput !== 'object'
+                  ) {
+                    closeIterator(iterator);
+                    return await finish(
+                      'failed',
+                      'The model returned invalid tool input.',
+                      'invalid_tool_input',
+                    );
+                  }
+                  const call = SessionToolCallSchema.parse({
+                    toolCallId: sanitizedId,
                     toolName: event.toolName,
-                    input: event.input,
-                  }),
+                    input: sanitizedInput,
+                  });
+                  calls.push(call);
+                  rawInputs.set(call.toolCallId, event.input);
+                }
+                if (event.type === 'error') {
+                  closeIterator(iterator);
+                  return await finish(
+                    'failed',
+                    dependencies.redact(event.message),
+                    'provider_error',
+                  );
+                }
+                if (event.type === 'done') {
+                  streamCompleted = true;
+                  closeIterator(iterator);
+                  break;
+                }
+              }
+            } catch (error: unknown) {
+              if (iterator !== undefined) closeIterator(iterator);
+              if (isAborted(controller.signal)) {
+                const wallClockExceeded = now() - startedAt >= input.budgets.maxWallClockMs;
+                return await finish(
+                  wallClockExceeded ? 'budget_exhausted' : 'cancelled',
+                  transcript.summary,
+                  wallClockExceeded ? 'wall_clock_budget_exhausted' : 'cancelled',
                 );
               }
-              if (event.type === 'error') return await finish('failed', event.message);
-              if (event.type === 'done') streamCompleted = true;
+              const message = error instanceof Error ? error.message : 'Gateway stream failed.';
+              return await finish('failed', dependencies.redact(message), 'gateway_stream_failed');
             }
             if (isAborted(controller.signal)) {
               const wallClockExceeded = now() - startedAt >= input.budgets.maxWallClockMs;
@@ -413,7 +630,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               return await finish('failed', 'The model gateway stream ended before completion.');
             }
             transcript.turns += 1;
-            transcript.tokensUsed += turnTokens;
+            transcript.tokensUsed += Math.max(turnTokens, requestTokens);
             if (transcript.tokensUsed > input.budgets.maxTokens) {
               return await finish('budget_exhausted', transcript.summary);
             }
@@ -437,7 +654,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             );
             transcript.messages.push({ role: 'assistant', content });
             transcript.pendingToolCalls.push(...calls);
-            transcript.summary = text.join('');
+            transcript.summary = dependencies.redact(text.join(''));
             await save();
             if (calls.length === 0) return await finish('completed', transcript.summary);
           }
@@ -445,8 +662,8 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           const call = transcript.pendingToolCalls[0];
           if (call === undefined) continue;
           if (!input.tools.includes(call.toolName)) {
-            await emit('tool.started', call, 'started', {});
-            await emit('tool.failed', call, 'failed', { code: 'tool_not_allowed' });
+            enqueue(eventFor('tool.started', call, 'started', {}));
+            enqueue(eventFor('tool.failed', call, 'failed', { code: 'tool_not_allowed' }));
             transcript.messages.push({
               role: 'tool',
               content: [
@@ -460,8 +677,10 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             });
             transcript.pendingToolCalls.shift();
             await save();
+            await flushOutbox();
             continue;
           }
+          const rawInput = rawInputs.get(call.toolCallId) ?? call.input;
           const decision = PolicyDecisionSchema.parse(
             evaluateToolCall(
               {
@@ -472,7 +691,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 approvedDeployment: null,
               },
               call.toolName,
-              call.input,
+              rawInput,
             ),
           );
           if (decision.action === 'require_approval') {
@@ -484,17 +703,30 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               input: call.input,
               reason: decision.reason,
             });
-            const status = await dependencies.approvals.status(approval);
-            if (status === 'pending') {
-              await emit('approval.requested', call, 'approval-requested', {
-                reason: approval.reason,
-              });
-              return terminal('needs_approval', transcript.summary, approval);
+            const rawStatus = await dependencies.approvals.status(approval);
+            const parsedStatus = ApprovalStatusSchema.safeParse(rawStatus);
+            if (!parsedStatus.success) {
+              return await finish(
+                'failed',
+                'Approval service returned an invalid response.',
+                'invalid_approval_response',
+              );
             }
-            await emit('approval.resolved', call, 'approval-resolved', { decision: status });
+            const status = parsedStatus.data;
+            if (status === 'pending') {
+              enqueue(
+                eventFor('approval.requested', call, 'approval-requested', {
+                  reason: approval.reason,
+                }),
+              );
+              await save();
+              await flushOutbox();
+              return terminal(transcript, approval);
+            }
+            enqueue(eventFor('approval.resolved', call, 'approval-resolved', { decision: status }));
             if (status === 'denied') {
-              await emit('tool.started', call, 'started', {});
-              await emit('tool.failed', call, 'failed', { code: 'approval_denied' });
+              enqueue(eventFor('tool.started', call, 'started', {}));
+              enqueue(eventFor('tool.failed', call, 'failed', { code: 'approval_denied' }));
               transcript.messages.push({
                 role: 'tool',
                 content: [
@@ -508,12 +740,13 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               });
               transcript.pendingToolCalls.shift();
               await save();
+              await flushOutbox();
               continue;
             }
           }
           if (decision.action === 'deny') {
-            await emit('tool.started', call, 'started', {});
-            await emit('tool.failed', call, 'failed', { code: decision.reason });
+            enqueue(eventFor('tool.started', call, 'started', {}));
+            enqueue(eventFor('tool.failed', call, 'failed', { code: decision.reason }));
             transcript.messages.push({
               role: 'tool',
               content: [
@@ -527,49 +760,80 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             });
             transcript.pendingToolCalls.shift();
             await save();
+            await flushOutbox();
             continue;
           }
-          transcript.activeToolCallId = call.toolCallId;
+          enqueue(eventFor('tool.started', call, 'started', {}));
           await save();
-          await emit('tool.started', call, 'started', {});
+          await flushOutbox();
+          transcript.activeToolCallId = call.toolCallId;
+          const fence = transcript.nextFence;
+          transcript.nextFence += 1;
+          transcript.executionLease = {
+            toolCallId: call.toolCallId,
+            ownerId: workerId,
+            fence,
+            expiresAtMs: now() + executionLeaseMs,
+          };
+          await save();
+          let renewalError: Error | undefined;
+          let renewal = Promise.resolve();
+          const renewalTimer = setInterval(
+            () => {
+              renewal = renewal
+                .then(async () => {
+                  if (
+                    transcript.executionLease?.ownerId !== workerId ||
+                    transcript.executionLease.fence !== fence
+                  ) {
+                    throw new SessionLeaseBusyError();
+                  }
+                  transcript.executionLease.expiresAtMs = now() + executionLeaseMs;
+                  await save();
+                })
+                .catch((error: unknown) => {
+                  renewalError =
+                    error instanceof Error ? error : new Error('Execution lease renewal failed');
+                  controller.abort(renewalError);
+                });
+            },
+            Math.max(1, Math.floor(executionLeaseMs / 3)),
+          );
+          let executionOutcome: ToolExecutionWithAudit | typeof ABORTED | undefined;
+          let executionError: unknown;
           try {
-            const executed: ToolExecutionWithAudit = await dependencies.tools
-              .get(call.toolName)
-              .executeWithAudit(
-                call.input,
-                {
-                  organizationId: input.context.scope.organizationId,
-                  projectId: input.context.scope.projectId,
-                  runId: input.runId,
-                  taskId,
-                  step: `tool:${call.toolCallId}`,
-                },
-                controller.signal,
-              );
-            const visible = visibleToolOutput(executed.output, call.toolName, dependencies.redact);
-            transcript.messages.push({
-              role: 'tool',
-              content: [
-                {
-                  type: 'tool-result',
-                  toolCallId: call.toolCallId,
-                  toolName: call.toolName,
-                  output: { type: 'text', value: visible.wrapped },
-                },
-              ],
-            });
-            transcript.pendingToolCalls.shift();
-            transcript.completedToolCallIds.push(call.toolCallId);
-            transcript.activeToolCallId = null;
-            provenance.push({ trust: 'untrusted', source: `tool:${call.toolName}` });
-            transcript.provenance = [...provenance];
-            await save();
-            await emit('tool.output', call, 'output', { output: visible.value });
-            await emit('tool.completed', call, 'completed', { audit: executed.auditPayload });
+            const execution = dependencies.tools.get(call.toolName).executeWithAudit(
+              rawInput,
+              {
+                organizationId: input.context.scope.organizationId,
+                projectId: input.context.scope.projectId,
+                runId: input.runId,
+                taskId,
+                step: `tool:${call.toolCallId}`,
+              },
+              controller.signal,
+            );
+            executionOutcome = await raceWithAbort(execution, controller.signal);
           } catch (error: unknown) {
-            const code = error instanceof ToolExecutionError ? error.code : 'tool_failed';
-            await emit('tool.failed', call, 'failed', { code });
-            if (isAborted(controller.signal)) continue;
+            executionError = error;
+          } finally {
+            clearInterval(renewalTimer);
+            await renewal;
+          }
+          if (renewalError !== undefined) throw renewalError;
+          if (executionOutcome === ABORTED) {
+            enqueue(eventFor('tool.failed', call, 'failed', { code: 'tool_cancelled' }));
+            await save();
+            return await finish(
+              now() - startedAt >= input.budgets.maxWallClockMs ? 'budget_exhausted' : 'cancelled',
+              transcript.summary,
+              'tool_cancelled',
+            );
+          }
+          if (executionError !== undefined || executionOutcome === undefined) {
+            const code =
+              executionError instanceof ToolExecutionError ? executionError.code : 'tool_failed';
+            enqueue(eventFor('tool.failed', call, 'failed', { code }));
             transcript.messages.push({
               role: 'tool',
               content: [
@@ -583,12 +847,52 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             });
             transcript.pendingToolCalls.shift();
             transcript.activeToolCallId = null;
+            transcript.executionLease = null;
             await save();
+            await flushOutbox();
+            continue;
           }
+          const executed = executionOutcome;
+
+          const visible = visibleToolOutput(executed.output, call.toolName, dependencies.redact);
+          const registryReferences = registryResultReferences(executed.output);
+          const collectedReferences = ResultReferencesSchema.parse(
+            dependencies.results?.collect({
+              tool: call.toolName,
+              input: call.input,
+              output: executed.output,
+            }) ?? { commits: [], artifacts: [] },
+          );
+          const references = {
+            commits: [...registryReferences.commits, ...collectedReferences.commits],
+            artifacts: [...registryReferences.artifacts, ...collectedReferences.artifacts],
+          };
+          transcript.messages.push({
+            role: 'tool',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                output: { type: 'text', value: visible.wrapped },
+              },
+            ],
+          });
+          transcript.pendingToolCalls.shift();
+          transcript.completedToolCallIds.push(call.toolCallId);
+          transcript.activeToolCallId = null;
+          transcript.executionLease = null;
+          provenance.push({ trust: 'untrusted', source: `tool:${call.toolName}` });
+          transcript.provenance = [...provenance];
+          appendUnique(transcript.commits, references.commits.map(dependencies.redact));
+          appendUnique(transcript.artifacts, references.artifacts.map(dependencies.redact));
+          enqueue(eventFor('tool.output', call, 'output', { output: visible.value }));
+          enqueue(eventFor('tool.completed', call, 'completed', { audit: executed.auditPayload }));
+          await save();
+          await flushOutbox();
         }
       } finally {
-        clearTimeout(timer);
-        callerSignal?.removeEventListener('abort', onCallerAbort);
+        cleanup();
       }
     },
   };

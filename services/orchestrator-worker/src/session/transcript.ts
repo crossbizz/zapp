@@ -18,6 +18,34 @@ export const SessionToolCallSchema = z
   .strict();
 export type SessionToolCall = z.infer<typeof SessionToolCallSchema>;
 
+export const SessionEventRecordSchema = z
+  .object({
+    eventKey: z.string().min(1),
+    runId: z.string().min(1),
+    taskId: z.string().min(1),
+    type: z.enum([
+      'tool.started',
+      'tool.output',
+      'tool.completed',
+      'tool.failed',
+      'approval.requested',
+      'approval.resolved',
+    ]),
+    occurredAt: z.string().datetime(),
+    payload: z.record(z.unknown()),
+  })
+  .strict();
+export type SessionEventRecord = z.infer<typeof SessionEventRecordSchema>;
+
+const ExecutionLeaseSchema = z
+  .object({
+    toolCallId: z.string().min(1),
+    ownerId: z.string().min(1),
+    fence: z.number().int().positive().safe(),
+    expiresAtMs: z.number().nonnegative().safe(),
+  })
+  .strict();
+
 const SessionTranscriptBaseSchema = z
   .object({
     key: TranscriptKeySchema,
@@ -40,8 +68,16 @@ const SessionTranscriptBaseSchema = z
     completedToolCallIds: z.array(z.string().min(1)),
     pendingToolCalls: z.array(SessionToolCallSchema),
     activeToolCallId: z.string().min(1).nullable(),
+    executionLease: ExecutionLeaseSchema.nullable(),
+    nextFence: z.number().int().positive().safe(),
+    eventOutbox: z.array(
+      z.object({ event: SessionEventRecordSchema, delivered: z.boolean() }).strict(),
+    ),
+    commits: z.array(z.string()),
+    artifacts: z.array(z.string()),
     summary: z.string(),
     terminalStatus: z.enum(['completed', 'budget_exhausted', 'failed', 'cancelled']).nullable(),
+    terminalErrorCode: z.string().min(1).nullable(),
   })
   .strict();
 
@@ -60,12 +96,26 @@ function validateTranscriptQueue(
       message: 'Active tool call must be first in the pending queue',
     });
   }
+  if (
+    (transcript.activeToolCallId === null) !== (transcript.executionLease === null) ||
+    (transcript.executionLease !== null &&
+      transcript.executionLease.toolCallId !== transcript.activeToolCallId)
+  ) {
+    validation.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Active tool call and execution lease must match',
+    });
+  }
   const allIds = [
     ...transcript.completedToolCallIds,
     ...transcript.pendingToolCalls.map((call) => call.toolCallId),
   ];
   if (new Set(allIds).size !== allIds.length) {
     validation.addIssue({ code: z.ZodIssueCode.custom, message: 'Tool call ids must be unique' });
+  }
+  const eventKeys = transcript.eventOutbox.map((entry) => entry.event.eventKey);
+  if (new Set(eventKeys).size !== eventKeys.length) {
+    validation.addIssue({ code: z.ZodIssueCode.custom, message: 'Event keys must be unique' });
   }
 }
 

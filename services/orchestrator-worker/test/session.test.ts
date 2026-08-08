@@ -23,6 +23,7 @@ import { MemoryTranscriptStore } from '../src/session/transcript.js';
 const roots: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -142,6 +143,8 @@ function input(tools: ToolName[] = ['write_file']) {
   };
 }
 
+const countRequestTokens = (): number => 1;
+
 function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
   const requests: CompleteRequest[] = [];
   return {
@@ -193,13 +196,20 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
+      countRequestTokens,
+      results: {
+        collect: () => ({
+          commits: ['0123456789abcdef0123456789abcdef01234567'],
+          artifacts: [],
+        }),
+      },
     });
 
     const result = await session.run(input());
 
     expect(result).toEqual({
       status: 'completed',
-      commits: [],
+      commits: ['0123456789abcdef0123456789abcdef01234567'],
       artifacts: [],
       summary: 'Implemented and verified.',
     });
@@ -253,6 +263,7 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
 
     const result = await session.run({ ...input(), mode: 'ask' });
@@ -315,6 +326,7 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
     const sessionInput = input(['execute_migration']);
 
@@ -380,6 +392,7 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
 
     const result = await session.run({
@@ -441,6 +454,7 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
     const cancellation = new AbortController();
 
@@ -482,6 +496,7 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
 
     const result = await session.run({
@@ -533,6 +548,7 @@ describe('agent session loop', () => {
           summarizer: 'summary',
         },
         redact: (value) => value,
+        countRequestTokens,
       });
 
       const running = session.run({
@@ -550,7 +566,7 @@ describe('agent session loop', () => {
     }
   });
 
-  it('does not replay a mutation with an ambiguous post-execution checkpoint', async () => {
+  it('fails closed without replaying a mutation with an ambiguous post-execution checkpoint', async () => {
     const { registry, root } = await memoryRegistry();
     await writeFile(join(root, 'resume.txt'), 'completed mutation result');
     const transcripts = new MemoryTranscriptStore();
@@ -588,8 +604,19 @@ describe('agent session loop', () => {
         },
       ],
       activeToolCallId: 'call-ambiguous',
+      executionLease: {
+        toolCallId: 'call-ambiguous',
+        ownerId: 'lost-worker',
+        fence: 1,
+        expiresAtMs: Date.now() - 1,
+      },
+      nextFence: 2,
+      eventOutbox: [],
+      commits: [],
+      artifacts: [],
       summary: '',
       terminalStatus: null,
+      terminalErrorCode: null,
     });
     const events: SessionEvent[] = [];
     const scripted = scriptedGateway([
@@ -612,25 +639,481 @@ describe('agent session loop', () => {
         summarizer: 'summary',
       },
       redact: (value) => value,
+      countRequestTokens,
     });
 
     const result = await session.run(input());
 
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('failed');
     expect(await readFile(join(root, 'resume.txt'), 'utf8')).toBe('completed mutation result');
-    expect(scripted.requests).toHaveLength(1);
-    expect(scripted.requests[0]?.messages.at(-1)).toMatchObject({
-      role: 'tool',
-      content: [
-        {
-          output: {
-            type: 'error-text',
-            value: 'Tool outcome unknown; execution was not replayed.',
-          },
-        },
-      ],
-    });
+    expect(scripted.requests).toHaveLength(0);
     expect(events.map((event) => event.type)).toEqual(['tool.failed']);
     expect(events[0]?.payload).toMatchObject({ code: 'tool_outcome_unknown' });
+  });
+
+  it('durably fails malformed approval responses without executing', async () => {
+    let migrationCalls = 0;
+    const migrations: MigrationPort = {
+      executeMigration: () => {
+        migrationCalls += 1;
+        return Promise.resolve({ migrationId: 'migration-invalid-approval', status: 'applied' });
+      },
+    };
+    const { registry } = await memoryRegistry({ migrations });
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-invalid-approval',
+          toolName: 'execute_migration',
+          input: { environmentId: 'environment-test', migration: 'DROP TABLE users' },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve({ approved: true } as never) },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    const result = await session.run(input(['execute_migration']));
+
+    expect(result.status).toBe('failed');
+    expect(migrationCalls).toBe(0);
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(saved?.terminalStatus).toBe('failed');
+  });
+
+  it('redacts model text, tool-input values, and tool-input keys before persistence', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        { type: 'text-delta', text: 'registered-secret summary' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-secret-input',
+          toolName: 'write_file',
+          input: {
+            path: 'secret.txt',
+            content: 'registered-secret value',
+            'registered-secret-key': 'registered-secret nested',
+          },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'registered-secret final' },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
+      countRequestTokens,
+    });
+
+    const result = await session.run({ ...input(), mode: 'ask' });
+
+    expect(result.summary).toBe('[REDACTED] final');
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(JSON.stringify(saved)).not.toContain('registered-secret');
+    expect(JSON.stringify(saved)).toContain('[REDACTED]-key');
+  });
+
+  it('uses a fenced execution lease before declaring an active mutation abandoned', async () => {
+    vi.useFakeTimers();
+    let releaseTool: (() => void) | undefined;
+    let markToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    let environmentCalls = 0;
+    const environment: EnvironmentPort = {
+      setEnvironmentVariable: () =>
+        new Promise((resolve) => {
+          environmentCalls += 1;
+          markToolStarted?.();
+          releaseTool = () => {
+            resolve({ updated: true, name: 'CONFIG_VALUE', scope: 'preview' });
+          };
+        }),
+    };
+    const { registry } = await memoryRegistry({ environment });
+    const transcripts = new MemoryTranscriptStore();
+    let clock = 1_000;
+    const gateway = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-leased',
+          toolName: 'set_environment_variable',
+          input: {
+            environmentId: 'environment-test',
+            name: 'CONFIG_VALUE',
+            secretRef: 'sec_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
+            scope: 'preview',
+          },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'leased mutation complete' },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]).gateway;
+    const common = {
+      gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending' as const) },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value: string) => value,
+      countRequestTokens,
+      now: () => clock,
+      executionLeaseMs: 100,
+    };
+    const first = createSessionLoop({ ...common, workerId: 'worker-one' });
+    const second = createSessionLoop({ ...common, workerId: 'worker-two' });
+    const running = first.run(input(['set_environment_variable']));
+    await toolStarted;
+
+    const beforeExpiry = await second.run(input(['set_environment_variable'])).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    clock = 1_101;
+    await vi.advanceTimersByTimeAsync(34);
+    const afterNominalExpiry = await second.run(input(['set_environment_variable'])).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    releaseTool?.();
+    const completed = await running;
+
+    expect(beforeExpiry).toMatchObject({ error: { name: 'SessionLeaseBusyError' } });
+    expect(afterNominalExpiry).toMatchObject({ error: { name: 'SessionLeaseBusyError' } });
+    expect(environmentCalls).toBe(1);
+    expect(completed.status).toBe('completed');
+  });
+
+  it('replays a durable event outbox after post-mutation delivery failure', async () => {
+    const { registry, root } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-outbox',
+          toolName: 'write_file',
+          input: { path: 'outbox.txt', content: 'written once' },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'outbox recovered' },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const delivered: SessionEvent[] = [];
+    let failOutput = true;
+    const dependencies = {
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: {
+        emit: (event: SessionEvent) => {
+          if (event.type === 'tool.output' && failOutput) {
+            failOutput = false;
+            throw new Error('event delivery unavailable');
+          }
+          delivered.push(event);
+        },
+      },
+      approvals: { status: () => Promise.resolve('pending' as const) },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value: string) => value,
+      countRequestTokens,
+    };
+    const session = createSessionLoop(dependencies);
+
+    await expect(session.run(input())).rejects.toThrow('event delivery unavailable');
+    expect(await readFile(join(root, 'outbox.txt'), 'utf8')).toBe('written once');
+    const resumed = await createSessionLoop(dependencies).run(input());
+    expect(resumed.status).toBe('completed');
+    expect(delivered.map((event) => event.type)).toEqual([
+      'tool.started',
+      'tool.output',
+      'tool.completed',
+    ]);
+    expect(new Set(delivered.map((event) => event.eventKey)).size).toBe(delivered.length);
+    expect(scripted.requests).toHaveLength(2);
+  });
+
+  it('durably returns structured commit and artifact references on terminal replay', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-results',
+          toolName: 'write_file',
+          input: { path: 'results.txt', content: 'results' },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'results complete' },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const dependencies = {
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending' as const) },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value: string) => value,
+      countRequestTokens,
+      results: {
+        collect: () => ({
+          commits: ['0123456789abcdef0123456789abcdef01234567'],
+          artifacts: ['artifact-session-result'],
+        }),
+      },
+    };
+    const completed = await createSessionLoop(dependencies).run(input());
+    const replayed = await createSessionLoop(dependencies).run(input());
+
+    expect(completed.commits).toEqual(['0123456789abcdef0123456789abcdef01234567']);
+    expect(completed.artifacts).toEqual(['artifact-session-result']);
+    expect(replayed).toEqual(completed);
+  });
+
+  it('aggregates an artifact reference from a typed registry result', async () => {
+    const { registry } = await memoryRegistry();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-test-results',
+          toolName: 'read_test_results',
+          input: { suite: 'unit' },
+        },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'screenshot complete' },
+        { type: 'usage', totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts: new MemoryTranscriptStore(),
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    const result = await session.run(input(['read_test_results']));
+
+    expect(result.artifacts).toEqual(['artifact-tests']);
+  });
+
+  it('reserves exact request input tokens before opening the gateway', async () => {
+    const { registry } = await memoryRegistry();
+    let gatewayCalls = 0;
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(): AsyncIterable<GatewayStreamEvent> {
+          await Promise.resolve();
+          gatewayCalls += 1;
+          yield { type: 'done' };
+        },
+      },
+      tools: registry,
+      transcripts: new MemoryTranscriptStore(),
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens: () => 20,
+    });
+
+    const result = await session.run({
+      ...input(),
+      budgets: { maxTurns: 4, maxTokens: 20, maxWallClockMs: 30_000 },
+    });
+
+    expect(result.status).toBe('budget_exhausted');
+    expect(gatewayCalls).toBe(0);
+  });
+
+  it('acknowledges cancellation and closes a gateway iterator whose next never settles', async () => {
+    const { registry } = await memoryRegistry();
+    let releaseNext: (() => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let returnCalls = 0;
+    const iterator = {
+      next: () =>
+        new Promise<IteratorResult<GatewayStreamEvent>>((resolve) => {
+          markStarted?.();
+          releaseNext = () => {
+            resolve({ done: true, value: undefined });
+          };
+        }),
+      return: () => {
+        returnCalls += 1;
+        return Promise.resolve({ done: true, value: undefined as never });
+      },
+    };
+    const session = createSessionLoop({
+      gateway: { stream: () => ({ [Symbol.asyncIterator]: () => iterator }) },
+      tools: registry,
+      transcripts: new MemoryTranscriptStore(),
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+    const cancellation = new AbortController();
+    const running = session.run(input(), cancellation.signal);
+    await started;
+    cancellation.abort(new Error('cancel blocked iterator'));
+    const acknowledgement = await Promise.race([
+      running.then((result) => result.status),
+      new Promise<'blocked'>((resolve) =>
+        setImmediate(() => {
+          resolve('blocked');
+        }),
+      ),
+    ]);
+
+    expect(acknowledgement).toBe('cancelled');
+    expect(returnCalls).toBe(1);
+    releaseNext?.();
+    await running;
+  });
+
+  it.each([
+    {
+      label: 'iterator failure',
+      stream: async function* (): AsyncIterable<GatewayStreamEvent> {
+        await Promise.resolve();
+        throw new Error('registered-secret provider');
+      },
+      summary: '[REDACTED] provider',
+    },
+    {
+      label: 'malformed event',
+      stream: async function* (): AsyncIterable<GatewayStreamEvent> {
+        await Promise.resolve();
+        yield {
+          type: 'text-delta',
+          text: 'safe',
+          'registered-secret-key': 'registered-secret-value',
+        } as never;
+      },
+      summary: undefined,
+    },
+  ])('persists sanitized gateway failure: $label', async (testCase) => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const session = createSessionLoop({
+      gateway: { stream: () => testCase.stream() },
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
+      countRequestTokens,
+    });
+
+    const result = await session.run(input());
+
+    expect(result.status).toBe('failed');
+    if (testCase.summary !== undefined) expect(result.summary).toBe(testCase.summary);
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(saved?.terminalStatus).toBe('failed');
+    expect(JSON.stringify(saved)).not.toContain('registered-secret');
   });
 });
