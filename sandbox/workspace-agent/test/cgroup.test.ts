@@ -38,6 +38,7 @@ class ManualExecutionContainment implements ExecutionContainment {
   constructor(
     readonly id: string,
     readonly procsPath: string,
+    private readonly removeError?: Error,
   ) {}
 
   kill(): Promise<void> {
@@ -53,7 +54,9 @@ class ManualExecutionContainment implements ExecutionContainment {
   remove(): Promise<void> {
     this.removeCalls += 1;
     this.resolveRemoved();
-    return Promise.resolve();
+    return this.removeError === undefined
+      ? Promise.resolve()
+      : Promise.reject(this.removeError);
   }
 
   markEmpty(): void {
@@ -64,7 +67,10 @@ class ManualExecutionContainment implements ExecutionContainment {
 class ManualContainment implements Containment {
   readonly executions: ManualExecutionContainment[] = [];
 
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly removeError?: Error,
+  ) {}
 
   async create(): Promise<ExecutionContainment> {
     const id = `execution-${String(this.executions.length + 1)}`;
@@ -72,7 +78,7 @@ class ManualContainment implements Containment {
     const procsPath = join(directory, 'cgroup.procs');
     await mkdir(directory);
     await writeFile(procsPath, '');
-    const execution = new ManualExecutionContainment(id, procsPath);
+    const execution = new ManualExecutionContainment(id, procsPath, this.removeError);
     this.executions.push(execution);
     return execution;
   }
@@ -327,6 +333,97 @@ describe('cgroup-v2 containment', () => {
       expect(acknowledged).toBe(true);
       expect(containment.executions[0]?.removeCalls).toBe(1);
       await expect(manager.acknowledgeCleanup(cleanupId)).resolves.toBe(true);
+    } finally {
+      containment.executions[0]?.markEmpty();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps buffered disconnect acknowledgement pending until owned containment succeeds', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-disconnect-ack-'));
+    const containment = new ManualContainment(workspaceRoot);
+    const manager = new ExecManager(workspaceRoot, containment);
+    const cleanupId = randomUUID();
+    const disconnect = new Error('controlled output disconnect');
+    let started = false;
+    let acknowledgementState: 'pending' | 'resolved' | 'rejected' = 'pending';
+
+    try {
+      const execution = manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'process.stdout.write("ready"); setTimeout(() => process.exit(0), 50)'],
+          timeoutMs: 2_000,
+        },
+        (record) => {
+          if (record.type === 'started') {
+            started = true;
+          } else if (record.type === 'stdout') {
+            throw disconnect;
+          }
+        },
+        cleanupId,
+      );
+
+      await expect(execution).rejects.toBe(disconnect);
+      const acknowledgement = manager.acknowledgeCleanup(cleanupId).then(
+        (result) => {
+          acknowledgementState = 'resolved';
+          return result;
+        },
+        (error: unknown) => {
+          acknowledgementState = 'rejected';
+          throw error;
+        },
+      );
+      void acknowledgement.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(started).toBe(true);
+      expect(acknowledgementState).toBe('pending');
+      expect(containment.executions[0]?.removeCalls).toBe(0);
+
+      containment.executions[0]?.markEmpty();
+      await expect(acknowledgement).resolves.toBe(true);
+      expect(acknowledgementState).toBe('resolved');
+      expect(containment.executions[0]?.removeCalls).toBe(1);
+    } finally {
+      containment.executions[0]?.markEmpty();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves owned containment failure stage after buffered disconnect', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'zapp-cgroup-disconnect-failure-'));
+    const containment = new ManualContainment(
+      workspaceRoot,
+      new Error('controlled remove failure'),
+    );
+    const manager = new ExecManager(workspaceRoot, containment);
+    const cleanupId = randomUUID();
+    const disconnect = new Error('controlled output disconnect');
+
+    try {
+      const execution = manager.run(
+        {
+          cmd: process.execPath,
+          args: ['-e', 'process.stdout.write("ready"); setTimeout(() => process.exit(0), 50)'],
+          timeoutMs: 2_000,
+        },
+        (record) => {
+          if (record.type === 'stdout') {
+            throw disconnect;
+          }
+        },
+        cleanupId,
+      );
+
+      await expect(execution).rejects.toBe(disconnect);
+      const acknowledgement = manager.acknowledgeCleanup(cleanupId);
+      void acknowledgement.catch(() => undefined);
+      containment.executions[0]?.markEmpty();
+
+      await expect(acknowledgement).rejects.toMatchObject({ stage: 'remove' });
     } finally {
       containment.executions[0]?.markEmpty();
       await rm(workspaceRoot, { recursive: true, force: true });

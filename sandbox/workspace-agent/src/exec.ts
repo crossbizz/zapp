@@ -153,8 +153,8 @@ interface ActiveProcess {
 interface CleanupReceipt {
   readonly completion: Promise<void>;
   readonly terminal: () => boolean;
-  resolve(): void;
-  reject(error: Error): void;
+  bind(owner: Promise<void>): void;
+  rejectUnbound(error: Error): void;
 }
 
 const MAX_CLEANUP_RECEIPTS = 256;
@@ -386,7 +386,7 @@ export class ExecManager {
         ? this.runPty(input, cwd, environment, containment, emit, receipt)
         : this.runProcess(input, cwd, environment, containment, emit, receipt));
     } catch (error) {
-      receipt?.reject(error instanceof Error ? error : new Error('Execution failed'));
+      receipt?.rejectUnbound(error instanceof Error ? error : new Error('Execution failed'));
       throw error;
     }
   }
@@ -443,6 +443,7 @@ export class ExecManager {
     let resolveCompletion: () => void = () => undefined;
     let rejectCompletion: (error: Error) => void = () => undefined;
     let settled = false;
+    let owner: Promise<void> | undefined;
     const completion = new Promise<void>((resolve, reject) => {
       resolveCompletion = resolve;
       rejectCompletion = reject;
@@ -451,14 +452,30 @@ export class ExecManager {
     const receipt: CleanupReceipt = {
       completion,
       terminal: () => settled,
-      resolve() {
-        if (!settled) {
-          settled = true;
-          resolveCompletion();
+      bind(activeDone) {
+        if (owner !== undefined || settled) {
+          throw new Error('Cleanup receipt already has an owner');
         }
+        owner = activeDone;
+        void activeDone.then(
+          () => {
+            if (!settled) {
+              settled = true;
+              resolveCompletion();
+            }
+          },
+          (error: unknown) => {
+            if (!settled) {
+              settled = true;
+              rejectCompletion(
+                error instanceof Error ? error : new Error('Containment cleanup failed'),
+              );
+            }
+          },
+        );
       },
-      reject(error) {
-        if (!settled) {
+      rejectUnbound(error) {
+        if (owner === undefined && !settled) {
           settled = true;
           rejectCompletion(error);
         }
@@ -596,16 +613,7 @@ export class ExecManager {
     }
     const { active, state } = this.beginActive(pid, containment);
     if (cleanupReceipt !== undefined) {
-      void active.done.then(
-        () => {
-          cleanupReceipt.resolve();
-        },
-        (error: unknown) => {
-          cleanupReceipt.reject(
-            error instanceof Error ? error : new Error('Containment cleanup failed'),
-          );
-        },
-      );
+      cleanupReceipt.bind(active.done);
     }
     // The PID route owns only the launcher process.  Its numeric identity must
     // disappear as soon as that process exits, even when HTTP output delivery
@@ -701,16 +709,7 @@ export class ExecManager {
     terminal.pause();
     const { active, state } = this.beginActive(pid, containment);
     if (cleanupReceipt !== undefined) {
-      void active.done.then(
-        () => {
-          cleanupReceipt.resolve();
-        },
-        (error: unknown) => {
-          cleanupReceipt.reject(
-            error instanceof Error ? error : new Error('Containment cleanup failed'),
-          );
-        },
-      );
+      cleanupReceipt.bind(active.done);
     }
     const timeout = setTimeout(() => {
       active.kill('timeout');
