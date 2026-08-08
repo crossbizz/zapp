@@ -640,6 +640,22 @@ describe('Modal image provider facade', () => {
       const syntax = spawnSync('/bin/dash', ['-n', '-c', script], { encoding: 'utf8' });
       expect(syntax.status, syntax.stderr).toBe(0);
       expect(script).not.toMatch(/\bjq\b[^;]*\|\s*(?:head|tail)\b/u);
+      const jqAssignments = script
+        .split(';')
+        .map((statement) => statement.trim())
+        .filter((statement) => /\w+=\$\(jq\s/u.test(statement));
+      for (const assignment of jqAssignments) {
+        const jqFailure = spawnSync(
+          '/bin/dash',
+          [
+            '-c',
+            `jq() { printf 'partial-value'; return 7; }; set -eu; ${assignment}; printf 'continued'`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(jqFailure.status, jqFailure.stderr).toBe(7);
+        expect(jqFailure.stdout).not.toContain('continued');
+      }
 
       const failFastPreamble = script.slice(0, script.indexOf(';'));
       const execution = spawnSync('/bin/dash', ['-c', `${failFastPreamble}; exit 0`], {
