@@ -67,6 +67,13 @@ set +a
 export DATABASE_URL="postgres://zapp:zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"
 export REDIS_URL="redis://localhost:${ZAPP_REDIS_PORT:-6379}"
 
+# Arm the live backup/delete/restore/clone proof (git-service backup.test.ts):
+# with the flag set, that suite THROWS when a dependency is missing instead of
+# skipping. git-service's workflow.test.ts asserts this line exists — the proof
+# must not be able to silently vanish from the gate (it lived in ci.yml's
+# git-backup-live job until Actions were parked).
+export GIT_BACKUP_LIVE=1
+
 # This hook is the CI now; arm the suites' refuse-to-skip guards.
 export CI="${CI:-zapp-prepush}"
 

@@ -37,7 +37,11 @@ type Workflow = {
 const workflowPath = fileURLToPath(
   new URL('../../../.github/workflows/git-backups.yml', import.meta.url),
 );
-const ciWorkflowPath = fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url));
+const hookPath = fileURLToPath(
+  new URL('../../../scripts/git-hooks/pre-push.local', import.meta.url),
+);
+const turboConfigPath = fileURLToPath(new URL('../../../turbo.json', import.meta.url));
+const rootManifestPath = fileURLToPath(new URL('../../../package.json', import.meta.url));
 const execute = promisify(execFile);
 
 const secretEnvironment = {
@@ -148,30 +152,32 @@ describe('the Git backup workflow', () => {
     expect(containsSecretReference({ ...operation, env: undefined })).toBe(false);
   });
 
-  it('CI runs the live backup/delete/restore/clone proof with every declared dependency', async () => {
-    const workflow = parse(await readFile(ciWorkflowPath, 'utf8')) as Workflow;
-    const job = workflow.jobs?.['git-backup-live'];
-    const steps = job?.steps ?? [];
+  it('the push gate runs the live backup/delete/restore/clone proof with every declared dependency', async () => {
+    // GitHub Actions is parked (owner decision, 2026-08-07) and the pre-push
+    // hook is the gate, so the never-silently-vanish property this test held
+    // over ci.yml's `git-backup-live` job now attaches to the hook chain: the
+    // hook arms GIT_BACKUP_LIVE and pins the local stack, turbo's strict
+    // envMode admits the flag into test:integration, and `pnpm verify` runs
+    // that task. Sever any link and this fails, exactly as the job variant
+    // did — and backup.test.ts itself throws when the flag is armed while a
+    // dependency is missing, so the proof cannot quietly degrade to a skip.
+    const hook = await readFile(hookPath, 'utf8');
+    expect(hook, 'gate no longer arms the live backup proof').toContain(
+      'export GIT_BACKUP_LIVE=1',
+    );
+    expect(hook).toMatch(
+      /^export DATABASE_URL="postgres:\/\/zapp:zapp@localhost:\$\{ZAPP_POSTGRES_PORT:-5432\}\/zapp"$/m,
+    );
+    expect(hook).toContain('pnpm verify');
 
-    expect(job, 'missing dedicated live backup gate').toBeDefined();
-    expect(Object.keys(job?.services ?? {}).sort()).toEqual(['forgejo', 'postgres']);
-    expect(job?.env).toMatchObject({
-      GIT_BACKUP_LIVE: '1',
-      DATABASE_URL: 'postgres://postgres@localhost:5432/zapp',
-      FORGEJO_URL: 'http://localhost:3000',
-      ARTIFACT_ENDPOINT: 'http://localhost:9000',
-      ARTIFACT_KEY: 'minioadmin',
-      ARTIFACT_SECRET: 'minioadmin',
-      ARTIFACT_BUCKET: 'zapp-git-backups',
-    });
-    expect(job?.services?.['postgres']?.env).toMatchObject({
-      POSTGRES_HOST_AUTH_METHOD: 'trust',
-    });
-    expect(steps.find((step) => step.name === 'Start MinIO service')?.run).toContain(
-      'minio/minio:RELEASE.2025-04-22T22-12-26Z server /data',
-    );
-    expect(steps.find((step) => step.name === 'Live backup recovery gate')?.run).toBe(
-      'pnpm --filter @zapp/git-service exec vitest run test/integration/backup.test.ts --no-file-parallelism',
-    );
+    const turbo = JSON.parse(
+      (await readFile(turboConfigPath, 'utf8')).replace(/^\s*\/\/.*$/gmu, ''),
+    ) as { tasks?: Record<string, { env?: readonly string[] }> };
+    expect(turbo.tasks?.['test:integration']?.env).toContain('GIT_BACKUP_LIVE');
+
+    const manifest = JSON.parse(await readFile(rootManifestPath, 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(manifest.scripts?.['verify']).toContain('turbo run test:integration');
   });
 });
