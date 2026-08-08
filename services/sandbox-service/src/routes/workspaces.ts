@@ -88,7 +88,11 @@ export interface WorkspaceRowBoundary {
     providerWorkspaceId: string,
     expectedStatus: 'provisioning',
   ): Promise<WorkspaceLifecycleRow>;
-  get(workspaceId: string, organizationId?: string): Promise<WorkspaceLifecycleRow | undefined>;
+  get(
+    workspaceId: string,
+    organizationId: string,
+    projectId: string,
+  ): Promise<WorkspaceLifecycleRow | undefined>;
   getAttachment(
     workspaceId: string,
     organizationId: string,
@@ -153,6 +157,12 @@ const CreateWorkspaceBodySchema = z
     env: EnvVarsSchema,
     networkProfile: NetworkProfileSchema,
     operationKey: OperationKeySchema,
+  })
+  .strict();
+const WorkspaceScopeHeadersSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
   })
   .strict();
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
@@ -307,6 +317,13 @@ function readIdempotencyKey(header: string | string[] | undefined): string {
   return parsed.data;
 }
 
+function readWorkspaceScope(request: FastifyRequest) {
+  return WorkspaceScopeHeadersSchema.parse({
+    organizationId: request.headers['x-zapp-organization-id'],
+    projectId: request.headers['x-zapp-project-id'],
+  });
+}
+
 function createInputFor(
   row: WorkspaceLifecycleRow,
   body: z.infer<typeof CreateWorkspaceBodySchema>,
@@ -338,11 +355,10 @@ export function registerWorkspaceRoutes(
     workspaceId: string,
     request: FastifyRequest,
   ): Promise<string> => {
-    const organizationId = idSchema('org').parse(request.headers['x-zapp-organization-id']);
-    const row = await deps.rows.get(workspaceId, organizationId);
+    const scope = readWorkspaceScope(request);
+    const row = await deps.rows.get(workspaceId, scope.organizationId, scope.projectId);
     if (
       row === undefined ||
-      row.organizationId !== organizationId ||
       row.providerWorkspaceId === null ||
       row.status === 'terminated'
     ) {
@@ -362,6 +378,15 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = CreateWorkspaceBodySchema.parse(request.body);
       requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
+      const scope = readWorkspaceScope(request);
+      if (
+        scope.organizationId !== body.workspace.organizationId ||
+        scope.projectId !== body.workspace.projectId
+      ) {
+        throw Object.assign(new Error('Workspace scope does not match the request.'), {
+          statusCode: 400,
+        });
+      }
       const key = WorkspaceRowIdempotencyKeySchema.parse({
         runId: body.runId,
         taskId: body.taskId,
@@ -555,7 +580,12 @@ export function registerWorkspaceRoutes(
     },
     async (request: FastifyRequest) => {
       const params = WorkspaceParamsSchema.parse(request.params);
-      const row = await deps.rows.get(params.workspaceId);
+      const scope = readWorkspaceScope(request);
+      const row = await deps.rows.get(
+        params.workspaceId,
+        scope.organizationId,
+        scope.projectId,
+      );
       if (row === undefined) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
@@ -581,7 +611,12 @@ export function registerWorkspaceRoutes(
       const params = WorkspaceParamsSchema.parse(request.params);
       const body = TerminateBodySchema.parse(request.body);
       requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
-      const row = await deps.rows.get(params.workspaceId);
+      const scope = readWorkspaceScope(request);
+      const row = await deps.rows.get(
+        params.workspaceId,
+        scope.organizationId,
+        scope.projectId,
+      );
       if (row === undefined) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }

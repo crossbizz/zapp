@@ -34,6 +34,8 @@ const IDS = {
   taskId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NE',
   workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
 } as const;
+const OTHER_ORGANIZATION_ID = 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NZ';
+const OTHER_PROJECT_ID = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NZ';
 
 const IMAGE_LOCK = {
   version: 1,
@@ -449,10 +451,16 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     return Promise.resolve(next);
   }
 
-  get(workspaceId: string, organizationId?: string): Promise<WorkspaceLifecycleRow | undefined> {
+  get(
+    workspaceId: string,
+    organizationId: string,
+    projectId: string,
+  ): Promise<WorkspaceLifecycleRow | undefined> {
     const row = this.rows.get(workspaceId);
     return Promise.resolve(
-      row === undefined || (organizationId !== undefined && row.organizationId !== organizationId)
+      row === undefined ||
+        row.organizationId !== organizationId ||
+        row.projectId !== projectId
         ? undefined
         : row,
     );
@@ -463,9 +471,9 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     organizationId: string,
     projectId: string,
   ) {
-    const row = await this.get(workspaceId, organizationId);
+    const row = await this.get(workspaceId, organizationId, projectId);
     const attachment = this.attachments.get(workspaceId);
-    return row === undefined || row.projectId !== projectId || attachment === undefined
+    return row === undefined || attachment === undefined
       ? undefined
       : { row, attachment };
   }
@@ -629,6 +637,7 @@ describe('attach reattach recovery and ownership', () => {
       headers: {
         'x-zapp-service-token': SERVICE_TOKEN,
         'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
         'idempotency-key': OPERATION_KEY,
       },
       payload: {
@@ -642,7 +651,9 @@ describe('attach reattach recovery and ownership', () => {
       },
     });
     await vi.waitFor(async () => {
-      await expect(rows.get(IDS.workspaceId)).resolves.toMatchObject({
+      await expect(
+        rows.get(IDS.workspaceId, IDS.organizationId, IDS.projectId),
+      ).resolves.toMatchObject({
         status: 'provisioning',
         providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
       });
@@ -832,7 +843,9 @@ describe('attach reattach recovery and ownership', () => {
       });
 
       expect(response.statusCode, testCase.name).toBe(testCase.expectedStatus);
-      await expect(rows.get(IDS.workspaceId)).resolves.toMatchObject({
+      await expect(
+        rows.get(IDS.workspaceId, IDS.organizationId, IDS.projectId),
+      ).resolves.toMatchObject({
         status: 'terminated',
         terminatedAt: NOW,
       });
@@ -1037,6 +1050,141 @@ describe('create status terminate and idempotency', () => {
     expect(sdk.sandbox.terminateCalls).toBe(1);
   });
 
+  it.each([
+    {
+      name: 'organization header is missing',
+      headers: { 'x-zapp-project-id': IDS.projectId },
+    },
+    {
+      name: 'project header is missing',
+      headers: { 'x-zapp-organization-id': IDS.organizationId },
+    },
+    {
+      name: 'organization header differs from the workspace row',
+      headers: {
+        'x-zapp-organization-id': OTHER_ORGANIZATION_ID,
+        'x-zapp-project-id': IDS.projectId,
+      },
+    },
+    {
+      name: 'project header differs from the workspace row',
+      headers: {
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': OTHER_PROJECT_ID,
+      },
+    },
+  ])('rejects create before persistence or provider access when $name', async ({ headers }) => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'idempotency-key': OPERATION_KEY,
+        ...headers,
+      },
+      payload: {
+        workspace: requestedRow(),
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(sdk.creates).toHaveLength(0);
+    expect(rows.transitions).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      name: 'status across organizations',
+      method: 'GET' as const,
+      path: '',
+      organizationId: OTHER_ORGANIZATION_ID,
+      projectId: IDS.projectId,
+    },
+    {
+      name: 'status across projects',
+      method: 'GET' as const,
+      path: '',
+      organizationId: IDS.organizationId,
+      projectId: OTHER_PROJECT_ID,
+    },
+    {
+      name: 'terminate across organizations',
+      method: 'POST' as const,
+      path: '/terminate',
+      organizationId: OTHER_ORGANIZATION_ID,
+      projectId: IDS.projectId,
+    },
+    {
+      name: 'terminate across projects',
+      method: 'POST' as const,
+      path: '/terminate',
+      organizationId: IDS.organizationId,
+      projectId: OTHER_PROJECT_ID,
+    },
+  ])('returns 404 without row or provider disclosure for $name', async (testCase) => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      status: 'ready',
+    });
+    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: testCase.method,
+      url: `/internal/workspaces/${IDS.workspaceId}${testCase.path}`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': testCase.organizationId,
+        'x-zapp-project-id': testCase.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      ...(testCase.method === 'POST' ? { payload: { operationKey: OPERATION_KEY } } : {}),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      code: 'workspace_not_found',
+      message: 'Workspace was not found.',
+    });
+    expect(response.body).not.toContain(IDS.workspaceId);
+    expect(response.body).not.toContain(sdk.sandbox.providerWorkspaceId);
+    expect(sdk.getWorkspaceCalls).toBe(0);
+    expect(sdk.sandbox.terminateCalls).toBe(0);
+  });
+
   it('persists requested -> provisioning -> started -> ready once and terminates only after provider absence', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     const provider = createModalSandboxProvider({
@@ -1063,6 +1211,7 @@ describe('create status terminate and idempotency', () => {
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
       'idempotency-key': OPERATION_KEY,
     };
 
@@ -1098,7 +1247,11 @@ describe('create status terminate and idempotency', () => {
     const status = await app.inject({
       method: 'GET',
       url: `/internal/workspaces/${IDS.workspaceId}`,
-      headers: { 'x-zapp-service-token': SERVICE_TOKEN },
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+      },
     });
     expect(status.statusCode).toBe(200);
     expect(status.json<{ providerStatus: WorkspaceStatus }>().providerStatus).toBe('ready');
@@ -1137,6 +1290,7 @@ describe('create status terminate and idempotency', () => {
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
       'idempotency-key': OPERATION_KEY,
     };
     const payload = {
@@ -1188,6 +1342,8 @@ describe('create status terminate and idempotency', () => {
       url: '/internal/workspaces',
       headers: {
         'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
         'idempotency-key': OPERATION_KEY,
       },
       payload: {
@@ -1543,6 +1699,7 @@ describe('agent proxy and unguarded conformance', () => {
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
       'idempotency-key': OPERATION_KEY,
     };
     try {
@@ -1572,6 +1729,7 @@ describe('agent proxy and unguarded conformance', () => {
         headers: {
           'x-zapp-service-token': SERVICE_TOKEN,
           'x-zapp-organization-id': IDS.organizationId,
+          'x-zapp-project-id': IDS.projectId,
         },
       });
       expect(guardedSnapshot.statusCode).toBe(409);
