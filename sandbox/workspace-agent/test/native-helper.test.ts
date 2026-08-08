@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { access, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as nodePty from 'node-pty';
 import { describe, expect, test } from 'vitest';
 
@@ -159,6 +159,24 @@ async function swapParent(fixture: SwapFixture): Promise<void> {
 }
 
 describe('descriptor-relative native workspace helpers', () => {
+  test('accepts the real Linux node-pty install shape without a macOS-only spawn helper', async () => {
+    const scriptUrl = pathToFileURL(
+      join(PACKAGE_ROOT, 'scripts', 'ensure-node-pty-helper.mjs'),
+    ).href;
+    const validation = runNative(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `Object.defineProperty(process, 'platform', { value: 'linux' }); await import(${JSON.stringify(scriptUrl)});`,
+      ],
+      process.env,
+    );
+
+    const result = await validation.completion;
+    expect(result.exitCode, result.stderr.toString('utf8')).toBe(0);
+  });
+
   test('build emits executable native helper and launcher binaries', async () => {
     await expect(access(PATH_HELPER, constants.X_OK)).resolves.toBeUndefined();
     await expect(access(EXEC_LAUNCHER, constants.X_OK)).resolves.toBeUndefined();
