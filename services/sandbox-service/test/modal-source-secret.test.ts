@@ -63,7 +63,7 @@ beforeEach(() => {
   modalState.secretLookups.length = 0;
 });
 
-test('attaches the named source-read secret only to the explicit source-fetch layer', async () => {
+test('scopes the named source-read secret through partial-clone checkout and only its fetch layer', async () => {
   const publisher = createModalImagePublisher({
     credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
   });
@@ -113,6 +113,9 @@ test('attaches the named source-read secret only to the explicit source-fetch la
   expect(sourceFetch).toContain('GIT_ASKPASS');
   expect(sourceFetch).toContain('https://github.com/crossbizz/zapp.git');
   expect(sourceFetch).toContain('abcdef0123456789abcdef0123456789abcdef01');
+  expect(sourceFetch).toContain(
+    'GIT_ASKPASS=/tmp/zapp-source-fetch/askpass GIT_TERMINAL_PROMPT=0 git -c credential.helper= checkout --detach FETCH_HEAD',
+  );
   expect(sourceFetch).toContain('git rev-parse HEAD');
   expect(modalState.layers[2]?.params).toBeUndefined();
   const credentialBoundary = modalState.layers[2]?.commands.join('\n') ?? '';
