@@ -1118,15 +1118,21 @@ function createModalWorkspaceSdk(
           }),
         ).toString('base64');
         const script = [
-          "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
+          "let encoded = ''; for await (const chunk of process.stdin) encoded += chunk;",
+          "const input = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));",
           "const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, 'base64') });",
           'const body = Buffer.from(await response.arrayBuffer());',
           "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined, bodyBase64: body.toString('base64') }));",
         ].join('\n');
-        const process = await sandbox.exec(['node', '--input-type=module', '-e', script, encoded], {
+        const process = await sandbox.exec(['node', '--input-type=module', '-e', script], {
           mode: 'text',
           timeoutMs: 30_000,
         });
+        try {
+          await process.stdin.writeText(encoded);
+        } finally {
+          await process.closeStdin();
+        }
         const [stdout, exitCode] = await Promise.all([process.stdout.readText(), process.wait()]);
         if (exitCode !== 0) throw new Error('Workspace agent request failed');
         const response = z
@@ -1156,15 +1162,21 @@ function createModalWorkspaceSdk(
           }),
         ).toString('base64');
         const script = [
-          "const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));",
+          "let encoded = ''; for await (const chunk of process.stdin) encoded += chunk;",
+          "const input = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));",
           "const response = await fetch(input.url, { method: input.method, headers: input.headers, body: input.bodyBase64 === undefined ? undefined : Buffer.from(input.bodyBase64, 'base64') });",
           "process.stdout.write(JSON.stringify({ statusCode: response.status, contentType: response.headers.get('content-type') ?? undefined }) + '\\n');",
           'if (response.body !== null) for await (const chunk of response.body) process.stdout.write(Buffer.from(chunk));',
         ].join('\n');
-        const process = await sandbox.exec(['node', '--input-type=module', '-e', script, encoded], {
+        const process = await sandbox.exec(['node', '--input-type=module', '-e', script], {
           mode: 'text',
           timeoutMs: WORKSPACE_TIMEOUT_MS,
         });
+        try {
+          await process.stdin.writeText(encoded);
+        } finally {
+          await process.closeStdin();
+        }
         const reader = process.stdout.getReader();
         let buffered = '';
         while (!buffered.includes('\n')) {

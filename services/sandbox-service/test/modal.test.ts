@@ -58,6 +58,7 @@ vi.mock('modal', async (importOriginal) => {
     };
 
     readonly sandboxes = {
+      fromId: () => Promise.resolve(modalSdkState.sandbox),
       create: (...args: unknown[]) => {
         modalSdkState.createCalls.push(args);
         return Promise.resolve(modalSdkState.sandbox);
@@ -91,6 +92,7 @@ vi.mock('modal', async (importOriginal) => {
   };
 });
 import {
+  createModalSandboxProvider,
   createModalImagePublisher,
   imageDockerfileCommands,
   type ModalSdkPort,
@@ -260,6 +262,110 @@ beforeEach(() => {
   modalSdkState.experimentalCreateCalls.length = 0;
   modalSdkState.sandbox = undefined;
   modalSdkState.volumeCloseCount = 0;
+});
+
+describe('Modal workspace agent adapter', () => {
+  test('streams an allowed 8 MiB agent envelope through stdin instead of one argv entry', async () => {
+    let command: string[] = [];
+    let stdin = '';
+    let stdinClosed = false;
+    const responseBody = Buffer.from(JSON.stringify({ ok: true }));
+    modalSdkState.sandbox = {
+      sandboxId: 'sb-envelope-stdin',
+      poll: () => Promise.resolve(null),
+      exec(nextCommand: string[]) {
+        command = nextCommand;
+        if (nextCommand.some((argument) => Buffer.byteLength(argument) > 128 * 1_024)) {
+          const error = new Error('argument list too long');
+          Object.assign(error, { code: 'E2BIG' });
+          return Promise.reject(error);
+        }
+        return Promise.resolve({
+          stdin: {
+            writeText(value: string) {
+              stdin = value;
+              return Promise.resolve();
+            },
+          },
+          closeStdin() {
+            stdinClosed = true;
+            return Promise.resolve();
+          },
+          stdout: {
+            readText: () =>
+              Promise.resolve(
+                JSON.stringify({
+                  statusCode: 200,
+                  contentType: 'application/json; charset=utf-8',
+                  bodyBase64: responseBody.toString('base64'),
+                }),
+              ),
+          },
+          stderr: { readText: () => Promise.resolve('') },
+          wait: () => Promise.resolve(stdinClosed ? 0 : 1),
+        });
+      },
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: {
+        version: 1,
+        environments: {
+          dev: {
+            modalEnvironment: 'zapp-dev',
+            sourceRevision: 'c58a416cba65f57ea64ba3e3e90f3646efca9b62',
+            tag: '2026-08-08-c58a416',
+            images: {
+              'forge-node-base': {
+                appName: 'zapp-workspaces',
+                digest: 'im-9NCxx8merCgh67jj0YLM84',
+                publishedName: 'forge-node-base:2026-08-08-c58a416',
+              },
+              'forge-web-test': {
+                appName: 'zapp-browser-verify',
+                digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+                publishedName: 'forge-web-test:2026-08-08-c58a416',
+              },
+            },
+          },
+        },
+      },
+      agentToken: 'agent-test-token',
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+
+    await expect(
+      provider.writeFilesAtomically('sb-envelope-stdin', [
+        { path: 'large.bin', data: Buffer.alloc(8 * 1_024 * 1_024, 'a') },
+      ]),
+    ).resolves.toBeUndefined();
+
+    expect(command).toHaveLength(4);
+    expect(command.slice(0, 3)).toEqual(['node', '--input-type=module', '-e']);
+    expect(Math.max(...command.map((argument) => Buffer.byteLength(argument)))).toBeLessThan(
+      128 * 1_024,
+    );
+    expect(stdinClosed).toBe(true);
+    const envelope = JSON.parse(Buffer.from(stdin, 'base64').toString('utf8')) as {
+      method: string;
+      url: string;
+      headers: Record<string, string>;
+      bodyBase64: string;
+    };
+    expect(envelope.method).toBe('POST');
+    expect(envelope.url).toBe('http://127.0.0.1:8877/files/atomic-write');
+    expect(envelope.headers.authorization).toBe('Bearer agent-test-token');
+    const body = JSON.parse(Buffer.from(envelope.bodyBase64, 'base64').toString('utf8')) as {
+      files: Array<{ path: string; dataBase64: string }>;
+    };
+    expect(body.files).toHaveLength(1);
+    expect(body.files[0]?.path).toBe('large.bin');
+    expect(
+      Buffer.from(body.files[0]?.dataBase64 ?? '', 'base64').equals(
+        Buffer.alloc(8 * 1_024 * 1_024, 'a'),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('Modal image provider facade', () => {
