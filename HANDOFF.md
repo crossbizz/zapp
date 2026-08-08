@@ -131,6 +131,18 @@ and isolation suites would otherwise skip and a skip must never read as a pass.
 
 Turbo caches per package, so in practice only what you touched actually executes.
 
+Three properties of the hook worth knowing before you fight it (all from real
+incidents on 2026-08-07, see tasks/lessons.md): it **pins DATABASE_URL/REDIS_URL
+to the local compose stack** regardless of what `.env` says — `.env` may carry a
+remote Neon URL for M4 provisioning work, and the shared remote database is
+non-hermetic (ad-hoc `vitest` runs that source `.env` are NOT immune; export the
+localhost URLs yourself). It **arms `CI` and `GIT_BACKUP_LIVE`**, so suites throw
+instead of skipping when their configuration is missing, and the live Git
+backup/restore proof runs on every push to main. And it takes a **machine-wide
+lock** (one verify gate at a time), because two agents share this laptop and
+concurrent gates collide on the web e2e port and the per-service `_test`
+databases.
+
 To restore automatic CI later: raise the spending limit and re-add `push`/`pull_request`
 triggers, or register a **self-hosted runner** — self-hosted minutes are not billed, even
 on private repos — and change `runs-on`.
