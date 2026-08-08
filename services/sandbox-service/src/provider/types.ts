@@ -42,14 +42,56 @@ export const ImageFileSchema = z
   .strict();
 export type ImageFile = z.infer<typeof ImageFileSchema>;
 
+export const SourceFetchRevisionSchema = z
+  .object({
+    repositoryUrl: z
+      .string()
+      .regex(
+        /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/u,
+        'Expected an immutable-source GitHub HTTPS repository URL',
+      ),
+    commitSha: z.string().regex(/^[a-f0-9]{40}$/u, 'Expected a full Git commit SHA'),
+  })
+  .strict();
+export type SourceFetchRevision = z.infer<typeof SourceFetchRevisionSchema>;
+
+export const ImageBuildLayerSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('plain'), commands: z.array(z.string().min(1)).min(1) }).strict(),
+  z.object({ kind: z.literal('source-fetch'), source: SourceFetchRevisionSchema }).strict(),
+]);
+export type ImageBuildLayer = z.infer<typeof ImageBuildLayerSchema>;
+
 export const ImageRecipeSchema = z
   .object({
     imageName: ImageNameSchema,
     base: ImageBaseSchema,
-    commands: z.array(z.string().min(1)).min(1),
+    layers: z.array(ImageBuildLayerSchema).min(1),
     files: z.array(ImageFileSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const sourceLayerIndexes = value.layers.flatMap((layer, index) =>
+      layer.kind === 'source-fetch' ? [index] : [],
+    );
+    if (sourceLayerIndexes.length > 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['layers'],
+        message: 'A recipe can contain only one source-fetch layer',
+      });
+    }
+    const sourceLayerIndex = sourceLayerIndexes[0];
+    if (
+      sourceLayerIndex !== undefined &&
+      value.layers[sourceLayerIndex + 1]?.kind !== 'plain'
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['layers', sourceLayerIndex + 1],
+        message: 'A source-fetch layer must be followed by a plain verification layer',
+      });
+    }
+  });
 export type ImageRecipe = z.infer<typeof ImageRecipeSchema>;
 
 export const PublishedImageNameSchema = z
@@ -187,10 +229,19 @@ export const ImageSmokeEvidenceSchema = z
       .strict(),
     capabilities: z
       .object({
+        previewProxyHealth: z.literal(true),
         volumeReadWrite: z.literal(true),
         filesystemSnapshot: ImageDigestSchema,
         encryptedTunnel: z.literal(true),
         readinessProbe: z.literal(true),
+      })
+      .strict(),
+    credentialAbsence: z
+      .object({
+        environment: z.literal(true),
+        gitConfiguration: z.literal(true),
+        askpassPath: z.literal(true),
+        processEnvironment: z.literal(true),
       })
       .strict(),
     terminated: z.literal(true),

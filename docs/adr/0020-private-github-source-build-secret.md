@@ -1,6 +1,6 @@
 # ADR-0020: Private GitHub source build secret
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-07
 - Owners: Workspace runtime / sandbox service / infrastructure
 - Affects: WS-2; temporary until M4 GitHub App delivery
@@ -12,7 +12,7 @@ repository, and Modal JS SDK 0.9.0 has no local-source upload primitive. WS-2
 must build an exact advertised Git revision without placing a repository
 credential in a command argument, URL, Git configuration, log, or image layer.
 
-## Proposal
+## Decision
 
 Provision a Modal named Secret called `zapp-github-source-read` containing only
 the required key `ZAPP_GITHUB_READ_TOKEN`. Its value is a fine-grained GitHub
@@ -31,5 +31,5 @@ unavailable. A real image smoke also proves no credential persists in process
 environment, Git configuration, filesystem contents, logs, or image layers.
 
 This is temporary until the M4 GitHub App can mint the source-read credential.
-It requires explicit user approval and Secret provisioning before
-implementation; this Proposed ADR does not authorize either.
+The human approved this decision on 2026-08-07 and provisioned the named Secret
+in the `zapp-dev` environment before implementation began.

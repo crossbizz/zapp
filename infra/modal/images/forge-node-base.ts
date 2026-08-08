@@ -1,22 +1,16 @@
 import { z } from 'zod';
-import { ImageRecipeSchema, type ImageRecipe } from '@zapp/sandbox-service/provider-types';
+import {
+  ImageRecipeSchema,
+  SourceFetchRevisionSchema,
+  type ImageRecipe,
+} from '@zapp/sandbox-service/provider-types';
 import {
   IMAGE_BUILD_CONFIG,
   ImageBuildConfigSchema,
   type ImageBuildConfig,
 } from './config.js';
 
-export const SourceRevisionSchema = z
-  .object({
-    repositoryUrl: z
-      .string()
-      .regex(
-        /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/u,
-        'Expected an immutable-source GitHub HTTPS repository URL',
-      ),
-    commitSha: z.string().regex(/^[a-f0-9]{40}$/u, 'Expected a full Git commit SHA'),
-  })
-  .strict();
+export const SourceRevisionSchema = SourceFetchRevisionSchema;
 export type SourceRevision = z.infer<typeof SourceRevisionSchema>;
 
 const BOOT_SCRIPT = `#!/usr/bin/env bash
@@ -112,19 +106,32 @@ export function createForgeNodeBaseRecipe(
   return ImageRecipeSchema.parse({
     imageName: 'forge-node-base',
     base: { kind: 'registry', ref: config.node.baseImage },
-    commands: [
-      `RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources && printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99snapshot`,
-      'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
-      `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
-      'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
-      `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
-      `RUN git clone --filter=blob:none --no-checkout '${source.repositoryUrl}' ${sourceDirectory} && cd ${sourceDirectory} && git fetch --depth=1 origin '${source.commitSha}' && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = '${source.commitSha}'`,
-      `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
-      `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,
-      `RUN cd ${sourceDirectory} && pnpm --filter @zapp/workspace-agent deploy --prod /opt/zapp/agent && pnpm --filter @zapp/preview-proxy deploy --prod /opt/zapp/proxy`,
-      'RUN test -f /opt/zapp/agent/dist/main.js && test -f /opt/zapp/proxy/dist/main.js && mkdir -p /workspace',
-      'ENV NODE_ENV=production ZAPP_WORKSPACE_ROOT=/workspace PORT=8080',
-      'WORKDIR /workspace',
+    layers: [
+      {
+        kind: 'plain',
+        commands: [
+          `RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources && printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99snapshot`,
+          'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
+          `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
+          'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
+          `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
+        ],
+      },
+      {
+        kind: 'source-fetch',
+        source,
+      },
+      {
+        kind: 'plain',
+        commands: [
+          `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
+          `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,
+          `RUN cd ${sourceDirectory} && pnpm --filter @zapp/workspace-agent deploy --prod /opt/zapp/agent && pnpm --filter @zapp/preview-proxy deploy --prod /opt/zapp/proxy`,
+          'RUN test -f /opt/zapp/agent/dist/main.js && test -f /opt/zapp/proxy/dist/main.js && mkdir -p /workspace',
+          'ENV NODE_ENV=production ZAPP_WORKSPACE_ROOT=/workspace PORT=8080',
+          'WORKDIR /workspace',
+        ],
+      },
     ],
     files: [
       { path: '/opt/zapp/boot.sh', mode: '0755', contents: BOOT_SCRIPT },

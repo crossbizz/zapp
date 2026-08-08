@@ -19,7 +19,7 @@ function baseRecipe() {
       kind: 'registry',
       ref: 'node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3',
     },
-    commands: ['RUN node --version'],
+    layers: [{ kind: 'plain', commands: ['RUN node --version'] }],
     files: [],
   });
 }
@@ -45,6 +45,13 @@ function successfulSandbox(
         return Promise.resolve({ exitCode: 0, stdout: 'v22.23.1\n', stderr: '' });
       }
       const url = command.at(-1) ?? '';
+      if (command[0] === 'curl' && url.endsWith('/__zapp/healthz')) {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: JSON.stringify({ status: 'ok' }),
+          stderr: '',
+        });
+      }
       if (command[0] === 'curl' && url.endsWith('/healthz')) {
         return Promise.resolve({
           exitCode: 0,
@@ -146,7 +153,7 @@ describe('Modal image provider facade', () => {
       ImageRecipeSchema.parse({
         imageName: 'forge-node-base',
         base: baseRecipe().base,
-        commands: ['RUN npm ci --prefix /opt/zapp/browser'],
+        layers: [{ kind: 'plain', commands: ['RUN npm ci --prefix /opt/zapp/browser'] }],
         files: [
           {
             path: '/opt/zapp/browser/package-lock.json',
@@ -377,8 +384,18 @@ describe('Modal image provider facade', () => {
       'agent-shutdown-buffered',
       'agent-shutdown-pty',
       'pid-ownership',
+      '/__zapp/healthz',
       '/workspace-probe',
       '/exec/cleanup/',
+      'ZAPP_GITHUB_READ_TOKEN',
+      '${GIT_ASKPASS+x}',
+      '${GIT_CONFIG_GLOBAL+x}',
+      '${GIT_CONFIG_SYSTEM+x}',
+      '/tmp/zapp-source-fetch/askpass',
+      '/root/.git-credentials',
+      '/proc/[0-9]*/environ',
+      'git config --system',
+      'core\\.[Aa]sk[Pp]ass',
     ]) {
       expect(serializedCommands).toContain(requiredProbe);
     }
@@ -429,10 +446,17 @@ describe('Modal image provider facade', () => {
         pidOwnership: true,
       },
       capabilities: {
+        previewProxyHealth: true,
         volumeReadWrite: true,
         filesystemSnapshot: 'im-snapshot0123',
         encryptedTunnel: true,
         readinessProbe: true,
+      },
+      credentialAbsence: {
+        environment: true,
+        gitConfiguration: true,
+        askpassPath: true,
+        processEnvironment: true,
       },
       terminated: true,
     });
@@ -500,7 +524,11 @@ describe('Modal image provider facade', () => {
     const sandbox = successfulSandbox([], () => undefined);
     const exec = sandbox.exec.bind(sandbox);
     sandbox.exec = (command) => {
-      if (command[0] === 'curl' && command.at(-1)?.endsWith('/healthz')) {
+      if (
+        command[0] === 'curl' &&
+        command.at(-1)?.endsWith('/healthz') &&
+        !command.at(-1)?.endsWith('/__zapp/healthz')
+      ) {
         healthAttempts += 1;
         if (healthAttempts === 1) {
           return Promise.resolve({ exitCode: 7, stdout: '', stderr: 'connection refused' });

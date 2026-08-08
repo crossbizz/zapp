@@ -46,6 +46,34 @@ const SOURCE_REVISION = {
   commitSha: 'abcdef0123456789abcdef0123456789abcdef01',
 } as const;
 
+const SUCCESSFUL_SMOKE_EVIDENCE = {
+  nodeVersion: 'v22.23.1',
+  health: { ok: true, details: 'workspace-agent ready' },
+  vmRuntime: true,
+  cgroup: { delegated: true, kill: true, emptySignal: true },
+  lifecycle: {
+    timeout: { buffered: true, pty: true },
+    disconnect: { buffered: true, pty: true },
+    explicitKill: { buffered: true, pty: true },
+    agentShutdown: { buffered: true, pty: true },
+    pidOwnership: true,
+  },
+  capabilities: {
+    previewProxyHealth: true,
+    volumeReadWrite: true,
+    filesystemSnapshot: 'im-snapshot0123',
+    encryptedTunnel: true,
+    readinessProbe: true,
+  },
+  credentialAbsence: {
+    environment: true,
+    gitConfiguration: true,
+    askpassPath: true,
+    processEnvironment: true,
+  },
+  terminated: true,
+} as const;
+
 function successfulPublisher(
   calls: Array<{ operation: string; input: unknown }>,
 ): ModalImagePublisher {
@@ -62,26 +90,7 @@ function successfulPublisher(
     },
     smokeImage(input) {
       calls.push({ operation: 'smoke', input });
-      return Promise.resolve({
-        nodeVersion: 'v22.23.1',
-        health: { ok: true, details: 'workspace-agent ready' },
-        vmRuntime: true,
-        cgroup: { delegated: true, kill: true, emptySignal: true },
-        lifecycle: {
-          timeout: { buffered: true, pty: true },
-          disconnect: { buffered: true, pty: true },
-          explicitKill: { buffered: true, pty: true },
-          agentShutdown: { buffered: true, pty: true },
-          pidOwnership: true,
-        },
-        capabilities: {
-          volumeReadWrite: true,
-          filesystemSnapshot: 'im-snapshot0123',
-          encryptedTunnel: true,
-          readinessProbe: true,
-        },
-        terminated: true,
-      });
+      return Promise.resolve(SUCCESSFUL_SMOKE_EVIDENCE);
     },
     verifyPublishedImage(input) {
       calls.push({ operation: 'verify', input });
@@ -368,26 +377,7 @@ describe('Modal image publication transaction', () => {
       if (input.environment === 'zapp-staging') {
         return Promise.reject(new Error('staging VM smoke failed'));
       }
-      return Promise.resolve({
-        nodeVersion: 'v22.23.1',
-        health: { ok: true, details: 'workspace-agent ready' },
-        vmRuntime: true,
-        cgroup: { delegated: true, kill: true, emptySignal: true },
-        lifecycle: {
-          timeout: { buffered: true, pty: true },
-          disconnect: { buffered: true, pty: true },
-          explicitKill: { buffered: true, pty: true },
-          agentShutdown: { buffered: true, pty: true },
-          pidOwnership: true,
-        },
-        capabilities: {
-          volumeReadWrite: true,
-          filesystemSnapshot: 'im-snapshot0123',
-          encryptedTunnel: true,
-          readinessProbe: true,
-        },
-        terminated: true,
-      });
+      return Promise.resolve(SUCCESSFUL_SMOKE_EVIDENCE);
     };
 
     await expect(

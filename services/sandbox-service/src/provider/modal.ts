@@ -18,6 +18,7 @@ import {
   type ModalCredentials,
   type ModalImagePublisher,
   type SandboxTags,
+  type SourceFetchRevision,
 } from './types.js';
 
 const ModalSdkRunResultSchema = z
@@ -39,6 +40,7 @@ const AgentExecResultSchema = z
   })
   .strict();
 const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
+const PreviewProxyHealthSchema = z.object({ status: z.literal('ok') }).strict();
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 const HEALTH_PROBE_INTERVAL_MS = 250;
@@ -110,7 +112,57 @@ function fileCommands(recipe: ImageRecipe): string[] {
 }
 
 export function imageDockerfileCommands(recipe: ImageRecipe): string[] {
-  return [...fileCommands(recipe), ...recipe.commands];
+  return imageDockerfileLayers(recipe).flatMap((layer) => layer.commands);
+}
+
+interface DockerfileBuildLayer {
+  readonly kind: 'plain' | 'source-fetch';
+  readonly commands: string[];
+}
+
+const SOURCE_DIRECTORY = '/tmp/zapp-src';
+const ASKPASS_DIRECTORY = '/tmp/zapp-source-fetch';
+const ASKPASS_PATH = `${ASKPASS_DIRECTORY}/askpass`;
+const CREDENTIAL_CONFIG_PATTERN =
+  '^(credential\\.|core\\.[Aa]sk[Pp]ass$|http\\..*\\.extraheader)';
+
+function sourceFetchCommand(source: SourceFetchRevision): string {
+  return `RUN set -eu; umask 077; test ! -e ${ASKPASS_DIRECTORY}; mkdir ${ASKPASS_DIRECTORY}; cleanup() { rm -rf ${ASKPASS_DIRECTORY}; }; trap cleanup EXIT; trap 'exit 1' HUP INT TERM; printf '%s\\n' '#!/bin/sh' 'case "$1" in' '*Username*) printf "%s\\n" "x-access-token" ;;' '*) printf "%s\\n" "$ZAPP_GITHUB_READ_TOKEN" ;;' 'esac' > ${ASKPASS_PATH}; chmod 0700 ${ASKPASS_PATH}; GIT_ASKPASS=${ASKPASS_PATH} GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --filter=blob:none --no-checkout ${shellQuote(source.repositoryUrl)} ${SOURCE_DIRECTORY}; cd ${SOURCE_DIRECTORY}; GIT_ASKPASS=${ASKPASS_PATH} GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch --depth=1 origin ${shellQuote(source.commitSha)}; git checkout --detach FETCH_HEAD; test "$(git rev-parse HEAD)" = ${shellQuote(source.commitSha)}`;
+}
+
+function credentialAbsenceCommand(includeProcessEnvironments: boolean): string {
+  const directEnvironmentChecks = [
+    'ZAPP_GITHUB_READ_TOKEN',
+    'GIT_ASKPASS',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_NOSYSTEM',
+  ]
+    .map((name) => `test -z "\${${name}+x}"`)
+    .join('; ');
+  const processCheck = includeProcessEnvironments
+    ? "; for process_environment in /proc/[0-9]*/environ; do if test -r \"$process_environment\" && tr '\\0' '\\n' < \"$process_environment\" 2>/dev/null | grep -Eq '^(ZAPP_GITHUB_READ_TOKEN|GIT_ASKPASS|GIT_CONFIG_(COUNT|GLOBAL|SYSTEM|NOSYSTEM|KEY_[0-9]+|VALUE_[0-9]+))='; then exit 1; fi; done"
+    : '';
+  return `set -eu; ${directEnvironmentChecks}; test ! -e ${ASKPASS_PATH}; test ! -e ${ASKPASS_DIRECTORY}; test ! -e /root/.git-credentials; test ! -e /root/.config/git/credentials; test -z "$(git config --system --get-regexp '${CREDENTIAL_CONFIG_PATTERN}' || true)"; test -z "$(git config --global --get-regexp '${CREDENTIAL_CONFIG_PATTERN}' || true)"; test -z "$(git -C ${SOURCE_DIRECTORY} config --local --get-regexp '${CREDENTIAL_CONFIG_PATTERN}' || true)"; remote_url=$(git -C ${SOURCE_DIRECTORY} remote get-url origin); case "$remote_url" in https://github.com/*) ;; *) exit 1 ;; esac; case "\${remote_url#https://}" in *@*) exit 1 ;; esac${processCheck}`;
+}
+
+function imageDockerfileLayers(recipe: ImageRecipe): DockerfileBuildLayer[] {
+  const files = fileCommands(recipe);
+  const layers: DockerfileBuildLayer[] = [
+    ...(files.length === 0 ? [] : [{ kind: 'plain' as const, commands: files }]),
+  ];
+  for (const layer of recipe.layers) {
+    if (layer.kind === 'source-fetch') {
+      layers.push(
+        { kind: 'source-fetch', commands: [sourceFetchCommand(layer.source)] },
+        { kind: 'plain', commands: [`RUN ${credentialAbsenceCommand(false)}`] },
+      );
+    } else {
+      layers.push(layer);
+    }
+  }
+  return layers;
 }
 
 function credentialsFromEnvironment(): ModalCredentials {
@@ -137,7 +189,18 @@ function createSdkPort(credentials: ModalCredentials): ModalSdkPort {
         input.recipe.base.kind === 'registry'
           ? client.images.fromRegistry(input.recipe.base.ref)
           : await client.images.fromId(input.recipe.base.digest);
-      const image = base.dockerfileCommands(imageDockerfileCommands(input.recipe));
+      let image = base;
+      for (const layer of imageDockerfileLayers(input.recipe)) {
+        if (layer.kind === 'source-fetch') {
+          const sourceReadSecret = await client.secrets.fromName('zapp-github-source-read', {
+            environment: input.environment,
+            requiredKeys: ['ZAPP_GITHUB_READ_TOKEN'],
+          });
+          image = image.dockerfileCommands(layer.commands, { secrets: [sourceReadSecret] });
+        } else {
+          image = image.dockerfileCommands(layer.commands);
+        }
+      }
       const built = await image.build(app);
       return built.imageId;
     },
@@ -521,6 +584,32 @@ async function runSmoke(
     }
 
     const health = await waitForAgentHealth(sandbox, input.agentToken);
+    PreviewProxyHealthSchema.parse(
+      JSON.parse(
+        (
+          await execOrThrow(
+            sandbox,
+            [
+              'curl',
+              '--fail-with-body',
+              '--silent',
+              '--show-error',
+              'http://127.0.0.1:8080/__zapp/healthz',
+            ],
+            'preview proxy health probe',
+          )
+        ).stdout,
+      ) as unknown,
+    );
+    await execOrThrow(
+      sandbox,
+      [
+        'sh',
+        '-lc',
+        credentialAbsenceCommand(true),
+      ],
+      'source credential absence probe',
+    );
 
     await probeTimeoutCleanup(sandbox, input.agentToken, 'buffered-timeout', false);
     await probeTimeoutCleanup(sandbox, input.agentToken, 'pty-timeout', true);
@@ -566,10 +655,17 @@ async function runSmoke(
         pidOwnership: true,
       },
       capabilities: {
+        previewProxyHealth: true,
         volumeReadWrite: true,
         filesystemSnapshot: snapshotDigest,
         encryptedTunnel: true,
         readinessProbe: true,
+      },
+      credentialAbsence: {
+        environment: true,
+        gitConfiguration: true,
+        askpassPath: true,
+        processEnvironment: true,
       },
       terminated: true,
     });

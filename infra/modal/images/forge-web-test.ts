@@ -88,11 +88,16 @@ export function createForgeWebTestRecipe(
   return ImageRecipeSchema.parse({
     imageName: 'forge-web-test',
     base: { kind: 'publication', digest: baseDigest },
-    commands: [
-      'RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation fonts-noto-color-emoji fonts-noto-cjk && rm -rf /var/lib/apt/lists/*',
-      'RUN npm ci --prefix /opt/zapp/browser --omit=dev --no-audit --no-fund',
-      'RUN PLAYWRIGHT_BROWSERS_PATH=/ms-playwright /opt/zapp/browser/node_modules/.bin/playwright install --with-deps chromium',
-      'ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PATH=/opt/zapp/browser/node_modules/.bin:$PATH ZAPP_BROWSER_CDP_PORT=9222',
+    layers: [
+      {
+        kind: 'plain',
+        commands: [
+          'RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation fonts-noto-color-emoji fonts-noto-cjk && rm -rf /var/lib/apt/lists/*',
+          'RUN npm ci --prefix /opt/zapp/browser --omit=dev --no-audit --no-fund',
+          'RUN PLAYWRIGHT_BROWSERS_PATH=/ms-playwright /opt/zapp/browser/node_modules/.bin/playwright install --with-deps chromium',
+          'ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PATH=/opt/zapp/browser/node_modules/.bin:$PATH ZAPP_BROWSER_CDP_PORT=9222',
+        ],
+      },
     ],
     files: [
       {

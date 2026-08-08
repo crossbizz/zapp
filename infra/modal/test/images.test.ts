@@ -24,10 +24,14 @@ const ALTERNATE_CONFIG = {
   },
 } as const;
 
+function recipeCommands(recipe: ReturnType<typeof createForgeNodeBaseRecipe>): string[] {
+  return recipe.layers.flatMap((layer) => (layer.kind === 'plain' ? layer.commands : []));
+}
+
 describe('forge-node-base image policy', () => {
   test('validates configuration and consumes every pinned recipe assumption', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION, ALTERNATE_CONFIG);
-    const commands = recipe.commands.join('\n');
+    const commands = recipeCommands(recipe).join('\n');
 
     expect(recipe.base).toEqual({ kind: 'registry', ref: ALTERNATE_CONFIG.node.baseImage });
     expect(commands).toContain(ALTERNATE_CONFIG.node.debianSnapshot);
@@ -65,7 +69,7 @@ describe('forge-node-base image policy', () => {
 
   test('returns a pinned Node 22 recipe with the required build and runtime tools', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION);
-    const commands = recipe.commands.join('\n');
+    const commands = recipeCommands(recipe).join('\n');
 
     expect(recipe.base).toEqual({ kind: 'registry', ref: IMAGE_BUILD_CONFIG.node.baseImage });
     expect(IMAGE_BUILD_CONFIG.node.baseImage).not.toMatch(/latest/iu);
@@ -91,7 +95,7 @@ describe('forge-node-base image policy', () => {
   });
 
   test('bootstraps trusted CAs from the signed snapshot before switching it to HTTPS', () => {
-    const commands = createForgeNodeBaseRecipe(SOURCE_REVISION).commands;
+    const commands = recipeCommands(createForgeNodeBaseRecipe(SOURCE_REVISION));
     const caBootstrapIndex = commands.findIndex(
       (command) => command.includes('apt-get install') && command.includes('ca-certificates'),
     );
@@ -111,11 +115,24 @@ describe('forge-node-base image policy', () => {
 
   test('fetches and verifies the exact immutable source revision before deploying both builds', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION);
-    const commands = recipe.commands.join('\n');
+    const recipeShape = recipe as unknown as {
+      layers?: Array<
+        | { kind: 'plain'; commands: string[] }
+        | { kind: 'source-fetch'; source: typeof SOURCE_REVISION }
+      >;
+    };
 
-    expect(commands).toContain(SOURCE_REVISION.repositoryUrl);
-    expect(commands).toContain(SOURCE_REVISION.commitSha);
-    expect(commands).toContain('git rev-parse HEAD');
+    expect(recipeShape.layers).toBeDefined();
+    const layers = recipeShape.layers ?? [];
+    const sourceLayerIndex = layers.findIndex((layer) => layer.kind === 'source-fetch');
+    expect(sourceLayerIndex).toBeGreaterThanOrEqual(0);
+    expect(layers.filter((layer) => layer.kind === 'source-fetch')).toHaveLength(1);
+    expect(layers[sourceLayerIndex + 1]?.kind).toBe('plain');
+    expect(layers[sourceLayerIndex]).toEqual({ kind: 'source-fetch', source: SOURCE_REVISION });
+    const commands = layers.flatMap((layer) =>
+      layer.kind === 'plain' ? layer.commands : [],
+    ).join('\n');
+
     expect(commands).toContain('@zapp/workspace-agent');
     expect(commands).toContain('@zapp/preview-proxy');
     expect(commands).toContain('/opt/zapp/agent');
@@ -153,7 +170,9 @@ describe('forge-web-test image policy', () => {
 
   test('extends the built base digest and pins browser, accessibility, and font tooling', () => {
     const recipe = createForgeWebTestRecipe('im-base0123456789');
-    const commands = recipe.commands.join('\n');
+    const commands = recipe.layers
+      .flatMap((layer) => (layer.kind === 'plain' ? layer.commands : []))
+      .join('\n');
 
     expect(recipe.base).toEqual({ kind: 'publication', digest: 'im-base0123456789' });
     expect(commands).toContain('npm ci --prefix /opt/zapp/browser');
