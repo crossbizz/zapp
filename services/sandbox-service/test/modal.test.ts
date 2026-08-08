@@ -668,6 +668,117 @@ describe('Modal image provider facade', () => {
     }
   });
 
+  test('surfaces the closed kill-acknowledgement phase from the explicit-kill dash script', async () => {
+    const commands: string[][] = [];
+    const sandbox = successfulSandbox(commands, () => undefined);
+    const defaultExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      const script = command[2] ?? '';
+      if (
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        script.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        script.includes('request_pid=$!')
+      ) {
+        const fakeCommands = `
+curl() {
+  case "$*" in
+    */kill*) printf '%s\\n' '{"killed":false}' ;;
+    *) printf '%s\\n' '{"type":"started","pid":4242,"executionId":"execution-diagnostic-sentinel"}' '{"type":"exit","exitCode":143}' ;;
+  esac
+}
+jq() {
+  case "$*" in
+    *.pid*) printf '%s\\n' '4242' ;;
+    *.executionId*) printf '%s\\n' 'execution-diagnostic-sentinel' ;;
+    *.killed*) printf '%s\\n' 'false' ;;
+    *.exitCode*) printf '%s\\n' '143' ;;
+    *) return 9 ;;
+  esac
+}
+`;
+        const execution = spawnSync('/bin/dash', ['-c', `${fakeCommands}\n${script}`], {
+          encoding: 'utf8',
+        });
+        return {
+          exitCode: execution.status ?? 127,
+          stdout: execution.stdout,
+          stderr: execution.stderr,
+        };
+      }
+      return defaultExec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+    const agentToken = randomUUID();
+
+    const smoke = publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken,
+    });
+
+    await expect(smoke).rejects.toThrow(
+      'explicit-kill-buffered cleanup probe failed with exit code 1 (phase: kill_acknowledgement)',
+    );
+    await expect(smoke).rejects.not.toThrow(agentToken);
+    await expect(smoke).rejects.not.toThrow('execution-diagnostic-sentinel');
+  });
+
+  test.each([
+    JSON.stringify({ phase: 'kill_acknowledgement', token: 'diagnostic-secret-sentinel' }),
+    JSON.stringify({ phase: 'unbounded-diagnostic-sentinel' }),
+  ])('rejects a non-closed explicit-kill diagnostic object', async (stdout) => {
+    const sandbox = successfulSandbox([], () => undefined);
+    const defaultExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = (command) => {
+      const script = command[2] ?? '';
+      if (
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        script.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        script.includes('request_pid=$!')
+      ) {
+        return Promise.resolve({ exitCode: 9, stdout, stderr: 'raw-stderr-sentinel' });
+      }
+      return defaultExec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    const error = await publisher
+      .smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      })
+      .then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'explicit-kill-buffered cleanup probe failed with exit code 9',
+    );
+  });
+
   test('rejects a smoke when the immutable name does not resolve to the lock digest', async () => {
     let createCount = 0;
     const sdk = {

@@ -43,6 +43,21 @@ const AgentExecResultSchema = z
   .strict();
 const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 const PreviewProxyHealthSchema = z.object({ status: z.literal('ok') }).strict();
+const ExplicitKillProbeFailurePhaseSchema = z.enum([
+  'started_wait',
+  'identity_parse',
+  'kill_request',
+  'stream_completion',
+  'kill_acknowledgement',
+  'exit_record',
+  'exit_code_validation',
+]);
+const ExplicitKillProbeDiagnosticSchema = z
+  .object({ phase: ExplicitKillProbeFailurePhaseSchema })
+  .strict();
+type ExplicitKillProbeFailurePhase = z.infer<
+  typeof ExplicitKillProbeFailurePhaseSchema
+>;
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 const HEALTH_PROBE_INTERVAL_MS = 250;
@@ -309,6 +324,30 @@ async function execOrThrow(
   return result;
 }
 
+async function execExplicitKillProbeOrThrow(
+  sandbox: ModalSdkSandboxPort,
+  command: string[],
+  purpose: string,
+): Promise<ModalSdkRunResult> {
+  const result = ModalSdkRunResultSchema.parse(await sandbox.exec(command));
+  if (result.exitCode !== 0) {
+    let diagnostic: z.infer<typeof ExplicitKillProbeDiagnosticSchema> | undefined;
+    try {
+      const parsed = ExplicitKillProbeDiagnosticSchema.safeParse(
+        JSON.parse(result.stdout) as unknown,
+      );
+      if (parsed.success) diagnostic = parsed.data;
+    } catch {
+      // Only the closed diagnostic schema may cross this boundary.
+    }
+    const suffix = diagnostic === undefined ? '' : ` (phase: ${diagnostic.phase})`;
+    throw new Error(
+      `${purpose} failed with exit code ${String(result.exitCode)}${suffix}`,
+    );
+  }
+  return result;
+}
+
 async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolveDelay) => {
     setTimeout(resolveDelay, milliseconds);
@@ -395,6 +434,11 @@ function detachedChildCommand(marker: string): string {
   return `setsid sh -c 'sleep 1; echo escaped > ${marker}' >/dev/null 2>&1 & sleep 30`;
 }
 
+function explicitKillPhaseFailure(phase: ExplicitKillProbeFailurePhase): string {
+  const diagnostic = ExplicitKillProbeDiagnosticSchema.parse({ phase });
+  return `(failure_status=$? && printf '%s\\n' ${shellQuote(JSON.stringify(diagnostic))} && exit "$failure_status")`;
+}
+
 async function probeTimeoutCleanup(
   sandbox: ModalSdkSandboxPort,
   token: string,
@@ -448,7 +492,7 @@ function agentRequestScript(
     return `set -eu; rm -f ${output}; set +e; curl --max-time 0.25 --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output}; status=$?; set -e; test "$status" -ne 0`;
   }
 
-  return `set -eu; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; for _ in $(seq 1 200); do grep -q '"type":"started"' ${output} && break; sleep 0.025; done; pid=$(jq -ser 'map(select(.type == "started"))[0].pid' ${output}); generation=$(jq -ser 'map(select(.type == "started"))[0].executionId' ${output}); test -n "$pid"; test -n "$generation"; kill_body=$(printf '{"executionId":"%s"}' "$generation"); kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST --data "$kill_body" "http://127.0.0.1:8877/exec/$pid/kill"); wait "$request_pid"; test "$(printf %s "$kill_result" | jq -r .killed)" = 'true'; exit_code=$(jq -ser 'map(select(.type == "exit"))[-1].exitCode' ${output}); test "$exit_code" -ne 0`;
+  return `set -eu; rm -f ${output}; curl --silent --show-error ${execHeaders} --request POST --data ${shellQuote(detachedBody)} ${shellQuote(executionUrl)} > ${output} & request_pid=$!; started=false; for _ in $(seq 1 200); do if grep -q '"type":"started"' ${output}; then started=true; break; fi; sleep 0.025; done; test "$started" = true || ${explicitKillPhaseFailure('started_wait')}; pid=$(jq -ser 'map(select(.type == "started"))[0].pid' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; generation=$(jq -ser 'map(select(.type == "started"))[0].executionId' ${output}) || ${explicitKillPhaseFailure('identity_parse')}; test -n "$pid" || ${explicitKillPhaseFailure('identity_parse')}; test -n "$generation" || ${explicitKillPhaseFailure('identity_parse')}; kill_body=$(printf '{"executionId":"%s"}' "$generation"); kill_result=$(curl --fail-with-body --silent --show-error ${killHeaders} --request POST --data "$kill_body" "http://127.0.0.1:8877/exec/$pid/kill") || ${explicitKillPhaseFailure('kill_request')}; wait "$request_pid" || ${explicitKillPhaseFailure('stream_completion')}; test "$(printf %s "$kill_result" | jq -r .killed)" = 'true' || ${explicitKillPhaseFailure('kill_acknowledgement')}; exit_code=$(jq -ser 'map(select(.type == "exit"))[-1].exitCode' ${output}) || ${explicitKillPhaseFailure('exit_record')}; test "$exit_code" -ne 0 || ${explicitKillPhaseFailure('exit_code_validation')}`;
 }
 
 async function probeScriptedLifecycle(
@@ -459,11 +503,12 @@ async function probeScriptedLifecycle(
 ): Promise<void> {
   const cleanupId = randomUUID();
   const scenario = `${label}-${pty ? 'pty' : 'buffered'}`;
-  await execOrThrow(
-    sandbox,
-    ['sh', '-lc', agentRequestScript(token, cleanupId, label, pty)],
-    `${scenario} cleanup probe`,
-  );
+  const command = ['sh', '-lc', agentRequestScript(token, cleanupId, label, pty)];
+  if (label === 'explicit-kill') {
+    await execExplicitKillProbeOrThrow(sandbox, command, `${scenario} cleanup probe`);
+  } else {
+    await execOrThrow(sandbox, command, `${scenario} cleanup probe`);
+  }
   await acknowledgeCleanup(sandbox, token, cleanupId);
   await execOrThrow(
     sandbox,
