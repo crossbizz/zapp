@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -224,6 +225,26 @@ function sdkSandbox(sandbox: ModalSdkSandboxPort) {
     },
     terminate: () => sandbox.terminate(),
   };
+}
+
+function runDash(script: string): Promise<{ status: number; stdout: string; stderr: string }> {
+  return new Promise((resolveExecution, rejectExecution) => {
+    const child = spawn('/bin/dash', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', rejectExecution);
+    child.once('exit', (status) => {
+      resolveExecution({ status: status ?? 127, stdout, stderr });
+    });
+  });
 }
 
 beforeEach(() => {
@@ -612,6 +633,124 @@ describe('Modal image provider facade', () => {
       terminated: true,
     });
     expect(terminationCount).toBe(1);
+  });
+
+  test('streams started to the live explicit-kill probe before the response completes', async () => {
+    const commands: string[][] = [];
+    const sandbox = successfulSandbox(commands, () => undefined);
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+    await publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+    });
+
+    const script = commands.find(
+      (command) =>
+        command[0] === 'sh' &&
+        command[1] === '-lc' &&
+        command[2]?.includes('/tmp/zapp-explicit-kill-buffered.ndjson') &&
+        command[2].includes('request_pid=$!'),
+    )?.[2];
+    expect(script).toBeDefined();
+
+    const events: string[] = [];
+    let streamResponse: ServerResponse | undefined;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.once('end', () => {
+        if (request.url?.startsWith('/exec?stream=1')) {
+          events.push('stream_started');
+          streamResponse = response;
+          response.on('error', () => undefined);
+          response.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          response.flushHeaders();
+          response.write(
+            `${JSON.stringify({
+              type: 'started',
+              pid: 4242,
+              executionId: 'execution-curl-buffer-sentinel',
+            })}\n`,
+          );
+          return;
+        }
+        if (request.url === '/exec/4242/kill') {
+          events.push('kill_requested');
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end('{"killed":true}\n');
+          streamResponse?.write('{"type":"exit","exitCode":143}\n');
+          streamResponse?.end();
+          events.push('stream_completed');
+          return;
+        }
+        response.writeHead(404);
+        response.end();
+      });
+    });
+
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(8877, '127.0.0.1', resolveListen);
+    });
+    try {
+      const fastScript = (script ?? '').replace(
+        'sleep 30 & start_deadline_pid=$!',
+        'sleep 0.5 & start_deadline_pid=$!',
+      );
+      const execution = await runDash(fastScript);
+      expect(execution.status, `${execution.stdout}\n${execution.stderr}`).toBe(0);
+      expect(events).toEqual(['stream_started', 'kill_requested', 'stream_completed']);
+    } finally {
+      streamResponse?.destroy();
+      await new Promise<void>((resolveClose) =>
+        server.close(() => {
+          resolveClose();
+        }),
+      );
+    }
+  });
+
+  test('disables buffering for every emitted background NDJSON consumer', async () => {
+    const commands: string[][] = [];
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(successfulSandbox(commands, () => undefined)),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+    await publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+    });
+
+    const backgroundStreams = commands
+      .filter((command) => command[0] === 'sh' && command[1] === '-lc')
+      .flatMap((command) => {
+        const script = command[2] ?? '';
+        return [...script.matchAll(/& request(?:_b)?_pid=\$!/gu)].map((match) => {
+          const requestEnd = match.index + match[0].length;
+          return script.slice(script.lastIndexOf('curl ', match.index), requestEnd);
+        });
+      })
+      .filter((request) => request.includes('stream=1'));
+    expect(backgroundStreams).toHaveLength(5);
+    for (const request of backgroundStreams) {
+      expect(request).toContain('--no-buffer');
+    }
   });
 
   test('emits fail-fast smoke scripts that execute under Debian dash', async () => {
