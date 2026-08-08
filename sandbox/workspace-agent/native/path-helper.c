@@ -859,7 +859,7 @@ rename_cleanup:
 }
 
 static int run_search(int argc, char **argv) {
-  if (argc != 8) return PATH_HELPER_USAGE;
+  if (argc != 9) return PATH_HELPER_USAGE;
   bool path_violation = false;
   int root_fd = open_workspace_root(argv[2], &path_violation);
   int parent_fd = -1;
@@ -890,7 +890,7 @@ static int run_search(int argc, char **argv) {
   }
   char *arguments[16];
   size_t next = 0;
-  arguments[next++] = "rg";
+  arguments[next++] = argv[8];
   arguments[next++] = "--no-heading";
   arguments[next++] = "--line-number";
   arguments[next++] = "--color=never";
@@ -904,7 +904,7 @@ static int run_search(int argc, char **argv) {
   arguments[next++] = argv[4];
   arguments[next++] = descriptor_path;
   arguments[next] = NULL;
-  execvp("rg", arguments);
+  execv(argv[8], arguments);
   return PATH_HELPER_IO_FAILURE;
 }
 
@@ -927,7 +927,7 @@ int path_helper_main(int argc, char **argv) {
   if (argc == 5 && strcmp(argv[1], "rename") == 0) {
     return run_rename(argv[2], argv[3], argv[4]);
   }
-  if (argc == 8 && strcmp(argv[1], "search") == 0) {
+  if (argc == 9 && strcmp(argv[1], "search") == 0) {
     return run_search(argc, argv);
   }
   (void)fprintf(stderr, "path-helper: invalid invocation\n");

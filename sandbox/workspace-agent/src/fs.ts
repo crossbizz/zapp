@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Writable } from 'node:stream';
+import { rgPath } from '@vscode/ripgrep';
 import { z } from 'zod';
 import { AtomicWriteConflictError, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
 
@@ -61,12 +63,38 @@ export class FileOperationValidationError extends Error {
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATH_HELPER = join(PACKAGE_ROOT, 'dist', 'native', 'path-helper');
+const TYPED_EARLY_EXIT_CODES = new Set([65, 66]);
 
 class NativePathHelperError extends Error {
   constructor(readonly exitCode: number | null) {
     super('Native workspace path helper failed');
     this.name = 'NativePathHelperError';
   }
+}
+
+function writeHelperInput(stream: Writable, input: Buffer): Promise<Error | undefined> {
+  return new Promise((resolveInput) => {
+    const onError = (error: Error): void => {
+      resolveInput(error);
+    };
+    stream.once('error', onError);
+    stream.end(input, (error?: Error | null) => {
+      if (error === undefined || error === null) {
+        stream.off('error', onError);
+        resolveInput(undefined);
+      } else {
+        resolveInput(error);
+      }
+    });
+  });
+}
+
+function isTypedEarlyExitPipeClosure(error: Error, exitCode: number | null): boolean {
+  return (
+    (error as NodeJS.ErrnoException).code === 'EPIPE' &&
+    exitCode !== null &&
+    TYPED_EARLY_EXIT_CODES.has(exitCode)
+  );
 }
 
 function globMatches(path: string, glob: string): boolean {
@@ -87,18 +115,23 @@ function runPathHelper(args: readonly string[], input?: Buffer): Promise<Buffer>
       return;
     }
     const stdout: Buffer[] = [];
+    const inputCompletion =
+      input === undefined || stdinStream === null
+        ? Promise.resolve(undefined)
+        : writeHelperInput(stdinStream, input);
     stdoutStream.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.once('error', rejectResult);
     child.once('close', (exitCode) => {
-      if (exitCode === 0) {
-        resolveResult(Buffer.concat(stdout));
-      } else {
-        rejectResult(new NativePathHelperError(exitCode));
-      }
+      void inputCompletion.then((inputError) => {
+        if (inputError !== undefined && !isTypedEarlyExitPipeClosure(inputError, exitCode)) {
+          rejectResult(inputError);
+        } else if (exitCode !== 0) {
+          rejectResult(new NativePathHelperError(exitCode));
+        } else {
+          resolveResult(Buffer.concat(stdout));
+        }
+      });
     });
-    if (input !== undefined) {
-      stdinStream?.end(input);
-    }
   });
 }
 
@@ -128,6 +161,10 @@ function runNativeHelper(
     const stderr: Buffer[] = [];
     let capturedBytes = 0;
     let truncated = false;
+    const inputCompletion =
+      input === undefined || child.stdin === null
+        ? Promise.resolve(undefined)
+        : writeHelperInput(child.stdin, input);
     const capture = (target: Buffer[], chunk: Buffer): void => {
       const remaining = outputLimit - capturedBytes;
       if (remaining <= 0) {
@@ -147,18 +184,21 @@ function runNativeHelper(
     });
     child.once('error', rejectResult);
     child.once('close', (exitCode) => {
-      if (exitCode !== null && acceptedExitCodes.has(exitCode)) {
-        resolveResult({
-          exitCode,
-          stdout: Buffer.concat(stdout),
-          stderr: Buffer.concat(stderr),
-          truncated,
-        });
-      } else {
-        rejectResult(new NativePathHelperError(exitCode));
-      }
+      void inputCompletion.then((inputError) => {
+        if (inputError !== undefined && !isTypedEarlyExitPipeClosure(inputError, exitCode)) {
+          rejectResult(inputError);
+        } else if (exitCode === null || !acceptedExitCodes.has(exitCode)) {
+          rejectResult(new NativePathHelperError(exitCode));
+        } else {
+          resolveResult({
+            exitCode,
+            stdout: Buffer.concat(stdout),
+            stderr: Buffer.concat(stderr),
+            truncated,
+          });
+        }
+      });
     });
-    if (input !== undefined) child.stdin?.end(input);
   });
 }
 
@@ -288,6 +328,7 @@ export class WorkspaceFileManager {
       input.glob ?? '',
       input.fixedStrings === true ? '1' : '0',
       input.ignoreCase === true ? '1' : '0',
+      rgPath,
     ];
     const startedAt = Date.now();
     try {

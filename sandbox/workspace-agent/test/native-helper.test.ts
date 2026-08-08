@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import type { Writable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as nodePty from 'node-pty';
 import { describe, expect, test } from 'vitest';
@@ -22,6 +23,7 @@ import { describe, expect, test } from 'vitest';
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATH_HELPER = join(PACKAGE_ROOT, 'dist', 'native', 'path-helper');
 const EXEC_LAUNCHER = join(PACKAGE_ROOT, 'dist', 'native', 'exec-launcher');
+const TYPED_EARLY_EXIT_CODES = new Set([65, 66]);
 
 interface SwapFixture {
   readonly fixtureRoot: string;
@@ -36,6 +38,31 @@ interface SwapFixture {
 interface NativeRun {
   readonly completion: Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }>;
   readonly kill: () => void;
+}
+
+function writeNativeInput(stream: Writable, input: Buffer): Promise<Error | undefined> {
+  return new Promise((resolveInput) => {
+    const onError = (error: Error): void => {
+      resolveInput(error);
+    };
+    stream.once('error', onError);
+    stream.end(input, (error?: Error | null) => {
+      if (error === undefined || error === null) {
+        stream.off('error', onError);
+        resolveInput(undefined);
+      } else {
+        resolveInput(error);
+      }
+    });
+  });
+}
+
+function isTypedEarlyExitPipeClosure(error: Error, exitCode: number | null): boolean {
+  return (
+    (error as NodeJS.ErrnoException).code === 'EPIPE' &&
+    exitCode !== null &&
+    TYPED_EARLY_EXIT_CODES.has(exitCode)
+  );
 }
 
 async function waitForPath(path: string): Promise<void> {
@@ -73,18 +100,32 @@ function runNative(
   }
   stdoutStream.on('data', (chunk: Buffer) => stdout.push(chunk));
   stderrStream.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const inputCompletion =
+    input === undefined || child.stdin === null
+      ? Promise.resolve(undefined)
+      : writeNativeInput(child.stdin, input);
   const completion = new Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }>(
     (resolveCompletion, rejectCompletion) => {
       child.once('error', rejectCompletion);
       child.once('close', (exitCode) => {
-        resolveCompletion({ exitCode, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) });
+        void inputCompletion.then((inputError) => {
+          if (
+            inputError !== undefined &&
+            !isTypedEarlyExitPipeClosure(inputError, exitCode)
+          ) {
+            rejectCompletion(inputError);
+          } else {
+            resolveCompletion({
+              exitCode,
+              stdout: Buffer.concat(stdout),
+              stderr: Buffer.concat(stderr),
+            });
+          }
+        });
       });
     },
   );
   void completion.catch(() => undefined);
-  if (input !== undefined) {
-    child.stdin?.end(input);
-  }
   return { completion, kill: () => child.kill('SIGKILL') };
 }
 
@@ -211,7 +252,9 @@ describe('descriptor-relative native workspace helpers', () => {
     {
       name: 'lexical alias',
       args: ['2', 'target.txt', '3', './target.txt', '3'],
-      input: 'onetwo',
+      // Exceed a Linux pipe buffer so the helper's typed early rejection races
+      // with an in-flight request body deterministically.
+      input: 'x'.repeat(4 * 1024 * 1024),
       exitCode: 66,
     },
     {

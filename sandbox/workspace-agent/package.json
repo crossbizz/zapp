@@ -17,6 +17,7 @@
     "postinstall": "node scripts/ensure-node-pty-helper.mjs"
   },
   "dependencies": {
+    "@vscode/ripgrep": "^1.17.0",
     "@zapp/contracts": "workspace:*",
     "@zapp/workspace-runtime": "workspace:*",
     "execa": "8.0.1",
