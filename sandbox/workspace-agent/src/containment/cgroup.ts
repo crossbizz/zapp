@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
@@ -78,7 +78,7 @@ class CgroupV2Execution implements ExecutionContainment {
     }
     this.removed = true;
     try {
-      await rm(this.directory);
+      await rmdir(this.directory);
     } catch {
       throw new ContainmentUnavailableError();
     }
