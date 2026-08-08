@@ -55,6 +55,18 @@ set -a
 [ -f .env.local.forgejo ] && . ./.env.local.forgejo
 set +a
 
+# Pin the gate to the LOCAL compose stack, whatever .env currently says. These
+# are docker-compose.dev.yml literals, pinned here for the reason dev-up.sh
+# pins the MinIO literals. .env is live developer config, not a hermetic test
+# env — on 2026-08-07 it held a Neon DATABASE_URL, so the gate ran every suite
+# against a shared remote database where concurrent agents' runs truncate each
+# other's rows: deadlocks, vanishing orgs, and a different failure set every
+# run. The pg_isready probe above guards localhost, so the suites must test
+# localhost — a guard that probes one database while the tests hit another is
+# no guard at all.
+export DATABASE_URL="postgres://zapp:zapp@localhost:${ZAPP_POSTGRES_PORT:-5432}/zapp"
+export REDIS_URL="redis://localhost:${ZAPP_REDIS_PORT:-6379}"
+
 # This hook is the CI now; arm the suites' refuse-to-skip guards.
 export CI="${CI:-zapp-prepush}"
 

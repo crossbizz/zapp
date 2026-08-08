@@ -17,7 +17,7 @@
     "db:generate": "pnpm --filter @zapp/db db:generate",
     "db:migrate": "pnpm --filter @zapp/db db:migrate",
     "format": "prettier --write .",
-    "verify": "pnpm turbo run lint typecheck build test --continue --filter=!@zapp/desktop && pnpm turbo run test:integration --filter=!@zapp/desktop && pnpm --filter @zapp/control-api run test:isolation && pnpm --filter @zapp/control-api run test:gate5",
+    "verify": "pnpm turbo run lint typecheck build test --continue --filter=!@zapp/desktop && pnpm turbo run test:integration --filter=!@zapp/desktop --concurrency=1 && pnpm --filter @zapp/control-api run test:isolation && pnpm --filter @zapp/control-api run test:gate5",
     "verify:cold": "rm -rf packages/*/dist services/*/dist .turbo && pnpm verify"
   },
   "devDependencies": {

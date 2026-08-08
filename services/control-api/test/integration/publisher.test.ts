@@ -938,10 +938,12 @@ describe.skipIf(!hasDatabase || !hasRedis)('PostgreSQL NOTIFY to Redis fanout', 
       // bound is 2 s rather than the production 500 ms SLO. Every break this
       // test exists to catch — no LISTEN bridge, wrong channel, fabricated
       // sequence, publish-before-commit — fails at ANY bound; the wall-clock
-      // number only has to be tight enough to notice the bridge is gone. On
-      // macOS Docker the cold insert alone takes ~900 ms and fanout jitters
-      // past 500 ms about one run in four; the production SLO is enforced by
-      // ops metrics on production infra, not by this laptop-stack test.
+      // number only has to be tight enough to notice the bridge is gone.
+      // Measured with DATABASE_URL pointed at a remote Neon endpoint, the cold
+      // insert alone took ~875 ms and fanout jittered past 500 ms one run in
+      // four — wall-clock here is a property of wherever DATABASE_URL points,
+      // which is exactly why the production SLO is enforced by ops metrics on
+      // production infra rather than by this test.
       const startedAt = Date.now();
 
       await vi.waitFor(

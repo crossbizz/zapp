@@ -41,3 +41,23 @@ input gets the `|| [ -n "$var" ]` unterminated-final-line guard by default.
 and is installed by `scripts/dev-up.sh` — .git/hooks is untracked, so without
 the installer a fresh clone has no gate at all (same silent-disarm failure,
 different mechanism).
+
+## 2026-08-07 — A gate must pin the environment it certifies
+
+**What happened:** The armed pre-push gate went red with deadlocks, FK
+violations on rows that had just been inserted, and `organization_not_found`
+404s that changed from run to run. The hook sourced `.env` for connection
+strings — and `.env`'s `DATABASE_URL` pointed at a shared remote Neon endpoint
+(live M4 prep config), not the local stack. Every "local" suite ran against a
+database other concurrently-working agents were truncating. Meanwhile the
+hook's own `pg_isready -h localhost` probe guarded a database the tests never
+touched. Three debugging detours (CPU contention, IPv6, macOS Docker fsync)
+were all artifacts of measuring against the wrong database.
+
+**Rule:** A verification gate pins every piece of infrastructure it certifies
+— explicitly, in the gate itself — rather than inheriting live developer
+config. If a guard probes X, the thing it guards must run against X; guard and
+testee reading different config is the same silent-disarm failure as a skipped
+suite. And when a latency number looks impossible, check *where* the traffic
+goes before theorizing about *why* it is slow: a TLSSocket frame in a stack
+trace for a "localhost" database was the tell.
