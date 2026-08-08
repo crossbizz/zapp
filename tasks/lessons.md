@@ -61,3 +61,19 @@ testee reading different config is the same silent-disarm failure as a skipped
 suite. And when a latency number looks impossible, check *where* the traffic
 goes before theorizing about *why* it is slow: a TLSSocket frame in a stack
 trace for a "localhost" database was the tell.
+
+## 2026-08-07 — Re-scope work that exceeds ten minutes
+
+**What happened:** Correctness work could expand into repeated race hunting,
+heuristic hardening, or audit-driven edge cases while the end-to-end product
+path remained incomplete.
+
+**Rule:** At ten minutes, classify the delay. If the product-critical path is
+blocked by a race, heuristic, flaky test, or review/audit edge case, stop the
+grind: preserve structural security and real correctness, re-scope to the
+smallest load-bearing contract, document the disposition in the owning plan's
+Execution log, and move on. A failed required check remains failed and a
+blocked task remains unchecked; re-scoping never turns missing evidence into a
+pass. A prescribed local gate may run longer while its process is healthy and
+making progress, but do not restart or broaden it merely to chase marginal
+coverage.
