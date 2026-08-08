@@ -48,7 +48,7 @@ const SOURCE_REVISION = {
 
 const SUCCESSFUL_SMOKE_EVIDENCE = {
   nodeVersion: 'v22.23.1',
-  health: { ok: true, details: 'workspace-agent ready' },
+  health: { ok: true, details: 'workspace-agent ready', devServer: null },
   vmRuntime: true,
   cgroup: { delegated: true, kill: true, emptySignal: true },
   lifecycle: {

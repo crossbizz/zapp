@@ -96,7 +96,11 @@ import {
   type ModalSdkPort,
   type ModalSdkSandboxPort,
 } from '../src/provider/modal.js';
-import { ImageRecipeSchema, SmokeImageInputSchema } from '../src/provider/types.js';
+import {
+  AgentHealthSchema,
+  ImageRecipeSchema,
+  SmokeImageInputSchema,
+} from '../src/provider/types.js';
 
 const TAG = '2026-08-05-abcdef0';
 
@@ -143,7 +147,11 @@ function successfulSandbox(
       if (command[0] === 'curl' && url.endsWith('/healthz')) {
         return Promise.resolve({
           exitCode: 0,
-          stdout: JSON.stringify({ ok: true, details: 'workspace-agent ready' }),
+          stdout: JSON.stringify({
+            ok: true,
+            details: 'workspace-agent ready',
+            devServer: null,
+          }),
           stderr: '',
         });
       }
@@ -607,7 +615,7 @@ describe('Modal image provider facade', () => {
     expect(ownershipScript?.match(/executionId/gu)?.length).toBeGreaterThanOrEqual(2);
     expect(result).toEqual({
       nodeVersion: 'v22.23.1',
-      health: { ok: true, details: 'workspace-agent ready' },
+      health: { ok: true, details: 'workspace-agent ready', devServer: null },
       vmRuntime: true,
       cgroup: { delegated: true, kill: true, emptySignal: true },
       lifecycle: {
@@ -1215,9 +1223,95 @@ jq() {
         telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
       }),
     ).resolves.toEqual(
-      expect.objectContaining({ health: { ok: true, details: 'workspace-agent ready' } }),
+      expect.objectContaining({
+        health: { ok: true, details: 'workspace-agent ready', devServer: null },
+      }),
     );
     expect(healthAttempts).toBe(2);
+  });
+
+  test.each([
+    {
+      state: 'idle',
+      health: {
+        ok: true,
+        details: 'workspace-agent ready',
+        devServer: null,
+      },
+    },
+    {
+      state: 'managed dev server running',
+      health: {
+        ok: true,
+        details: 'workspace-agent ready',
+        devServer: {
+          port: 3000,
+          pid: 4242,
+          supervisorId: 'dev-server-1',
+          owned: true,
+          httpReady: true,
+        },
+      },
+    },
+  ])('accepts and preserves the exact $state workspace-agent health response', async ({ health }) => {
+    let healthAttempts = 0;
+    const sandbox = successfulSandbox([], () => undefined);
+    const exec = sandbox.exec.bind(sandbox);
+    sandbox.exec = (command) => {
+      if (
+        command[0] === 'curl' &&
+        command.at(-1)?.endsWith('/healthz') &&
+        !command.at(-1)?.endsWith('/__zapp/healthz')
+      ) {
+        healthAttempts += 1;
+        if (healthAttempts === 1) {
+          return Promise.resolve({ exitCode: 0, stdout: JSON.stringify(health), stderr: '' });
+        }
+      }
+      return exec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    const evidence = await publisher.smokeImage({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-built0123',
+      publishedName: `forge-node-base:${TAG}`,
+      agentToken: randomUUID(),
+      telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
+    });
+
+    expect(evidence.health).toEqual(health);
+    expect(healthAttempts).toBe(1);
+  });
+
+  test('keeps publisher health evidence strict at both object boundaries', () => {
+    const running = {
+      ok: true,
+      details: 'workspace-agent ready',
+      devServer: {
+        port: 3000,
+        pid: 4242,
+        supervisorId: 'dev-server-1',
+        owned: true,
+        httpReady: true,
+      },
+    } as const;
+
+    expect(AgentHealthSchema.safeParse({ ...running, unexpected: true }).success).toBe(false);
+    expect(
+      AgentHealthSchema.safeParse({
+        ...running,
+        devServer: { ...running.devServer, unexpected: true },
+      }).success,
+    ).toBe(false);
   });
 
   test('terminates the VM when a smoke assertion fails', async () => {

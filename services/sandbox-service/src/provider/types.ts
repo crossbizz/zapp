@@ -203,6 +203,16 @@ export const AgentHealthSchema = z
   .object({
     ok: z.literal(true),
     details: z.string().min(1),
+    devServer: z
+      .object({
+        port: z.number().int().min(1).max(65_535),
+        pid: z.number().int().positive(),
+        supervisorId: z.string().min(1),
+        owned: z.boolean(),
+        httpReady: z.boolean(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 
