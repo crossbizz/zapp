@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "@zapp/contracts": "workspace:*",
+    "fastify": "^5.11.2",
+    "fastify-type-provider-zod": "^4.0.2",
     "modal": "0.9.0",
     "zod": "3.25.76"
   },

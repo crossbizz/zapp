@@ -194,7 +194,7 @@ either task complete on fail-closed evidence alone.
 
 ##### Slice 4a — create, status, terminate, readiness, and row idempotency
 
-- [ ] **4a RED — write the failing integration cases.** In
+- [x] **4a RED — write the failing integration cases.** In
   `test/integration/modal-provider.test.ts`, add strict fake-provider cases plus the
   env-gated real-Modal case for: immutable lock-file image selection; the exact seven
   required tags; resource-profile limits; env allowlisting; boot command; agent
@@ -205,9 +205,9 @@ either task complete on fail-closed evidence alone.
   second provider mutation. Assert every mutating internal request carries its
   idempotency key, malformed/extra boundary fields fail Zod validation, and a missing
   real credential skips visibly by its env name rather than passing.
-- [ ] **4a RED run — prove the new behavior is absent for the intended reason.** Run
+- [x] **4a RED run — prove the new behavior is absent for the intended reason.** Run
   `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "create status terminate and idempotency"`. Expected: FAIL because the provider/app/workspace routes do not yet implement the lifecycle; an env-gated real case may report only its explicit credential skip in addition to that failure.
-- [ ] **4a minimal implementation.** In the listed files only, implement
+- [x] **4a minimal implementation.** In the listed files only, implement
   `ModalSandboxProvider.createWorkspace`, `getStatus`, and idempotent
   `terminateWorkspace`; the strict service app and workspace lifecycle routes; and the
   injected workspace-row boundary used by CP-9. Persist every legal transition in
@@ -217,14 +217,14 @@ either task complete on fail-closed evidence alone.
   reporting ready/terminated falsely. Reuse the pinned image lock data and
   `RESOURCE_PROFILES`; accept only contract-derived values and never expose a Modal
   object, agent origin, or credential.
-- [ ] **4a GREEN — rerun the exact RED command.** Expected: all non-credential cases
+- [x] **4a GREEN — rerun the exact RED command.** Expected: all non-credential cases
   PASS and the real case either PASSes against Modal or names its credential skip;
   idempotent replay shows one provider mutation and one workspace identity.
-- [ ] **4a package verification.** Run
+- [x] **4a package verification.** Run
   `pnpm --filter @zapp/sandbox-service test && pnpm --filter @zapp/sandbox-service lint && pnpm --filter @zapp/sandbox-service typecheck && pnpm --filter @zapp/sandbox-service build`.
   Record the trailing counts and any visible credential-gated skip. A failure or skip
   is never reported as a pass.
-- [ ] **4a commit.** Commit only the 4a files and evidence with
+- [x] **4a commit.** Commit only the 4a files and evidence with
   `feat(sandbox-service): Modal workspace create/status/terminate`. Do not check WS-3
   or WS-4 boxes.
 
@@ -502,3 +502,5 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-2 done — real Modal dev publish and standalone smoke at source `c58a416cba65f57ea64ba3e3e90f3646efca9b62` exited 0 with immutable tag `2026-08-08-c58a416`, base digest `im-9NCxx8merCgh67jj0YLM84`, web-test digest `im-eVxjg43Gv7bQrkH0CbwrrX`, and all strict VM/lifecycle/credential-absence/volume/snapshot/tunnel/readiness evidence; after the three bounded test-stability repairs and one clean SOL High review, exact advertised SHA `90305ed8fef549998555e8b027dcb9e3f24d0f8a` passed the one-shot locked local gate under Node 22.23.1/pnpm 9.15.0: concurrent 70/70, integration 15/15 (DB 48/48, Git 16/16, control API 236/236), isolation 54/54, and Gate 5 1/1. WS-3 remains unchecked.
 - 2026-08-08 WS-3 BLOCKED — the reviewed workspace-agent implementation and current published image passed focused daemon/auth checks 7/7, the dependency-built full suite 91/91, WS-1 conformance 35/35, package lint/typecheck/build 5/5, and one real Modal standalone smoke against tag `2026-08-08-c58a416` with strict authenticated VM/lifecycle/containment and capability evidence. WS-3 remains unchecked only because its binding guarded-write acceptance requires WS-4's production cloud runtime to prove successful revision-CAS commit plus deterministic final-window conflict with zero target writes across every writer domain; that provider/conformance path does not exist yet.
 - 2026-08-08 WS-4 expansion/preflight — expanded 4a/4b/guarded-production/4c into binding TDD cycles; pinned Modal JS SDK 0.9.0 exposes no proven atomic revision-CAS primitive whose domain covers exec, Git, editor, other-runtime, and provider writers, so implementable slices may proceed while joint WS-3/WS-4 completion awaits the required approved architecture decision and real guarded proof.
+- 2026-08-08 WS-4 4a re-scope — at the 15-minute checkpoint, kept execution to the smallest load-bearing lifecycle contract: strict fake-provider and env-gated real-Modal create/status/terminate coverage through an injected workspace-row boundary; CP-9/schema expansion, proxying, and reattach remain outside Slice 4a.
+- 2026-08-08 WS-4 4a verified — deterministic lifecycle RED failed at the absent app boundary, then GREEN covered strict create/status/terminate, 30-second authenticated readiness, requested→provisioning→started→ready rows, concurrent tuple idempotency, failure compensation, and strict inputs; sandbox-service finished 33 passed with 1 explicit MODAL_TOKEN_ID/MODAL_TOKEN_SECRET skip plus lint/typecheck/build green, and the single SOL High review's five Important findings were fixed in one round.

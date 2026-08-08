@@ -4,11 +4,20 @@ import process from 'node:process';
 import { posix } from 'node:path';
 import { ModalClient, NotFoundError, Probe } from 'modal';
 import { z } from 'zod';
-import { CleanupFailureResponseSchema } from '@zapp/contracts';
+import {
+  CleanupFailureResponseSchema,
+  CreateWorkspaceInputSchema,
+  RESOURCE_PROFILES,
+  WorkspaceHandleSchema,
+  type CreateWorkspaceInput,
+  type WorkspaceHandle,
+  type WorkspaceStatus,
+} from '@zapp/contracts';
 import {
   AgentHealthSchema,
   ImageDigestSchema,
   ImageSmokeEvidenceSchema,
+  PublishedImageNameSchema,
   ModalCredentialsSchema,
   PublishImageInputSchema,
   PublishedImageSchema,
@@ -56,9 +65,7 @@ const ExplicitKillProbeFailurePhaseSchema = z.enum([
 const ExplicitKillProbeDiagnosticSchema = z
   .object({ phase: ExplicitKillProbeFailurePhaseSchema })
   .strict();
-type ExplicitKillProbeFailurePhase = z.infer<
-  typeof ExplicitKillProbeFailurePhaseSchema
->;
+type ExplicitKillProbeFailurePhase = z.infer<typeof ExplicitKillProbeFailurePhaseSchema>;
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 const HEALTH_PROBE_INTERVAL_MS = 250;
@@ -143,8 +150,7 @@ interface DockerfileBuildLayer {
 const SOURCE_DIRECTORY = '/tmp/zapp-src';
 const ASKPASS_DIRECTORY = '/tmp/zapp-source-fetch';
 const ASKPASS_PATH = `${ASKPASS_DIRECTORY}/askpass`;
-const CREDENTIAL_CONFIG_PATTERN =
-  '^(credential\\.|core\\.[Aa]sk[Pp]ass$|http\\..*\\.extraheader)';
+const CREDENTIAL_CONFIG_PATTERN = '^(credential\\.|core\\.[Aa]sk[Pp]ass$|http\\..*\\.extraheader)';
 
 function sourceFetchCommand(source: SourceFetchRevision): string {
   return `RUN set -eu; umask 077; test ! -e ${ASKPASS_DIRECTORY}; mkdir ${ASKPASS_DIRECTORY}; cleanup() { rm -rf ${ASKPASS_DIRECTORY}; }; trap cleanup EXIT; trap 'exit 1' HUP INT TERM; printf '%s\\n' '#!/bin/sh' 'case "$1" in' '*Username*) printf "%s\\n" "x-access-token" ;;' '*) printf "%s\\n" "$ZAPP_GITHUB_READ_TOKEN" ;;' 'esac' > ${ASKPASS_PATH}; chmod 0700 ${ASKPASS_PATH}; GIT_ASKPASS=${ASKPASS_PATH} GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --filter=blob:none --no-checkout ${shellQuote(source.repositoryUrl)} ${SOURCE_DIRECTORY}; cd ${SOURCE_DIRECTORY}; GIT_ASKPASS=${ASKPASS_PATH} GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch --depth=1 origin ${shellQuote(source.commitSha)}; GIT_ASKPASS=${ASKPASS_PATH} GIT_TERMINAL_PROMPT=0 git -c credential.helper= checkout --detach FETCH_HEAD; test "$(git rev-parse HEAD)" = ${shellQuote(source.commitSha)}`;
@@ -344,9 +350,7 @@ async function execExplicitKillProbeOrThrow(
       // Only the closed diagnostic schema may cross this boundary.
     }
     const suffix = diagnostic === undefined ? '' : ` (phase: ${diagnostic.phase})`;
-    throw new Error(
-      `${purpose} failed with exit code ${String(result.exitCode)}${suffix}`,
-    );
+    throw new Error(`${purpose} failed with exit code ${String(result.exitCode)}${suffix}`);
   }
   return result;
 }
@@ -417,9 +421,7 @@ async function acknowledgeCleanup(
   if (response.exitCode !== 0) {
     let diagnostic = undefined;
     try {
-      diagnostic = CleanupFailureResponseSchema.safeParse(
-        JSON.parse(response.stdout) as unknown,
-      );
+      diagnostic = CleanupFailureResponseSchema.safeParse(JSON.parse(response.stdout) as unknown);
     } catch {
       // Only the closed diagnostic schema may cross this boundary.
     }
@@ -670,11 +672,7 @@ async function runSmoke(
     );
     await execOrThrow(
       sandbox,
-      [
-        'sh',
-        '-lc',
-        credentialAbsenceCommand(true),
-      ],
+      ['sh', '-lc', credentialAbsenceCommand(true)],
       'source credential absence probe',
     );
 
@@ -739,6 +737,380 @@ async function runSmoke(
   } finally {
     await sandbox.terminate();
   }
+}
+
+const WorkspaceEnvironmentNameSchema = z.enum(['dev', 'staging', 'prod']);
+type WorkspaceEnvironmentName = z.infer<typeof WorkspaceEnvironmentNameSchema>;
+
+const ModalImageLockSchema = z
+  .object({
+    version: z.literal(1),
+    environments: z.record(
+      WorkspaceEnvironmentNameSchema,
+      z
+        .object({
+          modalEnvironment: z.enum(['zapp-dev', 'zapp-staging', 'zapp-prod']),
+          sourceRevision: z.string().regex(/^[a-f0-9]{40}$/u),
+          tag: z.string().min(1),
+          images: z
+            .object({
+              'forge-node-base': z
+                .object({
+                  appName: z.literal('zapp-workspaces'),
+                  digest: ImageDigestSchema,
+                  publishedName: PublishedImageNameSchema,
+                })
+                .strict(),
+              'forge-web-test': z
+                .object({
+                  appName: z.literal('zapp-browser-verify'),
+                  digest: ImageDigestSchema,
+                  publishedName: PublishedImageNameSchema,
+                })
+                .strict(),
+            })
+            .strict(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type ModalImageLock = z.infer<typeof ModalImageLockSchema>;
+
+export interface ModalWorkspaceCreateOptions {
+  readonly environment: ModalEnvironment;
+  readonly appName: 'zapp-workspaces';
+  readonly digest: string;
+  readonly publishedName: string;
+  readonly tags: SandboxTags;
+  readonly resources: Readonly<{
+    cpuRequest: number;
+    cpuLimit: number;
+    memRequestMiB: number;
+    memLimitMiB: number;
+  }>;
+  readonly environmentVariables: Readonly<Record<string, string>>;
+  readonly command: readonly ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'];
+  readonly encryptedPorts: readonly [8877];
+  readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
+  readonly timeoutMs: number;
+}
+
+export interface ModalWorkspaceSandbox {
+  readonly providerWorkspaceId: string;
+  waitUntilReady(timeoutMs: number): Promise<void>;
+  agentHealth(token: string): Promise<unknown>;
+  terminate(): Promise<void>;
+}
+
+export interface ModalWorkspaceSdkPort {
+  createWorkspace(input: ModalWorkspaceCreateOptions): Promise<ModalWorkspaceSandbox>;
+  getWorkspace(providerWorkspaceId: string): Promise<ModalWorkspaceSandbox | undefined>;
+  close(): void;
+}
+
+export interface ModalSandboxProviderOptions {
+  readonly environment: WorkspaceEnvironmentName;
+  readonly imageLock: unknown;
+  readonly agentToken: string;
+  readonly credentials?: ModalCredentials;
+  readonly sdkFactory?: (environment: ModalEnvironment) => ModalWorkspaceSdkPort;
+  readonly now?: () => Date;
+  readonly clockMs?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}
+
+const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
+const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
+const WorkspaceAgentHealthSchema = z
+  .object({ ok: z.boolean(), details: z.string().min(1) })
+  .strict();
+
+function createModalWorkspaceSdk(
+  credentials: ModalCredentials,
+  environment: ModalEnvironment,
+): ModalWorkspaceSdkPort {
+  const parsedCredentials = ModalCredentialsSchema.parse(credentials);
+  const client = new ModalClient({
+    tokenId: parsedCredentials.tokenId,
+    tokenSecret: parsedCredentials.tokenSecret,
+    environment,
+  });
+
+  function adapt(
+    sandbox: Awaited<ReturnType<typeof client.sandboxes.fromId>>,
+  ): ModalWorkspaceSandbox {
+    return {
+      providerWorkspaceId: sandbox.sandboxId,
+      async waitUntilReady(timeoutMs) {
+        await sandbox.waitUntilReady(timeoutMs);
+      },
+      async agentHealth(token) {
+        const response = ModalSdkRunResultSchema.parse(
+          await (async () => {
+            try {
+              const process = await sandbox.exec(authenticatedCurl(token, '/healthz'), {
+                mode: 'text',
+                timeoutMs: 2_000,
+              });
+              const [stdout, stderr, exitCode] = await Promise.all([
+                process.stdout.readText(),
+                process.stderr.readText(),
+                process.wait(),
+              ]);
+              return { stdout, stderr, exitCode };
+            } catch {
+              return { stdout: '', stderr: '', exitCode: 1 };
+            }
+          })(),
+        );
+        if (response.exitCode !== 0) return { ok: false, details: 'workspace agent not ready' };
+        try {
+          return WorkspaceAgentHealthSchema.parse(JSON.parse(response.stdout) as unknown);
+        } catch {
+          return { ok: false, details: 'workspace agent returned an invalid health response' };
+        }
+      },
+      async terminate() {
+        await sandbox.terminate();
+      },
+    };
+  }
+
+  return {
+    async createWorkspace(input) {
+      const app = await client.apps.fromName(input.appName, {
+        environment: input.environment,
+        createIfMissing: true,
+      });
+      const image = await client.images.fromId(input.digest);
+      const sandbox = await client.sandboxes.create(app, image, {
+        command: [...input.command],
+        env: { ...input.environmentVariables },
+        tags: { ...input.tags },
+        cpu: input.resources.cpuRequest,
+        cpuLimit: input.resources.cpuLimit,
+        memoryMiB: input.resources.memRequestMiB,
+        memoryLimitMiB: input.resources.memLimitMiB,
+        encryptedPorts: [...input.encryptedPorts],
+        readinessProbe: Probe.withTcp(input.readinessProbe.port, {
+          intervalMs: input.readinessProbe.intervalMs,
+        }),
+        timeoutMs: input.timeoutMs,
+        experimentalOptions: { vm_runtime: true },
+      });
+      return adapt(sandbox);
+    },
+    async getWorkspace(providerWorkspaceId) {
+      try {
+        return adapt(await client.sandboxes.fromId(providerWorkspaceId));
+      } catch (error) {
+        if (error instanceof NotFoundError) return undefined;
+        throw error;
+      }
+    },
+    close() {
+      client.close();
+    },
+  };
+}
+
+function workspaceEnvironmentVariables(
+  callerEnvironment: Readonly<Record<string, string>>,
+  agentToken: string,
+): Readonly<Record<string, string>> {
+  for (const name of Object.keys(callerEnvironment)) {
+    if (!WORKSPACE_ENV_ALLOWLIST.has(name)) {
+      throw new Error(`${name} environment variable is not allowlisted`);
+    }
+  }
+  return {
+    ZAPP_AGENT_TOKEN: agentToken,
+    ZAPP_WORKSPACE_ROOT: '/workspace',
+    ...callerEnvironment,
+  };
+}
+
+export class ModalSandboxProvider {
+  readonly lockedImageTag: string;
+  private readonly environment: WorkspaceEnvironmentName;
+  private readonly modalEnvironment: ModalEnvironment;
+  private readonly image: {
+    readonly appName: 'zapp-workspaces';
+    readonly digest: string;
+    readonly publishedName: string;
+  };
+  private readonly agentToken: string;
+  private readonly sdkFactory: (environment: ModalEnvironment) => ModalWorkspaceSdkPort;
+  private readonly now: () => Date;
+  private readonly clockMs: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+
+  constructor(options: ModalSandboxProviderOptions) {
+    this.environment = WorkspaceEnvironmentNameSchema.parse(options.environment);
+    const lock = ModalImageLockSchema.parse(options.imageLock);
+    const lockedEnvironment = lock.environments[this.environment];
+    if (lockedEnvironment === undefined) {
+      throw new Error(`No Modal image lock exists for ${this.environment}`);
+    }
+    this.modalEnvironment = lockedEnvironment.modalEnvironment;
+    this.image = lockedEnvironment.images['forge-node-base'];
+    this.lockedImageTag = this.image.publishedName;
+    this.agentToken = z.string().min(1).parse(options.agentToken);
+    this.now = options.now ?? (() => new Date());
+    this.clockMs = options.clockMs ?? Date.now;
+    this.sleep = options.sleep ?? delay;
+    this.sdkFactory =
+      options.sdkFactory ??
+      ((environment) =>
+        createModalWorkspaceSdk(options.credentials ?? credentialsFromEnvironment(), environment));
+  }
+
+  async createWorkspace(untrustedInput: CreateWorkspaceInput): Promise<WorkspaceHandle> {
+    const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
+    if (input.imageTag !== this.lockedImageTag || input.imageTag.includes(':latest')) {
+      throw new Error('Workspace image must match the immutable image lock');
+    }
+    const resources = RESOURCE_PROFILES[input.resourceProfile];
+    const tags = SandboxTagsSchema.parse({
+      org_id: input.organizationId,
+      project_id: input.projectId,
+      branch_id: input.branchId,
+      run_id: input.runId ?? 'unattributed',
+      task_id: input.taskId ?? 'unattributed',
+      purpose: input.purpose,
+      environment: this.modalEnvironment,
+    });
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    let sandbox: ModalWorkspaceSandbox | undefined;
+    const sdkOwnership = { closeHere: true };
+    const createdAt = this.now();
+    const deadline = this.clockMs() + HEALTH_PROBE_TIMEOUT_MS;
+    try {
+      const creation = sdk.createWorkspace({
+        environment: this.modalEnvironment,
+        appName: this.image.appName,
+        digest: this.image.digest,
+        publishedName: this.image.publishedName,
+        tags,
+        resources: {
+          cpuRequest: resources.cpuRequest,
+          cpuLimit: resources.cpuLimit,
+          memRequestMiB: resources.memRequestGiB * 1_024,
+          memLimitMiB: resources.memLimitGiB * 1_024,
+        },
+        environmentVariables: workspaceEnvironmentVariables(input.env, this.agentToken),
+        command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
+        encryptedPorts: [8877],
+        readinessProbe: { kind: 'tcp', port: 8877, intervalMs: HEALTH_PROBE_INTERVAL_MS },
+        timeoutMs: WORKSPACE_TIMEOUT_MS,
+      });
+      sandbox = await new Promise<ModalWorkspaceSandbox>((resolveCreation, rejectCreation) => {
+        let settled = false;
+        const timer = setTimeout(
+          () => {
+            if (settled) return;
+            settled = true;
+            sdkOwnership.closeHere = false;
+            rejectCreation(new Error('Modal workspace creation exceeded the readiness deadline'));
+            void creation.then(
+              async (lateSandbox) => {
+                try {
+                  await lateSandbox.terminate();
+                } finally {
+                  sdk.close();
+                }
+              },
+              () => {
+                sdk.close();
+              },
+            );
+          },
+          Math.max(1, deadline - this.clockMs()),
+        );
+        void creation.then(
+          (createdSandbox) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolveCreation(createdSandbox);
+          },
+          (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            rejectCreation(error instanceof Error ? error : new Error('Modal creation failed'));
+          },
+        );
+      });
+      if (this.clockMs() >= deadline) throw new Error('workspace agent readiness timed out');
+      await sandbox.waitUntilReady(Math.max(1, deadline - this.clockMs()));
+      for (;;) {
+        if (this.clockMs() >= deadline) throw new Error('workspace agent readiness timed out');
+        const health = WorkspaceAgentHealthSchema.parse(await sandbox.agentHealth(this.agentToken));
+        if (this.clockMs() >= deadline) throw new Error('workspace agent readiness timed out');
+        if (health.ok) break;
+        await this.sleep(Math.min(HEALTH_PROBE_INTERVAL_MS, deadline - this.clockMs()));
+      }
+      return WorkspaceHandleSchema.parse({
+        providerWorkspaceId: sandbox.providerWorkspaceId,
+        status: 'ready',
+        resourceProfile: input.resourceProfile,
+        imageTag: this.lockedImageTag,
+        createdAt: createdAt.toISOString(),
+        expiresAt: new Date(createdAt.getTime() + WORKSPACE_TIMEOUT_MS).toISOString(),
+      });
+    } catch (error) {
+      if (sandbox !== undefined) {
+        try {
+          await sandbox.terminate();
+        } catch {
+          // The creation failure remains authoritative; the row never reports ready.
+        }
+      }
+      throw error;
+    } finally {
+      if (sdkOwnership.closeHere) sdk.close();
+    }
+  }
+
+  async getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) return 'terminated';
+      const health = WorkspaceAgentHealthSchema.parse(await sandbox.agentHealth(this.agentToken));
+      return health.ok ? 'ready' : 'started';
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async terminateWorkspace(providerWorkspaceId: string): Promise<void> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) return;
+      await sandbox.terminate();
+      const deadline = this.clockMs() + HEALTH_PROBE_TIMEOUT_MS;
+      while ((await sdk.getWorkspace(id)) !== undefined) {
+        if (this.clockMs() >= deadline) {
+          throw new Error('Modal sandbox termination was not confirmed');
+        }
+        await this.sleep(HEALTH_PROBE_INTERVAL_MS);
+      }
+    } finally {
+      sdk.close();
+    }
+  }
+}
+
+export function createModalSandboxProvider(
+  options: ModalSandboxProviderOptions,
+): ModalSandboxProvider {
+  return new ModalSandboxProvider(options);
 }
 
 export function createModalImagePublisher(
