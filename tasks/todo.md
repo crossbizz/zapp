@@ -60,7 +60,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-16 OpenAPI + generated SDK
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
-- [ ] WS-2 Modal images (forge-node-base, forge-web-test)
+- [x] WS-2 Modal images (forge-node-base, forge-web-test)
 - [ ] WS-3 workspace-agent daemon
 - [ ] WS-4 Modal provider create/exec/terminate/attach
 - [ ] WS-5 Scoped-token git clone/push

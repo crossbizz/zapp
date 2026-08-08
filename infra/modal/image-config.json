@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "node": {
+    "baseImage": "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3",
+    "debianSnapshot": "20260714T000000Z",
+    "packageManagers": {
+      "pnpm": "9.15.0",
+      "yarn": "1.22.22"
+    }
+  },
+  "webTest": {
+    "packageName": "zapp-browser-image-runtime",
+    "packageVersion": "0.0.0",
+    "playwright": "1.62.1",
+    "axeCoreCli": "4.12.1"
+  }
+}
