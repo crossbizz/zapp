@@ -65,7 +65,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-3-FIX-1 Advanced workspace-agent routes required by WS-4
 - [x] WS-3-FIX-2 Correct sandbox-service package exports for cold publisher build
 - [x] WS-3-FIX-3 Align publisher health schema with workspace-agent devServer evidence
-- [ ] WS-3-FIX-4 Preserve typed atomic-alias rejection on locked Modal — immutable publication/smoke verified; exact WS-4 4b live/package rerun pending
+- [x] WS-3-FIX-4 Preserve typed atomic-alias rejection on locked Modal
 - [ ] WS-4 Modal provider create/exec/terminate/attach
 - [ ] WS-5 Scoped-token git clone/push
 - [ ] WS-6 Lifecycle state machine + reaper + reconciler

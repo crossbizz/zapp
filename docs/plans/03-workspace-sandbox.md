@@ -181,7 +181,7 @@ non-compulsory lock.
 
 - [x] **RED:** Against Linux and the currently locked Modal image, split the four atomic alias/symlink cases so the exact case returning HTTP 500 is named, then add a deterministic local regression at the owning native/route boundary.
 - [x] **GREEN:** Correct only the native-to-route error classification for the reproduced case, preserving descriptor-relative confinement, zero target writes, mode/content preservation, and staging cleanup.
-- [ ] **Verify and publish:** Run workspace-agent tests plus WS-1 conformance and touched lint/typecheck/build; publish and lock one fresh immutable dev image; rerun the exact WS-4 4b live matrix and complete sandbox-service package verification with real Modal credentials. Leave guarded acceptance, WS-3, and WS-4 unchecked.
+- [x] **Verify and publish:** Run workspace-agent tests plus WS-1 conformance and touched lint/typecheck/build; publish and lock one fresh immutable dev image; rerun the exact WS-4 4b live matrix and complete sandbox-service package verification with real Modal credentials. Leave guarded acceptance, WS-3, and WS-4 unchecked.
 - [x] **Commit:** `fix(workspace-agent): map atomic path conflicts to typed errors`; then resume WS-4 Slice 4b bookkeeping without another 4b adversarial review.
 
 ### Task WS-4: Modal provider — create/attach/exec/terminate
@@ -273,7 +273,7 @@ either task complete on fail-closed evidence alone.
 
 ##### Slice 4b — strict authenticated agent client, internal routes, and unguarded conformance
 
-- [ ] **4b RED — write the failing proxy and conformance cases.** In the same test
+- [x] **4b RED — write the failing proxy and conformance cases.** In the same test
   file, drive a strict fake agent through every named WS-3 API: buffered and NDJSON
   streaming `POST /exec`, `POST /exec/:pid/kill`, `GET/PUT /files?path=`,
   `GET /files/list`, `POST /git`, `GET /healthz`, `GET /metrics`,
@@ -286,7 +286,7 @@ either task complete on fail-closed evidence alone.
   `workspaceId` resolves to the attached sandbox, cross-tenant or unknown ownership is
   a 404, and request bodies cannot supply a provider ID, agent origin, host path,
   filesystem flag, arbitrary Git command, or arbitrary process escape hatch.
-- [ ] **4b RED — add the shared unguarded conformance matrix.** Run unguarded atomic
+- [x] **4b RED — add the shared unguarded conformance matrix.** Run unguarded atomic
   writes, ordinary-write serialization, lexical/canonical/same-inode and absent-name
   case/Unicode alias rejection, leaf-symlink rejection, rollback/cleanup/mode
   preservation, confined search including zero matches, repeated absent file deletion,
@@ -306,7 +306,7 @@ either task complete on fail-closed evidence alone.
   Until an approved qualifying CAS exists, both `readFileForUpdate` and any batch
   carrying `expectedRevision` fail closed with `AtomicWriteConflictError`; unguarded
   batches retain the WS-3 atomic/rollback guarantees.
-- [ ] **4b GREEN — rerun the two 4b matrices.** Expected: strict proxy and unguarded
+- [x] **4b GREEN — rerun the two 4b matrices.** Expected: strict proxy and unguarded
   conformance PASS; guarded unsupported cases return the typed conflict with zero
   writes. This GREEN is not guarded production acceptance.
 - [x] **4b package verification.** Run
@@ -560,3 +560,5 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-3-FIX-4 implementation verified / publication pending — deterministic Debian/native RED isolated canonical parent-symlink resolution as exit 74 (`ENOTDIR`) while lexical, same-inode, and leaf-symlink cases were already typed exit 66; the scoped atomic-parent classification now returns exit 65 without writes or staging, injected atomic I/O and unrelated list `ENOTDIR` remain exit 74, workspace-agent passed 110/110, WS-1 conformance passed 35/35, and touched lint/typecheck/build passed under Node 22.23.1/pnpm 9.15.0. One SOL High review's single Important shared-classifier finding was fixed in the allowed round. Per controller scope, no Modal publish/smoke/full verify ran; the immutable publication and resumed live package gate remain for a fresh publisher, so WS-3-FIX-4, WS-3, WS-4, and 4b remain unchecked.
 - 2026-08-08 WS-3-FIX-4 Modal publication BLOCKED — exact clean local/tracking/live SHA `17cc2364c54b7588b87f91afb0fbe268c5647511` passed Node 22.23.1/pnpm 9.15.0, exported credential-name/publication-lock preflight, the exact Modal-infra dependency build 3/3, and compiled-import/schema preflight; the sole provider-reaching `pnpm modal:publish --env dev` then exited 1 at `/modal.client.ModalClient/AuthTokenGet UNAUTHENTICATED: Token ID is malformed`. Because the request reached Modal there was no SDK retry or standalone smoke. The dev lock remains source `0caeb0e9b72159c8c3548a3c0fdcaac9d557ef25`, tag `2026-08-08-0caeb0e`, base `im-7iRpEksk10JyqJo6Vmt8q4`, and web-test `im-dTuC4Tad50rj93x5y5WFCA`, with no publication-lock or temporary-lock residue. No production edit, full gate, bypass, completion bookkeeping, or live 4b rerun followed; WS-3-FIX-4, WS-3, WS-4, and 4b remain unchecked pending valid dev Modal credentials.
 - 2026-08-08 WS-3-FIX-4 Modal publication verified / live gate pending — exact clean local/tracking/origin-live/upstream-live SHA `7eef3dadca46bfcf07013531f6db70bfc886602b` included code commit `17cc2364c54b7588b87f91afb0fbe268c5647511` as an ancestor; freshly sourced root credentials were present at lengths 25/25 and `modal token info` authenticated only the expected workspace `yosemitemountain62`. After an initial local guard stopped before build/provider mutation because the default shell exposed Node 26/pnpm 11, the corrected single shell pinned Node 22.23.1/pnpm 9.15.0, passed the publication-lock check, exact Modal-infra dependency build 3/3, and compiled-import/schema preflight; the sole provider-reaching `pnpm modal:publish --env dev` and the one `pnpm modal:smoke --env dev` both exited 0. The atomic dev lock now records source `7eef3dadca46bfcf07013531f6db70bfc886602b`, tag `2026-08-08-7eef3da`, base `im-W3QI7kvWQ8KY2hqQmpkws4`, and web-test `im-ZQYAF8HUf6p0lPVSgYOvPU`, with no publication-lock or temporary-lock residue. No full verify, bypass, CI, production edit, or exact WS-4 4b live/package rerun followed; WS-3-FIX-4, WS-3, WS-4, and 4b remain unchecked pending that literal bundled acceptance.
+- 2026-08-08 WS-3-FIX-4 done — exact pushed HEAD `7329be70882e66b5c5d48a2dcc2bff41d08898eb` consumed immutable dev image `2026-08-08-7eef3da` from source `7eef3dadca46bfcf07013531f6db70bfc886602b`; the exact credentialed 4b focus passed 4/4 in 99.64s, including canonical-parent and leaf-symlink HTTP 400 rejection with preserved targets, strict proxying, stream cancellation/kill propagation, and managed dev-server evidence. The full credentialed sandbox-service package gate passed 41/41, including real Modal lifecycle and the live unguarded matrix, followed by lint/typecheck/build exit 0. No retry, production edit, new review, publish/smoke, full verify, bypass, CI, or main operation ran; guarded production acceptance, WS-3, and WS-4 remain unchecked.
+- 2026-08-08 WS-4 4b verified — the previously reviewed strict client/routes and shared unguarded conformance cases are recorded complete after the locked-image live matrix passed against `2026-08-08-7eef3da`; guarded revisions remain typed fail-closed with zero writes and are not guarded production acceptance. Slice 4c and the approved every-writer CAS proof remain outstanding, so WS-3 and WS-4 remain unchecked.
