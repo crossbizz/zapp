@@ -68,7 +68,7 @@ trace for a "localhost" database was the tell.
 heuristic hardening, or audit-driven edge cases while the end-to-end product
 path remained incomplete.
 
-**Rule:** At ten minutes, classify the delay. If the product-critical path is
+**Rule:** At 15 minutes, classify the delay. If the product-critical path is
 blocked by a race, heuristic, flaky test, or review/audit edge case, stop the
 grind: preserve structural security and real correctness, re-scope to the
 smallest load-bearing contract, document the disposition in the owning plan's
@@ -76,4 +76,18 @@ Execution log, and move on. A failed required check remains failed and a
 blocked task remains unchecked; re-scoping never turns missing evidence into a
 pass. A prescribed local gate may run longer while its process is healthy and
 making progress, but do not restart or broaden it merely to chase marginal
-coverage.
+coverage. Rethink is this task even needed, or can be modified to achieve our goals safely and reliably.
+
+## 2026-08-08 — Re-scoping means continue, not stop
+
+**What happened:** A load-bearing task was re-scoped into a small diagnostic
+contract, but execution stopped to request approval even though the human's
+standing objective already authorized normal in-scope work needed to finish the
+application.
+
+**Rule:** When a terminal objective says to finish all milestones, an in-scope
+diagnostic, observability improvement, or repair needed to remove a proven
+blocker does not require another approval. Re-scope it, record it, and continue.
+Stop only when progress needs genuinely new authority, a vendor/architecture
+substitution, destructive action, or a plan conflict the existing instructions
+do not resolve.
