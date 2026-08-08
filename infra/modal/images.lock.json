@@ -1,4 +1,22 @@
 {
   "version": 1,
-  "environments": {}
+  "environments": {
+    "dev": {
+      "modalEnvironment": "zapp-dev",
+      "sourceRevision": "c58a416cba65f57ea64ba3e3e90f3646efca9b62",
+      "tag": "2026-08-08-c58a416",
+      "images": {
+        "forge-node-base": {
+          "appName": "zapp-workspaces",
+          "digest": "im-9NCxx8merCgh67jj0YLM84",
+          "publishedName": "forge-node-base:2026-08-08-c58a416"
+        },
+        "forge-web-test": {
+          "appName": "zapp-browser-verify",
+          "digest": "im-eVxjg43Gv7bQrkH0CbwrrX",
+          "publishedName": "forge-web-test:2026-08-08-c58a416"
+        }
+      }
+    }
+  }
 }
