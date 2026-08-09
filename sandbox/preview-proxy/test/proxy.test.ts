@@ -998,7 +998,6 @@ describe('preview proxy acceptance contract', () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
     cleanups.push(() => browser.close());
     const page = await browser.newPage();
-    cleanups.push(() => page.close());
     await page.goto(`${proxy.url}/`);
 
     const result = await page.evaluate(() => {
