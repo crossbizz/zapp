@@ -11,6 +11,12 @@ import {
 import { z } from 'zod';
 
 import {
+  createGitTokenClient,
+  createWorkspaceGitService,
+  type GitTokenClientOptions,
+  type WorkspaceGitService,
+} from './provider/git-bootstrap.js';
+import {
   registerWorkspaceRoutes,
   type WorkspaceAgentProvider,
   type WorkspaceRowBoundary,
@@ -40,7 +46,7 @@ declare module 'fastify' {
 
 export type SandboxServiceApp = FastifyInstance;
 
-export interface BuildAppOptions {
+interface BuildAppCommonOptions {
   readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
   readonly serviceTokens: SandboxServiceTokenVerifier;
@@ -48,12 +54,24 @@ export interface BuildAppOptions {
   readonly logger?: FastifyServerOptions['logger'];
 }
 
+export type BuildAppOptions = BuildAppCommonOptions &
+  (
+    | { readonly workspaceGit: WorkspaceGitService; readonly gitService?: never }
+    | { readonly workspaceGit?: never; readonly gitService: GitTokenClientOptions }
+  );
+
 function authenticationError() {
   return { code: 'service_unauthenticated', message: 'A valid service token is required.' };
 }
 
 export function buildApp(options: BuildAppOptions) {
   const now = options.now ?? (() => new Date());
+  const workspaceGit =
+    options.workspaceGit ??
+    createWorkspaceGitService({
+      tokens: createGitTokenClient(options.gitService),
+      commands: options.provider,
+    });
   const app = Fastify({
     logger: options.logger ?? false,
     requestIdHeader: false,
@@ -116,6 +134,11 @@ export function buildApp(options: BuildAppOptions) {
     }
   });
 
-  registerWorkspaceRoutes(app, { provider: options.provider, rows: options.rows, now });
+  registerWorkspaceRoutes(app, {
+    provider: options.provider,
+    rows: options.rows,
+    workspaceGit,
+    now,
+  });
   return app;
 }

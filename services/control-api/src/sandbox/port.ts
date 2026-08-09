@@ -22,8 +22,21 @@ export const WorkspacePortSchema = z
 export type SandboxWorkspace = z.infer<typeof WorkspacePortSchema>;
 
 export const CreateWorkspaceInputSchema = z
-  .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
-  .strict();
+  .object({
+    workspace: WorkspacePortSchema,
+    branchName: z.string().trim().min(1).max(255).optional(),
+    operationKey: OperationKeySchema,
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.workspace.branchId === null) !== (input.branchName === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'branchName must accompany branchId',
+        path: ['branchName'],
+      });
+    }
+  });
 export const CreateWorkspaceResultSchema = z
   .object({ providerWorkspaceId: z.string().min(1), status: WorkspaceStatusSchema })
   .strict();

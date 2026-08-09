@@ -20,6 +20,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { SandboxServiceApp } from '../app.js';
+import type { WorkspaceGitService } from '../provider/git-bootstrap.js';
 import {
   ModalWorkspaceNotFoundError,
   ModalWorkspaceReadinessError,
@@ -61,13 +62,15 @@ export const WorkspaceRowIdempotencyKeySchema = z
     runId: idSchema('run'),
     taskId: idSchema('task'),
     purpose: WorkspacePurposeSchema,
+    branchId: idSchema('br'),
+    branchName: z.string().trim().min(1).max(255),
   })
   .strict();
 export type WorkspaceRowIdempotencyKey = z.infer<typeof WorkspaceRowIdempotencyKeySchema>;
 
 export interface WorkspaceRowClaim {
   readonly created: boolean;
-  /** On a replay, the boundary waits until the original row has a provider identity. */
+  /** On a replay, the boundary waits until the original create reaches ready or terminated. */
   readonly row: WorkspaceLifecycleRow;
 }
 
@@ -151,6 +154,7 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
 const CreateWorkspaceBodySchema = z
   .object({
     workspace: RequestedWorkspaceRowSchema,
+    branchName: z.string().trim().min(1).max(255),
     runId: idSchema('run'),
     taskId: idSchema('task'),
     purpose: WorkspacePurposeSchema,
@@ -348,13 +352,14 @@ export function registerWorkspaceRoutes(
   deps: {
     readonly provider: WorkspaceAgentProvider;
     readonly rows: WorkspaceRowBoundary;
+    readonly workspaceGit: WorkspaceGitService;
     readonly now: () => Date;
   },
 ): void {
-  const resolveProviderWorkspaceId = async (
+  const resolveWorkspace = async (
     workspaceId: string,
     request: FastifyRequest,
-  ): Promise<string> => {
+  ): Promise<WorkspaceLifecycleRow> => {
     const scope = readWorkspaceScope(request);
     const row = await deps.rows.get(workspaceId, scope.organizationId, scope.projectId);
     if (
@@ -364,7 +369,14 @@ export function registerWorkspaceRoutes(
     ) {
       throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
     }
-    return row.providerWorkspaceId;
+    return row;
+  };
+  const resolveProviderWorkspaceId = async (
+    workspaceId: string,
+    request: FastifyRequest,
+  ): Promise<string> => {
+    const row = await resolveWorkspace(workspaceId, request);
+    return z.string().min(1).parse(row.providerWorkspaceId);
   };
   app.post(
     '/internal/workspaces',
@@ -391,6 +403,8 @@ export function registerWorkspaceRoutes(
         runId: body.runId,
         taskId: body.taskId,
         purpose: body.purpose,
+        branchId: body.workspace.branchId,
+        branchName: body.branchName,
       });
       const input = createInputFor(body.workspace, body, deps.provider.lockedImageTag);
       const claim = await deps.rows.claimCreate(body.workspace, key, {
@@ -408,11 +422,10 @@ export function registerWorkspaceRoutes(
         },
       });
       if (!claim.created) {
-        if (claim.row.providerWorkspaceId === null) {
-          throw Object.assign(new Error('Original workspace creation did not resolve.'), {
+        if (claim.row.status !== 'ready' || claim.row.providerWorkspaceId === null)
+          throw Object.assign(new Error('Original workspace creation did not complete.'), {
             statusCode: 502,
           });
-        }
         return await reply.status(200).send({ workspace: claim.row });
       }
 
@@ -440,6 +453,16 @@ export function registerWorkspaceRoutes(
         if (providerStatus !== 'ready') {
           throw new Error('Workspace provider did not become ready.');
         }
+        await deps.workspaceGit.bootstrap({
+          organizationId: claim.row.organizationId,
+          projectId: claim.row.projectId,
+          branchId: RequestedWorkspaceRowSchema.parse(claim.row).branchId,
+          branchName: body.branchName,
+          providerWorkspaceId: handle.providerWorkspaceId,
+          runId: body.runId,
+          taskId: body.taskId,
+          operationKey: body.operationKey,
+        });
         const ready = await deps.rows.transition(claim.row.id, 'ready');
         return await reply.status(201).send({ workspace: ready });
       } catch (error) {
@@ -735,11 +758,35 @@ export function registerWorkspaceRoutes(
     { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: GitBodySchema } },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
-      return GitResponseSchema.parse(await deps.provider.git(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        GitBodySchema.parse(request.body),
-        readIdempotencyKey(request.headers['idempotency-key']),
-      ));
+      const input = GitBodySchema.parse(request.body);
+      const operationKey = readIdempotencyKey(request.headers['idempotency-key']);
+      if (input.operation === 'push') {
+        const row = await resolveWorkspace(workspaceId, request);
+        if (row.branchId === null || row.providerWorkspaceId === null) {
+          throw Object.assign(new Error('Workspace Git branch was not found.'), {
+            statusCode: 404,
+          });
+        }
+        return GitResponseSchema.parse(
+          await deps.workspaceGit.push(
+            {
+              organizationId: row.organizationId,
+              projectId: row.projectId,
+              branchId: row.branchId,
+              providerWorkspaceId: row.providerWorkspaceId,
+              operationKey,
+            },
+            input.args ?? [],
+          ),
+        );
+      }
+      return GitResponseSchema.parse(
+        await deps.provider.git(
+          await resolveProviderWorkspaceId(workspaceId, request),
+          input,
+          operationKey,
+        ),
+      );
     },
   );
 

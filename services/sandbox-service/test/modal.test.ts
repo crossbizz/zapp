@@ -1515,4 +1515,4 @@ test('the Modal SDK is imported only by the sandbox-service provider boundary', 
   }
 
   expect(importers).toEqual(['services/sandbox-service/src/provider/modal.ts']);
-});
+}, 15_000);

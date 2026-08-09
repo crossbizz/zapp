@@ -204,12 +204,12 @@ those APIs and by trusted runtimes; no UI-private path may bypass either boundar
 
 ### Task WS-5: Git in sandbox
 
-**Files:** Create: `src/provider/git-bootstrap.ts`, `test/integration/git-clone.test.ts`
+**Files:** Create: `src/provider/git-bootstrap.ts`, `test/integration/git-clone.test.ts`; Modify (required production composition): `src/app.ts`, `src/routes/workspaces.ts`, `test/{modal,integration/modal-provider}.test.ts`, `services/control-api/src/{sandbox/port,routes/workspaces}.ts`, `services/control-api/test/runs.test.ts`, package manifest + lockfile
 **Effort:** M
 
-- [ ] Binding behavior: on workspace create with `branchId`: mint short-lived repo-scoped token from git-service (GIT-3), clone `https://x-access-token:{token}@forgejo…/org_{id}/proj_{id}.git` at branch, configure `user.name="zapp-agent"`, `user.email="agent@zapp.build"`, store no credentials on disk after clone (`credential.helper=""`, token only in clone URL of initial fetch; subsequent pushes mint fresh tokens via agent `/git` op that requests token from sandbox-service — sandbox never holds long-lived creds).
-- [ ] Failing test: create→clone→edit→commit→push round-trip lands in Forgejo; token expired (TTL 300 s) push fails then succeeds after re-mint.
-- [ ] Commit: `feat(sandbox-service): scoped-token git clone/push bootstrap`
+- [x] Binding behavior: on workspace create with `branchId`: mint a short-lived repo-scoped token from git-service (GIT-3), use it only in the initial HTTPS clone request at the requested branch, configure `user.name="zapp-agent"`, `user.email="agent@zapp.build"`, and store no credentials on disk after clone (`credential.helper=""`; subsequent pushes mint fresh tokens via the agent `/git` operation that requests a token from sandbox-service — the sandbox never holds long-lived credentials).
+- [x] Failing test: create→clone→edit→commit→push round-trip lands in Forgejo; token expired (TTL 300 s) push fails then succeeds after re-mint.
+- [x] Commit: `feat(sandbox-service): scoped-token git clone/push bootstrap`
 
 ### Task WS-6: Lifecycle manager + reconciler
 
@@ -361,3 +361,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 M1-CI-plan03 done — clean Linux CI now owns packaged ripgrep, scopes the node-pty helper assertion to macOS while retaining PTY behavior, samples CPU from valid pre-work baselines, and drops the non-contract preview timing heuristic; affected package test/lint/typecheck/build passed 13/13 tasks with no provider run.
 - 2026-08-08 M1-CI-workspace-linux done — clean Linux helper input completion now preserves typed early exits without unhandled EPIPE, workspace-agent search owns packaged ripgrep, and CPU checks retain exact seam plus real group/RSS proof without arbitrary work thresholds; Linux RED/GREEN and package test/lint/typecheck/build passed with no provider run.
 - 2026-08-08 WS-4 done — existing create/proxy/reattach slices plus tenant scoping and stdin transport closed locally (55 passed / 3 provider-gated skips, lint/typecheck/build); the first pinned-`c58a416` acceptance exposed legacy health without `devServer`, a strict compatibility RED/GREEN normalized it to null, SOL review passed, and the post-fix real Modal lifecycle + fresh-provider reattach matrix passed 2/2; guarded cloud writes remain structurally fail-closed with zero mutation because Modal 0.9.0 has no qualifying all-writer CAS.
+- 2026-08-08 WS-5 done — authoritative tenant branch resolution now feeds idempotent GIT-3 clone/push composition, credentials remain process-only, failed creates replay fail-closed, and duplicate creates await bootstrap; local sandbox-service 58/62 (4 explicit provider skips) plus control-api 453/453 and both package static/build gates passed, two-round SOL review exited clean, locked-image Modal reattach and corrected real git-service/Forgejo acceptance passed after the harness exposed the audit tenant FK/append-only boundary, and the first pre-push contention RED was bounded to explicit 15-second budgets for three unchanged real-filesystem assertions.

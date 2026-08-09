@@ -9,6 +9,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../../src/app.js';
+import type { WorkspaceGitService } from '../../src/provider/git-bootstrap.js';
 import {
   createModalSandboxProvider,
   type ModalWorkspaceCreateOptions,
@@ -26,6 +27,10 @@ const NOW = new Date('2026-08-08T12:00:00.000Z');
 const OPERATION_KEY = `op_${'a'.repeat(64)}`;
 const SERVICE_TOKEN = 'valid-control-api-service-token';
 const AGENT_TOKEN = 'agent-test-token';
+const WORKSPACE_GIT_FIXTURE: WorkspaceGitService = {
+  bootstrap: () => Promise.resolve(),
+  push: () => Promise.reject(new Error('Unexpected workspace Git push')),
+};
 const IDS = {
   organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
   projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
@@ -397,6 +402,8 @@ function requestedRow(id = IDS.workspaceId): WorkspaceLifecycleRow {
 
 class MemoryWorkspaceRows implements WorkspaceRowBoundary {
   readonly transitions: Array<{ status: WorkspaceStatus; providerWorkspaceId: string | null }> = [];
+  replayClaims = 0;
+  replayResolutions = 0;
   private readonly rows = new Map<string, WorkspaceLifecycleRow>();
   private readonly idempotency = new Map<string, string>();
   private readonly createWaiters = new Map<string, Array<(row: WorkspaceLifecycleRow) => void>>();
@@ -418,20 +425,23 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     key: WorkspaceRowIdempotencyKey,
     attachment: Parameters<WorkspaceRowBoundary['claimCreate']>[2],
   ): Promise<WorkspaceRowClaim> {
-    const serialized = `${key.runId}:${key.taskId}:${key.purpose}`;
+    const serialized = `${key.runId}:${key.taskId}:${key.purpose}:${key.branchId}:${key.branchName}`;
     const existingId = this.idempotency.get(serialized);
     if (existingId !== undefined) {
+      this.replayClaims += 1;
       const existing = this.rows.get(existingId);
       if (existing === undefined) throw new Error('idempotency row missing');
-      if (existing.providerWorkspaceId === null) {
+      if (existing.status !== 'ready' && existing.status !== 'terminated') {
         return new Promise((resolve) => {
           const waiters = this.createWaiters.get(existingId) ?? [];
           waiters.push((row) => {
+            this.replayResolutions += 1;
             resolve({ created: false, row });
           });
           this.createWaiters.set(existingId, waiters);
         });
       }
+      this.replayResolutions += 1;
       return Promise.resolve({ created: false, row: existing });
     }
     this.rows.set(row.id, row);
@@ -451,8 +461,6 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     if (row.status !== expectedStatus) return Promise.resolve(row);
     const next = { ...row, providerWorkspaceId };
     this.rows.set(workspaceId, next);
-    for (const resolve of this.createWaiters.get(workspaceId) ?? []) resolve(next);
-    this.createWaiters.delete(workspaceId);
     return Promise.resolve(next);
   }
 
@@ -506,7 +514,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     };
     this.rows.set(workspaceId, next);
     this.transitions.push({ status, providerWorkspaceId: next.providerWorkspaceId });
-    if (next.providerWorkspaceId !== null) {
+    if (next.status === 'ready' || next.status === 'terminated') {
       for (const resolve of this.createWaiters.get(workspaceId) ?? []) resolve(next);
       this.createWaiters.delete(workspaceId);
     }
@@ -616,7 +624,7 @@ describe('attach reattach recovery and ownership', () => {
     expect(sdk.sandbox.terminateCalls).toBe(0);
   });
 
-  it('persists the opaque provider identity before waiting for agent readiness', async () => {
+  it('persists provider identity early but keeps duplicate create waiting through Git bootstrap', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     let releaseHealth = (): void => undefined;
     const healthBarrier = new Promise<void>((resolve) => {
@@ -632,7 +640,22 @@ describe('attach reattach recovery and ownership', () => {
       sleep: () => healthBarrier,
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    let gitBootstrapStarted = (): void => undefined;
+    const bootstrapStarted = new Promise<void>((resolve) => {
+      gitBootstrapStarted = resolve;
+    });
+    let releaseGitBootstrap = (): void => undefined;
+    const gitBootstrapBarrier = new Promise<void>((resolve) => {
+      releaseGitBootstrap = resolve;
+    });
+    const workspaceGit = {
+      ...WORKSPACE_GIT_FIXTURE,
+      async bootstrap(): Promise<void> {
+        gitBootstrapStarted();
+        await gitBootstrapBarrier;
+      },
+    };
+    const app = buildApp({ provider, rows, workspaceGit, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -647,6 +670,7 @@ describe('attach reattach recovery and ownership', () => {
       },
       payload: {
         workspace: requestedRow(),
+        branchName: 'main',
         runId: IDS.runId,
         taskId: IDS.taskId,
         purpose: 'builder',
@@ -664,7 +688,36 @@ describe('attach reattach recovery and ownership', () => {
       });
     });
     releaseHealth();
-    expect((await creation).statusCode).toBe(201);
+    await bootstrapStarted;
+    const replay = app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(rows.replayClaims).toBe(1);
+    });
+    expect(rows.replayResolutions).toBe(0);
+    releaseGitBootstrap();
+    const [created, replayed] = await Promise.all([creation, replay]);
+    expect(created.statusCode).toBe(201);
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toMatchObject({ workspace: { status: 'ready' } });
   });
 
   it('reattaches a workspace from its persisted immutable image after the service lock advances', async () => {
@@ -726,7 +779,7 @@ describe('attach reattach recovery and ownership', () => {
       providerWorkspaceId: created.providerWorkspaceId,
       status: 'provisioning',
     });
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -832,7 +885,7 @@ describe('attach reattach recovery and ownership', () => {
         status: testCase.mode === 'terminated-row' ? 'terminated' : 'ready',
         terminatedAt: testCase.mode === 'terminated-row' ? NOW : null,
       });
-      const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+      const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
       apps.push(app);
       await app.ready();
       const response = await app.inject({
@@ -1109,7 +1162,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -1123,6 +1176,7 @@ describe('create status terminate and idempotency', () => {
       },
       payload: {
         workspace: requestedRow(),
+        branchName: 'main',
         runId: IDS.runId,
         taskId: IDS.taskId,
         purpose: 'builder',
@@ -1183,7 +1237,7 @@ describe('create status terminate and idempotency', () => {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
       status: 'ready',
     });
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -1221,11 +1275,12 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const body = {
       workspace: requestedRow(),
+      branchName: 'main',
       runId: IDS.runId,
       taskId: IDS.taskId,
       purpose: 'builder',
@@ -1309,7 +1364,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -1320,6 +1375,7 @@ describe('create status terminate and idempotency', () => {
     };
     const payload = {
       workspace: requestedRow(),
+      branchName: 'main',
       runId: IDS.runId,
       taskId: IDS.taskId,
       purpose: 'builder',
@@ -1359,10 +1415,10 @@ describe('create status terminate and idempotency', () => {
     });
     const rows = new MemoryWorkspaceRows();
     rows.failTransitionStatus = 'ready';
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
-    const response = await app.inject({
+    const request = {
       method: 'POST',
       url: '/internal/workspaces',
       headers: {
@@ -1373,6 +1429,7 @@ describe('create status terminate and idempotency', () => {
       },
       payload: {
         workspace: requestedRow(),
+        branchName: 'main',
         runId: IDS.runId,
         taskId: IDS.taskId,
         purpose: 'builder',
@@ -1380,7 +1437,8 @@ describe('create status terminate and idempotency', () => {
         networkProfile: 'dependency_install',
         operationKey: OPERATION_KEY,
       },
-    });
+    } as const;
+    const response = await app.inject(request);
 
     expect(response.statusCode).toBe(502);
     expect(sdk.sandbox.terminateCalls).toBe(1);
@@ -1388,6 +1446,9 @@ describe('create status terminate and idempotency', () => {
       status: 'terminated',
       providerWorkspaceId: 'sb-modal-4a',
     });
+    const replay = await app.inject(request);
+    expect(replay.statusCode).toBe(502);
+    expect(sdk.creates).toHaveLength(1);
   });
 
   it('requires service authentication and rejects missing idempotency or extra boundary fields', async () => {
@@ -1398,11 +1459,12 @@ describe('create status terminate and idempotency', () => {
       sdkFactory: () => new FakeModalWorkspaceSdk(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const validBody = {
       workspace: requestedRow(),
+      branchName: 'main',
       runId: IDS.runId,
       taskId: IDS.taskId,
       purpose: 'builder',
@@ -1709,6 +1771,8 @@ describe('agent proxy and unguarded conformance', () => {
       runId: IDS.runId,
       taskId: IDS.taskId,
       purpose: 'builder',
+      branchId: IDS.branchId,
+      branchName: 'main',
     }, {
       resourceProfile: 'small',
       imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
@@ -1719,7 +1783,7 @@ describe('agent proxy and unguarded conformance', () => {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
     });
     await rows.transition(IDS.workspaceId, 'ready');
-    const app = buildApp({ provider, rows, serviceTokens, now: () => NOW });
+    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     await app.ready();
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,

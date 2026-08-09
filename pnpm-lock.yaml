@@ -1070,6 +1070,9 @@ importers:
 
   services/sandbox-service:
     dependencies:
+      '@zapp/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@zapp/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

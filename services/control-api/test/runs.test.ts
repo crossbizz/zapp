@@ -84,6 +84,7 @@ class FakeOrchestratorPort {
 class FakeSandboxServicePort {
   readonly calls: string[] = [];
   readonly operationKeys: (string | undefined)[] = [];
+  readonly createInputs: unknown[] = [];
   failCreates = 0;
   readonly failures = new Set<string>();
 
@@ -91,6 +92,7 @@ class FakeSandboxServicePort {
     readonly operationKey?: string;
   }): Promise<{ providerWorkspaceId: string; status: string }> {
     this.calls.push('create');
+    this.createInputs.push(input);
     this.operationKeys.push(input.operationKey);
     if (this.failCreates > 0) {
       this.failCreates -= 1;
@@ -931,18 +933,22 @@ describe('workspace passthrough routes', () => {
     const sandbox = new FakeSandboxServicePort();
     const wired = await wire({ sandbox });
     const project = await createProject(wired);
-    const branchId = wired.data.branches.find((branch) => branch.projectId === project.id)?.id;
-    expect(branchId).toBeDefined();
+    const branch = wired.data.branches.find((branch) => branch.projectId === project.id);
+    expect(branch).toBeDefined();
 
     const created = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/projects/${project.id}/workspaces`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'workspace-01' },
-      payload: { branchId, resourceProfile: 'standard' },
+      payload: { branchId: branch?.id, resourceProfile: 'standard' },
     });
     expect(created.statusCode, created.body).toBe(201);
     const workspace = created.json<{ workspace: { id: string; status: string } }>().workspace;
     expect(workspace.status).toBe('provisioning');
+    expect(sandbox.createInputs[0]).toMatchObject({
+      workspace: { branchId: branch?.id },
+      branchName: branch?.name,
+    });
 
     const read = await wired.built.app.inject({
       method: 'GET',

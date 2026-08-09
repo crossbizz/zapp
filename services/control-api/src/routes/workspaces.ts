@@ -60,11 +60,11 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
       const ctx = tenantOf(request);
       const project = await ctx.db.projects.getById(request.params.projectId);
       if (project === undefined) throw projectNotFound();
-      if (
-        request.body.branchId !== undefined &&
-        (await ctx.db.branches.getForProject(project.id, request.body.branchId)) === undefined
-      )
-        throw branchNotFound();
+      const branch =
+        request.body.branchId === undefined
+          ? undefined
+          : await ctx.db.branches.getForProject(project.id, request.body.branchId);
+      if (request.body.branchId !== undefined && branch === undefined) throw branchNotFound();
       authorize(ctx, 'edit_code');
       const operationKey = operationOf(request);
       const workspace = await ctx.db.workspaces.create({
@@ -87,7 +87,11 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
         try {
           result = CreateWorkspaceResultSchema.parse(
             await deps.sandbox.createWorkspace(
-              CreateWorkspaceInputSchema.parse({ workspace, operationKey }),
+              CreateWorkspaceInputSchema.parse({
+                workspace,
+                ...(branch === undefined ? {} : { branchName: branch.name }),
+                operationKey,
+              }),
             ),
           );
         } catch {
