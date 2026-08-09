@@ -91,6 +91,7 @@ Providers: anthropic, openai, google, openai-compatible (base-url configurable) 
 - [ ] **Blocking acceptance criterion (ADR-0015):** once, at final acceptance, set Anthropic cache breakpoints after the stable role prompt and assembled project context, issue two completions, observe a cache write then read, and prove non-zero `cachedInputTokens` reaches OPS-1A's authoritative response. If the pinned AI SDK cannot express both halves, move only the Anthropic adapter to `@anthropic-ai/sdk` as ADR-0015 pre-authorizes.
 - [ ] Verify affected packages and the real DB/Redis path; two review rounds maximum, exit = zero Critical/Important.
 - [ ] Commit: `feat(model-gateway): usage ledger + run budget cutoff`
+- [x] **AR-3B-FIX-1:** On caller cancellation, consume AI SDK final usage and durably settle the terminal provider error; classify transient lease-renewal uncertainty as `completion_retryable` before any commit.
 
 ### Task AR-4: `packages/agent-tools` registry (all PRD §16.1 tools)
 
@@ -362,3 +363,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-11 done — Added a strict phase/task/budget schema with `{ credits, wallClockMinutes }` task estimates, creation-time dependency/cycle validation, deterministic diamond scheduling, and cross-call one-writer branch ownership; RED/GREEN tests passed 6/6, package static/build gates passed, and review passed in round 2 after fixing ready-state branch reservation.
 - 2026-08-09 AR-12 done — Added production-registered task child workflows with run-derived integration branches, capped concurrency, idempotent activity boundaries, real isolated Git workspace/merge coverage, and typed conflict-task blocking; review passed in round 2.
 - 2026-08-09 AR-13 done — Added tenant-scoped Mission Control aggregate and paginated APIs with generated SDK, authoritative table overlays, approved-credit ceilings, terminal agent cleanup, and producer-backed commit diffstats; review passed in round 2 and forced affected verification was 21/21.
+- 2026-08-09 AR-3B-FIX-1 done — Closed the review-cap abort and renewal gaps with AI SDK final-usage settlement and retryable indeterminate renewal handling; model-gateway passed 81/81 and review passed in round 1, while AR-3B remains blocked only on its already-consumed Anthropic cache proof returning HTTP 401.

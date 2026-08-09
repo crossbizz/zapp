@@ -1,5 +1,6 @@
 import type {
   LanguageModel,
+  LanguageModelUsage,
   ModelMessage,
   Schema,
   SystemModelMessage,
@@ -71,5 +72,8 @@ export interface AiSdkProviderSettings {
 
 export interface AiSdkDependencies {
   createProvider(settings: AiSdkProviderSettings): (modelId: string) => LanguageModel;
-  streamText(options: AiSdkStreamOptions): { readonly stream: AsyncIterable<TextStreamPart<ToolSet>> };
+  streamText(options: AiSdkStreamOptions): {
+    readonly stream: AsyncIterable<TextStreamPart<ToolSet>>;
+    readonly totalUsage: PromiseLike<LanguageModelUsage>;
+  };
 }

@@ -1122,7 +1122,20 @@ async function captureAdapter(
     },
     streamText(options) {
       observed.streamOptions = options;
-      return { stream: asyncEvents([]) as never };
+      return {
+        totalUsage: Promise.resolve({
+          inputTokens: 0,
+          inputTokenDetails: {
+            noCacheTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+          outputTokens: 0,
+          outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+          totalTokens: 0,
+        }),
+        stream: asyncEvents([]) as never,
+      };
     },
   };
   const adapter = create(dependencies);
@@ -1376,6 +1389,17 @@ describe('AI SDK provider adapters', () => {
       dependencies: {
         createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
         streamText: () => ({
+          totalUsage: Promise.resolve({
+            inputTokens: 12,
+            inputTokenDetails: {
+              noCacheTokens: 9,
+              cacheReadTokens: 3,
+              cacheWriteTokens: 0,
+            },
+            outputTokens: 4,
+            outputTokenDetails: { textTokens: 4, reasoningTokens: 0 },
+            totalTokens: 16,
+          }),
           stream: (async function* () {
             await Promise.resolve();
             yield { type: 'start' };
@@ -1447,6 +1471,17 @@ describe('AI SDK provider adapters', () => {
         dependencies: {
           createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
           streamText: () => ({
+            totalUsage: Promise.resolve({
+              inputTokens: 12,
+              inputTokenDetails: {
+                noCacheTokens: 9,
+                cacheReadTokens: 3,
+                cacheWriteTokens: 0,
+              },
+              outputTokens: 4,
+              outputTokenDetails: { textTokens: 4, reasoningTokens: 0 },
+              totalTokens: 16,
+            }),
             stream: (async function* () {
               await Promise.resolve();
               yield {
@@ -1494,6 +1529,58 @@ describe('AI SDK provider adapters', () => {
     },
   );
 
+  it('surfaces final AI SDK usage when caller cancellation produces an abort part', async () => {
+    const cancellation = new AbortController();
+    cancellation.abort(new Error('client disconnected'));
+    const adapter = createAnthropicAdapter({
+      apiKey: 'configured-in-test',
+      dependencies: {
+        createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+        streamText: () => ({
+          totalUsage: Promise.resolve({
+            inputTokens: 12,
+            inputTokenDetails: {
+              noCacheTokens: 9,
+              cacheReadTokens: 3,
+              cacheWriteTokens: 0,
+            },
+            outputTokens: 2,
+            outputTokenDetails: { textTokens: 2, reasoningTokens: 0 },
+            totalTokens: 14,
+          }),
+          stream: (async function* () {
+            await Promise.resolve();
+            yield { type: 'abort', reason: 'client-disconnected' };
+          })() as never,
+        }),
+      },
+    });
+    const events: BackendStreamEvent[] = [];
+    let terminalError: ModelTerminalError | undefined;
+
+    try {
+      for await (const event of adapter.stream({ ...providerInput, signal: cancellation.signal })) {
+        events.push(event);
+      }
+    } catch (error: unknown) {
+      terminalError = error as ModelTerminalError;
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'usage',
+        provider: 'anthropic',
+        model: 'model-under-test',
+        finishReason: 'abort',
+        inputTokens: 12,
+        outputTokens: 2,
+        totalTokens: 14,
+        cachedInputTokens: 3,
+      },
+    ]);
+    expect(terminalError).toMatchObject({ code: 'provider_error' });
+  });
+
   it('throws an AI SDK error part for the gateway to sanitize', async () => {
     const providerFailure = new Error('raw provider response');
     const adapter = createOpenAIAdapter({
@@ -1501,6 +1588,17 @@ describe('AI SDK provider adapters', () => {
       dependencies: {
         createProvider: () => (() => ({ provider: 'openai', modelId: 'test' }) as never),
         streamText: () => ({
+          totalUsage: Promise.resolve({
+            inputTokens: 0,
+            inputTokenDetails: {
+              noCacheTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+            outputTokens: 0,
+            outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+            totalTokens: 0,
+          }),
           stream: (async function* () {
             await Promise.resolve();
             yield { type: 'error', error: providerFailure };

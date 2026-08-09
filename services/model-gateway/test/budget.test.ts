@@ -435,6 +435,61 @@ describe('durable completion accounting', () => {
     expect(callsBeforeCompletion).toBeGreaterThanOrEqual(2);
   });
 
+  it('classifies an indeterminate lease renewal as a retryable completion', async () => {
+    let claimCalls = 0;
+    const provider: ReservableCompletionBackend = {
+      prepare: () =>
+        Promise.resolve({
+          route: [...route],
+          stream: (signal) =>
+            (async function* () {
+              await new Promise<void>((resolve) => {
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    resolve();
+                  },
+                  { once: true },
+                );
+                if (signal.aborted) resolve();
+              });
+              throw new ProviderAttemptError(
+                'anthropic',
+                'claude-sonnet-5',
+                new Error('lease renewal stopped provider'),
+              );
+            })(),
+        }),
+      stream: () => {
+        throw new Error('The accounted path must use prepare().');
+      },
+    };
+    const completion = createUsageAccountedCompletion({
+      backend: provider,
+      accounting: {
+        claim: () => {
+          claimCalls += 1;
+          if (claimCalls === 1) {
+            return Promise.resolve({
+              status: 'claimed' as const,
+              claimExpiresAt: '2026-08-09T16:05:00.000Z',
+              reservedCredits: '1.0000',
+              credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
+            });
+          }
+          return Promise.reject(new Error('control plane renewal unavailable'));
+        },
+        commit: () => Promise.reject(new Error('commit must not run after a lost lease')),
+      },
+      claimOwner: 'gateway-one',
+      leaseMs: 1_000,
+      leaseRenewalIntervalMs: 1,
+    });
+
+    await expect(collect(completion)).rejects.toBeInstanceOf(CompletionCommitIndeterminateError);
+    expect(claimCalls).toBeGreaterThanOrEqual(2);
+  });
+
   it('settles incurred provider work when the stream consumer disconnects', async () => {
     let nextCalls = 0;
     const provider: ReservableCompletionBackend = {
@@ -856,6 +911,17 @@ describe('Anthropic prompt-cache boundaries', () => {
           instructions = options.instructions;
           messages = options.messages;
           return {
+            totalUsage: Promise.resolve({
+              inputTokens: 120,
+              inputTokenDetails: {
+                noCacheTokens: 20,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 100,
+              },
+              outputTokens: 2,
+              outputTokenDetails: { textTokens: 2, reasoningTokens: 0 },
+              totalTokens: 122,
+            }),
             stream: (async function* () {
               await Promise.resolve();
               yield {

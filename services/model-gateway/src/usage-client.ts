@@ -346,10 +346,9 @@ export function createUsageAccountedCompletion(options: {
         const settle = async (): Promise<CompletionRecord> => {
           renewalStop.abort();
           await renewalTask;
-          if (renewalError instanceof Error) throw renewalError;
-          if (renewalError !== undefined) {
-            throw new Error('The completion lease renewal failed.', { cause: renewalError });
-          }
+          if (renewalError instanceof CompletionControlError) throw renewalError;
+          if (renewalError !== undefined)
+            throw new CompletionCommitIndeterminateError(renewalError);
           if (normalizedUsage.length === 0) {
             throw new CompletionCommitIndeterminateError(
               new Error('The provider completed without attributed usage.'),

@@ -201,7 +201,11 @@ export function createAiSdkAdapter(options: {
               throw part.error;
             case 'abort':
               if (!input.signal.aborted) throw new Error('provider stream aborted');
-              return;
+              yield usageEvent(await result.totalUsage, options.provider, input, 'abort');
+              throw new ModelTerminalError(
+                'provider_error',
+                'The model provider request was cancelled.',
+              );
             default:
               break;
           }
