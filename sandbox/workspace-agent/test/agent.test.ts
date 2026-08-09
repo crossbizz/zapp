@@ -309,7 +309,7 @@ class MacosCgroupExecution implements ExecutionContainment {
   }
 
   async remove(): Promise<void> {
-    await rm(this.directory, { recursive: true, force: true });
+    await rm(this.directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
   }
 }
 
