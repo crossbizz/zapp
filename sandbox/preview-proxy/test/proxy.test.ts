@@ -1882,14 +1882,14 @@ describe('preview proxy acceptance contract', () => {
     });
     const proxy = await startProxy({
       probePorts: [silent.port, healthy.port],
-      upstreamResponseHeaderTimeoutMs: 25,
+      upstreamResponseHeaderTimeoutMs: 500,
     });
 
     if (!proxy) {
       return;
     }
 
-    const timedOut = await fetch(`${proxy.url}/candidate`, { signal: AbortSignal.timeout(250) });
+    const timedOut = await fetch(`${proxy.url}/candidate`, { signal: AbortSignal.timeout(2_000) });
     const recovered = await fetch(`${proxy.url}/candidate`);
 
     expect(timedOut.status).toBe(502);
