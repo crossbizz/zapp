@@ -1,4 +1,4 @@
-import { chmod, mkdir } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,9 +24,17 @@ function run(command, args) {
 }
 
 await mkdir(outputDirectory, { recursive: true });
-for (const executable of ['path-helper', 'exec-launcher']) {
-  const source = join(nativeSource, `${executable}.c`);
-  const output = join(outputDirectory, executable);
-  await run(compiler, [...compilerFlags, source, '-o', output]);
-  await chmod(output, 0o755);
+const stagingDirectory = await mkdtemp(join(outputDirectory, '.build-'));
+try {
+  for (const executable of ['path-helper', 'exec-launcher']) {
+    const source = join(nativeSource, `${executable}.c`);
+    const output = join(stagingDirectory, executable);
+    await run(compiler, [...compilerFlags, source, '-o', output]);
+    await chmod(output, 0o755);
+  }
+  for (const executable of ['path-helper', 'exec-launcher']) {
+    await rename(join(stagingDirectory, executable), join(outputDirectory, executable));
+  }
+} finally {
+  await rm(stagingDirectory, { recursive: true, force: true });
 }

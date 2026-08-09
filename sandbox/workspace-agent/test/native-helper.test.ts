@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import {
   access,
+  chmod,
+  copyFile,
   link,
   lstat,
   mkdtemp,
@@ -241,6 +243,61 @@ describe('descriptor-relative native workspace helpers', () => {
     expect(result.exitCode, result.stderr.toString('utf8')).toBe(0);
     await expect(access(PATH_HELPER, constants.X_OK)).resolves.toBeUndefined();
     await expect(access(EXEC_LAUNCHER, constants.X_OK)).resolves.toBeUndefined();
+  });
+
+  test('keeps the published native helper intact while a rebuild is in progress', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'zapp-native-build-'));
+    const compilerPath = join(fixtureRoot, 'fake-compiler.mjs');
+    const helperBackup = join(fixtureRoot, 'path-helper');
+    const launcherBackup = join(fixtureRoot, 'exec-launcher');
+    const readyPath = join(fixtureRoot, 'compiler-ready');
+    const continuePath = join(fixtureRoot, 'compiler-continue');
+    await copyFile(PATH_HELPER, helperBackup);
+    await copyFile(EXEC_LAUNCHER, launcherBackup);
+    await writeFile(
+      compilerPath,
+      `#!/usr/bin/env node
+import { access, copyFile, writeFile } from 'node:fs/promises';
+const arguments_ = process.argv.slice(2);
+const output = arguments_[arguments_.indexOf('-o') + 1];
+await writeFile(output, '');
+await writeFile(process.env.ZAPP_NATIVE_BUILD_READY_PATH, 'ready');
+while (true) {
+  try {
+    await access(process.env.ZAPP_NATIVE_BUILD_CONTINUE_PATH);
+    break;
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+const backup = output.endsWith('path-helper')
+  ? process.env.ZAPP_NATIVE_BUILD_HELPER_BACKUP
+  : process.env.ZAPP_NATIVE_BUILD_LAUNCHER_BACKUP;
+await copyFile(backup, output);
+`,
+    );
+    await chmod(compilerPath, 0o755);
+    const build = runNative(
+      process.execPath,
+      [join(PACKAGE_ROOT, 'scripts', 'build-native.mjs')],
+      {
+        ...process.env,
+        CC: compilerPath,
+        ZAPP_NATIVE_BUILD_CONTINUE_PATH: continuePath,
+        ZAPP_NATIVE_BUILD_HELPER_BACKUP: helperBackup,
+        ZAPP_NATIVE_BUILD_LAUNCHER_BACKUP: launcherBackup,
+        ZAPP_NATIVE_BUILD_READY_PATH: readyPath,
+      },
+    );
+
+    try {
+      await waitForPath(readyPath);
+      expect((await readFile(PATH_HELPER)).length).toBeGreaterThan(0);
+    } finally {
+      await writeFile(continuePath, 'continue');
+      await build.completion;
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   test('build emits executable native helper and launcher binaries', async () => {
