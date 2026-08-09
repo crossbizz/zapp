@@ -86,6 +86,7 @@ class FakeSandboxServicePort {
   readonly operationKeys: (string | undefined)[] = [];
   readonly createInputs: unknown[] = [];
   failCreates = 0;
+  branchLockedCreates = 0;
   readonly failures = new Set<string>();
 
   createWorkspace(input: {
@@ -97,6 +98,14 @@ class FakeSandboxServicePort {
     if (this.failCreates > 0) {
       this.failCreates -= 1;
       return Promise.reject(new Error('sandbox unavailable'));
+    }
+    if (this.branchLockedCreates > 0) {
+      this.branchLockedCreates -= 1;
+      return Promise.reject(
+        Object.assign(new Error('The branch already has an active writer.'), {
+          code: 'branch_locked',
+        }),
+      );
     }
     return Promise.resolve({
       providerWorkspaceId: `sandbox-${String(this.calls.length)}`,
@@ -1093,6 +1102,26 @@ describe('workspace passthrough routes', () => {
     expect(wired.data.workspaces[0]).toMatchObject({
       status: 'requested',
       providerWorkspaceId: null,
+    });
+  });
+
+  it('returns the typed public 409 when the sandbox service reports an active branch writer', async () => {
+    const sandbox = new FakeSandboxServicePort();
+    sandbox.branchLockedCreates = 1;
+    const wired = await wire({ sandbox });
+    const project = await createProject(wired);
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/workspaces`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'branch-locked-create-01' },
+      payload: {},
+    });
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json<{ error: { code: string; message: string } }>().error).toMatchObject({
+      code: 'branch_locked',
+      message: 'The branch already has an active writer.',
     });
   });
 

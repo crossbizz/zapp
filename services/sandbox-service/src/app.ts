@@ -16,6 +16,7 @@ import {
   type GitTokenClientOptions,
   type WorkspaceGitService,
 } from './provider/git-bootstrap.js';
+import { BranchLockedError } from './provider/volumes.js';
 import {
   registerWorkspaceRoutes,
   type WorkspaceAgentProvider,
@@ -88,6 +89,10 @@ export function buildApp(options: BuildAppOptions) {
     },
   );
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof BranchLockedError) {
+      void reply.status(409).send({ code: error.code, message: error.message });
+      return;
+    }
     if ((error as { readonly code?: unknown }).code === 'atomic_write_conflict') {
       void reply.status(409).send({
         code: 'atomic_write_conflict',

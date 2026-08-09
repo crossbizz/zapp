@@ -70,6 +70,14 @@ export const PreviewWorkspaceResultSchema = z
   .object({ url: z.string().url(), expiresAt: z.string().datetime() })
   .strict();
 
+const SandboxBranchLockedCauseSchema = z
+  .object({ code: z.literal('branch_locked') })
+  .passthrough();
+
+export function isSandboxBranchLockedError(error: unknown): boolean {
+  return SandboxBranchLockedCauseSchema.safeParse(error).success;
+}
+
 /** Public workspace lifecycle only; raw filesystem and command access stay internal. */
 export interface SandboxServicePort {
   createWorkspace(

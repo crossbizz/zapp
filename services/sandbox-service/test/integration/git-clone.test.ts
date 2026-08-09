@@ -307,6 +307,11 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       terminatedAt: null,
     };
     const rows: WorkspaceRowBoundary = {
+      projectOwnedBy(projectId, organizationId) {
+        return Promise.resolve(
+          projectId === row.projectId && organizationId === row.organizationId,
+        );
+      },
       claimCreate() {
         return Promise.resolve({ created: true, row });
       },
@@ -335,6 +340,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
     const provider: WorkspaceAgentProvider = {
       lockedImageTag: 'forge-node-base:2026-08-08-c58a416',
       attachmentEnvironment: 'zapp-dev',
+      imageTagForPurpose: () => 'forge-node-base:2026-08-08-c58a416',
       async createWorkspace(input, onAllocated) {
         await onAllocated?.(IDS.providerWorkspaceId);
         return {

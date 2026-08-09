@@ -27,6 +27,7 @@ import {
   ModalWorkspaceTagMismatchError,
   type ModalWorkspaceAttachment,
 } from '../provider/modal.js';
+import { BranchLockedResponseSchema } from '../provider/volumes.js';
 
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -81,6 +82,7 @@ export interface WorkspaceAttachmentRecord {
 
 /** Durable row operations are injected so CP-9's tenant repository remains the row owner. */
 export interface WorkspaceRowBoundary {
+  projectOwnedBy(projectId: string, organizationId: string): Promise<boolean>;
   claimCreate(
     row: WorkspaceLifecycleRow,
     key: WorkspaceRowIdempotencyKey,
@@ -112,6 +114,7 @@ export interface WorkspaceRowBoundary {
 export interface WorkspaceLifecycleProvider {
   readonly lockedImageTag: string;
   readonly attachmentEnvironment: ModalWorkspaceAttachment['requiredTags']['environment'];
+  imageTagForPurpose(purpose: WorkspacePurpose): string;
   createWorkspace(
     input: CreateWorkspaceInput,
     onAllocated?: (providerWorkspaceId: string) => Promise<void>,
@@ -384,7 +387,11 @@ export function registerWorkspaceRoutes(
       preHandler: app.requireService,
       schema: {
         body: CreateWorkspaceBodySchema,
-        response: { 200: WorkspaceResponseSchema, 201: WorkspaceResponseSchema },
+        response: {
+          200: WorkspaceResponseSchema,
+          201: WorkspaceResponseSchema,
+          409: BranchLockedResponseSchema,
+        },
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -399,6 +406,9 @@ export function registerWorkspaceRoutes(
           statusCode: 400,
         });
       }
+      if (!(await deps.rows.projectOwnedBy(scope.projectId, scope.organizationId))) {
+        throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+      }
       const key = WorkspaceRowIdempotencyKeySchema.parse({
         runId: body.runId,
         taskId: body.taskId,
@@ -406,10 +416,11 @@ export function registerWorkspaceRoutes(
         branchId: body.workspace.branchId,
         branchName: body.branchName,
       });
-      const input = createInputFor(body.workspace, body, deps.provider.lockedImageTag);
+      const lockedImageTag = deps.provider.imageTagForPurpose(body.purpose);
+      const input = createInputFor(body.workspace, body, lockedImageTag);
       const claim = await deps.rows.claimCreate(body.workspace, key, {
         resourceProfile: body.workspace.resourceProfile,
-        imageTag: deps.provider.lockedImageTag,
+        imageTag: lockedImageTag,
         createdAt: body.workspace.createdAt,
         requiredTags: {
           org_id: body.workspace.organizationId,
@@ -430,9 +441,20 @@ export function registerWorkspaceRoutes(
       }
 
       await deps.rows.transition(claim.row.id, 'provisioning');
-      const untrustedHandle = await deps.provider.createWorkspace(input, async (providerWorkspaceId) => {
-        await deps.rows.bindProviderWorkspaceId(claim.row.id, providerWorkspaceId, 'provisioning');
-      });
+      let untrustedHandle: WorkspaceHandle;
+      try {
+        untrustedHandle = await deps.provider.createWorkspace(input, async (providerWorkspaceId) => {
+          await deps.rows.bindProviderWorkspaceId(claim.row.id, providerWorkspaceId, 'provisioning');
+        });
+      } catch (error) {
+        await deps.rows.transition(
+          claim.row.id,
+          'terminated',
+          { terminatedAt: deps.now() },
+          'provisioning',
+        );
+        throw error;
+      }
       const providerWorkspaceId = z
         .object({ providerWorkspaceId: z.string().min(1) })
         .passthrough()
@@ -441,7 +463,7 @@ export function registerWorkspaceRoutes(
         const handle = WorkspaceHandleSchema.strict().parse(untrustedHandle);
         if (
           handle.status !== 'ready' ||
-          handle.imageTag !== deps.provider.lockedImageTag ||
+          handle.imageTag !== lockedImageTag ||
           handle.resourceProfile !== claim.row.resourceProfile
         ) {
           throw new Error('Workspace provider returned a mismatched handle.');

@@ -17,6 +17,7 @@ import {
   CreateWorkspaceResultSchema,
   PreviewWorkspaceInputSchema,
   PreviewWorkspaceResultSchema,
+  isSandboxBranchLockedError,
   StartWorkspaceInputSchema,
   StartWorkspaceResultSchema,
   TerminateWorkspaceInputSchema,
@@ -94,7 +95,8 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
               }),
             ),
           );
-        } catch {
+        } catch (error) {
+          if (isSandboxBranchLockedError(error)) throw branchLocked();
           throw sandboxFailed();
         }
         const completed = await ctx.db.workspaces.completeCreate({
@@ -313,6 +315,13 @@ function workspaceNotFound(): ApiError {
 }
 function invalidWorkspaceState(): ApiError {
   return new ApiError('invalid_workspace_state', 409, 'That workspace cannot accept this action.');
+}
+function branchLocked(): ApiError {
+  return new ApiError(
+    'branch_locked',
+    409,
+    'The branch already has an active writer.',
+  );
 }
 function sandboxFailed(): ApiError {
   return new ApiError(

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import process from 'node:process';
 import { posix } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { ModalClient, NotFoundError, Probe } from 'modal';
+import { AlreadyExistsError, ModalClient, NotFoundError, Probe } from 'modal';
 import { z } from 'zod';
 import {
   CleanupFailureResponseSchema,
@@ -17,6 +17,7 @@ import {
   type ExecutionContract,
   type ExecInput,
   type WorkspaceHandle,
+  type WorkspacePurpose,
   type WorkspaceStatus,
 } from '@zapp/contracts';
 import {
@@ -37,6 +38,11 @@ import {
   type SandboxTags,
   type SourceFetchRevision,
 } from './types.js';
+import {
+  BranchLockedError,
+  createProjectVolumePlan,
+  type ProjectVolumePlan,
+} from './volumes.js';
 
 const ModalSdkRunResultSchema = z
   .object({
@@ -785,6 +791,7 @@ export type ModalImageLock = z.infer<typeof ModalImageLockSchema>;
 
 export interface ModalWorkspaceCreateOptions {
   readonly environment: ModalEnvironment;
+  /** One runtime App keeps branch-unique Sandbox names global across image purposes. */
   readonly appName: 'zapp-workspaces';
   readonly digest: string;
   readonly publishedName: string;
@@ -796,7 +803,14 @@ export interface ModalWorkspaceCreateOptions {
     memLimitMiB: number;
   }>;
   readonly environmentVariables: Readonly<Record<string, string>>;
-  readonly command: readonly ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'];
+  readonly sandboxName: string;
+  readonly volume: Readonly<{
+    name: string;
+    mounts: readonly [
+      Readonly<{ mountPath: '/cache'; subPath: '/cache' }>,
+    ];
+  }>;
+  readonly command: readonly string[];
   readonly encryptedPorts: readonly [8877];
   readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
   readonly timeoutMs: number;
@@ -861,7 +875,11 @@ const ModalWorkspaceAttachmentSchema = z
 export type ModalWorkspaceAttachment = z.infer<typeof ModalWorkspaceAttachmentSchema>;
 
 const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
-const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
+const WORKSPACE_ENV_ALLOWLIST = new Set([
+  'PLAYWRIGHT_BROWSERS_PATH',
+  'PNPM_STORE_DIR',
+  'ZAPP_TELEMETRY_ENDPOINT',
+]);
 const CompatibleAgentHealthSchema = z.union([
   AgentHealthSchema,
   z
@@ -1248,22 +1266,40 @@ function createModalWorkspaceSdk(
         createIfMissing: true,
       });
       const image = await client.images.fromId(input.digest);
-      const sandbox = await client.sandboxes.create(app, image, {
-        command: [...input.command],
-        env: { ...input.environmentVariables },
-        tags: { ...input.tags },
-        cpu: input.resources.cpuRequest,
-        cpuLimit: input.resources.cpuLimit,
-        memoryMiB: input.resources.memRequestMiB,
-        memoryLimitMiB: input.resources.memLimitMiB,
-        encryptedPorts: [...input.encryptedPorts],
-        readinessProbe: Probe.withTcp(input.readinessProbe.port, {
-          intervalMs: input.readinessProbe.intervalMs,
-        }),
-        timeoutMs: input.timeoutMs,
-        experimentalOptions: { vm_runtime: true },
+      const volume = await client.volumes.fromName(input.volume.name, {
+        environment: input.environment,
+        createIfMissing: true,
       });
-      return adapt(sandbox);
+      try {
+        const sandbox = await client.sandboxes.create(app, image, {
+          command: [...input.command],
+          env: { ...input.environmentVariables },
+          name: input.sandboxName,
+          volumes: Object.fromEntries(
+            input.volume.mounts.map(({ mountPath, subPath }) => [
+              mountPath,
+              volume.withMountOptions({ subPath }),
+            ]),
+          ),
+          tags: { ...input.tags },
+          cpu: input.resources.cpuRequest,
+          cpuLimit: input.resources.cpuLimit,
+          memoryMiB: input.resources.memRequestMiB,
+          memoryLimitMiB: input.resources.memLimitMiB,
+          encryptedPorts: [...input.encryptedPorts],
+          readinessProbe: Probe.withTcp(input.readinessProbe.port, {
+            intervalMs: input.readinessProbe.intervalMs,
+          }),
+          timeoutMs: input.timeoutMs,
+          experimentalOptions: { vm_runtime: true },
+        });
+        return adapt(sandbox);
+      } catch (error) {
+        if (error instanceof AlreadyExistsError) {
+          throw new BranchLockedError(input.tags.branch_id);
+        }
+        throw error;
+      }
     },
     async getWorkspace(providerWorkspaceId) {
       try {
@@ -1284,6 +1320,7 @@ function createModalWorkspaceSdk(
 function workspaceEnvironmentVariables(
   callerEnvironment: Readonly<Record<string, string>>,
   agentToken: string,
+  volume: ProjectVolumePlan,
 ): Readonly<Record<string, string>> {
   for (const name of Object.keys(callerEnvironment)) {
     if (!WORKSPACE_ENV_ALLOWLIST.has(name)) {
@@ -1292,9 +1329,28 @@ function workspaceEnvironmentVariables(
   }
   return {
     ZAPP_AGENT_TOKEN: agentToken,
-    ZAPP_WORKSPACE_ROOT: '/workspace',
+    ZAPP_WORKSPACE_ROOT: volume.workspaceRoot,
     ...callerEnvironment,
+    ...volume.environment,
   };
+}
+
+function workspaceBootCommand(
+  volume: ProjectVolumePlan,
+  seedPlaywrightCache: boolean,
+): readonly string[] {
+  const workspaceRoot = shellQuote(volume.workspaceRoot);
+  const lockFile = shellQuote(volume.lockFile);
+  const browserSeed = seedPlaywrightCache
+    ? 'if [ ! -e /cache/ms-playwright ]; then ln -s /ms-playwright /cache/ms-playwright || test -L /cache/ms-playwright; fi; '
+    : '';
+  return [
+    '/usr/bin/dumb-init',
+    '--',
+    '/bin/bash',
+    '-lc',
+    `set -euo pipefail; ${browserSeed}mkdir -p ${workspaceRoot}; exec 9>${lockFile}; flock -n 9 || exit 73; exec /opt/zapp/boot.sh`,
+  ];
 }
 
 export class ModalSandboxProvider {
@@ -1302,11 +1358,9 @@ export class ModalSandboxProvider {
   readonly attachmentEnvironment: ModalEnvironment;
   private readonly environment: WorkspaceEnvironmentName;
   private readonly modalEnvironment: ModalEnvironment;
-  private readonly image: {
-    readonly appName: 'zapp-workspaces';
-    readonly digest: string;
-    readonly publishedName: string;
-  };
+  private readonly images: NonNullable<
+    ModalImageLock['environments'][WorkspaceEnvironmentName]
+  >['images'];
   private readonly agentToken: string;
   private readonly sdkFactory: (environment: ModalEnvironment) => ModalWorkspaceSdkPort;
   private readonly now: () => Date;
@@ -1322,8 +1376,8 @@ export class ModalSandboxProvider {
     }
     this.modalEnvironment = lockedEnvironment.modalEnvironment;
     this.attachmentEnvironment = this.modalEnvironment;
-    this.image = lockedEnvironment.images['forge-node-base'];
-    this.lockedImageTag = this.image.publishedName;
+    this.images = lockedEnvironment.images;
+    this.lockedImageTag = this.images['forge-node-base'].publishedName;
     this.agentToken = z.string().min(1).parse(options.agentToken);
     this.now = options.now ?? (() => new Date());
     this.clockMs = options.clockMs ?? Date.now;
@@ -1334,15 +1388,30 @@ export class ModalSandboxProvider {
         createModalWorkspaceSdk(options.credentials ?? credentialsFromEnvironment(), environment));
   }
 
+  imageTagForPurpose(purpose: WorkspacePurpose): string {
+    return purpose === 'verifier'
+      ? this.images['forge-web-test'].publishedName
+      : this.images['forge-node-base'].publishedName;
+  }
+
   async createWorkspace(
     untrustedInput: CreateWorkspaceInput,
     onAllocated?: (providerWorkspaceId: string) => Promise<void>,
   ): Promise<WorkspaceHandle> {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
-    if (input.imageTag !== this.lockedImageTag || input.imageTag.includes(':latest')) {
+    const image =
+      input.purpose === 'verifier'
+        ? this.images['forge-web-test']
+        : this.images['forge-node-base'];
+    if (input.imageTag !== image.publishedName || input.imageTag.includes(':latest')) {
       throw new Error('Workspace image must match the immutable image lock');
     }
     const resources = RESOURCE_PROFILES[input.resourceProfile];
+    const volume = createProjectVolumePlan({
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      branchId: input.branchId,
+    });
     const tags = SandboxTagsSchema.parse({
       org_id: input.organizationId,
       project_id: input.projectId,
@@ -1360,9 +1429,9 @@ export class ModalSandboxProvider {
     try {
       const creation = sdk.createWorkspace({
         environment: this.modalEnvironment,
-        appName: this.image.appName,
-        digest: this.image.digest,
-        publishedName: this.image.publishedName,
+        appName: this.images['forge-node-base'].appName,
+        digest: image.digest,
+        publishedName: image.publishedName,
         tags,
         resources: {
           cpuRequest: resources.cpuRequest,
@@ -1370,8 +1439,10 @@ export class ModalSandboxProvider {
           memRequestMiB: resources.memRequestGiB * 1_024,
           memLimitMiB: resources.memLimitGiB * 1_024,
         },
-        environmentVariables: workspaceEnvironmentVariables(input.env, this.agentToken),
-        command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
+        environmentVariables: workspaceEnvironmentVariables(input.env, this.agentToken, volume),
+        sandboxName: volume.sandboxName,
+        volume: { name: volume.volumeName, mounts: volume.mounts },
+        command: workspaceBootCommand(volume, input.purpose === 'verifier'),
         encryptedPorts: [8877],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: HEALTH_PROBE_INTERVAL_MS },
         timeoutMs: WORKSPACE_TIMEOUT_MS,
@@ -1428,7 +1499,7 @@ export class ModalSandboxProvider {
         providerWorkspaceId: sandbox.providerWorkspaceId,
         status: 'ready',
         resourceProfile: input.resourceProfile,
-        imageTag: this.lockedImageTag,
+        imageTag: image.publishedName,
         createdAt: createdAt.toISOString(),
         expiresAt: new Date(createdAt.getTime() + WORKSPACE_TIMEOUT_MS).toISOString(),
       });

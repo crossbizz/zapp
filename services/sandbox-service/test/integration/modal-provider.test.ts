@@ -16,6 +16,7 @@ import {
   type ModalWorkspaceSandbox,
   type ModalWorkspaceSdkPort,
 } from '../../src/provider/modal.js';
+import { BranchLockedError } from '../../src/provider/volumes.js';
 import type {
   WorkspaceLifecycleRow,
   WorkspaceRowBoundary,
@@ -351,6 +352,7 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   closeCalls = 0;
   getWorkspaceCalls = 0;
   present = false;
+  createError: Error | undefined;
   private createBarrier: Promise<void> = Promise.resolve();
 
   holdCreation(): () => void {
@@ -364,6 +366,7 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   createWorkspace(input: ModalWorkspaceCreateOptions): Promise<ModalWorkspaceSandbox> {
     this.creates.push(input);
     return this.createBarrier.then(() => {
+      if (this.createError !== undefined) throw this.createError;
       this.present = true;
       return this.sandbox;
     });
@@ -409,6 +412,15 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
   private readonly createWaiters = new Map<string, Array<(row: WorkspaceLifecycleRow) => void>>();
   private readonly attachments = new Map<string, Parameters<WorkspaceRowBoundary['claimCreate']>[2]>();
   failTransitionStatus: WorkspaceStatus | undefined;
+  projectOwned = true;
+
+  projectOwnedBy(projectId: string, organizationId: string): Promise<boolean> {
+    return Promise.resolve(
+      this.projectOwned &&
+        projectId === IDS.projectId &&
+        organizationId === IDS.organizationId,
+    );
+  }
 
   seed(row: WorkspaceLifecycleRow): void {
     this.rows.set(row.id, row);
@@ -1027,7 +1039,19 @@ describe('create status terminate and idempotency', () => {
       imageTag: 'forge-node-base:2026-08-08-c58a416',
       createdAt: NOW.toISOString(),
     });
-    expect(sdk.creates).toEqual([
+    const [creation] = sdk.creates;
+    expect(creation).toBeDefined();
+    if (creation === undefined) throw new Error('workspace create input missing');
+    const { command, ...creationWithoutCommand } = creation;
+    expect(creation.sandboxName).toMatch(/^zapp-writer-[a-f0-9]{32}$/);
+    expect(command.slice(0, 4)).toEqual([
+      '/usr/bin/dumb-init',
+      '--',
+      '/bin/bash',
+      '-lc',
+    ]);
+    expect(command[4]).toContain(`/workspace/${IDS.branchId}/.zapp-writer.lock`);
+    expect({ ...creationWithoutCommand, sandboxName: '<stable-hash>' }).toEqual(
       {
         environment: 'zapp-dev',
         appName: 'zapp-workspaces',
@@ -1050,15 +1074,22 @@ describe('create status terminate and idempotency', () => {
         },
         environmentVariables: {
           ZAPP_AGENT_TOKEN: 'agent-test-token',
-          ZAPP_WORKSPACE_ROOT: '/workspace',
+          ZAPP_WORKSPACE_ROOT: `/workspace/${IDS.branchId}`,
           PNPM_STORE_DIR: '/cache/pnpm',
+          PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
         },
-        command: ['/usr/bin/dumb-init', '--', '/opt/zapp/boot.sh'],
+        sandboxName: '<stable-hash>',
+        volume: {
+          name: `vol-proj_${IDS.projectId}`,
+          mounts: [
+            { mountPath: '/cache', subPath: '/cache' },
+          ],
+        },
         encryptedPorts: [8877],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
         timeoutMs: 14_400_000,
       },
-    ]);
+    );
     expect(sdk.sandbox.readinessTimeouts).toEqual([30_000]);
     expect(sdk.sandbox.healthTokens).toEqual(['agent-test-token', 'agent-test-token']);
     expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('ready');
@@ -1086,6 +1117,37 @@ describe('create status terminate and idempotency', () => {
     const handle = await provider.createWorkspace(createInput());
 
     expect(handle.status).toBe('ready');
+    await provider.terminateWorkspace(handle.providerWorkspaceId);
+  });
+
+  it('selects the web-test image and seeds its pinned browsers into the project cache for verifier workspaces', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: 'agent-test-token',
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    const handle = await provider.createWorkspace({
+      ...createInput(),
+      purpose: 'verifier',
+      imageTag: IMAGE_LOCK.environments.dev.images['forge-web-test'].publishedName,
+    });
+
+    expect(handle.imageTag).toBe('forge-web-test:2026-08-08-c58a416');
+    expect(sdk.creates[0]).toMatchObject({
+      appName: 'zapp-workspaces',
+      digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+      publishedName: 'forge-web-test:2026-08-08-c58a416',
+    });
+    expect(sdk.creates[0]?.command[4]).toContain('/ms-playwright');
+    expect(sdk.creates[0]?.command[4]).toContain('/cache/ms-playwright');
+    expect(sdk.creates[0]?.command[4]).toContain('ln -s');
+    expect(sdk.creates[0]?.command[4]).not.toContain('cp -a');
     await provider.terminateWorkspace(handle.providerWorkspaceId);
   });
 
@@ -1126,6 +1188,105 @@ describe('create status terminate and idempotency', () => {
     );
     expect(sdk.sandbox.healthTokens).toHaveLength(0);
     expect(sdk.sandbox.terminateCalls).toBe(1);
+  });
+
+  it('returns 409 and releases the failed row when the branch already has an active writer', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.createError = new BranchLockedError(IDS.branchId);
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const app = buildApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: 'branch_locked',
+      message: 'The branch already has an active writer.',
+    });
+    await expect(
+      rows.get(IDS.workspaceId, IDS.organizationId, IDS.projectId),
+    ).resolves.toMatchObject({ status: 'terminated', providerWorkspaceId: null });
+  });
+
+  it('returns 404 before claiming or creating when the durable project ownership lookup fails', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+    const rows = new MemoryWorkspaceRows();
+    rows.projectOwned = false;
+    const app = buildApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(sdk.creates).toHaveLength(0);
+    expect(rows.transitions).toHaveLength(0);
   });
 
   it.each([
@@ -1563,6 +1724,53 @@ describe('create status terminate and idempotency', () => {
       expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('terminated');
     },
     120_000,
+  );
+
+  it.skipIf(!hasModalCredentials)(
+    'enforces one active writer per branch on the project Volume [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ws9-${Date.now().toString(36)}`,
+      });
+      let first: WorkspaceHandle | undefined;
+      let otherBranch: WorkspaceHandle | undefined;
+      try {
+        first = await provider.createWorkspace({
+          ...createInput(),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        await expect(
+          provider.createWorkspace({
+            ...createInput(),
+            runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7NX',
+            taskId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NY',
+            imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+          }),
+        ).rejects.toBeInstanceOf(BranchLockedError);
+        otherBranch = await provider.createWorkspace({
+          ...createInput(),
+          branchId: 'br_01J8ME7YQZJ2V9Q0X3T5B6K7NZ',
+          runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7NZ',
+          taskId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NZ',
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        expect(await provider.getStatus(otherBranch.providerWorkspaceId)).toBe('ready');
+      } finally {
+        if (first !== undefined) await provider.terminateWorkspace(first.providerWorkspaceId);
+        if (otherBranch !== undefined) {
+          await provider.terminateWorkspace(otherBranch.providerWorkspaceId);
+        }
+      }
+    },
+    180_000,
   );
 });
 
