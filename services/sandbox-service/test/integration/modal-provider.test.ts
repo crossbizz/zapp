@@ -8,7 +8,7 @@ import type {
 } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from '../../src/app.js';
+import { buildApp, type BuildAppOptions } from '../../src/app.js';
 import type { WorkspaceGitService } from '../../src/provider/git-bootstrap.js';
 import {
   createModalSandboxProvider,
@@ -17,6 +17,7 @@ import {
   type ModalWorkspaceSdkPort,
 } from '../../src/provider/modal.js';
 import { BranchLockedError } from '../../src/provider/volumes.js';
+import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 import type {
   WorkspaceLifecycleRow,
   WorkspaceRowBoundary,
@@ -32,6 +33,21 @@ const WORKSPACE_GIT_FIXTURE: WorkspaceGitService = {
   bootstrap: () => Promise.resolve(),
   push: () => Promise.reject(new Error('Unexpected workspace Git push')),
 };
+const EMPTY_SECRET_INJECTOR = createScopedSecretInjector({
+  decrypt: () => Promise.reject(new Error('Unexpected secret decrypt')),
+});
+const NOOP_NETWORK_POLICIES = { record: () => Promise.resolve() };
+
+function buildTestApp(
+  options: Omit<BuildAppOptions, 'secrets' | 'networkPolicies'> &
+    Partial<Pick<BuildAppOptions, 'secrets' | 'networkPolicies'>>,
+) {
+  return buildApp({
+    secrets: EMPTY_SECRET_INJECTOR,
+    networkPolicies: NOOP_NETWORK_POLICIES,
+    ...options,
+  } as BuildAppOptions);
+}
 const IDS = {
   organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
   projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
@@ -591,6 +607,140 @@ describe('attach reattach recovery and ownership', () => {
     expect(sdk.creates).toHaveLength(1);
   });
 
+  it('resolves child-only secrets and redacts buffered and split streaming output at the route boundary', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.method !== 'POST' || request.path !== '/exec') {
+        return strictAgentResponse(request);
+      }
+      const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
+        env?: Record<string, string>;
+      };
+      expect(body.env).toEqual({
+        STRIPE_KEY: 'stripe-value',
+        ZAPP_SECRET_NAMES: '["STRIPE_KEY"]',
+      });
+      if (request.query?.stream === '1') {
+        return {
+          statusCode: 200,
+          contentType: 'application/x-ndjson; charset=utf-8',
+          body: Buffer.from(
+            [
+              {
+                type: 'started',
+                pid: 41,
+                executionId: '123e4567-e89b-42d3-a456-426614174000',
+                at: NOW.toISOString(),
+              },
+              { type: 'stdout', data: 'stripe-', at: NOW.toISOString() },
+              { type: 'stdout', data: 'value', at: NOW.toISOString() },
+              {
+                type: 'exit',
+                exitCode: 0,
+                durationMs: 1,
+                truncated: false,
+                at: NOW.toISOString(),
+              },
+            ]
+              .map((record) => JSON.stringify(record))
+              .join('\n') + '\n',
+          ),
+        };
+      }
+      return jsonResponse({
+        exitCode: 0,
+        stdout: 'stripe-value',
+        stderr: '',
+        durationMs: 1,
+        truncated: false,
+      });
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      status: 'ready',
+    });
+    const decrypt = vi.fn(({ secretId }: { readonly secretId: string }) =>
+      Promise.resolve({
+        secret: {
+          id: secretId,
+          organizationId: IDS.organizationId,
+          projectId: IDS.projectId,
+          environmentId: 'env_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+          name: 'STRIPE_KEY',
+          keyVersion: 1,
+        },
+        value: 'stripe-value',
+      }),
+    );
+    const options = {
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      secrets: createScopedSecretInjector({ decrypt }),
+      networkPolicies: { record: vi.fn(() => Promise.resolve()) },
+      now: () => NOW,
+    };
+    const app = buildTestApp(options);
+    apps.push(app);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+    const payload = {
+      command: 'node',
+      args: ['-e', 'process.stdout.write(process.env.STRIPE_KEY ?? "")'],
+      timeoutMs: 1_000,
+      secretScope: {
+        environmentId: 'env_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+        secretIds: ['sec_01J8ME7YQZJ2V9Q0X3T5B6K7NH'],
+      },
+    };
+
+    const buffered = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/exec`,
+      headers,
+      payload,
+    });
+    expect(buffered.statusCode).toBe(200);
+    expect(buffered.json()).toMatchObject({ stdout: '[secret:STRIPE_KEY]' });
+    expect(buffered.body).not.toContain('stripe-value');
+
+    const streamed = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/exec?stream=1`,
+      headers,
+      payload,
+    });
+    expect(streamed.statusCode).toBe(200);
+    expect(streamed.body).toContain('[secret:STRIPE_KEY]');
+    expect(streamed.body).not.toContain('stripe-value');
+    expect(decrypt).toHaveBeenCalledTimes(2);
+
+    const rawEnvironment = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/exec`,
+      headers,
+      payload: { ...payload, env: { STRIPE_KEY: 'caller-value' } },
+    });
+    expect(rawEnvironment.statusCode).toBe(400);
+  });
+
   it('rejects unknown and mismatched provider identity and keeps repeated attach read-only', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     const firstProvider = createModalSandboxProvider({
@@ -667,7 +817,7 @@ describe('attach reattach recovery and ownership', () => {
         await gitBootstrapBarrier;
       },
     };
-    const app = buildApp({ provider, rows, workspaceGit, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -791,7 +941,7 @@ describe('attach reattach recovery and ownership', () => {
       providerWorkspaceId: created.providerWorkspaceId,
       status: 'provisioning',
     });
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -897,7 +1047,7 @@ describe('attach reattach recovery and ownership', () => {
         status: testCase.mode === 'terminated-row' ? 'terminated' : 'ready',
         terminatedAt: testCase.mode === 'terminated-row' ? NOW : null,
       });
-      const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+      const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
       apps.push(app);
       await app.ready();
       const response = await app.inject({
@@ -930,6 +1080,84 @@ describe('attach reattach recovery and ownership', () => {
     process.env.MODAL_TOKEN_ID !== '' &&
     typeof process.env.MODAL_TOKEN_SECRET === 'string' &&
     process.env.MODAL_TOKEN_SECRET !== '';
+
+  it.skipIf(!hasModalCredentials)(
+    'injects and redacts one app-child secret through the locked Modal image [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ws11-${Date.now().toString(36)}`,
+      });
+      let created: WorkspaceHandle | undefined;
+      try {
+        created = await provider.createWorkspace({
+          ...createInput(),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        const rows = new MemoryWorkspaceRows();
+        rows.seed({
+          ...requestedRow(),
+          providerWorkspaceId: created.providerWorkspaceId,
+          status: 'ready',
+        });
+        const app = buildTestApp({
+          provider,
+          rows,
+          workspaceGit: WORKSPACE_GIT_FIXTURE,
+          serviceTokens,
+          secrets: createScopedSecretInjector({
+            decrypt: ({ secretId }) =>
+              Promise.resolve({
+                secret: {
+                  id: secretId,
+                  organizationId: IDS.organizationId,
+                  projectId: IDS.projectId,
+                  environmentId: 'env_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+                  name: 'STRIPE_KEY',
+                  keyVersion: 1,
+                },
+                value: 'ws11-redaction-sentinel',
+              }),
+          }),
+          now: () => NOW,
+        });
+        apps.push(app);
+        await app.ready();
+        const response = await app.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/exec`,
+          headers: {
+            'x-zapp-service-token': SERVICE_TOKEN,
+            'x-zapp-organization-id': IDS.organizationId,
+            'x-zapp-project-id': IDS.projectId,
+            'idempotency-key': OPERATION_KEY,
+          },
+          payload: {
+            command: 'node',
+            args: ['-e', 'process.stdout.write(process.env.STRIPE_KEY ?? "missing")'],
+            timeoutMs: 10_000,
+            secretScope: {
+              environmentId: 'env_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+              secretIds: ['sec_01J8ME7YQZJ2V9Q0X3T5B6K7NH'],
+            },
+          },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ stdout: '[secret:STRIPE_KEY]' });
+        expect(response.body).not.toContain('ws11-redaction-sentinel');
+      } finally {
+        if (created !== undefined) await provider.terminateWorkspace(created.providerWorkspaceId);
+      }
+    },
+    60_000,
+  );
 
   it.skipIf(!hasModalCredentials)(
     'reattaches a real Modal sandbox after provider restart [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
@@ -1202,7 +1430,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({
+    const app = buildTestApp({
       provider,
       rows,
       workspaceGit: WORKSPACE_GIT_FIXTURE,
@@ -1253,7 +1481,7 @@ describe('create status terminate and idempotency', () => {
     });
     const rows = new MemoryWorkspaceRows();
     rows.projectOwned = false;
-    const app = buildApp({
+    const app = buildTestApp({
       provider,
       rows,
       workspaceGit: WORKSPACE_GIT_FIXTURE,
@@ -1287,6 +1515,88 @@ describe('create status terminate and idempotency', () => {
     expect(response.statusCode).toBe(404);
     expect(sdk.creates).toHaveLength(0);
     expect(rows.transitions).toHaveLength(0);
+  });
+
+  it('records the complete network policy before provider allocation and fails closed when recording fails', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const record = vi.fn(() => Promise.resolve());
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      networkPolicies: { record },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const request = {
+      method: 'POST' as const,
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder' as const,
+        env: {},
+        networkProfile: 'dependency_install' as const,
+        integrationDomains: ['api.stripe.com'],
+        operationKey: OPERATION_KEY,
+      },
+    };
+
+    const response = await app.inject(request);
+    expect(response.statusCode).toBe(201);
+    expect(record).toHaveBeenCalledWith({
+      operationKey: OPERATION_KEY,
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+      workspaceId: IDS.workspaceId,
+      policy: {
+        profile: 'dependency_install',
+        outboundDomains: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
+        blockAll: false,
+      },
+      providerEnforced: false,
+      recordedAt: NOW,
+    });
+    const blockedSdk = new FakeModalWorkspaceSdk();
+    const blockedRows = new MemoryWorkspaceRows();
+    const blocked = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => blockedSdk,
+      }),
+      rows: blockedRows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      networkPolicies: { record: () => Promise.reject(new Error('audit unavailable')) },
+      now: () => NOW,
+    });
+    apps.push(blocked);
+    await blocked.ready();
+    const blockedResponse = await blocked.inject(request);
+    expect(blockedResponse.statusCode).toBe(500);
+    expect(blockedSdk.creates).toHaveLength(0);
+    expect(blockedRows.transitions).toHaveLength(0);
   });
 
   it.each([
@@ -1323,7 +1633,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -1398,7 +1708,7 @@ describe('create status terminate and idempotency', () => {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
       status: 'ready',
     });
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
 
@@ -1436,7 +1746,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const body = {
@@ -1525,7 +1835,7 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -1576,7 +1886,7 @@ describe('create status terminate and idempotency', () => {
     });
     const rows = new MemoryWorkspaceRows();
     rows.failTransitionStatus = 'ready';
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const request = {
@@ -1620,7 +1930,7 @@ describe('create status terminate and idempotency', () => {
       sdkFactory: () => new FakeModalWorkspaceSdk(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     apps.push(app);
     await app.ready();
     const validBody = {
@@ -1991,7 +2301,7 @@ describe('agent proxy and unguarded conformance', () => {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
     });
     await rows.transition(IDS.workspaceId, 'ready');
-    const app = buildApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
     await app.ready();
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,

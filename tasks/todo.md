@@ -71,7 +71,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-8 Resource profiles + cost recorder
 - [x] WS-9 Cache volumes + branch locks
 - [x] WS-10 Preview proxy + capture client
-- [ ] WS-11 Secret injection + network profiles + redaction
+- [x] WS-11 Secret injection + network profiles + redaction
 - [ ] WS-12 Preview tokens + share records
 ### Plan 06
 - [x] GIT-4 Nightly bundle backups + restore

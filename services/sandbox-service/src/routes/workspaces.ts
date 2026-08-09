@@ -20,6 +20,11 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { SandboxServiceApp } from '../app.js';
+import {
+  NetworkPolicyRecordSchema,
+  resolveNetworkPolicy,
+  type NetworkPolicyRecorder,
+} from '../network/profiles.js';
 import type { WorkspaceGitService } from '../provider/git-bootstrap.js';
 import {
   ModalWorkspaceNotFoundError,
@@ -28,6 +33,13 @@ import {
   type ModalWorkspaceAttachment,
 } from '../provider/modal.js';
 import { BranchLockedResponseSchema } from '../provider/volumes.js';
+import {
+  assertSandboxEnvironment,
+  createSecretStreamRedactor,
+  redactExecResult,
+  type ScopedSecretInjector,
+  type SecretRegistry,
+} from '../secrets/injector.js';
 
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -163,6 +175,7 @@ const CreateWorkspaceBodySchema = z
     purpose: WorkspacePurposeSchema,
     env: EnvVarsSchema,
     networkProfile: NetworkProfileSchema,
+    integrationDomains: z.array(z.string().min(1)).max(100).default([]),
     operationKey: OperationKeySchema,
   })
   .strict();
@@ -185,7 +198,16 @@ const AttachedWorkspaceResponseSchema = z
 const StatusResponseSchema = z
   .object({ workspace: WorkspaceLifecycleRowSchema, providerStatus: WorkspaceStatusSchema })
   .strict();
-const ExecBodySchema = ExecInputSchema.omit({ providerWorkspaceId: true }).strict();
+const SecretExecScopeSchema = z
+  .object({
+    environmentId: idSchema('env'),
+    secretIds: z.array(idSchema('sec')).min(1).max(200),
+  })
+  .strict();
+const ExecCommandBodySchema = ExecInputSchema.omit({ providerWorkspaceId: true, env: true }).strip();
+const ExecBodySchema = ExecCommandBodySchema
+  .extend({ secretScope: SecretExecScopeSchema.optional() })
+  .strict();
 const ExecQuerySchema = z.object({ stream: z.literal('1').optional() }).strict();
 const ExecParamsSchema = WorkspaceParamsSchema.extend({ pid: z.coerce.number().int().positive() }).strict();
 const KillBodySchema = z.object({ executionId: z.string().uuid() }).strict();
@@ -356,6 +378,8 @@ export function registerWorkspaceRoutes(
     readonly provider: WorkspaceAgentProvider;
     readonly rows: WorkspaceRowBoundary;
     readonly workspaceGit: WorkspaceGitService;
+    readonly secrets: ScopedSecretInjector;
+    readonly networkPolicies: NetworkPolicyRecorder;
     readonly now: () => Date;
   },
 ): void {
@@ -409,6 +433,17 @@ export function registerWorkspaceRoutes(
       if (!(await deps.rows.projectOwnedBy(scope.projectId, scope.organizationId))) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
+      await deps.networkPolicies.record(
+        NetworkPolicyRecordSchema.parse({
+          operationKey: body.operationKey,
+          organizationId: scope.organizationId,
+          projectId: scope.projectId,
+          workspaceId: body.workspace.id,
+          policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
+          providerEnforced: false,
+          recordedAt: deps.now(),
+        }),
+      );
       const key = WorkspaceRowIdempotencyKeySchema.parse({
         runId: body.runId,
         taskId: body.taskId,
@@ -688,10 +723,34 @@ export function registerWorkspaceRoutes(
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const query = ExecQuerySchema.parse(request.query);
       const body = ExecBodySchema.parse(request.body);
-      const providerWorkspaceId = await resolveProviderWorkspaceId(workspaceId, request);
+      const row = await resolveWorkspace(workspaceId, request);
+      const providerWorkspaceId = z.string().min(1).parse(row.providerWorkspaceId);
       const key = readIdempotencyKey(request.headers['idempotency-key']);
-      const input = ExecInputSchema.parse({ ...body, providerWorkspaceId });
-      if (query.stream !== '1') return ExecResultSchema.parse(await deps.provider.exec(input, key));
+      let registry: SecretRegistry = {};
+      let childEnvironment: Readonly<Record<string, string>> | undefined;
+      if (body.secretScope !== undefined) {
+        const resolved = await deps.secrets.resolve({
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          environmentId: body.secretScope.environmentId,
+          secretIds: body.secretScope.secretIds,
+          reason: `launch app command in workspace ${workspaceId}`,
+        });
+        registry = resolved.values;
+        childEnvironment = { ...resolved.values, ...resolved.agentEnvironment };
+        assertSandboxEnvironment(childEnvironment, Object.keys(resolved.values));
+      }
+      const command = ExecCommandBodySchema.parse(body);
+      const input = ExecInputSchema.parse({
+        ...command,
+        providerWorkspaceId,
+        ...(childEnvironment === undefined ? {} : { env: childEnvironment }),
+      });
+      if (query.stream !== '1') {
+        return ExecResultSchema.parse(
+          redactExecResult(await deps.provider.exec(input, key), registry),
+        );
+      }
       const controller = new AbortController();
       const abort = (): void => {
         controller.abort();
@@ -701,10 +760,27 @@ export function registerWorkspaceRoutes(
       reply.hijack();
       reply.raw.statusCode = 200;
       reply.raw.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+      const stdout = createSecretStreamRedactor(registry);
+      const stderr = createSecretStreamRedactor(registry);
       try {
         for await (const untrustedRecord of deps.provider.execStream(input, key, controller.signal)) {
           const record = ExecStreamRecordSchema.parse(untrustedRecord);
           if (reply.raw.destroyed) break;
+          if (record.type === 'stdout' || record.type === 'stderr') {
+            const data = (record.type === 'stdout' ? stdout : stderr).push(record.data);
+            if (data !== '') reply.raw.write(`${JSON.stringify({ ...record, data })}\n`);
+            continue;
+          }
+          if (record.type === 'exit') {
+            const stdoutTail = stdout.finish();
+            const stderrTail = stderr.finish();
+            if (stdoutTail !== '') {
+              reply.raw.write(`${JSON.stringify({ type: 'stdout', data: stdoutTail, at: record.at })}\n`);
+            }
+            if (stderrTail !== '') {
+              reply.raw.write(`${JSON.stringify({ type: 'stderr', data: stderrTail, at: record.at })}\n`);
+            }
+          }
           reply.raw.write(`${JSON.stringify(record)}\n`);
         }
         if (!reply.raw.destroyed) reply.raw.end();

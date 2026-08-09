@@ -1,4 +1,4 @@
-import { NetworkProfileSchema, type NetworkProfile } from '@zapp/contracts';
+import { NetworkProfileSchema, idSchema, type NetworkProfile } from '@zapp/contracts';
 import { z } from 'zod';
 
 const DomainSchema = z
@@ -25,6 +25,31 @@ export interface NetworkPolicy {
   readonly outboundDomains: readonly string[];
   readonly blockAll: boolean;
 }
+
+export const NetworkPolicyRecordSchema = z
+  .object({
+    operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    workspaceId: idSchema('ws'),
+    policy: z
+      .object({
+        profile: NetworkProfileSchema,
+        outboundDomains: z.array(DomainSchema),
+        blockAll: z.boolean(),
+      })
+      .strict(),
+    providerEnforced: z.boolean(),
+    recordedAt: z.coerce.date(),
+  })
+  .strict();
+export type NetworkPolicyRecord = z.infer<typeof NetworkPolicyRecordSchema>;
+
+export interface NetworkPolicyRecorder {
+  /** Implementations correlate or deduplicate retries by the stable operation key. */
+  record(record: NetworkPolicyRecord): Promise<void>;
+}
+
 export function resolveNetworkPolicy(
   untrustedProfile: NetworkProfile,
   untrustedIntegrationDomains: readonly string[],

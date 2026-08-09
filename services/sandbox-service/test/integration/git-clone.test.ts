@@ -19,6 +19,7 @@ import {
   type WorkspaceGitCommandPort,
 } from '../../src/provider/git-bootstrap.js';
 import type { WorkspaceAgentProvider, WorkspaceLifecycleRow, WorkspaceRowBoundary } from '../../src/routes/workspaces.js';
+import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -379,6 +380,10 @@ describe('WS-5 scoped-token Git bootstrap', () => {
     const app = buildApp({
       provider,
       rows,
+      secrets: createScopedSecretInjector({
+        decrypt: () => Promise.reject(new Error('Unexpected secret decrypt')),
+      }),
+      networkPolicies: { record: () => Promise.resolve() },
       gitService: {
         baseUrl: 'http://git-service.test:4500',
         serviceTokens: { secret: 's'.repeat(32) },

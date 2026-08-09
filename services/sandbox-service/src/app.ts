@@ -22,6 +22,8 @@ import {
   type WorkspaceAgentProvider,
   type WorkspaceRowBoundary,
 } from './routes/workspaces.js';
+import type { NetworkPolicyRecorder } from './network/profiles.js';
+import type { ScopedSecretInjector } from './secrets/injector.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -51,6 +53,8 @@ interface BuildAppCommonOptions {
   readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
   readonly serviceTokens: SandboxServiceTokenVerifier;
+  readonly secrets: ScopedSecretInjector;
+  readonly networkPolicies: NetworkPolicyRecorder;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
 }
@@ -143,6 +147,8 @@ export function buildApp(options: BuildAppOptions) {
     provider: options.provider,
     rows: options.rows,
     workspaceGit,
+    secrets: options.secrets,
+    networkPolicies: options.networkPolicies,
     now,
   });
   return app;
