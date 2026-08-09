@@ -8,7 +8,7 @@
 
 **Tech Stack:** Stripe SDK + webhooks, Flexprice API (event ingestion, meters/metered features, wallets, entitlements — docs.flexprice.io), OpenTelemetry SDK (node) + OTLP → Grafana Cloud, Grafana Faro (web/desktop), PostHog (cloud: analytics + flags), k6 (load), gitleaks/osv-scanner/Semgrep (CI), AWS SQS/SNS/SES for queues + email (LocalStack locally, AWS SDK v3 with endpoint override).
 
-**Milestone:** OPS-1..3 (M2), OPS-4..18 (M5, several can start earlier). **Depends on:** Plans 01–08 hooks. **Consumed by:** master exit criteria E19, E20, E22.
+**Milestone:** OPS-1A (M1), OPS-1B..3 (M2), OPS-4..18 (M5, several can start earlier). **Depends on:** Plans 01–08 hooks. **Consumed by:** master exit criteria E19, E20, E22.
 
 ## Global Constraints
 
@@ -20,15 +20,25 @@ Master plan §Global Constraints, plus:
 
 ---
 
-### Task OPS-1 [M2]: Ledger service + Flexprice metering integration
+### Task OPS-1A [M1]: Durable completion journal + authoritative usage reservation
 
-**Files:** Create: `services/control-api/src/usage/{ledger,flexprice,pricing}.ts`, `config/pricing.json`, `scripts/flexprice-bootstrap.ts`, `test/usage.test.ts`
-**Interfaces produced (binding):**
+**ADR:** ADR-0025. **Files:** Create/modify: control-api model-completion and usage schemas/routes/repositories/composition plus run-budget default resolution; `packages/db` execution/billing schema, next migration and schema/tenant tests; `config/pricing.json`; usage transactional-outbox publisher/consumer; API/internal client tests; required manifests/exports.
+**Effort:** L
+
+- [ ] RED: stable claim/commit/get boundary; tenant/fingerprint conflict; lease takeover; commit replay; deterministic ledger row IDs; omitted run budget resolves to configured M1 default and invalid/absent default/rate fails closed before workflow/provider dispatch; pricing snapshot remains fixed for the run; atomic worst-case reservation rejects before provider dispatch; concurrent reservations cannot cross the effective ceiling; commit settles actual usage and releases unused credit; approved idempotent monotonic ceiling increase resumes a blocked run while a decrease is rejected; database-commit/Redis-loss healing; completed journal byte-for-byte replay; active-run-only bounded reconciliation under a database leader lease; transactional outbox publishes one SQS/Flexprice event per ledger row.
+- [ ] GREEN: resolve and persist every run's immutable base ceiling and local pricing-version snapshot at creation; one run-scoped database transaction owns completion reservations, journal completion, append-only token rows, append-only approved ceiling adjustments, authoritative per-run running totals, and usage outbox; Redis is only the healed hot mirror under `run:{id}:credits`. No model-gateway database/Redis/SQS/Flexprice dependency.
+- [ ] Verify DB and control-api packages including real Postgres/Redis/LocalStack; two review rounds maximum, exit = zero Critical/Important.
+- [ ] Commit: `feat(usage): durable model completion journal and authoritative reservation`
+
+### Task OPS-1B [M2]: Ledger service + Flexprice metering completion
+
+**Files:** Create: `services/control-api/src/usage/{ledger,flexprice,pricing}.ts`, `scripts/flexprice-bootstrap.ts`, `test/usage.test.ts`; Modify: `config/pricing.json`
+**Depends on:** OPS-1A. **Interfaces produced (binding):**
 - `recordUsage(entry: UsageEntry)`: (1) validates category enum from FND-5, (2) appends `usage_ledger` row (attribution truth: org/project/run/task), (3) forwards to Flexprice ingestion — event shape per Flexprice docs: `{ event_name: category, external_customer_id: organizationId, event_id: ledgerRowId (idempotency), timestamp, properties: { project_id, run_id, task_id, quantity, unit, provider } }`; Flexprice forwarding runs through SQS `zapp-usage-events` (+DLQ): the ledger write is synchronous, the Flexprice event is enqueued, and a consumer forwards with backoff — the ledger never blocks on Flexprice and outages drain automatically (LocalStack in tests).
 - `scripts/flexprice-bootstrap.ts`: idempotently creates one **metered feature + meter** per PRD §30.1 category (aggregation SUM over `properties.quantity`) and plans/entitlements from `config/plans.json` — Flexprice is configured from code, never hand-edited.
-- `config/pricing.json` retains local rates **for pre-run estimates and Mission Control live tickers only**; authoritative rating/credit burn happens in Flexprice.
+- `config/pricing.json` rates are authoritative, versioned snapshots for in-flight run reservation/cutoff and also drive pre-run estimates/Mission Control; Flexprice remains authoritative for organization wallet rating, entitlements, and billing.
 - `getUsageSummary(orgId, window)`: ledger aggregates by category/project/run (attribution views); credit balance reads come from OPS-3.
-- Internal route `POST /internal/usage` (service token) used by model-gateway (AR-3), sandbox-service (WS-8), release-service.
+- Internal route `POST /internal/usage` (service token) for non-model emitters extends OPS-1A; model-gateway uses only ADR-0025's claim/commit/get boundary.
 **Effort:** L
 
 - [ ] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.

@@ -40,6 +40,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ### Cross-plan gate repairs
 - [x] M1-PLAN-1 Rebind WS-12 preview access to zapp-owned authenticated ingress (ADR-0023)
+- [x] M1-PLAN-2 Reorder durable model completion + authoritative usage accounting (ADR-0025)
 - [x] M1-GATE-1 Deterministic cold-state local validation (Turbo ordering + test isolation; CI billing-blocked)
 - [x] M1-GATE-2 Bound real-process test fixtures under full cold-gate contention (CI billing-blocked)
 - [x] M1-GATE-3 Bound workspace-runtime real-Git fixture under local Forgejo cold-gate load (CI billing-blocked)
@@ -78,7 +79,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ### Plan 04 — Agent runtime core
 - [x] AR-1 model-gateway streaming API
 - [x] AR-2 Routing/retry/fallback
-- [ ] AR-3 Usage telemetry + budget cutoff
+- [ ] AR-3A Stable completion identity + exhaustive terminal envelope
+- [ ] OPS-1A Durable completion journal + authoritative usage reservation
+- [ ] AR-3B Usage telemetry + budget cutoff + Anthropic cache proof
 - [x] AR-4 agent-tools registry (PRD §16.1 complete)
 - [x] AR-5 agent-policies + injection defense + role prompts
 - [x] AR-6 Session loop
@@ -115,7 +118,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WEB-10 Interview/spec/plan approval cards
 - [ ] WEB-11 Code/Logs/Tests surfaces
 - [ ] WEB-17 Template gallery + detail with demo preview & Remix
-- [ ] OPS-1 Ledger + Flexprice metering pipeline
+- [ ] OPS-1B Flexprice bootstrap + usage summaries + complete metering acceptance
 - [ ] OPS-2 Metering coverage + three-way reconciliation
 - [ ] OPS-3 Plan quotas + budget enforcement
 - [ ] MAC-4 Platform auth + Keychain

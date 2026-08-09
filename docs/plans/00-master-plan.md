@@ -177,6 +177,10 @@ Plans: 03 (all core), 02 (CP-9..CP-16), 04 (AR-1..AR-8), 08 (WEB-1..WEB-6), 06 (
 
 ### M2 — Agentic core: durable runs + Mission Control (Weeks 8–14)
 Plans: 04 (AR-9..AR-15), 05 (VF-1..VF-5), 08 (WEB-7..WEB-11, WEB-17), 10 (OPS-1..OPS-3), 09 (MAC-4..MAC-6).
+
+ADR-0025 pulls OPS-1A's authoritative model-completion write/reservation boundary into M1
+and orders AR-3A → OPS-1A → AR-3B before further real model traffic. OPS-1B retains the
+remaining M2 Flexprice bootstrap and usage-summary acceptance.
 **Exit:** Ask/Prototype/Build modes on Temporal; task graph with per-task commits; pause/resume/redirect/cancel < 5 s ack; Mission Control renders structured events with replay/resume; capability detection produces execution contracts; dev-server + build + typecheck + smoke gates run; usage recorded per run (E7 partial, E8, E9, E19 partial; §38.4 exit).
 
 ### M3 — Verification-first: verifier, browser tests, repair, autonomous (Weeks 12–18, overlaps M2)
@@ -284,6 +288,8 @@ Solo/small-team fallback: execute in milestone order M0→M6; within a milestone
 North star (PRD §37.1): **verified production releases per active org per month** — instrumented from day one: `release.created` + verifier decision events feed PostHog (OPS-6); activation funnel (signup → first preview → first deploy) defined in WEB-16/OPS-6; reliability metrics (verification false-pass/false-fail, repair-loop counts) emitted by VF-10/VF-13; economics (model + Modal cost per verified release) from OPS-1..OPS-3 ledger.
 
 ## Execution log
+
+- 2026-08-09 M1-PLAN-2 done — Split capped AR-3 into stable completion identity, Temporal-durable transcript replay, pre-dispatch OPS-1A reservations with append-only approved ceiling increases and fixed local run-rate snapshots, and final gateway wiring so retries do not rebill or bypass SQS/Flexprice; both review rounds were consumed and the final concrete plan findings were resolved without a third round (ADR-0025).
 
 ### M1-GATE-7 — Serialize shared-database integration suites
 

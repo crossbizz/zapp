@@ -70,26 +70,25 @@ Providers: anthropic, openai, google, openai-compatible (base-url configurable) 
 - [x] Commit: `feat(model-gateway): routing with retry + provider fallback`
 - [x] **Follow-on (ADR-0015):** `config/models.json` validation must reject a role whose primary and fallbacks all resolve through the same transport — the cross-vendor fallback chain exists to survive one vendor's outage, and routing it through one proxy silently re-concentrates that failure. Test: such a config fails load. Also pin that `compatible/<vendor>/<model>` resolves to the `compatible` adapter with the vendor-qualified model id preserved (the first-separator split implies it; nothing asserts it, and OpenRouter-style ids depend on it).
 
-### Task AR-3: Usage telemetry + budget enforcement
+### Task AR-3A: Stable completion identity + exhaustive terminal envelope
 
-> **DEFERRED OUT OF THE M1 CRITICAL PATH (controller, 2026-08-07).** AR-3 has now capped
-> twice — five review-fix rounds on 2026-08-06 and five more on `task/AR-3-recovery`
-> 2026-08-07 — roughly ten rounds, more than any other task, while **not appearing in M1's
-> exit criterion** (sign in → prompt → sandbox → dev server → preview → builder edit →
-> commit → sandbox killed → resume). Per AGENTS.md's cap rule the response to a second cap
-> is re-scope and escalate, not a third attempt. Stop work on AR-3 now; do not open round
-> 11. It is safe to defer because no model-provider credentials exist yet, so there is no
-> live spend to meter. **Hard precondition:** AR-3 must land before either (a) real
-> model-provider credentials are used for anything beyond a smoke test, or (b) M2's
-> autonomous runs (AR-14 budget approval depends on it). Reopen it as the first M2 task
-> with the two structural P1 defects from the round-5 review as its starting brief.
-
-**Files:** Create: `src/budget.ts`, `src/telemetry.ts`, `test/budget.test.ts`
+**ADR:** ADR-0025. **Files:** Modify: `services/model-gateway/src/{app,routing,schemas}.ts`, `services/model-gateway/src/providers/{adapter,types}.ts`, `services/model-gateway/test/gateway.test.ts`, `services/orchestrator-worker/src/session/{loop,transcript}.ts`, `services/orchestrator-worker/src/activities/session.ts`, `services/orchestrator-worker/test/{session,integration/m1-run}.test.ts`; required exports.
 **Effort:** M
 
-- [ ] Binding behavior: every completion writes `usage_ledger` rows (model_input_tokens, model_output_tokens, model_cached_tokens where reported) with cost from `config/pricing.json`; Redis running counter per run (`run:{id}:credits`) incremented atomically; if `budget.remainingCredits` would be exceeded mid-run → end stream with `{ type: "error", code: "budget_exceeded" }` and emit `usage.recorded` event — orchestrator converts to approval request (AR-14); latency/tokens/provider recorded per call (OTel span).
-- [ ] Failing tests: ledger math from fake usage payloads; budget cutoff triggers at the boundary; counter reconciliation job matches ledger sum.
-- [ ] **Blocking acceptance criterion (ADR-0015):** prove Anthropic prompt caching end to end — set a cache breakpoint on a stable prefix, issue two completions, observe a cache *write* then a cache *read*, assert `cachedInputTokens` is non-zero on the second and reaches the usage event OPS-1 records. If this cannot be expressed through the Vercel AI SDK, move **the Anthropic adapter only** to `@anthropic-ai/sdk` behind the unchanged `ProviderAdapter` interface — pre-authorized, no new ADR. Record which branch was taken, and the evidence, in the Execution log. Rationale: PRD §30.1 requires metering cached tokens, and the AR-7 context shape makes the stable prefix the dominant cost line (PRD §37.6).
+- [ ] RED: interrupt after the token reservation is saved, then replay the same durable turn and assert an identical `completionId`, request fingerprint, `maxOutputTokens`, and no second reservation; advance one committed turn and assert a different ID. Kill the activity worker process after that save, restart on a fresh process, and prove Temporal's persisted heartbeat checkpoint supplies the same request/reservation. Table-test every provider finish reason: `stop`/`tool-calls` emits usage then terminal success; `length` emits usage then `output_limit_exceeded`; content-filter/error/unknown emits usage then a typed terminal error, never `done`.
+- [ ] GREEN: durably store/reuse the complete in-flight request and reservation, heartbeat every successful transcript CAS to Temporal as the production checkpoint, require its deterministic identity on the gateway boundary, clear it only with the committed turn, and normalize attributed usage plus exhaustive terminal outcomes without a process-local persistence fake.
+- [ ] Verify both packages; two review rounds maximum, exit = zero Critical/Important.
+- [ ] Commit: `feat(agent-runtime): stable model completion identity and terminal envelope`
+
+### Task AR-3B: Usage telemetry + budget enforcement
+
+**Depends on:** AR-3A, OPS-1A (ADR-0025). **Files:** Create: `services/model-gateway/src/{usage-client,telemetry}.ts`, `services/model-gateway/test/budget.test.ts`; Modify: gateway app/server/routing/provider adapter and orchestrator session/activity files, package manifests/lockfile, `config/pricing.json` consumer tests; required exports.
+**Effort:** L
+
+- [ ] RED: completed journal replay makes zero provider calls and returns identical events; foreign live claim is retryable; insufficient atomic reservation makes zero provider calls; concurrent reservations cannot exceed the effective ceiling; commit-before-worker-loss retry is billed once; exact base ceiling plus approved monotonic increases survives Redis loss; cutoff emits `usage.recorded` then `budget_exceeded`; every retry/fallback has a provider/model latency/token span and terminal failures are errors.
+- [ ] GREEN: model-gateway uses only the strict OPS-1A client, commits the complete neutral response before its terminal event, and the orchestrator durably emits `usage.recorded` through its outbox before mapping cutoff to `budget_exhausted`/AR-14.
+- [ ] **Blocking acceptance criterion (ADR-0015):** once, at final acceptance, set Anthropic cache breakpoints after the stable role prompt and assembled project context, issue two completions, observe a cache write then read, and prove non-zero `cachedInputTokens` reaches OPS-1A's authoritative response. If the pinned AI SDK cannot express both halves, move only the Anthropic adapter to `@anthropic-ai/sdk` as ADR-0015 pre-authorizes.
+- [ ] Verify affected packages and the real DB/Redis path; two review rounds maximum, exit = zero Critical/Important.
 - [ ] Commit: `feat(model-gateway): usage ledger + run budget cutoff`
 
 ### Task AR-4: `packages/agent-tools` registry (all PRD §16.1 tools)
