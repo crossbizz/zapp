@@ -104,7 +104,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] AR-13 Mission Control read model
 - [ ] AR-14 Run budgets + approval loop
 - [ ] AR-15 Ask + Prototype modes
-- [ ] VF-1 Adapter framework + generic node
+- [x] VF-1 Adapter framework + generic node
 - [ ] VF-2 Framework adapters (P0 set)
 - [ ] VF-3 Capability scan pipeline
 - [ ] VF-4 Gate registry + §24.2 policy matrix

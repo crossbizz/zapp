@@ -34,9 +34,9 @@ services/verification-service/src/{app,browser-agent/{session,driver},routes}.ts
 **Interfaces produced:** `ProjectAdapter` (FND-4) implementations; `detectProject(runtime): Promise<{ adapterId, confidence, evidence }[]>` ranked; generic-node fallback always matches (PRD §17.3): package manager from lockfile (pnpm-lock/yarn.lock/package-lock/bun.lockb), commands from package.json scripts (`dev|start`, `build`, `test`, `typecheck|tsc`, `lint`), port from script args/env/`PORT`, workspace root detection for monorepos (pnpm-workspace.yaml/turbo.json → root + target package selection recorded as open question when ambiguous).
 **Effort:** L
 
-- [ ] **Step 1:** Failing tests against 6 fixture projects (npm CRA-like, pnpm vite, yarn express, pnpm monorepo, no-scripts bare, bun) asserting detected manager/commands/port; ambiguity object for monorepo without obvious app target.
-- [ ] **Step 2:** Implement detection via `listFiles` + `readFile` on the runtime interface (works local + cloud).
-- [ ] **Step 3:** Commit: `feat(project-adapters): detection framework + generic node fallback`
+- [x] **Step 1:** Failing tests against 6 fixture projects (npm CRA-like, pnpm vite, yarn express, pnpm monorepo, no-scripts bare, bun) asserting detected manager/commands/port; ambiguity object for monorepo without obvious app target.
+- [x] **Step 2:** Implement detection via `listFiles` + `readFile` on the runtime interface (works local + cloud).
+- [x] **Step 3:** Commit: `feat(project-adapters): detection framework + generic node fallback`
 
 ### Task VF-2: Framework adapters (P0 set)
 
@@ -197,3 +197,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 
 - (empty)
 - 2026-08-06 VF-3 interface input approved — ADR-0014 adds optional `ExecutionContract.test.integration`; capability scanning owns detection and population of that command.
+- 2026-08-09 VF-1 done — added ranked runtime-only detection and a generic Node execution-contract fallback across npm, pnpm, yarn, bun, and ambiguous monorepos.

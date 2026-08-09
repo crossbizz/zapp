@@ -1,0 +1,1 @@
+{"scripts":{"dev":"PORT=3001 bun src.ts","build":"bun build src.ts","test":"bun test"}}

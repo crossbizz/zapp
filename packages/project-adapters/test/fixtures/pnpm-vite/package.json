@@ -1,0 +1,1 @@
+{"scripts":{"dev":"vite --port 4173","build":"vite build","test":"vitest","typecheck":"tsc --noEmit","lint":"eslint ."}}
