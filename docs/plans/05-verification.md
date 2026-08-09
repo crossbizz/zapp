@@ -198,4 +198,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - (empty)
 - 2026-08-06 VF-3 interface input approved — ADR-0014 adds optional `ExecutionContract.test.integration`; capability scanning owns detection and population of that command.
 - 2026-08-09 VF-1 done — added ranked runtime-only detection and a generic Node execution-contract fallback across npm, pnpm, yarn, bun, and ambiguous monorepos.
-- 2026-08-09 VF-4 done — encoded all 45 PRD gate-policy cells, explicit actor-attributed waivers, and the public workspace-runtime gate registry.
+- 2026-08-09 VF-4 done — encoded all 45 PRD gate-policy cells, explicit actor-attributed waivers, and the public workspace-runtime gate registry; repaired the clean-CI export test to require no stale `dist/`.
