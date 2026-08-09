@@ -6,6 +6,10 @@
     "packageManagers": {
       "pnpm": "9.15.0",
       "yarn": "1.22.22"
+    },
+    "gitleaks": {
+      "version": "8.26.0",
+      "linuxX64Sha256": "32faa8a77f6ce4b483921072ea89f78a794ad1d96471f2ad6e01ad3b0ebafa00"
     }
   },
   "webTest": {

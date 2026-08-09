@@ -13,15 +13,43 @@ export const GateResultSchema = z
   .strict();
 export type GateResult = z.infer<typeof GateResultSchema>;
 
-export interface EvidenceArtifactSink {
+export interface RawEvidenceArtifactSink {
   store(input: { readonly kind: string; readonly body: Uint8Array }): Promise<string>;
+}
+
+export interface SecretRedactor {
+  redact(text: string): string;
+}
+
+const redactedSink = Symbol('redacted-evidence-artifact-sink');
+
+export interface EvidenceArtifactSink extends RawEvidenceArtifactSink {
+  readonly [redactedSink]: true;
+}
+
+export function createRedactingArtifactSink(
+  sink: RawEvidenceArtifactSink,
+  redactor: SecretRedactor,
+): EvidenceArtifactSink {
+  return {
+    [redactedSink]: true,
+    async store(input) {
+      const text = new TextDecoder().decode(input.body);
+      return sink.store({
+        kind: input.kind,
+        body: new TextEncoder().encode(redactor.redact(text)),
+      });
+    },
+  };
 }
 
 export interface GateContext {
   readonly runtime: WorkspaceRuntime;
   readonly contract: ExecutionContract;
+  readonly baseCommit: string;
   readonly commit: string;
   readonly criteria: readonly string[];
+  readonly fullSecretScan: boolean;
   readonly artifacts: EvidenceArtifactSink;
 }
 

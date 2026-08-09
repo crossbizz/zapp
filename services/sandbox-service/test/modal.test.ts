@@ -704,6 +704,7 @@ describe('Modal image provider facade', () => {
       '/proc/[0-9]*/environ',
       'git config --system',
       'core\\.[Aa]sk[Pp]ass',
+      'gitleaks git',
     ]) {
       expect(serializedCommands).toContain(requiredProbe);
     }
@@ -759,6 +760,7 @@ describe('Modal image provider facade', () => {
         filesystemSnapshot: 'im-snapshot0123',
         encryptedTunnel: true,
         readinessProbe: true,
+        gitleaksSecretScan: true,
       },
       credentialAbsence: {
         environment: true,

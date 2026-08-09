@@ -15,6 +15,10 @@ const ALTERNATE_CONFIG = {
       'node:22.24.0-bookworm-slim@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     debianSnapshot: '20260801T000000Z',
     packageManagers: { pnpm: '9.16.0', yarn: '1.22.23' },
+    gitleaks: {
+      version: '8.26.0',
+      linuxX64Sha256: '32faa8a77f6ce4b483921072ea89f78a794ad1d96471f2ad6e01ad3b0ebafa00',
+    },
   },
   webTest: {
     packageName: 'zapp-modal-browser-runtime-test',
@@ -37,6 +41,10 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain(ALTERNATE_CONFIG.node.debianSnapshot);
     expect(commands).toContain(`pnpm@${ALTERNATE_CONFIG.node.packageManagers.pnpm}`);
     expect(commands).toContain(`yarn@${ALTERNATE_CONFIG.node.packageManagers.yarn}`);
+    expect(commands).toContain(`gitleaks_${ALTERNATE_CONFIG.node.gitleaks.version}_linux_x64`);
+    expect(commands).toContain(ALTERNATE_CONFIG.node.gitleaks.linuxX64Sha256);
+    expect(commands).toContain('sha256sum --check');
+    expect(commands).toContain('gitleaks version');
 
     const invalidConfigs = [
       {

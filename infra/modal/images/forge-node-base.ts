@@ -102,6 +102,7 @@ export function createForgeNodeBaseRecipe(
   const config = ImageBuildConfigSchema.parse(untrustedConfig);
   const sourceDirectory = '/tmp/zapp-src';
   const snapshot = config.node.debianSnapshot;
+  const gitleaks = config.node.gitleaks;
 
   return ImageRecipeSchema.parse({
     imageName: 'forge-node-base',
@@ -114,6 +115,7 @@ export function createForgeNodeBaseRecipe(
           'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
           `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
           'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
+          `RUN set -eux; archive=gitleaks_${gitleaks.version}_linux_x64.tar.gz; curl --fail --show-error --silent --location --output /tmp/$archive https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks.version}/$archive; printf '${gitleaks.linuxX64Sha256}  /tmp/%s\\n' "$archive" | sha256sum --check; tar -xzf /tmp/$archive -C /usr/local/bin gitleaks; chmod 0755 /usr/local/bin/gitleaks; rm -f /tmp/$archive; gitleaks version | grep -F '${gitleaks.version}'`,
           `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
         ],
       },

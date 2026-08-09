@@ -27,6 +27,12 @@ export const ImageBuildConfigSchema = z
             yarn: ExactVersionSchema,
           })
           .strict(),
+        gitleaks: z
+          .object({
+            version: ExactVersionSchema,
+            linuxX64Sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+          })
+          .strict(),
       })
       .strict(),
     webTest: z

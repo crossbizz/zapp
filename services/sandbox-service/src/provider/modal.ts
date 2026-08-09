@@ -687,6 +687,38 @@ async function runSmoke(
       ['sh', '-lc', credentialAbsenceCommand(true)],
       'source credential absence probe',
     );
+    await execOrThrow(
+      sandbox,
+      [
+        'sh',
+        '-lc',
+        [
+          'set -eu',
+          'probe=$(mktemp -d)',
+          'trap \'rm -rf "$probe"\' EXIT INT TERM',
+          'cd "$probe"',
+          'git init --quiet',
+          'git config user.email smoke@zapp.invalid',
+          'git config user.name zapp-smoke',
+          'printf safe > app.ts',
+          'git add app.ts',
+          'git commit --quiet -m base',
+          'base=$(git rev-parse HEAD)',
+          'secret=$(printf %s%s%s sk_ live_ 51H8z7aQ3mT9vK2pL6nR4cD8sF1wY5uB7eG0jN2xP9qA)',
+          'printf \'export const token = "%s";\\n\' "$secret" > app.ts',
+          'git add app.ts',
+          'git commit --quiet -m planted',
+          'set +e',
+          'gitleaks git --no-banner --log-level=error --redact=100 --report-format=json --report-path=report.json --log-opts="$base..HEAD" .',
+          'status=$?',
+          'set -e',
+          'test "$status" -eq 1',
+          'jq -e \'length == 1 and .[0].File == "app.ts" and .[0].StartLine == 1\' report.json >/dev/null',
+          '! grep -F "$secret" report.json',
+        ].join('; '),
+      ],
+      'gitleaks planted-secret probe',
+    );
 
     await probeTimeoutCleanup(sandbox, input.agentToken, 'buffered-timeout', false);
     await probeTimeoutCleanup(sandbox, input.agentToken, 'pty-timeout', true);
@@ -737,6 +769,7 @@ async function runSmoke(
         filesystemSnapshot: snapshotDigest,
         encryptedTunnel: true,
         readinessProbe: true,
+        gitleaksSecretScan: true,
       },
       credentialAbsence: {
         environment: true,

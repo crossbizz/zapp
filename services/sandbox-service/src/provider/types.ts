@@ -244,6 +244,7 @@ export const ImageSmokeEvidenceSchema = z
         filesystemSnapshot: ImageDigestSchema,
         encryptedTunnel: z.literal(true),
         readinessProbe: z.literal(true),
+        gitleaksSecretScan: z.literal(true),
       })
       .strict(),
     credentialAbsence: z

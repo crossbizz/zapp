@@ -64,6 +64,7 @@ const SUCCESSFUL_SMOKE_EVIDENCE = {
     filesystemSnapshot: 'im-snapshot0123',
     encryptedTunnel: true,
     readinessProbe: true,
+    gitleaksSecretScan: true,
   },
   credentialAbsence: {
     environment: true,
