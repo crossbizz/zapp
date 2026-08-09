@@ -26,6 +26,7 @@ interface DurableFixtureState {
     readonly runId: string;
     readonly organizationId: string;
     readonly projectId: string;
+    readonly payload: Record<string, unknown>;
   }>;
   readonly eventBatches: Record<string, true>;
   readonly commits: Record<string, string>;
@@ -118,6 +119,7 @@ function workerProgram(): string {
             runId: event.runId,
             organizationId: event.organizationId,
             projectId: event.projectId,
+            payload: event.payload,
           });
         }
       }),
@@ -148,7 +150,10 @@ function workerProgram(): string {
           return created;
         });
         if (loseResponse) throw new Error('simulated response loss after durable commit');
-        return { commitSha };
+        return {
+          commitSha,
+          diffstat: [{ path: 'src/app.ts', additions: 12, deletions: 3 }],
+        };
       },
     });
     const sessionActivities = createSessionActivities(
@@ -447,6 +452,11 @@ describe('AR-8 M1 durable Temporal run', () => {
         'run.completed',
       ]);
       expect(state.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4]);
+      expect(state.events.find((event) => event.type === 'commit.created')?.payload).toEqual({
+        commitSha: '0123456789abcdef0123456789abcdef01234567',
+        message: 'Complete M1 builder task',
+        diffstat: [{ path: 'src/app.ts', additions: 12, deletions: 3 }],
+      });
       expect(state.events.every((event) => event.runId === runId)).toBe(true);
       expect(state.events.every((event) => event.organizationId === organizationId)).toBe(true);
       expect(state.events.every((event) => event.projectId === projectId)).toBe(true);

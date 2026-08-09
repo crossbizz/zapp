@@ -74,6 +74,8 @@ const events = proxyActivities<EventActivities>({
   retry: ACTIVITY_RETRY_POLICY,
 });
 
+const M1_COMMIT_MESSAGE = 'Complete M1 builder task';
+
 function operationKey(input: RunWorkflowInput, step: string): string {
   return `${input.runId}:task-m1:${step}`;
 }
@@ -184,12 +186,16 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       organizationId: input.organizationId,
       projectId: input.projectId,
       workspaceId: input.continuation.workspaceId,
-      message: 'Complete M1 builder task',
+      message: M1_COMMIT_MESSAGE,
       idempotencyKey: operationKey(input, 'commit-and-push'),
     });
     await events.emitEvents({
       events: [
-        event(input, 'commit.created', 'commit-created', { commitSha: committed.commitSha }),
+        event(input, 'commit.created', 'commit-created', {
+          commitSha: committed.commitSha,
+          message: M1_COMMIT_MESSAGE,
+          diffstat: committed.diffstat,
+        }),
         event(input, 'run.completed', 'run-completed', { status: 'completed' }),
       ],
     });

@@ -72,6 +72,7 @@ import {
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerMissionControlRoutes } from './routes/mission-control.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import { registerSpecificationRoutes } from './routes/specifications.js';
@@ -502,6 +503,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             },
             ...(tenant.pricing === undefined ? {} : { pricing: tenant.pricing }),
           });
+          registerMissionControlRoutes(app);
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),

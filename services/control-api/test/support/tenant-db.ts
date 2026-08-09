@@ -1,7 +1,11 @@
 import { newId } from '@zapp/contracts';
 import type {
   AgentEventRow,
+  AgentPhase,
   AgentRun,
+  AgentTask,
+  Approval,
+  Artifact,
   AuditEvent,
   Branch,
   Environment,
@@ -9,8 +13,12 @@ import type {
   ProjectContract,
   PreviewShareRow,
   Repository,
+  RunCreditAccount,
+  RunCreditCeilingAdjustment,
   SecretMetadata,
   Specification,
+  TestRun,
+  VerificationResult,
   Workspace,
 } from '@zapp/db';
 
@@ -84,6 +92,14 @@ export class InMemoryTenantData {
   readonly runs: AgentRun[] = [];
   readonly runAccounting = new Map<string, NewRunInput['accounting']>();
   readonly events: AgentEventRow[] = [];
+  readonly phases: AgentPhase[] = [];
+  readonly tasks: AgentTask[] = [];
+  readonly approvals: Approval[] = [];
+  readonly artifacts: Artifact[] = [];
+  readonly testRuns: TestRun[] = [];
+  readonly verificationResults: VerificationResult[] = [];
+  readonly creditAccounts: RunCreditAccount[] = [];
+  readonly creditCeilingAdjustments: RunCreditCeilingAdjustment[] = [];
   readonly auditEvents: AuditEvent[] = [];
   readonly workspaces: Workspace[] = [];
   readonly previewShares: PreviewShareRow[] = [];
@@ -766,6 +782,37 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
       ingest() {
         return Promise.resolve({ kind: 'run_not_found' } as const);
+      },
+    },
+
+    missionControl: {
+      forRun(runId) {
+        const phases = mine(orgId, data.phases)
+          .filter((row) => row.runId === runId)
+          .sort((left, right) => left.sequence - right.sequence);
+        const phaseIds = new Set(phases.map((row) => row.id));
+        const latestCeiling = mine(orgId, data.creditCeilingAdjustments)
+          .filter((row) => row.runId === runId)
+          .sort(
+            (left, right) =>
+              right.createdAt.getTime() - left.createdAt.getTime() ||
+              right.id.localeCompare(left.id),
+          )[0];
+        const creditAccount = mine(orgId, data.creditAccounts).find(
+          (row) => row.runId === runId,
+        );
+        return Promise.resolve({
+          phases,
+          tasks: mine(orgId, data.tasks).filter((row) => phaseIds.has(row.phaseId)),
+          approvals: mine(orgId, data.approvals).filter((row) => row.runId === runId),
+          artifacts: mine(orgId, data.artifacts).filter((row) => row.runId === runId),
+          testRuns: mine(orgId, data.testRuns).filter((row) => row.runId === runId),
+          verificationResults: mine(orgId, data.verificationResults).filter(
+            (row) => row.runId === runId,
+          ),
+          creditAccount,
+          effectiveCreditCeiling: latestCeiling?.absoluteCeiling ?? creditAccount?.baseCeiling,
+        });
       },
     },
   };

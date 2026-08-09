@@ -4715,6 +4715,382 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{runId}/mission-control": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            activeAgents: {
+                                agentId: string;
+                                role: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                taskId: string | null;
+                            }[];
+                            approvals: {
+                                approvalId: string;
+                                request?: unknown;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** Format: date-time */
+                                resolvedAt: string | null;
+                                response?: unknown;
+                                status: string;
+                                taskId: string | null;
+                                type: string;
+                            }[];
+                            commits: {
+                                diffstat: {
+                                    additions: number;
+                                    deletions: number;
+                                    path: string;
+                                }[];
+                                message: string | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                sha: string;
+                                taskId: string | null;
+                            }[];
+                            cost: {
+                                budget: number | null;
+                                creditsUsed: number;
+                            };
+                            currentPhase: {
+                                id: string;
+                                sequence: number;
+                                status: string;
+                                title: string;
+                            } | null;
+                            filesChanged: {
+                                additions: number;
+                                deletions: number;
+                                path: string;
+                            }[];
+                            previewStatus: {
+                                /** Format: date-time */
+                                occurredAt: string;
+                                /** @enum {string} */
+                                status: "starting" | "ready" | "failed";
+                            } | null;
+                            progress: {
+                                done: number;
+                                total: number;
+                            };
+                            recentToolCalls: {
+                                agentId: string | null;
+                                durationMs: number | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                status: string;
+                                taskId: string | null;
+                                toolCallId: string;
+                                toolName: string;
+                                userSummary: string | null;
+                            }[];
+                            risks: {
+                                id: string;
+                                severity: string;
+                                summary: string;
+                            }[];
+                            run: {
+                                /** @enum {string} */
+                                appType: "web" | "mobile";
+                                branchId: string | null;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                /** @enum {string} */
+                                mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                                model: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                startedBy: string;
+                                status: string;
+                            };
+                            screenshots: {
+                                artifactId: string;
+                                contentHash: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                            }[];
+                            taskGraph: {
+                                edges: {
+                                    from: string;
+                                    to: string;
+                                }[];
+                                nodes: {
+                                    assignedAgentRole: string | null;
+                                    id: string;
+                                    phaseId: string;
+                                    riskLevel: string;
+                                    status: string;
+                                    title: string;
+                                }[];
+                            };
+                            testRuns: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                status: string;
+                                summary?: unknown;
+                                taskId: string | null;
+                                testRunId: string;
+                                type: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/mission-control/commits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                diffstat: {
+                                    additions: number;
+                                    deletions: number;
+                                    path: string;
+                                }[];
+                                message: string | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                sha: string;
+                                taskId: string | null;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/mission-control/tool-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                agentId: string | null;
+                                durationMs: number | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                status: string;
+                                taskId: string | null;
+                                toolCallId: string;
+                                toolName: string;
+                                userSummary: string | null;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}/pause": {
         parameters: {
             query?: never;

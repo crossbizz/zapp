@@ -13,6 +13,8 @@ import {
   agentPhases,
   agentRuns,
   agentTasks,
+  approvals,
+  artifacts,
   auditEvents,
   branches,
   environments,
@@ -22,15 +24,22 @@ import {
   projects,
   repositories,
   runCreditAccounts,
+  runCreditCeilingAdjustments,
   secretCiphertexts,
   secretMetadata,
   specifications,
+  testRuns,
+  verificationResults,
   workspaces,
   nextEventSequence,
   type AgentEventRow,
   type AuditEvent,
   type Branch,
   type AgentRun,
+  type AgentPhase,
+  type AgentTask,
+  type Approval,
+  type Artifact,
   type Database,
   type Environment,
   type EventRepository,
@@ -38,10 +47,13 @@ import {
   type ProjectContract,
   type ProjectRepository,
   type Repository,
+  type RunCreditAccount,
   type SecretMetadata,
   type Specification,
+  type TestRun,
   type TenantDb,
   type Workspace,
+  type VerificationResult,
 } from '@zapp/db';
 import { and, asc, desc, eq, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 
@@ -491,6 +503,23 @@ export interface TenantEventRepository extends EventRepository {
   ingest(input: IngestEventBatchInput): Promise<IngestEventBatchResult>;
 }
 
+export interface MissionControlRows {
+  readonly phases: AgentPhase[];
+  readonly tasks: AgentTask[];
+  readonly approvals: Approval[];
+  readonly artifacts: Artifact[];
+  readonly testRuns: TestRun[];
+  readonly verificationResults: VerificationResult[];
+  readonly creditAccount: RunCreditAccount | undefined;
+  /** Latest approved absolute ceiling, falling back to the account's original ceiling. */
+  readonly effectiveCreditCeiling: string | undefined;
+}
+
+export interface TenantMissionControlRepository {
+  /** Every row needed by AR-13 after the tenant-scoped run lookup succeeds. */
+  forRun(runId: string): Promise<MissionControlRows>;
+}
+
 export interface AuditEventListRequest extends PageRequest {
   readonly actorId?: string;
   readonly action?: string;
@@ -516,6 +545,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
+  readonly missionControl: TenantMissionControlRepository;
   readonly auditEvents: TenantAuditEventRepository;
 }
 
@@ -658,6 +688,105 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await input.audit(tx, inserted);
             return { kind: 'stored', events: inserted };
           });
+        },
+      },
+
+      missionControl: {
+        async forRun(runId: string): Promise<MissionControlRows> {
+          const [
+            phases,
+            taskRows,
+            approvalRows,
+            artifactRows,
+            runTests,
+            verifications,
+            account,
+            ceilingAdjustments,
+          ] =
+            await Promise.all([
+              db
+                .select()
+                .from(agentPhases)
+                .where(
+                  scoped(
+                    agentPhases.organizationId,
+                    eq(agentPhases.runId, runId),
+                  ),
+                )
+                .orderBy(asc(agentPhases.sequence)),
+              db
+                .select({ task: agentTasks })
+                .from(agentTasks)
+                .innerJoin(agentPhases, eq(agentTasks.phaseId, agentPhases.id))
+                .where(
+                  scoped(
+                    agentTasks.organizationId,
+                    eq(agentPhases.organizationId, orgId),
+                    eq(agentPhases.runId, runId),
+                  ),
+                )
+                .orderBy(asc(agentPhases.sequence), asc(agentTasks.id)),
+              db
+                .select()
+                .from(approvals)
+                .where(scoped(approvals.organizationId, eq(approvals.runId, runId)))
+                .orderBy(asc(approvals.requestedAt), asc(approvals.id)),
+              db
+                .select()
+                .from(artifacts)
+                .where(scoped(artifacts.organizationId, eq(artifacts.runId, runId)))
+                .orderBy(desc(artifacts.createdAt), desc(artifacts.id)),
+              db
+                .select()
+                .from(testRuns)
+                .where(scoped(testRuns.organizationId, eq(testRuns.runId, runId)))
+                .orderBy(desc(testRuns.startedAt), desc(testRuns.id)),
+              db
+                .select()
+                .from(verificationResults)
+                .where(
+                  scoped(
+                    verificationResults.organizationId,
+                    eq(verificationResults.runId, runId),
+                  ),
+                )
+                .orderBy(desc(verificationResults.createdAt), desc(verificationResults.id)),
+              db
+                .select()
+                .from(runCreditAccounts)
+                .where(
+                  scoped(
+                    runCreditAccounts.organizationId,
+                    eq(runCreditAccounts.runId, runId),
+                  ),
+                )
+                .limit(1),
+              db
+                .select({ absoluteCeiling: runCreditCeilingAdjustments.absoluteCeiling })
+                .from(runCreditCeilingAdjustments)
+                .where(
+                  scoped(
+                    runCreditCeilingAdjustments.organizationId,
+                    eq(runCreditCeilingAdjustments.runId, runId),
+                  ),
+                )
+                .orderBy(
+                  desc(runCreditCeilingAdjustments.createdAt),
+                  desc(runCreditCeilingAdjustments.id),
+                )
+                .limit(1),
+            ]);
+          return {
+            phases,
+            tasks: taskRows.map(({ task }) => task),
+            approvals: approvalRows,
+            artifacts: artifactRows,
+            testRuns: runTests,
+            verificationResults: verifications,
+            creditAccount: account[0],
+            effectiveCreditCeiling:
+              ceilingAdjustments[0]?.absoluteCeiling ?? account[0]?.baseCeiling,
+          };
         },
       },
 

@@ -223,8 +223,8 @@ behavior is in scope.
 **Interfaces produced:** `GET /v1/runs/:runId/mission-control` → aggregate per PRD §14.2: `{ run, currentPhase, progress: {done,total}, taskGraph: nodes+edges with states, activeAgents, recentToolCalls (last 50, visibility-filtered), filesChanged (from commit diffstats), commits, testRuns, previewStatus, screenshots (artifact refs), cost: {creditsUsed, budget}, approvals (open+resolved), risks }` — built from events + tables, **never chat text** (Global Constraint 11); paginated sub-resources for tool calls/commits.
 **Effort:** M
 
-- [ ] Failing tests: aggregate built from seeded events matches snapshot; internal-visibility tool calls excluded for user role.
-- [ ] Commit: `feat(control-api): Mission Control aggregate read model`
+- [x] Failing tests: aggregate built from seeded events matches snapshot; internal-visibility tool calls excluded for user role.
+- [x] Commit: `feat(control-api): Mission Control aggregate read model`
 
 ### Task AR-14 [M2]: Run budgets + approval requests
 
@@ -361,3 +361,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-9 done — Added exact production queues, Postgres-fenced canonical activity replay with live lease renewal, private two-step continue-as-new state, three-attempt transient retry, and a real Postgres+Temporal production-worker proof; review passed in round 2 after closing all production composition and queue-bypass findings.
 - 2026-08-09 AR-11 done — Added a strict phase/task/budget schema with `{ credits, wallClockMinutes }` task estimates, creation-time dependency/cycle validation, deterministic diamond scheduling, and cross-call one-writer branch ownership; RED/GREEN tests passed 6/6, package static/build gates passed, and review passed in round 2 after fixing ready-state branch reservation.
 - 2026-08-09 AR-12 done — Added production-registered task child workflows with run-derived integration branches, capped concurrency, idempotent activity boundaries, real isolated Git workspace/merge coverage, and typed conflict-task blocking; review passed in round 2.
+- 2026-08-09 AR-13 done — Added tenant-scoped Mission Control aggregate and paginated APIs with generated SDK, authoritative table overlays, approved-credit ceilings, terminal agent cleanup, and producer-backed commit diffstats; review passed in round 2 and forced affected verification was 21/21.

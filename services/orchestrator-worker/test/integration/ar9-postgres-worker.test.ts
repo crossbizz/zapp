@@ -97,7 +97,7 @@ describe('AR-9 production Postgres worker composition', () => {
             artifacts: [],
             summary: 'phase complete',
           }),
-        commitAndPush: () => Promise.resolve({ commitSha: 'c'.repeat(40) }),
+        commitAndPush: () => Promise.resolve({ commitSha: 'c'.repeat(40), diffstat: [] }),
         recordBaseCommit: taskActivityNotExpected,
         createTaskWorkspace: taskActivityNotExpected,
         transitionTaskState: taskActivityNotExpected,

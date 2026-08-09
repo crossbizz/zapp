@@ -90,8 +90,11 @@ describe('GET /v1/openapi.json', () => {
       '/v1/projects/{projectId}/preview/shares',
       '/v1/organizations/{organizationId}/preview-shares/{shareId}/sessions',
       '/v1/preview/session',
+      '/v1/runs/{runId}/mission-control',
+      '/v1/runs/{runId}/mission-control/tool-calls',
+      '/v1/runs/{runId}/mission-control/commits',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(53);
+    expect(Object.keys(document.paths)).toHaveLength(56);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

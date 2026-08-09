@@ -101,7 +101,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] AR-10 Pause/resume/cancel/redirect signals
 - [x] AR-11 planning-engine schema + scheduler
 - [x] AR-12 Isolated task workflows + merge/conflict tasks
-- [ ] AR-13 Mission Control read model
+- [x] AR-13 Mission Control read model
 - [ ] AR-14 Run budgets + approval loop
 - [ ] AR-15 Ask + Prototype modes
 - [x] VF-1 Adapter framework + generic node

@@ -32,8 +32,19 @@ export const CommitAndPushInputSchema = z
   .strict();
 export type CommitAndPushInput = z.infer<typeof CommitAndPushInputSchema>;
 
+export const CommitDiffstatEntrySchema = z
+  .object({
+    path: z.string().min(1).max(4_096),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const CommitAndPushResultSchema = z
-  .object({ commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u) })
+  .object({
+    commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+    diffstat: z.array(CommitDiffstatEntrySchema).max(10_000),
+  })
   .strict();
 export type CommitAndPushResult = z.infer<typeof CommitAndPushResultSchema>;
 

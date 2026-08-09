@@ -83,7 +83,7 @@ describe('AR-9 Temporal worker hardening', () => {
       },
       commitAndPush: () => {
         commitAttempts += 1;
-        return Promise.resolve({ commitSha: 'b'.repeat(40) });
+        return Promise.resolve({ commitSha: 'b'.repeat(40), diffstat: [] });
       },
     };
     const worker = await createRunWorker({
