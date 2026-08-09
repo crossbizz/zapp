@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CompletionIdSchema, CompletionUsageSchema } from '@zapp/contracts';
+import { CompletionIdSchema, CompletionUsageSchema, CreditStateSchema } from '@zapp/contracts';
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -257,6 +257,7 @@ const UsageRecordedStreamEventSchema = z
     type: z.literal('usage.recorded'),
     completionId: CompletionIdSchema,
     usage: z.array(CompletionUsageSchema).min(1).max(16),
+    credits: CreditStateSchema,
   })
   .strict();
 const DoneStreamEventSchema = z.object({ type: z.literal('done') }).strict();

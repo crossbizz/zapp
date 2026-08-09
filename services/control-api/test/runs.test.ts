@@ -3,7 +3,8 @@ import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
-import type { AgentRun, Branch, Project, Workspace } from '@zapp/db';
+import type { AgentRun, Approval, Branch, Project, Workspace } from '@zapp/db';
+import type { ModelCompletionRepository } from '../src/usage/model-completions.js';
 import type { AuthIdentity } from '../src/auth/port.js';
 import { OrchestratorError } from '../src/orchestrator/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
@@ -56,6 +57,9 @@ class FakeOrchestratorPort {
     readonly runId: string;
     readonly signal: string;
     readonly operationKey?: string;
+    readonly approvalId?: string;
+    readonly decision?: string;
+    readonly absoluteCeiling?: string;
   }[] = [];
   failStarts = 0;
   signalResult: unknown = { applied: true };
@@ -73,13 +77,45 @@ class FakeOrchestratorPort {
     readonly runId: string;
     readonly signal: string;
     readonly operationKey?: string;
+    readonly approvalId?: string;
+    readonly decision?: string;
+    readonly absoluteCeiling?: string;
   }): Promise<{ applied: boolean }> {
     this.signals.push({
       runId: input.runId,
       signal: input.signal,
       ...(input.operationKey === undefined ? {} : { operationKey: input.operationKey }),
+      ...(input.approvalId === undefined ? {} : { approvalId: input.approvalId }),
+      ...(input.decision === undefined ? {} : { decision: input.decision }),
+      ...(input.absoluteCeiling === undefined ? {} : { absoluteCeiling: input.absoluteCeiling }),
     });
     return Promise.resolve(this.signalResult as { applied: boolean });
+  }
+}
+
+class FakeModelCompletionRepository implements ModelCompletionRepository {
+  readonly increases: Parameters<ModelCompletionRepository['increaseCeiling']>[0][] = [];
+
+  claim(): Promise<never> {
+    return Promise.reject(new Error('claim must not run through the approval route'));
+  }
+
+  commit(): Promise<never> {
+    return Promise.reject(new Error('commit must not run through the approval route'));
+  }
+
+  get(): Promise<undefined> {
+    return Promise.resolve(undefined);
+  }
+
+  increaseCeiling(input: Parameters<ModelCompletionRepository['increaseCeiling']>[0]) {
+    this.increases.push(input);
+    return Promise.resolve({
+      used: '100.0000',
+      reserved: '0.0000',
+      ceiling: input.absoluteCeiling,
+      version: 2,
+    });
   }
 }
 
@@ -155,6 +191,7 @@ interface Wired {
   readonly owner: TestSession;
   readonly organizationId: string;
   readonly orchestrator: FakeOrchestratorPort;
+  readonly modelCompletions: FakeModelCompletionRepository;
   readonly as: (session: TestSession) => Record<string, string>;
 }
 
@@ -196,16 +233,19 @@ async function wire(
     sandbox?: FakeSandboxServicePort;
     organizations?: InMemoryOrganizationStore;
     pricing?: typeof TEST_PRICING | null;
+    modelCompletions?: FakeModelCompletionRepository;
   } = {},
 ): Promise<Wired> {
   const data = new InMemoryTenantData();
   const orchestrator = new FakeOrchestratorPort();
+  const modelCompletions = options.modelCompletions ?? new FakeModelCompletionRepository();
   const built = buildHarness({
     tenantDb: data.factory,
     ...(options.organizations === undefined ? {} : { organizations: options.organizations }),
     // CP-9 will add this injected dependency. Keeping the fake in the test
     // first lets the HTTP assertion demonstrate the missing route today.
     orchestrator,
+    modelCompletions,
     ...(options.pricing === undefined ? {} : { pricing: options.pricing }),
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
   });
@@ -227,6 +267,7 @@ async function wire(
     owner,
     organizationId,
     orchestrator,
+    modelCompletions,
     as: (session) => ({ ...session.headers, [ORGANIZATION_HEADER]: organizationId }),
   };
 }
@@ -1405,5 +1446,125 @@ describe('workspace passthrough routes', () => {
     expect(wired.orchestrator.starts).toEqual([]);
     expect(wired.orchestrator.signals).toEqual([]);
     expect(sandbox.calls).toEqual([]);
+  });
+
+  it.each(['approved', 'rejected'] as const)(
+    'resolves a tenant-scoped budget approval as %s and signals the durable workflow once',
+    async (decision) => {
+      const wired = await wire();
+      const project = await createProject(wired);
+      const created = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${project.id}/runs`,
+        headers: { ...wired.as(wired.owner), 'idempotency-key': `approval-run-${decision}` },
+        payload: { mode: 'build', prompt: 'Reach the budget boundary', budget: { maxCredits: 100 } },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const runId = created.json<{ run: { id: string } }>().run.id;
+      const run = wired.data.runs.find((row) => row.id === runId);
+      if (run === undefined) throw new Error('seeded run disappeared');
+      wired.data.runs.splice(wired.data.runs.indexOf(run), 1, {
+        ...run,
+        status: 'waiting_for_approval',
+      });
+      const approvalId = newId('appr');
+      const approval: Approval = {
+        id: approvalId,
+        organizationId: wired.organizationId,
+        runId,
+        taskId: null,
+        type: 'budget_increase',
+        status: 'pending',
+        requestJson: {
+          currentCeiling: '100.0000',
+          absoluteCeiling: '200.0000',
+          workspaceId: 'workspace-ar14',
+        },
+        responseJson: null,
+        requestedAt: wired.built.now(),
+        resolvedAt: null,
+        resolvedBy: null,
+      };
+      wired.data.approvals.push(approval);
+
+      const response = await wired.built.app.inject({
+        method: 'POST',
+        url: `/v1/runs/${runId}/approvals/${approvalId}`,
+        headers: {
+          ...wired.as(wired.owner),
+          'idempotency-key': `resolve-budget-${decision}`,
+        },
+        payload: { decision, reason: `${decision} by owner` },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({
+        approval: {
+          approvalId,
+          status: decision,
+          absoluteCeiling: '200.0000',
+        },
+      });
+      expect(wired.modelCompletions.increases).toHaveLength(decision === 'approved' ? 1 : 0);
+      expect(wired.orchestrator.signals.at(-1)).toMatchObject({
+        runId,
+        signal: 'budget_approval',
+        approvalId,
+        decision,
+        ...(decision === 'approved' ? { absoluteCeiling: '200.0000' } : {}),
+      });
+      expect(wired.data.approvals.find((row) => row.id === approvalId)).toMatchObject({
+        status: decision,
+        resolvedBy: wired.owner.userId,
+      });
+    },
+  );
+
+  it('does not resolve or audit a non-budget approval through the budget endpoint', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'approval-type-scope-run' },
+      payload: { mode: 'build', prompt: 'Reach a different approval gate' },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const approvalId = newId('appr');
+    wired.data.approvals.push({
+      id: approvalId,
+      organizationId: wired.organizationId,
+      runId,
+      taskId: null,
+      type: 'production_deploy',
+      status: 'pending',
+      requestJson: { releaseId: 'rel_01J00000000000000000000000' },
+      responseJson: null,
+      requestedAt: wired.built.now(),
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    const auditCount = wired.built.audit.events.length;
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: {
+        ...wired.as(wired.owner),
+        'idempotency-key': 'approval-type-scope-resolution',
+      },
+      payload: { decision: 'approved' },
+    });
+
+    expect(response.statusCode, response.body).toBe(404);
+    expect(wired.data.approvals.find((row) => row.id === approvalId)).toMatchObject({
+      status: 'pending',
+      resolvedAt: null,
+      resolvedBy: null,
+    });
+    expect(wired.built.audit.events).toHaveLength(auditCount);
+    expect(wired.orchestrator.signals).toEqual([]);
+    expect(wired.modelCompletions.increases).toEqual([]);
   });
 });

@@ -106,6 +106,9 @@ describe('AR-9 production Postgres worker composition', () => {
         mergeTask: taskActivityNotExpected,
         createConflictTask: taskActivityNotExpected,
         emitTaskBlocked: taskActivityNotExpected,
+        estimateRunCost: taskActivityNotExpected,
+        requestBudgetIncrease: taskActivityNotExpected,
+        checkpointBudgetStop: taskActivityNotExpected,
       };
       const worker = await createProductionRunWorker({
         connection: environment.nativeConnection,

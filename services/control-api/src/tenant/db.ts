@@ -520,6 +520,25 @@ export interface TenantMissionControlRepository {
   forRun(runId: string): Promise<MissionControlRows>;
 }
 
+export interface ResolveRunApprovalInput {
+  readonly runId: string;
+  readonly approvalId: string;
+  readonly type: 'budget_increase';
+  readonly decision: 'approved' | 'rejected';
+  readonly reason: string | null;
+  readonly resolvedBy: string;
+  readonly resolvedAt: Date;
+  readonly audit: AuditHook<Approval>;
+}
+
+export type ResolveRunApprovalResult =
+  | { readonly outcome: 'resolved' | 'replayed'; readonly approval: Approval }
+  | { readonly outcome: 'conflict'; readonly approval: Approval };
+
+export interface TenantApprovalRepository {
+  resolve(input: ResolveRunApprovalInput): Promise<ResolveRunApprovalResult | undefined>;
+}
+
 export interface AuditEventListRequest extends PageRequest {
   readonly actorId?: string;
   readonly action?: string;
@@ -546,6 +565,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
   readonly missionControl: TenantMissionControlRepository;
+  readonly approvals: TenantApprovalRepository;
   readonly auditEvents: TenantAuditEventRepository;
 }
 
@@ -1299,6 +1319,53 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               return undefined;
             await input.audit(tx, run);
             return run;
+          });
+        },
+      },
+
+      approvals: {
+        async resolve(input) {
+          return await db.transaction(async (tx) => {
+            const [locked] = await tx
+              .update(approvals)
+              .set({ status: sql`${approvals.status}` })
+              .where(
+                scoped(
+                  approvals.organizationId,
+                  eq(approvals.id, input.approvalId),
+                  eq(approvals.runId, input.runId),
+                  eq(approvals.type, input.type),
+                ),
+              )
+              .returning();
+            if (locked === undefined) return undefined;
+            if (locked.status !== 'pending') {
+              return {
+                outcome: locked.status === input.decision ? 'replayed' : 'conflict',
+                approval: locked,
+              };
+            }
+            const [resolved] = await tx
+              .update(approvals)
+              .set({
+                status: input.decision,
+                responseJson: { decision: input.decision, reason: input.reason },
+                resolvedAt: input.resolvedAt,
+                resolvedBy: input.resolvedBy,
+              })
+              .where(
+                scoped(
+                  approvals.organizationId,
+                  eq(approvals.id, input.approvalId),
+                  eq(approvals.runId, input.runId),
+                  eq(approvals.type, input.type),
+                  eq(approvals.status, 'pending'),
+                ),
+              )
+              .returning();
+            if (resolved === undefined) throw new Error('locked approval disappeared');
+            await input.audit(tx, resolved);
+            return { outcome: 'resolved', approval: resolved };
           });
         },
       },

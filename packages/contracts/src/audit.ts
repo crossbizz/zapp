@@ -42,6 +42,7 @@ export const AUDIT_ACTIONS = [
   'run.redirect_requested',
   'run.redirected',
   'run.redirect_rejected',
+  'run.approval_resolved',
   'workspace.create_requested',
   'workspace.created',
   'workspace.start_requested',

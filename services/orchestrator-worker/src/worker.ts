@@ -8,6 +8,7 @@ import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 import { z } from 'zod';
 
 import type { EventActivities } from './activities/events.js';
+import type { ApprovalActivities } from './activities/approvals.js';
 import {
   createActivityIdempotencyInterceptor,
   type ActivityIdempotencyStore,
@@ -15,9 +16,17 @@ import {
 import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
-import { runWorkflow, RunWorkflowInputSchema } from './workflows/run.js';
+import {
+  budgetApprovalResolvedSignal,
+  runWorkflow,
+  RunWorkflowInputSchema,
+} from './workflows/run.js';
 
-export type RunActivities = EventActivities & SessionActivities & WorkspaceActivities;
+export type RunActivities =
+  & EventActivities
+  & SessionActivities
+  & WorkspaceActivities
+  & ApprovalActivities;
 export type ProductionRunActivities = RunActivities & TaskWorkflowActivities;
 
 export const TASK_QUEUES = {
@@ -116,6 +125,7 @@ export function createBusinessFailure(type: string, message: string): Applicatio
 
 export interface TemporalOrchestrator {
   startRun(input: unknown): Promise<void>;
+  signalRun(input: unknown): Promise<{ applied: boolean }>;
 }
 
 function createTemporalOrchestratorForQueue(
@@ -130,6 +140,31 @@ function createTemporalOrchestratorForQueue(
         workflowId: input.workflowId,
         args: [input],
       });
+    },
+    async signalRun(inputValue) {
+      const input = z
+        .object({
+          workflowId: z.string().min(1).max(255),
+          signal: z.string().min(1).max(100),
+          approvalId: z.string().optional(),
+          decision: z.enum(['approved', 'rejected']).optional(),
+          absoluteCeiling: z.string().optional(),
+        })
+        .passthrough()
+        .parse(inputValue);
+      const handle = client.workflow.getHandle(input.workflowId);
+      if (input.signal === 'budget_approval') {
+        await handle.signal(budgetApprovalResolvedSignal, {
+          approvalId: input.approvalId,
+          decision: input.decision,
+          ...(input.absoluteCeiling === undefined
+            ? {}
+            : { absoluteCeiling: input.absoluteCeiling }),
+        });
+      } else {
+        await handle.signal(input.signal);
+      }
+      return { applied: true };
     },
   };
 }

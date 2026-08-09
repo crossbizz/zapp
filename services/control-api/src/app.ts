@@ -502,6 +502,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               return membership?.status === 'active';
             },
             ...(tenant.pricing === undefined ? {} : { pricing: tenant.pricing }),
+            ...(deps.modelCompletions === undefined
+              ? {}
+              : { modelCompletions: deps.modelCompletions }),
           });
           registerMissionControlRoutes(app);
           registerWorkspaceRoutes(app, {

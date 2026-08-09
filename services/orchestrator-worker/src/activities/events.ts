@@ -22,7 +22,7 @@ export type EventBatch = z.infer<typeof EventBatchSchema>;
 export const RunStatusTransitionSchema = z
   .object({
     runId: z.string().min(1),
-    status: z.enum(['running', 'completed', 'failed']),
+    status: z.enum(['running', 'waiting_for_approval', 'completed', 'failed', 'cancelled']),
     idempotencyKey: z.string().min(1).max(512),
   })
   .strict();

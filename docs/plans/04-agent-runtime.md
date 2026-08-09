@@ -232,9 +232,9 @@ behavior is in scope.
 **Files:** Create: `src/activities/approvals.ts`, `packages/agent-policies/src/budgets.ts` wiring
 **Effort:** M
 
-- [ ] Binding behavior (PRD §30.2): run starts with budget (plan default or user-set); estimated cost shown pre-run (planner estimate activity); at 80% → `usage.recorded` warning event; at 100% → workflow pauses with `approval.requested` (type `budget_increase`); approve resumes with raised budget, reject → graceful stop with checkpoint; approvals stored (PRD §23.3) and resolved via `POST /v1/runs/:id/approvals/:approvalId` (added to CP-9 surface).
-- [ ] Failing tests: budget trip → paused + approval row; approve → resumes; reject → cancelled-with-checkpoint.
-- [ ] Commit: `feat(orchestrator): run budget gates with human approval loop`
+- [x] Binding behavior (PRD §30.2): run starts with budget (plan default or user-set); estimated cost shown pre-run (planner estimate activity); at 80% → `usage.recorded` warning event; at 100% → workflow pauses with `approval.requested` (type `budget_increase`); approve resumes with raised budget, reject → graceful stop with checkpoint; approvals stored (PRD §23.3) and resolved via `POST /v1/runs/:id/approvals/:approvalId` (added to CP-9 surface).
+- [x] Failing tests: budget trip → paused + approval row; approve → resumes; reject → cancelled-with-checkpoint.
+- [x] Commit: `feat(orchestrator): run budget gates with human approval loop`
 
 ### Task AR-15 [M2]: Ask + Prototype modes
 
@@ -364,3 +364,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-12 done — Added production-registered task child workflows with run-derived integration branches, capped concurrency, idempotent activity boundaries, real isolated Git workspace/merge coverage, and typed conflict-task blocking; review passed in round 2.
 - 2026-08-09 AR-13 done — Added tenant-scoped Mission Control aggregate and paginated APIs with generated SDK, authoritative table overlays, approved-credit ceilings, terminal agent cleanup, and producer-backed commit diffstats; review passed in round 2 and forced affected verification was 21/21.
 - 2026-08-09 AR-3B-FIX-1 done — Closed the review-cap abort and renewal gaps with AI SDK final-usage settlement and retryable indeterminate renewal handling; model-gateway passed 81/81 and review passed in round 1, while AR-3B remains blocked only on its already-consumed Anthropic cache proof returning HTTP 401.
+- 2026-08-09 AR-14 done — Added exact credit-state budget warnings/cutoff, durable Temporal approval pause/resume or checkpoint-cancel, tenant-scoped stored approval resolution, and the generated public SDK; the explicit API/accounting/storage joins required files beyond the terse task list, and review passed in round 2 after preventing non-budget approval mutation.

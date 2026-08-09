@@ -272,7 +272,7 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       insert into approvals
         (id, organization_id, run_id, type, status, request_json, response_json, resolved_at, resolved_by)
       values
-        (${approvalId}, ${organizationId}, ${runId}, 'credit_ceiling_increase', 'approved',
+        (${approvalId}, ${organizationId}, ${runId}, 'budget_increase', 'approved',
          ${JSON.stringify({ absoluteCeiling: '14.0000' })}::jsonb,
          ${JSON.stringify({ decision: 'approved' })}::jsonb,
          ${now.toISOString()}, ${userId})
@@ -295,7 +295,7 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       insert into approvals
         (id, organization_id, run_id, type, status, request_json, response_json, resolved_at, resolved_by)
       values
-        (${secondApprovalId}, ${organizationId}, ${runId}, 'credit_ceiling_increase', 'approved',
+        (${secondApprovalId}, ${organizationId}, ${runId}, 'budget_increase', 'approved',
          ${JSON.stringify({ absoluteCeiling: '16.0000' })}::jsonb,
          ${JSON.stringify({ decision: 'approved' })}::jsonb,
          ${now.toISOString()}, ${userId})
@@ -321,7 +321,7 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       insert into approvals
         (id, organization_id, run_id, type, status, request_json, response_json, resolved_at, resolved_by)
       values
-        (${decreaseApprovalId}, ${organizationId}, ${runId}, 'credit_ceiling_increase', 'approved',
+        (${decreaseApprovalId}, ${organizationId}, ${runId}, 'budget_increase', 'approved',
          ${JSON.stringify({ absoluteCeiling: '15.0000' })}::jsonb,
          ${JSON.stringify({ decision: 'approved' })}::jsonb,
          ${now.toISOString()}, ${userId})

@@ -50,6 +50,8 @@ describe('AR-9 Temporal worker hardening', () => {
     let ensureAttempts = 0;
     let sessionAttempts = 0;
     let commitAttempts = 0;
+    const approvalActivityNotExpected = (): Promise<never> =>
+      Promise.reject(new Error('AR-9 does not execute AR-14 approval activities'));
     const activities: RunActivities = {
       transitionRunStatus: ({ status }) => {
         statuses.push(status);
@@ -85,6 +87,9 @@ describe('AR-9 Temporal worker hardening', () => {
         commitAttempts += 1;
         return Promise.resolve({ commitSha: 'b'.repeat(40), diffstat: [] });
       },
+      estimateRunCost: approvalActivityNotExpected,
+      requestBudgetIncrease: approvalActivityNotExpected,
+      checkpointBudgetStop: approvalActivityNotExpected,
     };
     const worker = await createRunWorker({
       connection: environment.nativeConnection,
@@ -149,6 +154,8 @@ describe('AR-9 Temporal worker hardening', () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar9-business-${Date.now().toString(36)}`;
     let ensureAttempts = 0;
+    const approvalActivityNotExpected = (): Promise<never> =>
+      Promise.reject(new Error('AR-9 does not execute AR-14 approval activities'));
     const activities: RunActivities = {
       transitionRunStatus: () => Promise.resolve(),
       emitEvents: () => Promise.resolve(),
@@ -158,6 +165,9 @@ describe('AR-9 Temporal worker hardening', () => {
       },
       runBuilderSession: () => Promise.reject(new Error('session must not run')),
       commitAndPush: () => Promise.reject(new Error('commit must not run')),
+      estimateRunCost: approvalActivityNotExpected,
+      requestBudgetIncrease: approvalActivityNotExpected,
+      checkpointBudgetStop: approvalActivityNotExpected,
     };
     const worker = await createRunWorker({
       connection: environment.nativeConnection,

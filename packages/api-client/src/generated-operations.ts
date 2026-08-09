@@ -1024,6 +1024,28 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/runs/{runId}/approvals/{approvalId}": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/runs/{runId}/cancel": {
     "post": {
       "security": [

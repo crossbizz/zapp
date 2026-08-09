@@ -28,15 +28,37 @@ export const StartRunInputSchema = z
   .strict();
 export type StartRunInput = z.infer<typeof StartRunInputSchema>;
 
-export const SignalRunInputSchema = z
-  .object({
-    runId: idSchema('run'),
-    workflowId: z.string().min(1).max(255),
-    signal: z.enum(['pause', 'resume', 'cancel', 'redirect']),
-    prompt: z.string().min(1).max(20_000).optional(),
-    operationKey: OperationKeySchema,
-  })
-  .strict();
+const SignalIdentityShape = {
+  runId: idSchema('run'),
+  workflowId: z.string().min(1).max(255),
+  operationKey: OperationKeySchema,
+} as const;
+export const SignalRunInputSchema = z.union([
+  z
+    .object({
+      ...SignalIdentityShape,
+      signal: z.enum(['pause', 'resume', 'cancel', 'redirect']),
+      prompt: z.string().min(1).max(20_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...SignalIdentityShape,
+      signal: z.literal('budget_approval'),
+      approvalId: idSchema('appr'),
+      decision: z.literal('approved'),
+      absoluteCeiling: z.string().regex(/^\d+\.\d{4}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      ...SignalIdentityShape,
+      signal: z.literal('budget_approval'),
+      approvalId: idSchema('appr'),
+      decision: z.literal('rejected'),
+    })
+    .strict(),
+]);
 export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
 
 export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();

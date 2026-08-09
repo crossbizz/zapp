@@ -1,6 +1,11 @@
 import { createHash, createHmac } from 'node:crypto';
 
-import { AppTypeSchema, idSchema, ModelIdentifierSchema } from '@zapp/contracts';
+import {
+  AppTypeSchema,
+  CreditDecimalSchema,
+  idSchema,
+  ModelIdentifierSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -24,6 +29,7 @@ import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { RunSchema, toRun } from '../tenant/view.js';
 import type { PricingConfig } from '../usage/pricing.js';
+import type { ModelCompletionRepository } from '../usage/model-completions.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -41,6 +47,33 @@ const CreateRunBody = z
   })
   .strict();
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
+const ApprovalParams = z
+  .object({ runId: idSchema('run'), approvalId: idSchema('appr') })
+  .strict();
+const ResolveBudgetApprovalBody = z
+  .object({
+    decision: z.enum(['approved', 'rejected']),
+    reason: z.string().trim().min(1).max(2_000).optional(),
+  })
+  .strict();
+const ApprovalRequestPayload = z
+  .object({
+    currentCeiling: CreditDecimalSchema,
+    absoluteCeiling: CreditDecimalSchema,
+    workspaceId: z.string().min(1).max(512),
+  })
+  .strict();
+const ResolvedBudgetApprovalResponse = z
+  .object({
+    approval: z
+      .object({
+        approvalId: idSchema('appr'),
+        status: z.enum(['approved', 'rejected']),
+        absoluteCeiling: CreditDecimalSchema,
+      })
+      .strict(),
+  })
+  .strict();
 
 const SIGNALS = {
   pause: {
@@ -84,6 +117,7 @@ export interface RunRoutesDeps {
     context: EventStreamAuthorizationContext,
   ) => Promise<boolean>;
   readonly pricing?: PricingConfig;
+  readonly modelCompletions?: ModelCompletionRepository;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -289,6 +323,86 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
     );
   }
 
+  app.post(
+    '/v1/runs/:runId/approvals/:approvalId',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ApprovalParams,
+        body: ResolveBudgetApprovalBody,
+        response: { 200: ResolvedBudgetApprovalResponse },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'start_run');
+      const operationKey = operationOf(request);
+      const resolved = await ctx.db.approvals.resolve({
+        runId: run.id,
+        approvalId: request.params.approvalId,
+        type: 'budget_increase',
+        decision: request.body.decision,
+        reason: request.body.reason ?? null,
+        resolvedBy: actorOf(request),
+        resolvedAt: deps.now(),
+        audit: async (tx, approval) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.approval_resolved',
+            target: { type: 'run', id: run.id },
+            metadata: {
+              runId: run.id,
+              approvalId: approval.id,
+              decision: request.body.decision,
+              operationKey,
+            },
+          });
+        },
+      });
+      if (resolved === undefined || resolved.approval.type !== 'budget_increase') {
+        throw approvalNotFound();
+      }
+      if (resolved.outcome === 'conflict') throw approvalConflict();
+      const approvalRequest = ApprovalRequestPayload.parse(resolved.approval.requestJson);
+      if (request.body.decision === 'approved') {
+        if (deps.modelCompletions === undefined) throw accountingUnavailable();
+        await deps.modelCompletions.increaseCeiling({
+          organizationId: ctx.organizationId,
+          projectId: run.projectId,
+          runId: run.id,
+          approvalId: resolved.approval.id,
+          operationKey,
+          absoluteCeiling: approvalRequest.absoluteCeiling,
+        });
+      }
+      const signalled = SignalRunResultSchema.parse(
+        await deps.orchestrator.signalRun(
+          SignalRunInputSchema.parse({
+            runId: run.id,
+            workflowId: run.temporalWorkflowId ?? run.id,
+            signal: 'budget_approval',
+            approvalId: resolved.approval.id,
+            decision: request.body.decision,
+            ...(request.body.decision === 'approved'
+              ? { absoluteCeiling: approvalRequest.absoluteCeiling }
+              : {}),
+            operationKey,
+          }),
+        ),
+      );
+      if (!signalled.applied) throw invalidRunState();
+      return ResolvedBudgetApprovalResponse.parse({
+        approval: {
+          approvalId: resolved.approval.id,
+          status: request.body.decision,
+          absoluteCeiling: approvalRequest.absoluteCeiling,
+        },
+      });
+    },
+  );
+
   app.get(
     '/v1/runs/:runId',
     {
@@ -356,6 +470,15 @@ function projectNotFound(): ApiError {
 }
 function branchNotFound(): ApiError {
   return new ApiError('branch_not_found', 404, 'That branch does not exist.');
+}
+function approvalNotFound(): ApiError {
+  return new ApiError('approval_not_found', 404, 'That approval does not exist.');
+}
+function approvalConflict(): ApiError {
+  return new ApiError('approval_conflict', 409, 'That approval was already resolved differently.');
+}
+function accountingUnavailable(): ApiError {
+  return new ApiError('usage_accounting_unavailable', 503, 'Usage accounting is unavailable.');
 }
 function modelNotAllowed(): ApiError {
   return new ApiError(

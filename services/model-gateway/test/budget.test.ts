@@ -185,7 +185,11 @@ describe('durable completion accounting', () => {
     const record = completedRecord();
     const commit = vi.fn();
     const accounting: CompletionUsageClient = {
-      claim: vi.fn().mockResolvedValue({ status: 'completed', completion: record }),
+      claim: vi.fn().mockResolvedValue({
+        status: 'completed',
+        completion: record,
+        credits: { used: '8.0000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+      }),
       commit,
     };
     const completion = createUsageAccountedCompletion({
@@ -197,7 +201,12 @@ describe('durable completion accounting', () => {
 
     await expect(collect(completion)).resolves.toEqual([
       ...record.events,
-      { type: 'usage.recorded', completionId: request.completionId, usage: record.usage },
+      {
+        type: 'usage.recorded',
+        completionId: request.completionId,
+        usage: record.usage,
+        credits: { used: '8.0000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+      },
     ]);
     expect(provider.calls).toBe(0);
     expect(commit).not.toHaveBeenCalled();
@@ -253,6 +262,7 @@ describe('durable completion accounting', () => {
       type: 'usage.recorded',
       completionId: request.completionId,
       usage: [usage],
+      credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
     });
     expect(claim).toHaveBeenCalledWith(
       expect.objectContaining({ route, completionId: request.completionId }),
@@ -275,7 +285,11 @@ describe('durable completion accounting', () => {
               reservedCredits: '1.0000',
               credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
             }
-          : { status: 'completed' as const, completion: stored }),
+          : {
+              status: 'completed' as const,
+              completion: stored,
+              credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+            }),
       ),
       commit,
     };
@@ -289,7 +303,12 @@ describe('durable completion accounting', () => {
     await expect(collect(completion)).rejects.toBeInstanceOf(CompletionCommitIndeterminateError);
     await expect(collect(completion)).resolves.toEqual([
       ...completedRecord().events,
-      { type: 'usage.recorded', completionId: request.completionId, usage: [usage] },
+      {
+        type: 'usage.recorded',
+        completionId: request.completionId,
+        usage: [usage],
+        credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+      },
     ]);
     expect(provider.calls).toBe(1);
     expect(commit).toHaveBeenCalledTimes(1);

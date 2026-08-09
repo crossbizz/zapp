@@ -1539,7 +1539,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -1601,7 +1601,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -4525,6 +4525,95 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/approvals/{approvalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    approvalId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        decision: "approved" | "rejected";
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            approval: {
+                                absoluteCeiling: string;
+                                approvalId: string;
+                                /** @enum {string} */
+                                status: "approved" | "rejected";
+                            };
+                        };
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;

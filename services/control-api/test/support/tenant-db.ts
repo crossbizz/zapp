@@ -669,6 +669,34 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
     },
 
+    approvals: {
+      async resolve(input) {
+        const existing = mine(orgId, data.approvals).find(
+          (row) =>
+            row.id === input.approvalId &&
+            row.runId === input.runId &&
+            row.type === input.type,
+        );
+        if (existing === undefined) return undefined;
+        if (existing.status !== 'pending') {
+          return {
+            outcome: existing.status === input.decision ? 'replayed' : 'conflict',
+            approval: existing,
+          } as const;
+        }
+        const resolved: Approval = {
+          ...existing,
+          status: input.decision,
+          responseJson: { decision: input.decision, reason: input.reason },
+          resolvedAt: input.resolvedAt,
+          resolvedBy: input.resolvedBy,
+        };
+        await input.audit(NO_TRANSACTION, resolved);
+        data.approvals.splice(data.approvals.indexOf(existing), 1, resolved);
+        return { outcome: 'resolved', approval: resolved } as const;
+      },
+    },
+
     workspaces: {
       getById(id) {
         return Promise.resolve(mine(orgId, data.workspaces).find((row) => row.id === id));

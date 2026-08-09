@@ -142,11 +142,15 @@ function terminalError(terminal: CompletionRecord['terminal']): ModelTerminalErr
   return terminal.type === 'error' ? new ModelTerminalError(terminal.code, terminal.message) : undefined;
 }
 
-function recordedEvent(completion: CompletionRecord): BackendStreamEvent {
+function recordedEvent(
+  completion: CompletionRecord,
+  credits: ModelCompletionCommitResponse['credits'],
+): BackendStreamEvent {
   return BackendStreamEventSchema.parse({
     type: 'usage.recorded',
     completionId: completion.completionId,
     usage: completion.usage,
+    credits,
   });
 }
 
@@ -217,7 +221,7 @@ export function createUsageAccountedCompletion(options: {
         const claim = await options.accounting.claim(claimInput);
         if (claim.status === 'completed') {
           for (const event of claim.completion.events) yield BackendStreamEventSchema.parse(event);
-          yield recordedEvent(claim.completion);
+          yield recordedEvent(claim.completion, claim.credits);
           const error = terminalError(claim.completion.terminal);
           if (error !== undefined) throw error;
           return;
@@ -343,7 +347,7 @@ export function createUsageAccountedCompletion(options: {
             }
           }
         };
-        const settle = async (): Promise<CompletionRecord> => {
+        const settle = async (): Promise<ModelCompletionCommitResponse> => {
           renewalStop.abort();
           await renewalTask;
           if (renewalError instanceof CompletionControlError) throw renewalError;
@@ -377,7 +381,7 @@ export function createUsageAccountedCompletion(options: {
             terminal,
           );
           options.observe?.({ type: 'usage.recorded' });
-          return committed.completion;
+          return committed;
         };
 
         try {
@@ -397,8 +401,8 @@ export function createUsageAccountedCompletion(options: {
             yield recordProviderEvent(next.value);
           }
           settlementStarted = true;
-          const completion = await settle();
-          yield recordedEvent(completion);
+          const committed = await settle();
+          yield recordedEvent(committed.completion, committed.credits);
           const error = terminalError(terminal);
           if (error !== undefined) throw error;
         } finally {

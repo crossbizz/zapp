@@ -229,6 +229,7 @@ describe('agent session loop', () => {
                 occurredAt: '2026-08-09T16:00:00.000Z',
               },
             ],
+            credits: { used: '8.0000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
           };
           yield {
             type: 'error',
@@ -262,6 +263,7 @@ describe('agent session loop', () => {
     expect(Array.isArray(recordedUsage)).toBe(true);
     if (!Array.isArray(recordedUsage)) throw new Error('Expected recorded usage array');
     expect(recordedUsage[0]).toMatchObject({ provider: 'anthropic', inputTokens: 1 });
+    expect(emitted?.payload['budget']).toEqual({ level: 'warning', utilizationBps: 8_000 });
     const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
     expect(saved?.eventOutbox).toHaveLength(1);
     expect(saved?.eventOutbox[0]?.delivered).toBe(true);
@@ -605,6 +607,7 @@ describe('agent session loop', () => {
               occurredAt: '2026-08-09T16:00:00.000Z',
             },
           ],
+          credits: { used: '1.0000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
         };
         yield { type: 'done' };
       },

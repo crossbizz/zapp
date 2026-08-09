@@ -6,6 +6,7 @@ import {
   wrapUntrusted,
   type ContentProvenance,
 } from '@zapp/agent-policies';
+import { evaluateRunCreditBudget } from '@zapp/agent-policies/budgets';
 import {
   ToolExecutionError,
   type ToolRegistry,
@@ -632,6 +633,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                   if (event.completionId !== request.completionId) {
                     throw new Error('Recorded usage completion identity does not match the request');
                   }
+                  const budget = evaluateRunCreditBudget(event.credits);
                   enqueue(
                     SessionEventSchema.parse({
                       eventKey: `${input.runId}:${taskId}:${event.completionId}:usage-recorded`,
@@ -640,13 +642,26 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                       type: 'usage.recorded',
                       occurredAt: new Date(now()).toISOString(),
                       payload: redactJson(
-                        { completionId: event.completionId, usage: event.usage },
+                        {
+                          completionId: event.completionId,
+                          usage: event.usage,
+                          credits: event.credits,
+                          budget,
+                        },
                         dependencies.redact,
                       ),
                     }),
                   );
                   await save();
                   await flushOutbox();
+                  if (budget.level === 'exhausted') {
+                    closeIterator(iterator);
+                    return await finish(
+                      'budget_exhausted',
+                      transcript.summary,
+                      'credit_budget_exhausted',
+                    );
+                  }
                   if (pendingTokenCutoff) {
                     closeIterator(iterator);
                     return await finish(

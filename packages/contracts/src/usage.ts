@@ -155,7 +155,13 @@ export const ModelCompletionClaimResponseSchema = z.discriminatedUnion('status',
       credits: CreditStateSchema,
     })
     .strict(),
-  z.object({ status: z.literal('completed'), completion: CompletionRecordSchema }).strict(),
+  z
+    .object({
+      status: z.literal('completed'),
+      completion: CompletionRecordSchema,
+      credits: CreditStateSchema,
+    })
+    .strict(),
   z
     .object({
       status: z.literal('leased'),

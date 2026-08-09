@@ -1,7 +1,15 @@
-import { continueAsNew, proxyActivities, type RetryPolicy } from '@temporalio/workflow';
+import {
+  condition,
+  continueAsNew,
+  defineSignal,
+  proxyActivities,
+  setHandler,
+  type RetryPolicy,
+} from '@temporalio/workflow';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
+import type { ApprovalActivities } from '../activities/approvals.js';
 import type { SessionActivities } from '../activities/session.js';
 import type { WorkspaceActivities } from '../activities/workspace.js';
 
@@ -39,14 +47,18 @@ const RunWorkflowContinuationSchema = z.discriminatedUnion('phase', [
 ]);
 const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
   continuation: RunWorkflowContinuationSchema.optional(),
+  budgetAttempt: z.number().int().nonnegative().max(100).optional(),
 }).strict();
 
-export const RunWorkflowResultSchema = z
-  .object({
-    status: z.literal('completed'),
-    commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
-  })
-  .strict();
+export const RunWorkflowResultSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('completed'),
+      commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+    })
+    .strict(),
+  z.object({ status: z.literal('cancelled'), checkpointRef: z.string().min(1) }).strict(),
+]);
 export type RunWorkflowResult = z.infer<typeof RunWorkflowResultSchema>;
 
 export const ACTIVITY_RETRY_POLICY: RetryPolicy = {
@@ -73,11 +85,37 @@ const events = proxyActivities<EventActivities>({
   startToCloseTimeout: '30 seconds',
   retry: ACTIVITY_RETRY_POLICY,
 });
+const approvals = proxyActivities<ApprovalActivities>({
+  startToCloseTimeout: '2 minutes',
+  retry: ACTIVITY_RETRY_POLICY,
+});
+
+const BudgetApprovalResolutionSchema = z.discriminatedUnion('decision', [
+  z
+    .object({
+      approvalId: z.string().regex(/^appr_[0-9A-HJKMNP-TV-Z]{26}$/u),
+      decision: z.literal('approved'),
+      absoluteCeiling: z.string().regex(/^\d+\.\d{4}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      approvalId: z.string().regex(/^appr_[0-9A-HJKMNP-TV-Z]{26}$/u),
+      decision: z.literal('rejected'),
+    })
+    .strict(),
+]);
+export const budgetApprovalResolvedSignal = defineSignal<[unknown]>('budgetApprovalResolved');
 
 const M1_COMMIT_MESSAGE = 'Complete M1 builder task';
 
 function operationKey(input: RunWorkflowInput, step: string): string {
   return `${input.runId}:task-m1:${step}`;
+}
+
+function nextRunCreditCeiling(currentMaxCredits: number): string {
+  if (currentMaxCredits >= 1_000_000) throw new Error('run credit ceiling cannot be increased');
+  return `${String(Math.min(1_000_000, currentMaxCredits * 2))}.0000`;
 }
 
 function event(
@@ -100,9 +138,27 @@ function event(
 
 export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
   const input = RunWorkflowStateSchema.parse(inputValue);
+  const budgetResolutions = new Map<string, z.infer<typeof BudgetApprovalResolutionSchema>>();
+  setHandler(budgetApprovalResolvedSignal, (value) => {
+    const resolution = BudgetApprovalResolutionSchema.parse(value);
+    budgetResolutions.set(resolution.approvalId, resolution);
+  });
+  const budgetAttempt = input.budgetAttempt ?? 0;
   if (input.continuation === undefined) {
     let workspaceId: string;
     try {
+      const estimate =
+        input.budget === null
+          ? undefined
+          : await approvals.estimateRunCost({
+              runId: input.runId,
+              organizationId: input.organizationId,
+              projectId: input.projectId,
+              mode: input.mode,
+              prompt: input.prompt,
+              maxCredits: input.budget.maxCredits,
+              idempotencyKey: operationKey(input, 'estimate-run-cost'),
+            });
       await events.transitionRunStatus({
         runId: input.runId,
         status: 'running',
@@ -114,6 +170,12 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
             mode: input.mode,
             appType: input.appType,
             model: input.model,
+            ...(estimate === undefined
+              ? {}
+              : {
+                  estimatedCredits: estimate.estimatedCredits,
+                  maxCredits: input.budget?.maxCredits,
+                }),
           }),
         ],
       });
@@ -138,10 +200,12 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     return continueAsNew<typeof runWorkflow>({
       ...input,
       continuation: { phase: 'session', workspaceId },
+      budgetAttempt,
     });
   }
 
   if (input.continuation.phase === 'session') {
+    let approvedMaxCredits: number | undefined;
     try {
       await events.emitEvents({
         events: [event(input, 'agent.started', 'agent-started', { agent: 'builder' })],
@@ -155,13 +219,101 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         model: input.model,
         prompt: input.prompt,
         budget: input.budget,
-        idempotencyKey: operationKey(input, 'builder-session'),
+        idempotencyKey: operationKey(input, `builder-session-${String(budgetAttempt)}`),
       });
       switch (sessionResult.status) {
         case 'completed':
           break;
+        case 'budget_exhausted': {
+          if (input.budget === null) throw new Error('builder_session_budget_exhausted');
+          const currentCeiling = `${String(input.budget.maxCredits)}.0000`;
+          const requested = await approvals.requestBudgetIncrease({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            workspaceId: input.continuation.workspaceId,
+            currentCeiling,
+            absoluteCeiling: nextRunCreditCeiling(input.budget.maxCredits),
+            idempotencyKey: operationKey(
+              input,
+              `budget-increase-${String(budgetAttempt)}`,
+            ),
+          });
+          await events.transitionRunStatus({
+            runId: input.runId,
+            status: 'waiting_for_approval',
+            idempotencyKey: operationKey(
+              input,
+              `status-waiting-for-approval-${String(budgetAttempt)}`,
+            ),
+          });
+          await events.emitEvents({
+            events: [
+              event(input, 'approval.requested', `budget-approval-${String(budgetAttempt)}`, {
+                approvalId: requested.approvalId,
+                type: 'budget_increase',
+                absoluteCeiling: requested.absoluteCeiling,
+              }),
+            ],
+          });
+          await condition(() => budgetResolutions.has(requested.approvalId));
+          const resolution = budgetResolutions.get(requested.approvalId);
+          if (resolution === undefined) throw new Error('budget approval resolution disappeared');
+          await events.emitEvents({
+            events: [
+              event(input, 'approval.resolved', `budget-resolution-${String(budgetAttempt)}`, {
+                approvalId: requested.approvalId,
+                decision: resolution.decision,
+              }),
+            ],
+          });
+          if (resolution.decision === 'rejected') {
+            const checkpoint = await approvals.checkpointBudgetStop({
+              runId: input.runId,
+              organizationId: input.organizationId,
+              projectId: input.projectId,
+              workspaceId: input.continuation.workspaceId,
+              approvalId: requested.approvalId,
+              idempotencyKey: operationKey(
+                input,
+                `budget-stop-checkpoint-${String(budgetAttempt)}`,
+              ),
+            });
+            await events.emitEvents({
+              events: [
+                event(input, 'artifact.created', `budget-checkpoint-${String(budgetAttempt)}`, {
+                  checkpointRef: checkpoint.checkpointRef,
+                }),
+                event(input, 'run.cancelled', `budget-cancelled-${String(budgetAttempt)}`, {
+                  reason: 'budget_increase_rejected',
+                }),
+              ],
+            });
+            await events.transitionRunStatus({
+              runId: input.runId,
+              status: 'cancelled',
+              idempotencyKey: operationKey(input, 'status-cancelled'),
+            });
+            return RunWorkflowResultSchema.parse({
+              status: 'cancelled',
+              checkpointRef: checkpoint.checkpointRef,
+            });
+          }
+          if (resolution.absoluteCeiling !== requested.absoluteCeiling) {
+            throw new Error('approved budget ceiling does not match the requested ceiling');
+          }
+          approvedMaxCredits = Number.parseInt(resolution.absoluteCeiling, 10);
+          await events.transitionRunStatus({
+            runId: input.runId,
+            status: 'running',
+            idempotencyKey: operationKey(
+              input,
+              `status-budget-resumed-${String(budgetAttempt)}`,
+            ),
+          });
+          break;
+        }
         case 'needs_approval':
-        case 'budget_exhausted':
         case 'failed':
         case 'cancelled':
           throw new Error(`builder_session_${sessionResult.status}`);
@@ -173,6 +325,17 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         idempotencyKey: operationKey(input, 'status-failed'),
       });
       throw error;
+    }
+    if (approvedMaxCredits !== undefined) {
+      return continueAsNew<typeof runWorkflow>({
+        ...input,
+        budget: { maxCredits: approvedMaxCredits },
+        budgetAttempt: budgetAttempt + 1,
+        continuation: {
+          phase: 'session',
+          workspaceId: input.continuation.workspaceId,
+        },
+      });
     }
     return continueAsNew<typeof runWorkflow>({
       ...input,

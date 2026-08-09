@@ -111,7 +111,11 @@ export function createModelCompletionRepository(
         if (existing !== undefined) {
           assertIdentity(existing, input);
           if (existing.state === 'completed') {
-            return { status: 'completed', completion: completionRecord(existing) };
+            return {
+              status: 'completed',
+              completion: completionRecord(existing),
+              credits: creditState(account, ceiling),
+            };
           }
           const claimExpiresAt = existing.claimExpiresAt;
           if (
@@ -387,7 +391,7 @@ export function createModelCompletionRepository(
         const approvalRequest = approval?.requestJson as { absoluteCeiling?: unknown } | undefined;
         if (
           approval === undefined ||
-          approval.type !== 'credit_ceiling_increase' ||
+          approval.type !== 'budget_increase' ||
           approval.status !== 'approved' ||
           approval.resolvedAt === null ||
           approval.resolvedBy === null ||
