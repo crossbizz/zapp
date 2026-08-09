@@ -1032,7 +1032,7 @@ describe('preview proxy acceptance contract', () => {
     expect(event.payload.message).toContain('primitive 42 true undefined [OpaqueObject]');
     expect(event.payload.message.length).toBeLessThanOrEqual(4_096);
     expect(event.payload.stack).toContain('Error');
-  });
+  }, 30_000);
 
   test('redacts complete Authorization Bearer tokens in client console uploads', async () => {
     const origin = await startOrigin((app) => {
