@@ -3,18 +3,18 @@
   "environments": {
     "dev": {
       "modalEnvironment": "zapp-dev",
-      "sourceRevision": "c58a416cba65f57ea64ba3e3e90f3646efca9b62",
-      "tag": "2026-08-08-c58a416",
+      "sourceRevision": "6b22eeabc0c2e3dbccfe681ee8ef18fd18478cff",
+      "tag": "2026-08-09-6b22eea",
       "images": {
         "forge-node-base": {
           "appName": "zapp-workspaces",
-          "digest": "im-9NCxx8merCgh67jj0YLM84",
-          "publishedName": "forge-node-base:2026-08-08-c58a416"
+          "digest": "im-RwJmaWfclnmb2rd7ucB4Ws",
+          "publishedName": "forge-node-base:2026-08-09-6b22eea"
         },
         "forge-web-test": {
           "appName": "zapp-browser-verify",
-          "digest": "im-eVxjg43Gv7bQrkH0CbwrrX",
-          "publishedName": "forge-web-test:2026-08-08-c58a416"
+          "digest": "im-F9nuIorTLU6TjtXLrG2hZI",
+          "publishedName": "forge-web-test:2026-08-09-6b22eea"
         }
       }
     }

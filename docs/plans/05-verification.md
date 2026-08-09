@@ -83,11 +83,11 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 **Files:** Create: `src/gates/{dev-server,build,typecheck,lint,unit-tests,secret-scan,shared}.ts`, `test/gates.test.ts`, `docs/adr/0026-verification-image-toolchain.md`; Modify: `src/gates/registry.ts`, `src/index.ts`, `infra/modal/{image-config.json,images/config.ts,images/forge-node-base.ts,images.lock.json,test/images.test.ts,test/publish.test.ts}`, `services/sandbox-service/src/provider/{modal,types}.ts`, `services/sandbox-service/test/modal.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior: each runs the contract command in the gate workspace with timeout from contract; structured result parsing (exit code + parsed summaries: vitest/jest JSON reporters when detectable, tsc error count, eslint JSON); secret_scan = Gitleaks against the diff range (base..head) + full scan weekly flag; dev_server_start = supervisor probe via WS-13; every gate stores raw log artifact + parsed summary through the branded registered-secret redaction boundary from ADR-0026.
-- [ ] Failing tests against fixture repos incl. one with a runtime-assembled planted `sk_live_` shape (secret gate fails with file+line, value absent from report); recipe RED requires the exact checksum-pinned Gitleaks binary.
-- [ ] Publication prerequisite: after the two-round local review exits clean, create and advertise one source checkpoint for Modal's immutable Git fetch; the prescribed completion commit then records the atomic image lock, tracker, and execution log after the one real acceptance.
-- [ ] Final acceptance only: publish one immutable dev image, and require its existing publisher smoke to execute the real Gitleaks binary against the planted Git diff before atomically updating `images.lock.json`. Review rounds run local suites only.
-- [ ] Commit: `feat(verification-engine): deterministic gate set`
+- [x] Binding behavior: each runs the contract command in the gate workspace with timeout from contract; structured result parsing (exit code + parsed summaries: vitest/jest JSON reporters when detectable, tsc error count, eslint JSON); secret_scan = Gitleaks against the diff range (base..head) + full scan weekly flag; dev_server_start = supervisor probe via WS-13; every gate stores raw log artifact + parsed summary through the branded registered-secret redaction boundary from ADR-0026.
+- [x] Failing tests against fixture repos incl. one with a runtime-assembled planted `sk_live_` shape (secret gate fails with file+line, value absent from report); recipe RED requires the exact checksum-pinned Gitleaks binary.
+- [x] Publication prerequisite: after the two-round local review exits clean, create and advertise one source checkpoint for Modal's immutable Git fetch; the prescribed completion commit then records the atomic image lock, tracker, and execution log after the one real acceptance.
+- [x] Final acceptance only: publish one immutable dev image, and require its existing publisher smoke to execute the real Gitleaks binary against the planted Git diff before atomically updating `images.lock.json`. Review rounds run local suites only.
+- [x] Commit: `feat(verification-engine): deterministic gate set`
 
 ### Task VF-6 [M3]: Preview health + browser smoke gates
 
@@ -201,3 +201,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-06 VF-3 interface input approved — ADR-0014 adds optional `ExecutionContract.test.integration`; capability scanning owns detection and population of that command.
 - 2026-08-09 VF-1 done — added ranked runtime-only detection and a generic Node execution-contract fallback across npm, pnpm, yarn, bun, and ambiguous monorepos.
 - 2026-08-09 VF-4 done — encoded all 45 PRD gate-policy cells, explicit actor-attributed waivers, and the public workspace-runtime gate registry; repaired the clean-CI export test to require no stale `dist/`.
+- 2026-08-09 VF-5 done — shipped six deterministic gates behind a branded artifact-redaction boundary, baked checksum-pinned Gitleaks 8.26.0, and passed the one real Modal publisher smoke with a redacted planted diff at immutable tag `2026-08-09-6b22eea` after two review rounds.
