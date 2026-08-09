@@ -595,7 +595,7 @@ async function waitForAgentHealth(
       await sandbox.exec(authenticatedCurl(token, '/healthz')),
     );
     if (response.exitCode === 0) {
-      const health = AgentHealthSchema.safeParse(JSON.parse(response.stdout) as unknown);
+      const health = CompatibleAgentHealthSchema.safeParse(JSON.parse(response.stdout) as unknown);
       if (health.success) {
         return health.data;
       }
@@ -862,12 +862,15 @@ export type ModalWorkspaceAttachment = z.infer<typeof ModalWorkspaceAttachmentSc
 
 const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const WORKSPACE_ENV_ALLOWLIST = new Set(['PNPM_STORE_DIR', 'ZAPP_TELEMETRY_ENDPOINT']);
-const WorkspaceAgentHealthSchema = z.union([
+const CompatibleAgentHealthSchema = z.union([
   AgentHealthSchema,
   z
     .object({ ok: z.literal(true), details: z.string().min(1) })
     .strict()
     .transform((health) => ({ ...health, devServer: null })),
+]);
+const WorkspaceAgentHealthSchema = z.union([
+  CompatibleAgentHealthSchema,
   z.object({ ok: z.literal(false), details: z.string().min(1) }).strict(),
 ]);
 const WorkspaceAgentExecResultSchema = z

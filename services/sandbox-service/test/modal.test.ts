@@ -1360,8 +1360,25 @@ jq() {
 
   test.each([
     {
+      state: 'locked c58 legacy idle',
+      health: {
+        ok: true,
+        details: 'workspace-agent ready',
+      },
+      expected: {
+        ok: true,
+        details: 'workspace-agent ready',
+        devServer: null,
+      },
+    },
+    {
       state: 'idle',
       health: {
+        ok: true,
+        details: 'workspace-agent ready',
+        devServer: null,
+      },
+      expected: {
         ok: true,
         details: 'workspace-agent ready',
         devServer: null,
@@ -1380,8 +1397,21 @@ jq() {
           httpReady: true,
         },
       },
+      expected: {
+        ok: true,
+        details: 'workspace-agent ready',
+        devServer: {
+          port: 3000,
+          pid: 4242,
+          supervisorId: 'dev-server-1',
+          owned: true,
+          httpReady: true,
+        },
+      },
     },
-  ])('accepts and preserves the exact $state workspace-agent health response', async ({ health }) => {
+  ])(
+    'accepts and preserves the exact $state workspace-agent health response',
+    async ({ health, expected }) => {
     let healthAttempts = 0;
     const sandbox = successfulSandbox([], () => undefined);
     const exec = sandbox.exec.bind(sandbox);
@@ -1416,9 +1446,10 @@ jq() {
       telemetryEndpoint: 'https://sandbox-service.internal/v1/telemetry',
     });
 
-    expect(evidence.health).toEqual(health);
-    expect(healthAttempts).toBe(1);
-  });
+      expect(evidence.health).toEqual(expected);
+      expect(healthAttempts).toBe(1);
+    },
+  );
 
   test('keeps publisher health evidence strict at both object boundaries', () => {
     const running = {

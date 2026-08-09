@@ -64,6 +64,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-3 workspace-agent daemon
 - [x] WS-4 Modal provider create/exec/terminate/attach
 - [x] WS-5 Scoped-token git clone/push
+- [x] WS-6-FIX-1 Locked-image health compatibility in Modal smoke
 - [ ] WS-6 Lifecycle state machine + reaper + reconciler
 - [ ] WS-7 Checkpoints + snapshot-free restore
 - [ ] WS-8 Resource profiles + cost recorder
