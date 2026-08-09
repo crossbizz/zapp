@@ -4,6 +4,10 @@ Status: accepted (controller ruling, 2026-08-03)
 Affects: `packages/contracts/src/sandbox.ts` (FND-4), plan 03 tasks WS-4 and WS-12
 References: PRD §18.2, §18.11, §18.13
 
+> **WS-12 note (2026-08-09):** ADR-0023 supersedes this ADR's provider-token
+> amendment after the pinned Modal SDK proved connect tokens unavailable on V2 sandboxes.
+> The file-I/O decision remains in force.
+
 ## Context
 
 FND-4 froze `CloudSandboxProvider` as the PRD §18.2 method set, verbatim. Two gaps in

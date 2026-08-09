@@ -86,7 +86,7 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/desktop/src/zapp/builder-cloud/*`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §21.3 cloud, §14.1 parity): cloud project window = shared builder components (conversation thread, preview via Modal connect URL in webview, Mission Control drawer) driven by the same SSE reducers as web; terminology/state identical (PRD §10.0.2); desktop adds: native menu actions (pause/resume run), dock badge for approvals.
+- [ ] Binding behavior (PRD §21.3 cloud, §14.1 parity): cloud project window = shared builder components (conversation thread, preview via the zapp authenticated preview URL from WS-12/ADR-0023 in webview, Mission Control drawer; no Modal URL or provider token reaches the client) driven by the same SSE reducers as web; terminology/state identical (PRD §10.0.2); desktop adds: native menu actions (pause/resume run), dock badge for approvals.
 - [ ] e2e: fixture event stream renders identically (snapshot parity test against web reducer outputs).
 - [ ] Commit: `feat(desktop): cloud builder + mission control parity`
 
