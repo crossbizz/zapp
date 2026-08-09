@@ -107,7 +107,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-1 Adapter framework + generic node
 - [ ] VF-2 Framework adapters (P0 set)
 - [ ] VF-3 Capability scan pipeline
-- [ ] VF-4 Gate registry + §24.2 policy matrix
+- [x] VF-4 Gate registry + §24.2 policy matrix
 - [ ] VF-5 Deterministic gates (build/type/lint/unit/secret/dev-server)
 - [ ] WS-13 Dev-server supervisor + logs
 - [ ] WS-14 Nightly Modal E2E suite

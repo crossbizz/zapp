@@ -75,8 +75,8 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 
 **Effort:** M
 
-- [ ] Failing test: the full §24.2 matrix table-driven (15 gates × 3 levels) asserting requirement classes; waiver handling (`typecheck` waived on Verified requires explicit waiver object).
-- [ ] Commit: `feat(verification-engine): gate registry + support-level policy matrix`
+- [x] Failing test: the full §24.2 matrix table-driven (15 gates × 3 levels) asserting requirement classes; waiver handling (`typecheck` waived on Verified requires explicit waiver object).
+- [x] Commit: `feat(verification-engine): gate registry + support-level policy matrix`
 
 ### Task VF-5: Deterministic gates (build/type/lint/unit/secret/dev-server)
 
@@ -198,3 +198,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - (empty)
 - 2026-08-06 VF-3 interface input approved — ADR-0014 adds optional `ExecutionContract.test.integration`; capability scanning owns detection and population of that command.
 - 2026-08-09 VF-1 done — added ranked runtime-only detection and a generic Node execution-contract fallback across npm, pnpm, yarn, bun, and ambiguous monorepos.
+- 2026-08-09 VF-4 done — encoded all 45 PRD gate-policy cells, explicit actor-attributed waivers, and the public workspace-runtime gate registry.
