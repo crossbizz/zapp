@@ -278,7 +278,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
     // environments. The harness must preserve both layers after every reset.
     for (const table of ['usage_ledger', 'audit_events']) {
       it(`refuses TRUNCATE on ${table}, owner or not`, async () => {
-        expect(await rejection(handle.sql.unsafe(`truncate table ${table}`))).toMatchObject({
+        expect(await rejection(handle.sql.unsafe(`truncate table ${table} cascade`))).toMatchObject({
           code: '42501',
         });
       });
@@ -324,7 +324,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       expect(guards).toHaveLength(4); // update/delete + truncate, on both tables
       expect(guards.every((guard) => guard.enabled === 'O')).toBe(true);
 
-      expect(await rejection(handle.sql.unsafe('truncate table usage_ledger'))).toMatchObject({
+      expect(await rejection(handle.sql.unsafe('truncate table usage_ledger cascade'))).toMatchObject({
         code: '42501',
       });
     });
