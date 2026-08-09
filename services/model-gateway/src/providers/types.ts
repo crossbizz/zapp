@@ -14,6 +14,22 @@ export interface ProviderAdapter {
   readonly stream: (input: ProviderInput) => AsyncIterable<BackendStreamEvent>;
 }
 
+export type ModelTerminalErrorCode =
+  | 'provider_error'
+  | 'content_filter'
+  | 'output_limit_exceeded'
+  | 'unknown_finish_reason';
+
+export class ModelTerminalError extends Error {
+  constructor(
+    readonly code: ModelTerminalErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ModelTerminalError';
+  }
+}
+
 export interface AiSdkTool {
   readonly description: string;
   readonly inputSchema: Schema;

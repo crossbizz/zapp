@@ -190,6 +190,7 @@ export const NeutralToolSchema = z
 
 export const CompleteRequestSchema = z
   .object({
+    completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
     organizationId: z.string(),
     projectId: z.string(),
     runId: z.string(),
@@ -220,6 +221,9 @@ const ToolCallStreamEventSchema = z
 const UsageStreamEventSchema = z
   .object({
     type: z.literal('usage'),
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    finishReason: z.string().min(1),
     inputTokens: z.number().int().nonnegative().optional(),
     outputTokens: z.number().int().nonnegative().optional(),
     totalTokens: z.number().int().nonnegative().optional(),
@@ -230,7 +234,12 @@ const DoneStreamEventSchema = z.object({ type: z.literal('done') }).strict();
 const ProviderErrorStreamEventSchema = z
   .object({
     type: z.literal('error'),
-    code: z.literal('provider_error'),
+    code: z.enum([
+      'provider_error',
+      'content_filter',
+      'output_limit_exceeded',
+      'unknown_finish_reason',
+    ]),
     message: z.string(),
   })
   .strict();

@@ -19,6 +19,7 @@ import { createCompatibleAdapter } from '../src/providers/compatible.js';
 import { configureProviders } from '../src/providers/configure.js';
 import { createGoogleAdapter } from '../src/providers/google.js';
 import { createOpenAIAdapter } from '../src/providers/openai.js';
+import { ModelTerminalError } from '../src/providers/types.js';
 import type {
   AiSdkDependencies,
   AiSdkStreamOptions,
@@ -31,6 +32,7 @@ const serviceTokens = createServiceTokenSigner({ secret: SERVICE_TOKEN_SECRET })
 const openApps: Array<ReturnType<typeof buildApp>> = [];
 
 const validRequest = {
+  completionId: `cmp_${'a'.repeat(64)}`,
   organizationId: 'org_1',
   projectId: 'project_1',
   runId: 'run_1',
@@ -306,6 +308,17 @@ describe('strict gateway stream event schema', () => {
     expect(GatewayStreamEventSchema.parse(event)).toEqual(event);
   });
 
+  it('rejects usage without provider, model, and terminal finish attribution', () => {
+    expect(
+      GatewayStreamEventSchema.safeParse({
+        type: 'usage',
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+      }).success,
+    ).toBe(false);
+  });
+
   it('parses every event before writing successful and failed streams', async () => {
     const parse = vi.spyOn(GatewayStreamEventSchema, 'parse');
     const success = await appFor(backend([{ type: 'text-delta', text: 'complete' }])).inject({
@@ -396,6 +409,9 @@ describe('neutral SSE stream', () => {
       },
       {
         type: 'usage',
+        provider: 'anthropic',
+        model: 'claude-test',
+        finishReason: 'stop',
         inputTokens: 21,
         outputTokens: 8,
         totalTokens: 29,
@@ -427,6 +443,9 @@ describe('neutral SSE stream', () => {
       },
       {
         type: 'usage',
+        provider: 'anthropic',
+        model: 'claude-test',
+        finishReason: 'stop',
         inputTokens: 21,
         outputTokens: 8,
         totalTokens: 29,
@@ -460,6 +479,46 @@ describe('neutral SSE stream', () => {
     ]);
     expect(response.payload).not.toContain('provider-secret-marker');
     expect(response.payload).not.toContain('upstream body');
+  });
+
+  it.each([
+    'provider_error',
+    'content_filter',
+    'output_limit_exceeded',
+    'unknown_finish_reason',
+  ] as const)('streams usage before typed terminal %s without done', async (code) => {
+    const completion: CompletionBackend = {
+      stream: () =>
+        (async function* () {
+          await Promise.resolve();
+          yield {
+            type: 'usage',
+            provider: 'anthropic',
+            model: 'claude-test',
+            finishReason: code,
+            totalTokens: 16,
+          } as const;
+          throw new ModelTerminalError(code, `safe ${code}`);
+        })(),
+    };
+
+    const response = await appFor(completion).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: validRequest,
+    });
+
+    expect(parseSse(response.payload)).toEqual([
+      {
+        type: 'usage',
+        provider: 'anthropic',
+        model: 'claude-test',
+        finishReason: code,
+        totalTokens: 16,
+      },
+      { type: 'error', code, message: `safe ${code}` },
+    ]);
   });
 
   it('turns a mid-stream throw into one sanitized terminal error without done', async () => {
@@ -1350,6 +1409,9 @@ describe('AI SDK provider adapters', () => {
       },
       {
         type: 'usage',
+        provider: 'anthropic',
+        model: 'model-under-test',
+        finishReason: 'stop',
         inputTokens: 12,
         outputTokens: 4,
         totalTokens: 16,
@@ -1357,6 +1419,69 @@ describe('AI SDK provider adapters', () => {
       },
     ]);
   });
+
+  it.each([
+    ['stop', undefined],
+    ['tool-calls', undefined],
+    ['length', 'output_limit_exceeded'],
+    ['content-filter', 'content_filter'],
+    ['error', 'provider_error'],
+    ['other', 'unknown_finish_reason'],
+    ['unknown-provider-value', 'unknown_finish_reason'],
+  ] as const)(
+    'emits attributed usage before the exhaustive %s terminal outcome',
+    async (finishReason, expectedErrorCode) => {
+      const adapter = createAnthropicAdapter({
+        apiKey: 'configured-in-test',
+        dependencies: {
+          createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+          streamText: () => ({
+            stream: (async function* () {
+              await Promise.resolve();
+              yield {
+                type: 'finish',
+                finishReason,
+                rawFinishReason: finishReason,
+                totalUsage: {
+                  inputTokens: 12,
+                  inputTokenDetails: {
+                    noCacheTokens: 9,
+                    cacheReadTokens: 3,
+                    cacheWriteTokens: 0,
+                  },
+                  outputTokens: 4,
+                  outputTokenDetails: { textTokens: 4, reasoningTokens: 0 },
+                  totalTokens: 16,
+                },
+              };
+            })() as never,
+          }),
+        },
+      });
+      const events: BackendStreamEvent[] = [];
+      let terminalError: ModelTerminalError | undefined;
+
+      try {
+        for await (const event of adapter.stream(providerInput)) events.push(event);
+      } catch (error: unknown) {
+        terminalError = error as ModelTerminalError;
+      }
+
+      expect(events).toEqual([
+        {
+          type: 'usage',
+          provider: 'anthropic',
+          model: 'model-under-test',
+          finishReason,
+          inputTokens: 12,
+          outputTokens: 4,
+          totalTokens: 16,
+          cachedInputTokens: 3,
+        },
+      ]);
+      expect(terminalError?.code).toBe(expectedErrorCode);
+    },
+  );
 
   it('throws an AI SDK error part for the gateway to sanitize', async () => {
     const providerFailure = new Error('raw provider response');

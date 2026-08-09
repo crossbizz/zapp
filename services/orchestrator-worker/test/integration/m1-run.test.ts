@@ -5,10 +5,16 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { newId } from '@zapp/contracts';
-import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { CompleteAsyncError } from '@temporalio/activity';
+import { ActivityCancelledError, ActivityNotFoundError, type Client } from '@temporalio/client';
+import { MockActivityEnvironment, TestWorkflowEnvironment } from '@temporalio/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EventBatchClient } from '../../src/activities/events.js';
+import {
+  createSessionActivities,
+  type RunBuilderSessionInput,
+} from '../../src/activities/session.js';
 import { createTemporalOrchestrator } from '../../src/worker.js';
 import { runWorkflow } from '../../src/workflows/run.js';
 
@@ -25,7 +31,12 @@ interface DurableFixtureState {
   readonly commits: Record<string, string>;
   commitAttempts: number;
   commitResponseLost: boolean;
-  transcriptCheckpoint: { readonly completedToolCallIds: string[] } | null;
+  transcriptCheckpoint: {
+    readonly completionId: string;
+    readonly requestFingerprint: string;
+    readonly maxOutputTokens: number;
+    readonly reservedTokens: number;
+  } | null;
 }
 
 function waitForLine(child: ChildProcess, expected: string): Promise<void> {
@@ -140,39 +151,90 @@ function workerProgram(): string {
         return { commitSha };
       },
     });
-    const sessionActivities = createSessionActivities({
-      run: async (_input, context) => {
-        const state = await load();
-        if (state.transcriptCheckpoint === null) {
-          state.transcriptCheckpoint = { completedToolCallIds: ['call-1'] };
-          await save(state);
-          console.log('AR8_SESSION_CHECKPOINTED');
-          await new Promise(() => undefined);
-        }
-        await eventClient.emit({
-          eventKey: runId + ':task-m1:call-1:completed',
-          runId,
-          organizationId,
-          projectId,
-          occurredAt: '2026-08-07T12:00:00.000Z',
-          type: 'tool.completed',
-          visibility: 'user',
-          payload: { toolCallId: 'call-1', tool: 'write_file' },
-        });
-        return {
-          status: 'completed',
-          commits: [],
-          artifacts: [],
-          summary: 'Builder resumed from its durable transcript.',
-        };
+    const sessionActivities = createSessionActivities(
+      {
+        run: async (_input, context) => {
+          const key = { runId, taskId: 'm1-builder' };
+          const durableTranscript = await context.transcripts.load(key);
+          if (durableTranscript === undefined) {
+            const completionId = 'cmp_' + 'c'.repeat(64);
+            const requestFingerprint = 'd'.repeat(64);
+            await context.transcripts.save(null, {
+              key,
+              role: 'builder',
+              mode: 'build',
+              tools: [],
+              budgets: { maxTurns: 4, maxTokens: 1000, maxWallClockMs: 30000 },
+              startedAtMs: Date.now(),
+              provenance: [],
+              messages: [{ role: 'user', content: 'Durable provider request.' }],
+              turns: 0,
+              tokensUsed: 12,
+              inFlightCompletion: {
+                completionId,
+                requestFingerprint,
+                requestTokens: 4,
+                reservedTokens: 12,
+                request: {
+                  completionId,
+                  organizationId,
+                  projectId,
+                  runId,
+                  taskId: 'm1-builder',
+                  agentRole: 'builder',
+                  messages: [{ role: 'user', content: 'Durable provider request.' }],
+                  tools: [],
+                  maxOutputTokens: 8,
+                },
+              },
+              completedToolCallIds: [],
+              pendingToolCalls: [],
+              activeToolCallId: null,
+              executionLease: null,
+              nextFence: 1,
+              eventOutbox: [],
+              commits: [],
+              artifacts: [],
+              summary: '',
+              terminalStatus: null,
+              terminalErrorCode: null,
+            });
+            console.log('AR8_SESSION_CHECKPOINTED');
+            await new Promise(() => undefined);
+          }
+          await update((state) => {
+            state.transcriptCheckpoint = {
+              completionId: durableTranscript.inFlightCompletion.completionId,
+              requestFingerprint: durableTranscript.inFlightCompletion.requestFingerprint,
+              maxOutputTokens: durableTranscript.inFlightCompletion.request.maxOutputTokens,
+              reservedTokens: durableTranscript.inFlightCompletion.reservedTokens,
+            };
+          });
+          await eventClient.emit({
+            eventKey: runId + ':task-m1:call-1:completed',
+            runId,
+            organizationId,
+            projectId,
+            occurredAt: '2026-08-07T12:00:00.000Z',
+            type: 'tool.completed',
+            visibility: 'user',
+            payload: { toolCallId: 'call-1', tool: 'write_file' },
+          });
+          return {
+            status: 'completed',
+            commits: [],
+            artifacts: [],
+            summary: 'Builder resumed from its durable transcript.',
+          };
+        },
       },
-    });
+      { heartbeatIntervalMs: 1 },
+    );
     const connection = await NativeConnection.connect({ address });
     const worker = await createRunWorker({
       connection,
       taskQueue,
       activities: { ...eventActivities, ...workspaceActivities, ...sessionActivities },
-      maxHeartbeatThrottleInterval: '10 milliseconds',
     });
     const running = worker.run();
     console.log('AR8_WORKER_READY');
@@ -217,6 +279,83 @@ describe('AR-8 M1 durable Temporal run', () => {
     children.length = 0;
     environment = undefined;
     fixtureDirectory = undefined;
+  });
+
+  it('latches cancellation before releasing an already-queued durable heartbeat', async () => {
+    const cancellationTokens: Uint8Array[] = [];
+    let heartbeatCalls = 0;
+    let rejectFirstHeartbeat: ((error: Error) => void) | undefined;
+    let resolveFirstHeartbeatStarted: (() => void) | undefined;
+    const firstHeartbeatStarted = new Promise<void>((resolve) => {
+      resolveFirstHeartbeatStarted = resolve;
+    });
+    const firstHeartbeat = new Promise<void>((_resolve, reject) => {
+      rejectFirstHeartbeat = reject;
+    });
+    const client = {
+      withAbortSignal: <T>(_signal: AbortSignal, operation: () => T): T => operation(),
+      activity: {
+        heartbeat: () => {
+          heartbeatCalls += 1;
+          if (heartbeatCalls === 1) {
+            resolveFirstHeartbeatStarted?.();
+            return firstHeartbeat;
+          }
+          return Promise.reject(new ActivityNotFoundError('activity already cancelled'));
+        },
+        reportCancellation: (taskToken: Uint8Array) => {
+          cancellationTokens.push(taskToken);
+          return Promise.resolve();
+        },
+      },
+    } as unknown as Client;
+    const activityEnvironment = new MockActivityEnvironment(undefined, { client });
+    let runnerObservedCancellation = false;
+    const activities = createSessionActivities(
+      {
+        run: async (_input, context) => {
+          if (!context.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              context.signal.addEventListener(
+                'abort',
+                () => {
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+          }
+          runnerObservedCancellation = true;
+          return { status: 'cancelled', commits: [], artifacts: [], summary: 'cancelled' };
+        },
+      },
+      { heartbeatIntervalMs: 1 },
+    );
+
+    const activityInput: RunBuilderSessionInput = {
+      runId: newId('run'),
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      workspaceId: 'workspace-cancel',
+      mode: 'build',
+      model: null,
+      prompt: 'Cancel the durable activity.',
+      budget: null,
+      idempotencyKey: 'cancel-durable-activity',
+    };
+    const running = activityEnvironment.run(
+      (activityInputValue: RunBuilderSessionInput) =>
+        activities.runBuilderSession(activityInputValue),
+      activityInput,
+    );
+    await firstHeartbeatStarted;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    rejectFirstHeartbeat?.(new ActivityCancelledError('cancelled'));
+
+    await expect(running).rejects.toBeInstanceOf(CompleteAsyncError);
+    expect(runnerObservedCancellation).toBe(true);
+    expect(heartbeatCalls).toBe(1);
+    expect(cancellationTokens).toEqual([Buffer.from('test')]);
   });
 
   it(
@@ -288,7 +427,12 @@ describe('AR-8 M1 durable Temporal run', () => {
         status: 'completed',
         commitSha: '0123456789abcdef0123456789abcdef01234567',
       });
-      expect(state.transcriptCheckpoint).toEqual({ completedToolCallIds: ['call-1'] });
+      expect(state.transcriptCheckpoint).toEqual({
+        completionId: `cmp_${'c'.repeat(64)}`,
+        requestFingerprint: 'd'.repeat(64),
+        maxOutputTokens: 8,
+        reservedTokens: 12,
+      });
       expect(Object.keys(state.commits)).toHaveLength(1);
       expect(state.commitAttempts).toBe(2);
       expect(state.statuses).toEqual(['queued', 'running', 'completed']);

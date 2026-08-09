@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   evaluateToolCall,
@@ -36,6 +36,18 @@ import {
   type SessionTranscriptDraft,
   type TranscriptStore,
 } from './transcript.js';
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function completionIdFor(runId: string, taskId: string, turn: number): string {
+  return `cmp_${sha256(JSON.stringify([runId, taskId, turn]))}`;
+}
+
+function requestFingerprint(request: CompleteRequest): string {
+  return sha256(JSON.stringify(request));
+}
 
 const BudgetsSchema = z
   .object({
@@ -320,6 +332,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           messages: initial.messages,
           turns: 0,
           tokensUsed: 0,
+          inFlightCompletion: null,
           completedToolCallIds: [],
           pendingToolCalls: [],
           activeToolCallId: null,
@@ -501,7 +514,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 inputJsonSchema: InputJsonSchema.parse(inputJsonSchema),
               };
             });
+            const completionId = completionIdFor(input.runId, taskId, transcript.turns);
             const requestBase: CompleteRequest = {
+              completionId,
               organizationId: input.context.scope.organizationId,
               projectId: input.context.scope.projectId,
               runId: input.runId,
@@ -511,34 +526,59 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               tools,
               maxOutputTokens: 1,
             };
+            let request: CompleteRequest;
             let requestTokens: number;
-            try {
-              requestTokens = z
-                .number()
-                .int()
-                .nonnegative()
-                .safe()
-                .parse(dependencies.countRequestTokens(requestBase));
-            } catch {
-              return await finish('failed', 'Request token counting failed.', 'token_count_failed');
+            let reservedTurnTokens: number;
+            if (transcript.inFlightCompletion === null) {
+              try {
+                requestTokens = z
+                  .number()
+                  .int()
+                  .nonnegative()
+                  .safe()
+                  .parse(dependencies.countRequestTokens(requestBase));
+              } catch {
+                return await finish('failed', 'Request token counting failed.', 'token_count_failed');
+              }
+              const remainingOutputBudget =
+                input.budgets.maxTokens - transcript.tokensUsed - requestTokens;
+              if (remainingOutputBudget <= 0) {
+                return await finish(
+                  'budget_exhausted',
+                  transcript.summary,
+                  'token_budget_exhausted',
+                );
+              }
+              const remainingTurnSlots = input.budgets.maxTurns - transcript.turns;
+              const outputTokenAllowance = Math.max(
+                1,
+                Math.floor(remainingOutputBudget / remainingTurnSlots),
+              );
+              request = {
+                ...requestBase,
+                maxOutputTokens: outputTokenAllowance,
+              };
+              reservedTurnTokens = requestTokens + outputTokenAllowance;
+              transcript.tokensUsed += reservedTurnTokens;
+              transcript.inFlightCompletion = {
+                completionId,
+                requestFingerprint: requestFingerprint(request),
+                requestTokens,
+                reservedTokens: reservedTurnTokens,
+                request: structuredClone(request),
+              };
+              await save();
+            } else {
+              if (transcript.inFlightCompletion.completionId !== completionId) {
+                throw new Error('Durable completion identity does not match the transcript turn');
+              }
+              request = structuredClone(transcript.inFlightCompletion.request);
+              requestTokens = transcript.inFlightCompletion.requestTokens;
+              reservedTurnTokens = transcript.inFlightCompletion.reservedTokens;
+              if (requestFingerprint(request) !== transcript.inFlightCompletion.requestFingerprint) {
+                throw new Error('Durable completion request fingerprint does not match');
+              }
             }
-            const remainingOutputBudget =
-              input.budgets.maxTokens - transcript.tokensUsed - requestTokens;
-            if (remainingOutputBudget <= 0) {
-              return await finish('budget_exhausted', transcript.summary, 'token_budget_exhausted');
-            }
-            const remainingTurnSlots = input.budgets.maxTurns - transcript.turns;
-            const outputTokenAllowance = Math.max(
-              1,
-              Math.floor(remainingOutputBudget / remainingTurnSlots),
-            );
-            const reservedTurnTokens = requestTokens + outputTokenAllowance;
-            transcript.tokensUsed += reservedTurnTokens;
-            await save();
-            const request: CompleteRequest = {
-              ...requestBase,
-              maxOutputTokens: outputTokenAllowance,
-            };
             const text: string[] = [];
             const calls: SessionToolCall[] = [];
             let accountedTurnTokens = reservedTurnTokens;
@@ -614,10 +654,17 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 }
                 if (event.type === 'error') {
                   closeIterator(iterator);
+                  if (event.code === 'output_limit_exceeded') {
+                    return await finish(
+                      'budget_exhausted',
+                      dependencies.redact(event.message),
+                      event.code,
+                    );
+                  }
                   return await finish(
                     'failed',
                     dependencies.redact(event.message),
-                    'provider_error',
+                    event.code,
                   );
                 }
                 if (event.type === 'done') {
@@ -650,6 +697,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               return await finish('failed', 'The model gateway stream ended before completion.');
             }
             transcript.turns += 1;
+            transcript.inFlightCompletion = null;
             const content: Array<
               | { type: 'text'; text: string }
               | {

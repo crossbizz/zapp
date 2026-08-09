@@ -15,9 +15,11 @@ import {
 import type {
   AiSdkDependencies,
   AiSdkTool,
+  ModelTerminalErrorCode,
   ProviderAdapter,
   ProviderInput,
 } from './types.js';
+import { ModelTerminalError } from './types.js';
 import type { ProviderId } from '../models.js';
 
 function convertTools(input: ProviderInput): Record<string, AiSdkTool> | undefined {
@@ -34,15 +36,41 @@ function convertTools(input: ProviderInput): Record<string, AiSdkTool> | undefin
   );
 }
 
-function usageEvent(usage: LanguageModelUsage): BackendStreamEvent {
+function usageEvent(
+  usage: LanguageModelUsage,
+  provider: ProviderId,
+  input: ProviderInput,
+  finishReason: string,
+): BackendStreamEvent {
   const cachedInputTokens = usage.inputTokenDetails.cacheReadTokens;
   return {
     type: 'usage',
+    provider,
+    model: input.modelId,
+    finishReason,
     ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
     ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
     ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
   };
+}
+
+function terminalError(finishReason: string): ModelTerminalError | undefined {
+  const outcomes: Readonly<Partial<Record<string, ModelTerminalErrorCode>>> = {
+    length: 'output_limit_exceeded',
+    'content-filter': 'content_filter',
+    error: 'provider_error',
+    other: 'unknown_finish_reason',
+  };
+  if (finishReason === 'stop' || finishReason === 'tool-calls') return undefined;
+  const code = outcomes[finishReason] ?? 'unknown_finish_reason';
+  const messages: Readonly<Record<ModelTerminalErrorCode, string>> = {
+    provider_error: 'The model provider request failed.',
+    content_filter: 'The model provider blocked the response.',
+    output_limit_exceeded: 'The model reached its output token limit.',
+    unknown_finish_reason: 'The model ended with an unsupported finish reason.',
+  };
+  return new ModelTerminalError(code, messages[code]);
 }
 
 function toolOutput(
@@ -112,8 +140,11 @@ export function createAiSdkAdapter(options: {
               };
               break;
             case 'finish':
-              if (part.finishReason === 'error') throw new Error('provider stream failed');
-              yield usageEvent(part.totalUsage);
+              yield usageEvent(part.totalUsage, options.provider, input, part.finishReason);
+              {
+                const error = terminalError(part.finishReason);
+                if (error !== undefined) throw error;
+              }
               break;
             case 'error':
               throw part.error;

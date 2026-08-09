@@ -1,5 +1,5 @@
 import { RunModeSchema, TOOL_NAMES } from '@zapp/contracts';
-import { ChatMessageSchema, JsonValueSchema } from '@zapp/model-gateway';
+import { ChatMessageSchema, CompleteRequestSchema, JsonValueSchema } from '@zapp/model-gateway';
 import { ContentProvenanceSchema } from '@zapp/agent-policies';
 import { z } from 'zod';
 import { ContextRoleSchema } from './context.js';
@@ -46,6 +46,31 @@ const ExecutionLeaseSchema = z
   })
   .strict();
 
+export const InFlightCompletionSchema = z
+  .object({
+    completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
+    requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+    requestTokens: z.number().int().nonnegative().safe(),
+    reservedTokens: z.number().int().positive().safe(),
+    request: CompleteRequestSchema,
+  })
+  .strict()
+  .superRefine((completion, validation) => {
+    if (completion.request.completionId !== completion.completionId) {
+      validation.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'In-flight completion identity must match its request',
+      });
+    }
+    if (completion.reservedTokens !== completion.requestTokens + completion.request.maxOutputTokens) {
+      validation.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'In-flight completion reservation must match the request limit',
+      });
+    }
+  });
+export type InFlightCompletion = z.infer<typeof InFlightCompletionSchema>;
+
 const SessionTranscriptBaseSchema = z
   .object({
     key: TranscriptKeySchema,
@@ -65,6 +90,7 @@ const SessionTranscriptBaseSchema = z
     messages: z.array(ChatMessageSchema),
     turns: z.number().int().nonnegative().safe(),
     tokensUsed: z.number().int().nonnegative().safe(),
+    inFlightCompletion: InFlightCompletionSchema.nullable().default(null),
     completedToolCallIds: z.array(z.string().min(1)),
     pendingToolCalls: z.array(SessionToolCallSchema),
     activeToolCallId: z.string().min(1).nullable(),
@@ -130,6 +156,57 @@ export type SessionTranscriptDraft = Omit<SessionTranscript, 'version'>;
 export interface TranscriptStore {
   load(key: unknown): Promise<SessionTranscript | undefined>;
   save(expectedVersion: number | null, transcript: unknown): Promise<SessionTranscript>;
+}
+
+export const MAX_TEMPORAL_TRANSCRIPT_BYTES = 1_500_000;
+
+export class CheckpointTranscriptStore implements TranscriptStore {
+  private transcript: SessionTranscript | undefined;
+
+  constructor(
+    seed: SessionTranscript | null | undefined,
+    private readonly persist: (transcript: SessionTranscript) => void | Promise<void>,
+    private readonly maxSerializedBytes = MAX_TEMPORAL_TRANSCRIPT_BYTES,
+  ) {
+    this.transcript =
+      seed === null || seed === undefined
+        ? undefined
+        : SessionTranscriptSchema.parse(structuredClone(seed));
+  }
+
+  load(keyInput: unknown): Promise<SessionTranscript | undefined> {
+    const key = TranscriptKeySchema.parse(keyInput);
+    if (this.transcript === undefined) return Promise.resolve(undefined);
+    if (transcriptMapKey(this.transcript.key) !== transcriptMapKey(key)) {
+      return Promise.reject(new Error('Checkpoint transcript key does not match the activity'));
+    }
+    return Promise.resolve(SessionTranscriptSchema.parse(structuredClone(this.transcript)));
+  }
+
+  async save(
+    expectedVersion: number | null,
+    transcriptInput: unknown,
+  ): Promise<SessionTranscript> {
+    const draft = SessionTranscriptDraftSchema.parse(transcriptInput);
+    const actualVersion = this.transcript?.version ?? null;
+    if (actualVersion !== expectedVersion) throw new TranscriptConflictError();
+    if (
+      this.transcript !== undefined &&
+      transcriptMapKey(this.transcript.key) !== transcriptMapKey(draft.key)
+    ) {
+      throw new Error('Checkpoint transcript key cannot change');
+    }
+    const saved = SessionTranscriptSchema.parse({
+      ...structuredClone(draft),
+      version: (actualVersion ?? -1) + 1,
+    });
+    if (Buffer.byteLength(JSON.stringify(saved), 'utf8') > this.maxSerializedBytes) {
+      throw new Error('Session transcript exceeds the Temporal checkpoint size limit');
+    }
+    await this.persist(saved);
+    this.transcript = saved;
+    return SessionTranscriptSchema.parse(structuredClone(saved));
+  }
 }
 
 export class TranscriptConflictError extends Error {

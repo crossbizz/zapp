@@ -18,7 +18,11 @@ import type { CompleteRequest, GatewayStreamEvent } from '@zapp/model-gateway';
 import { MemoryWorkspaceRuntime } from '@zapp/workspace-runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSessionLoop, type SessionEvent } from '../src/session/loop.js';
-import { MemoryTranscriptStore } from '../src/session/transcript.js';
+import {
+  MemoryTranscriptStore,
+  type SessionTranscript,
+  type TranscriptStore,
+} from '../src/session/transcript.js';
 
 const roots: string[] = [];
 
@@ -144,6 +148,11 @@ function input(tools: ToolName[] = ['write_file']) {
 }
 
 const countRequestTokens = (): number => 1;
+const USAGE_ATTRIBUTION = {
+  provider: 'anthropic',
+  model: 'claude-test',
+  finishReason: 'stop',
+} as const;
 
 function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
   const requests: CompleteRequest[] = [];
@@ -174,12 +183,12 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'result.txt', content: 'registered-secret removed' },
         },
-        { type: 'usage', inputTokens: 40, outputTokens: 20, totalTokens: 60 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 40, outputTokens: 20, totalTokens: 60 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'Implemented and verified.' },
-        { type: 'usage', inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 30, outputTokens: 10, totalTokens: 40 },
         { type: 'done' },
       ],
     ]);
@@ -241,12 +250,12 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'denied.txt', content: 'must not be written' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'I cannot modify files in Ask mode.' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -303,12 +312,12 @@ describe('agent session loop', () => {
           toolName: 'execute_migration',
           input: { environmentId: 'environment-test', migration: 'CREATE TABLE sample (id text)' },
         },
-        { type: 'usage', totalTokens: 12 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 12 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'Migration completed.' },
-        { type: 'usage', totalTokens: 8 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 8 },
         { type: 'done' },
       ],
     ]);
@@ -375,7 +384,7 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'one-turn.txt', content: 'written once' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -437,7 +446,7 @@ describe('agent session loop', () => {
             scope: 'preview',
           },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -479,7 +488,7 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'over-budget.txt', content: 'must not be written' },
         },
-        { type: 'usage', inputTokens: 8, outputTokens: 8, totalTokens: 1 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 8, outputTokens: 8, totalTokens: 1 },
         { type: 'done' },
       ],
     ]);
@@ -515,7 +524,7 @@ describe('agent session loop', () => {
     { label: 'absent', usage: [] },
     {
       label: 'understated',
-      usage: [{ type: 'usage' as const, outputTokens: 1 }],
+      usage: [{ type: 'usage' as const, ...USAGE_ATTRIBUTION, outputTokens: 1 }],
     },
   ])(
     'does not let $label provider output usage release a reserved allowance to the next turn',
@@ -675,7 +684,7 @@ describe('agent session loop', () => {
     const scripted = scriptedGateway([
       [
         { type: 'text-delta', text: 'Recovered without replay.' },
-        { type: 'usage', totalTokens: 5 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 5 },
         { type: 'done' },
       ],
     ]);
@@ -722,7 +731,7 @@ describe('agent session loop', () => {
           toolName: 'execute_migration',
           input: { environmentId: 'environment-test', migration: 'DROP TABLE users' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -766,12 +775,12 @@ describe('agent session loop', () => {
             'registered-secret-key': 'registered-secret nested',
           },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'registered-secret final' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -833,12 +842,12 @@ describe('agent session loop', () => {
             scope: 'preview',
           },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'leased mutation complete' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]).gateway;
@@ -894,12 +903,12 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'outbox.txt', content: 'written once' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'outbox recovered' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -954,12 +963,12 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'results.txt', content: 'results' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'results complete' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -1002,12 +1011,12 @@ describe('agent session loop', () => {
           toolName: 'read_test_results',
           input: { suite: 'unit' },
         },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
       [
         { type: 'text-delta', text: 'screenshot complete' },
-        { type: 'usage', totalTokens: 10 },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
         { type: 'done' },
       ],
     ]);
@@ -1064,6 +1073,91 @@ describe('agent session loop', () => {
 
     expect(result.status).toBe('budget_exhausted');
     expect(gatewayCalls).toBe(0);
+  });
+
+  it('replays one durably reserved completion request after interruption and advances identity only after commit', async () => {
+    const { registry } = await memoryRegistry();
+    const durable = new MemoryTranscriptStore();
+    let interrupted = false;
+    const store: TranscriptStore = {
+      load: (key) => durable.load(key),
+      async save(expectedVersion, value) {
+        const saved = await durable.save(expectedVersion, value);
+        const inFlightCompletion = saved.inFlightCompletion;
+        if (!interrupted && inFlightCompletion !== null) {
+          interrupted = true;
+          throw new Error('simulated worker loss after durable reservation');
+        }
+        return saved;
+      },
+    };
+    let tokenCounts = 0;
+    let gatewayCalls = 0;
+    const requests: CompleteRequest[] = [];
+    const reservedSnapshots: number[] = [];
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(request): AsyncIterable<GatewayStreamEvent> {
+          gatewayCalls += 1;
+          requests.push(structuredClone(request));
+          const current = await durable.load({ runId: 'run-test', taskId: 'task-test' });
+          reservedSnapshots.push(current?.tokensUsed ?? -1);
+          if (gatewayCalls === 1) {
+            yield {
+              type: 'tool-call',
+              toolCallId: 'call-write-replayed',
+              toolName: 'write_file',
+              input: { path: 'replayed.txt', content: 'durable' },
+            };
+            yield { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 8 };
+            yield { type: 'done' };
+            return;
+          }
+          yield { type: 'text-delta', text: 'Committed after replay.' };
+          yield { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 6 };
+          yield { type: 'done' };
+        },
+      },
+      tools: registry,
+      transcripts: store,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens: () => {
+        tokenCounts += 1;
+        return 5;
+      },
+    });
+
+    await expect(session.run(input())).rejects.toThrow(
+      'simulated worker loss after durable reservation',
+    );
+    expect(gatewayCalls).toBe(0);
+    const checkpoint = (await durable.load({
+      runId: 'run-test',
+      taskId: 'task-test',
+    })) as SessionTranscript;
+    expect(checkpoint.inFlightCompletion).not.toBeNull();
+    const firstCompletion = structuredClone(checkpoint.inFlightCompletion);
+
+    const result = await session.run(input());
+
+    expect(result.status).toBe('completed');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toEqual(firstCompletion?.request);
+    expect(requests[0]?.completionId).toBe(firstCompletion?.completionId);
+    expect(requests[0]?.maxOutputTokens).toBe(firstCompletion?.request.maxOutputTokens);
+    expect(firstCompletion?.requestFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(requests[1]?.completionId).not.toBe(requests[0]?.completionId);
+    expect(tokenCounts).toBe(2);
+    expect(reservedSnapshots[0]).toBe(checkpoint.tokensUsed);
+    expect((await durable.load(checkpoint.key))?.inFlightCompletion).toBeNull();
   });
 
   it('acknowledges cancellation and closes a gateway iterator whose next never settles', async () => {

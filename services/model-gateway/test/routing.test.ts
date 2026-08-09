@@ -8,6 +8,7 @@ import type { BackendStreamEvent, CompleteRequest } from '../src/schemas.js';
 import type { ProviderAdapter, ProviderInput } from '../src/providers/types.js';
 
 const request = {
+  completionId: `cmp_${'b'.repeat(64)}`,
   organizationId: 'org_1',
   projectId: 'project_1',
   runId: 'run_1',

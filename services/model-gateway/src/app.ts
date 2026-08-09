@@ -15,6 +15,7 @@ import {
   type CompleteRequest,
   type GatewayStreamEvent,
 } from './schemas.js';
+import { ModelTerminalError } from './providers/types.js';
 
 export { ChatMessageSchema, CompleteRequestSchema, NeutralToolSchema } from './schemas.js';
 export type { ChatMessage, CompleteRequest, GatewayStreamEvent, NeutralTool } from './schemas.js';
@@ -302,11 +303,15 @@ export function buildApp(options: BuildAppOptions) {
             reply.raw.end();
           }
         }
-      } catch {
+      } catch (error: unknown) {
         stopProvider();
         if (!responseAbortController.signal.aborted && !reply.raw.destroyed) {
-          request.log.warn({ errorCode: 'provider_error' }, 'provider completion failed');
-          if (await writeSse(reply.raw, SAFE_PROVIDER_ERROR, responseAbortController.signal)) {
+          const terminalEvent =
+            error instanceof ModelTerminalError
+              ? { type: 'error' as const, code: error.code, message: error.message }
+              : SAFE_PROVIDER_ERROR;
+          request.log.warn({ errorCode: terminalEvent.code }, 'provider completion failed');
+          if (await writeSse(reply.raw, terminalEvent, responseAbortController.signal)) {
             reply.raw.end();
           }
         }

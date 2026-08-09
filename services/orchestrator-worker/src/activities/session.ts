@@ -1,4 +1,5 @@
-import { activityInfo, Context, heartbeat } from '@temporalio/activity';
+import { CompleteAsyncError, Context } from '@temporalio/activity';
+import { ActivityCancelledError } from '@temporalio/client';
 import { idSchema, RunModeSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
@@ -9,9 +10,19 @@ import {
   type SessionInput,
   type SessionResult,
 } from '../session/loop.js';
+import {
+  CheckpointTranscriptStore,
+  MAX_TEMPORAL_TRANSCRIPT_BYTES,
+  SessionTranscriptSchema,
+  type TranscriptStore,
+} from '../session/transcript.js';
 
 export const SessionCheckpointSchema = z
-  .object({ runId: idSchema('run'), taskId: z.string().min(1) })
+  .object({
+    runId: idSchema('run'),
+    taskId: z.string().min(1),
+    transcript: SessionTranscriptSchema.nullable().default(null),
+  })
   .strict();
 export type SessionCheckpoint = z.infer<typeof SessionCheckpointSchema>;
 
@@ -35,6 +46,7 @@ export type RunBuilderSessionInput = z.infer<typeof RunBuilderSessionInputSchema
 
 export interface BuilderSessionContext {
   readonly resumeCheckpoint: SessionCheckpoint | undefined;
+  readonly transcripts: TranscriptStore;
   readonly signal: AbortSignal;
 }
 
@@ -55,12 +67,15 @@ export interface SessionActivityOptions {
 
 /** Binds the coarse durable-run input to the exact AR-6 session-loop contract. */
 export function adaptSessionLoop(
-  loop: Pick<ReturnType<typeof createSessionLoop>, 'run'>,
+  createLoop: (transcripts: TranscriptStore) => Pick<ReturnType<typeof createSessionLoop>, 'run'>,
   buildInput: (input: RunBuilderSessionInput) => SessionInput,
 ): BuilderSessionRunner {
   return {
     run(input, context) {
-      return loop.run(SessionInputSchema.parse(buildInput(input)), context.signal);
+      return createLoop(context.transcripts).run(
+        SessionInputSchema.parse(buildInput(input)),
+        context.signal,
+      );
     },
   };
 }
@@ -79,22 +94,81 @@ export function createSessionActivities(
   return {
     async runBuilderSession(inputValue) {
       const input = RunBuilderSessionInputSchema.parse(inputValue);
-      const checkpoint =
-        SessionCheckpointSchema.optional().parse(activityInfo().heartbeatDetails) ??
-        SessionCheckpointSchema.parse({ runId: input.runId, taskId: 'm1-builder' });
+      const activityContext = Context.current();
+      let checkpoint =
+        SessionCheckpointSchema.optional().parse(activityContext.info.heartbeatDetails) ??
+        SessionCheckpointSchema.parse({ runId: input.runId, taskId: 'm1-builder', transcript: null });
+      if (checkpoint.runId !== input.runId || checkpoint.taskId !== 'm1-builder') {
+        throw new Error('Temporal session checkpoint does not match the activity input');
+      }
+      let checkpointHeartbeatTail = Promise.resolve();
+      let checkpointHeartbeatFailure: Error | undefined;
+      let checkpointHeartbeatTerminal: Promise<never> | undefined;
+      const runnerController = new AbortController();
+      const forwardActivityCancellation = (): void => {
+        runnerController.abort(activityContext.cancellationSignal.reason);
+      };
+      activityContext.cancellationSignal.addEventListener('abort', forwardActivityCancellation, {
+        once: true,
+      });
+      if (activityContext.cancellationSignal.aborted) forwardActivityCancellation();
+      const heartbeatCheckpoint = (value: SessionCheckpoint): Promise<void> => {
+        const operation = checkpointHeartbeatTail.then(async () => {
+          if (checkpointHeartbeatTerminal !== undefined) return checkpointHeartbeatTerminal;
+          try {
+            await activityContext.client.activity.heartbeat(activityContext.info.taskToken, value);
+          } catch (error: unknown) {
+            if (error instanceof ActivityCancelledError) {
+              runnerController.abort(error);
+              checkpointHeartbeatTerminal = activityContext.client.activity
+                .reportCancellation(activityContext.info.taskToken)
+                .then(() => {
+                  throw new CompleteAsyncError();
+                });
+              return checkpointHeartbeatTerminal;
+            }
+            throw error;
+          }
+        });
+        checkpointHeartbeatTail = operation.catch(() => undefined);
+        return operation;
+      };
+      const transcripts = new CheckpointTranscriptStore(
+        checkpoint.transcript,
+        async (transcript) => {
+          const next = SessionCheckpointSchema.parse({ ...checkpoint, transcript });
+          if (Buffer.byteLength(JSON.stringify(next), 'utf8') > MAX_TEMPORAL_TRANSCRIPT_BYTES) {
+            throw new Error('Session checkpoint exceeds the Temporal payload size limit');
+          }
+          checkpoint = next;
+          await heartbeatCheckpoint(next);
+        },
+      );
       const sendHeartbeat = (): void => {
-        heartbeat(checkpoint);
+        void heartbeatCheckpoint(checkpoint).catch((error: unknown) => {
+          checkpointHeartbeatFailure =
+            error instanceof Error ? error : new Error('Temporal checkpoint heartbeat failed');
+          runnerController.abort(checkpointHeartbeatFailure);
+        });
       };
       const timer = setInterval(sendHeartbeat, heartbeatIntervalMs);
       sendHeartbeat();
       try {
         const result = await runner.run(input, {
           resumeCheckpoint: checkpoint,
-          signal: Context.current().cancellationSignal,
+          transcripts,
+          signal: runnerController.signal,
         });
+        clearInterval(timer);
+        await checkpointHeartbeatTail;
+        if (checkpointHeartbeatFailure !== undefined) throw checkpointHeartbeatFailure;
         return SessionResultSchema.parse(result);
       } finally {
         clearInterval(timer);
+        activityContext.cancellationSignal.removeEventListener(
+          'abort',
+          forwardActivityCancellation,
+        );
       }
     },
   };
