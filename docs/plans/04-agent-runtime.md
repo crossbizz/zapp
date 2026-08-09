@@ -176,8 +176,8 @@ Binding: queues `agent-runs`, `verification`, `releases`; activity middleware st
 **Interfaces produced (binding):** `PlanSchema` per PRD §13.1: phases[] (id, sequence, title, acceptanceCriteria[], approvalAfter: boolean), tasks[] (id, phaseId, title, dependsOn[], riskLevel, requiredTools[], expectedFiles[], acceptanceCriteriaIds[], requiredTests[], estimate), budget { credits, wallClockHours }; `TaskGraph.readyTasks(state)` respecting dependencies + one-writer-per-branch; cycle detection at plan creation (reject with `plan_cycle`).
 **Effort:** M
 
-- [ ] Failing tests: Appendix C example plan parses; diamond dependency schedules correctly; cycle rejected; two tasks touching same branch never both ready.
-- [ ] Commit: `feat(planning-engine): plan schema + dependency scheduler`
+- [x] Failing tests: Appendix C example plan parses; diamond dependency schedules correctly; cycle rejected; two tasks touching same branch never both ready.
+- [x] Commit: `feat(planning-engine): plan schema + dependency scheduler`
 
 ### Task AR-12 [M2]: Task workflow with isolation
 
@@ -329,3 +329,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-07 AR-8 done — Added the Temporal M1 run with durable transcript checkpoint recovery after worker SIGKILL, per-run CP-13 batching, and idempotent commit retry; the exact tracked pre-push gate passed.
 - 2026-08-09 AR-3A done — Added stable replayable completion requests, exhaustive provider-attributed terminal outcomes, and serialized acknowledged Temporal transcript checkpoints; the review-cap follow-up latched cancellation before queued heartbeats, with model-gateway 64/64, orchestrator-worker 151/151, and forced static checks 11/11.
 - 2026-08-09 AR-3B BLOCKED — Durable claim/replay/reservation, lease renewal, disconnect settlement, usage outbox cutoff ordering, retry/fallback telemetry, and AI SDK v7 instruction/cache boundaries are locally green (model-gateway 79/79, orchestrator-worker 154/154, contracts 132/132, real OPS-1A PostgreSQL/Redis 11/11); the capped second review findings were resolved without a third round, but final Anthropic cache proof stopped at the sole provider call because the configured `ANTHROPIC_API_KEY` returned HTTP 401, so AR-3B remains unchecked.
+- 2026-08-09 AR-11 done — Added a strict phase/task/budget schema with `{ credits, wallClockMinutes }` task estimates, creation-time dependency/cycle validation, deterministic diamond scheduling, and cross-call one-writer branch ownership; RED/GREEN tests passed 6/6, package static/build gates passed, and review passed in round 2 after fixing ready-state branch reservation.
