@@ -68,7 +68,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-6 Lifecycle state machine + reaper + reconciler
 - [x] WS-7 Checkpoints + snapshot-free restore
 - [x] WS-8 Resource profiles + cost recorder
-- [ ] WS-9 Cache volumes + branch locks
+- [x] WS-9 Cache volumes + branch locks
 - [x] WS-10 Preview proxy + capture client
 - [ ] WS-11 Secret injection + network profiles + redaction
 - [ ] WS-12 Preview tokens + share records

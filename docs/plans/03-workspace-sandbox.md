@@ -243,9 +243,9 @@ those APIs and by trusted runtimes; no UI-private path may bypass either boundar
 **Files:** Create: `src/provider/volumes.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §18.7): one project-scoped Volume `vol-proj_{id}` mounted at `/cache` (pnpm store `PNPM_STORE_DIR=/cache/pnpm`, playwright browsers `/cache/ms-playwright` on web-test image); no cross-org shared writable volumes (name embeds project id; creation checks project org); concurrent-writer guard: branch working dirs under `/workspace/{branchId}` with advisory lock file — second writer for same branch → `BranchLockedError` (PRD §18.7 "concurrent writers prohibited").
-- [ ] Test: second create for same branch while first active → 409; different branch OK.
-- [ ] Commit: `feat(sandbox-service): project-scoped cache volumes + branch write locks`
+- [x] Binding behavior (PRD §18.7): one project-scoped Volume `vol-proj_{id}` mounted at `/cache` (pnpm store `PNPM_STORE_DIR=/cache/pnpm`, playwright browsers `/cache/ms-playwright` on web-test image); no cross-org shared writable volumes (name embeds project id; creation checks project org); concurrent-writer guard: branch working dirs under `/workspace/{branchId}` with advisory lock file — second writer for same branch → `BranchLockedError` (PRD §18.7 "concurrent writers prohibited").
+- [x] Test: second create for same branch while first active → 409; different branch OK.
+- [x] Commit: `feat(sandbox-service): project-scoped cache volumes + branch write locks`
 
 ### Task WS-10: preview-proxy (in-sandbox)
 
@@ -368,3 +368,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-8 done — exact profiles and strict 30-second requested-or-observed cost accounting passed 6/6 focused and 83/87 package tests plus static gates; transient metrics and keyed ledger retries are covered, the locked-image Modal smoke passed once, and later OPS-1 owns production ledger/config composition.
 - 2026-08-08 WS-9 BLOCKED — project cache planning, tenant ownership lookup, branch-unique common-App sandbox names, typed internal/public 409s, isolated `/workspace/{branchId}`, and web-test cache-path wiring passed focused 5/5, sandbox-service 88/93, control-api 454/454, and both package static gates; the single real Modal acceptance failed before sandbox creation because Modal rejects mounting one Volume twice, so the corrected single `/cache` mount is locally green but provider-unverified and WS-9 remains unchecked without a forbidden retry.
 - 2026-08-09 WS-11 BLOCKED — scoped CP-7 decrypt validation, forbidden-env checks, chunk-safe literal redaction, and strict network-profile planning passed 5/5 plus sandbox-service 93/98 (five existing provider-gated skips) and package lint/typecheck/build; two-round review rejected the production join because the locked workspace-agent API can pass values only to arbitrary `/exec` calls while the managed app process accepts no env and stateless replicas cannot recover a process-local registry, so unsafe wiring was removed and the tracker stays unchecked pending an approved app-process injection/runtime-image boundary.
+- 2026-08-09 WS-9 done — the corrected single `/cache` project-Volume mount passed the one final locked-image Modal acceptance: a second active writer for the same branch returned the typed conflict while a different branch reached ready; local package/static gates remained green.
