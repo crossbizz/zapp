@@ -15,10 +15,12 @@ import {
   type IdempotencyStore,
 } from '../../src/plugins/idempotency.js';
 import type { GitServicePort } from '../../src/git/port.js';
+import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
 import type { SandboxServicePort } from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
+import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
@@ -125,6 +127,7 @@ export interface Harness {
 }
 
 export interface HarnessOptions {
+  readonly logger?: LoggerConfig;
   readonly config?: Partial<AuthConfig>;
   readonly users?: InMemoryUserStore;
   readonly organizations?: InMemoryOrganizationStore;
@@ -157,6 +160,7 @@ export interface HarnessOptions {
   readonly sandbox?: SandboxServicePort;
   readonly releasePort?: ReleasePort;
   readonly integrationPort?: IntegrationPort;
+  readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
    * shipping list; the suite that proves an unallowlisted caller is refused
@@ -192,7 +196,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
   const serviceTokens = new TestServiceTokens({ ...options.serviceTokenSecrets, denylist, now });
 
   const app = buildApp({
-    logger: false,
+    logger: options.logger ?? false,
     now,
     auth: {
       port,
@@ -229,6 +233,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { decryptCallers: options.decryptCallers }),
           },
         }),
+    ...(options.preview === undefined ? {} : { preview: options.preview }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

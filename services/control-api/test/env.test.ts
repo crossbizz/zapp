@@ -7,6 +7,7 @@ import { loadAuthEnv } from '../src/auth/config.js';
 import {
   loadEnv,
   loadMasterKey,
+  loadPreviewEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
@@ -58,6 +59,7 @@ const GENERATED: Record<string, string> = {
   SERVICE_TOKEN_SECRET: 'b'.repeat(64),
   RUN_INTENT_HMAC_SECRET: 'c'.repeat(64),
   SECRETS_MASTER_KEY: Buffer.alloc(32, 0x2a).toString('base64'),
+  PREVIEW_SHARE_SIGNING_KEY: 'd'.repeat(64),
 };
 
 describe('the shipped .env.example', () => {
@@ -72,6 +74,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadMasterKey(environment)).not.toThrow();
     expect(() => loadServiceTokenConfig(environment)).not.toThrow();
     expect(() => loadRunIntentHmacKey(environment)).not.toThrow();
+    expect(() => loadPreviewEnv(environment)).not.toThrow();
   });
 
   it('leaves every rotation variable empty, and empty is accepted', () => {
@@ -124,6 +127,10 @@ describe('the shipped .env.example', () => {
       'STYTCH_PROJECT_ID',
       'STYTCH_SECRET',
       'STYTCH_PUBLIC_TOKEN',
+      'PREVIEW_BASE_DOMAIN',
+      'PREVIEW_SHARE_SIGNING_KEY',
+      'PREVIEW_SHARE_KEY_VERSION',
+      'SANDBOX_SERVICE_URL',
     ]) {
       expect(template, name).toHaveProperty(name);
     }

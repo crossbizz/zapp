@@ -57,18 +57,6 @@ export const CheckpointWorkspaceResultSchema = z
 export const TerminateWorkspaceInputSchema = z
   .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
   .strict();
-export const PreviewWorkspaceInputSchema = z
-  .object({
-    workspace: WorkspacePortSchema,
-    port: z.number().int().min(1).max(65_535),
-    ttlSeconds: z.number().int().positive(),
-    userId: idSchema('user'),
-    operationKey: OperationKeySchema,
-  })
-  .strict();
-export const PreviewWorkspaceResultSchema = z
-  .object({ url: z.string().url(), expiresAt: z.string().datetime() })
-  .strict();
 
 const SandboxBranchLockedCauseSchema = z
   .object({ code: z.literal('branch_locked') })
@@ -90,9 +78,6 @@ export interface SandboxServicePort {
     input: z.infer<typeof CheckpointWorkspaceInputSchema>,
   ): Promise<unknown>;
   terminateWorkspace(input: z.infer<typeof TerminateWorkspaceInputSchema>): Promise<unknown>;
-  previewWorkspace(
-    input: z.infer<typeof PreviewWorkspaceInputSchema>,
-  ): Promise<unknown>;
 }
 
 export class SandboxServiceError extends Error {
@@ -108,6 +93,5 @@ export function createUnavailableSandboxService(): SandboxServicePort {
     startWorkspace: unavailable,
     checkpointWorkspace: unavailable,
     terminateWorkspace: unavailable,
-    previewWorkspace: unavailable,
   };
 }

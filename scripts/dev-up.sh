@@ -124,6 +124,7 @@ seed_placeholder_secret() {
 seed_placeholder_secret SESSION_JWT_SECRET "$(openssl rand -hex 32)"
 seed_placeholder_secret SERVICE_TOKEN_SECRET "$(openssl rand -hex 32)"
 seed_placeholder_secret RUN_INTENT_HMAC_SECRET "$(openssl rand -hex 32)"
+seed_placeholder_secret PREVIEW_SHARE_SIGNING_KEY "$(openssl rand -hex 32)"
 seed_placeholder_secret SECRETS_MASTER_KEY "$(openssl rand -base64 32)"
 if [ -n "$seeded" ]; then
   chmod 600 "$REPO_ROOT/.env"

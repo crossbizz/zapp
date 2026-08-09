@@ -41,6 +41,10 @@ const NON_PRD_TABLES = new Map([
     'secret_ciphertexts',
     'the vault behind secret_metadata.encrypted_value_ref (PRD §18.12, plan 02 CP-7): §23.6 says the ciphertext is held elsewhere, and this is elsewhere — kept off secret_metadata so the metadata read has no value column to leak',
   ],
+  [
+    'preview_shares',
+    'tenant-owned hashed preview bearer metadata and revocation state required by ADR-0023 and plan 03 WS-12; the PRD predates zapp-owned preview ingress',
+  ],
 ]);
 
 /**

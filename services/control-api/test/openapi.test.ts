@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import type { AppInstance } from '../src/app.js';
+import {
+  createInMemoryPreviewSessionStore,
+  createInMemoryPreviewShareStore,
+} from '../src/routes/preview.js';
 import { buildHarness } from './support/harness.js';
 
 const apps: AppInstance[] = [];
@@ -14,6 +18,18 @@ function documentedApp(): AppInstance {
     tenantDb: (() => {
       throw new Error('OpenAPI generation must not access the tenant database.');
     }),
+    preview: {
+      shares: createInMemoryPreviewShareStore(),
+      sessions: createInMemoryPreviewSessionStore(),
+      proxy: {
+        request: () => Promise.reject(new Error('OpenAPI must not proxy preview traffic.')),
+        openWebSocket: () => Promise.reject(new Error('OpenAPI must not proxy WebSockets.')),
+      },
+      signingKey: Buffer.alloc(32),
+      keyVersion: 1,
+      appBaseUrl: new URL('https://app.zapp.test'),
+      previewBaseDomain: 'preview.zapp.test',
+    },
   });
   apps.push(built.app);
   return built.app;
@@ -70,8 +86,12 @@ describe('GET /v1/openapi.json', () => {
       '/v1/projects',
       '/v1/organizations/{orgId}/audit-events',
       '/v1/organizations/{orgId}/settings',
+      '/v1/workspaces/{workspaceId}/preview/shares',
+      '/v1/projects/{projectId}/preview/shares',
+      '/v1/organizations/{organizationId}/preview-shares/{shareId}/sessions',
+      '/v1/preview/session',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(49);
+    expect(Object.keys(document.paths)).toHaveLength(53);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

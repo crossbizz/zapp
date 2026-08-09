@@ -15,11 +15,18 @@ import { createDbOrganizationStore } from './orgs/store.js';
 import { createDbAuditSink } from './plugins/audit.js';
 import { createRedisIdempotencyStore } from './plugins/idempotency.js';
 import { createRedisRateLimiter } from './plugins/rate-limit.js';
-import type { RedisCommands } from './redis/client.js';
+import type { RedisCommands, RedisConnection } from './redis/client.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
+import {
+  createRedisPreviewRevocationSource,
+  createRedisPreviewSessionStore,
+  createSandboxPreviewProxy,
+} from './routes/preview.js';
+import { createDbPreviewShareStore } from './preview/store.js';
+import type { PreviewEnv } from './env.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -40,6 +47,8 @@ import { createTenantDbFactory } from './tenant/db.js';
 export interface ServiceRuntime {
   readonly database: Database;
   readonly redis: RedisCommands;
+  /** WS-12 needs publish/subscribe in addition to request-store commands. */
+  readonly previewRedis?: RedisConnection;
   /** Shared 32-byte key returned by `loadRunIntentHmacKey`. */
   readonly runIntentHmacKey: Buffer;
   /** CP-15 pub/sub port. Omission is refused outside development by buildApp. */
@@ -68,6 +77,7 @@ export interface ServiceRuntime {
   readonly gitServiceUrl?: string;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
+  readonly preview?: PreviewEnv;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -149,5 +159,26 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       limiter: createRedisRateLimiter(redis),
       idempotency: createRedisIdempotencyStore(redis),
     },
+    ...(runtime.preview === undefined
+      ? {}
+      : {
+          preview: {
+            shares: createDbPreviewShareStore(database),
+            sessions: createRedisPreviewSessionStore(
+              runtime.previewRedis ?? (() => { throw new Error('preview Redis publisher missing'); })(),
+            ),
+            revocations: createRedisPreviewRevocationSource(
+              runtime.previewRedis ?? (() => { throw new Error('preview Redis subscriber missing'); })(),
+            ),
+            proxy: createSandboxPreviewProxy({
+              baseUrl: runtime.preview.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            signingKey: runtime.preview.signingKey,
+            keyVersion: runtime.preview.keyVersion,
+            appBaseUrl: new URL(runtime.auth.config.appBaseUrl),
+            previewBaseDomain: runtime.preview.previewBaseDomain,
+          },
+        }),
   });
 }

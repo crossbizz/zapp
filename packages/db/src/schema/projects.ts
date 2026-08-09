@@ -1,4 +1,5 @@
 import { SupportLevelSchema } from '@zapp/contracts';
+import { sql } from 'drizzle-orm';
 import {
   check,
   foreignKey,
@@ -213,6 +214,40 @@ export const projectContracts = pgTable(
   ],
 );
 
+/** WS-12 tenant-owned, revocable preview capability. Plaintext bearers never reach this table. */
+export const previewShares = pgTable(
+  'preview_shares',
+  {
+    /** Lowercase Crockford locator used in the isolated preview hostname. */
+    id: text('id').primaryKey(),
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id),
+    workspaceId: text('workspace_id').notNull(),
+    operationKey: text('operation_key').notNull(),
+    requestFingerprint: text('request_fingerprint').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    keyVersion: integer('key_version').notNull(),
+    policy: text('policy', { enum: ['org', 'anyone_with_link'] }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('preview_shares_org_operation_idx').on(t.organizationId, t.operationKey),
+    index('preview_shares_org_project_idx').on(t.organizationId, t.projectId, t.id),
+    index('preview_shares_org_workspace_idx').on(t.organizationId, t.workspaceId, t.id),
+    projectTenantForeignKey('preview_shares', t.projectId, t.organizationId),
+    check('preview_shares_policy_check', oneOf('policy', ['org', 'anyone_with_link'])),
+    check('preview_shares_key_version_check', sql`${t.keyVersion} > 0`),
+  ],
+);
+
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type Repository = typeof repositories.$inferSelect;
@@ -223,3 +258,5 @@ export type Environment = typeof environments.$inferSelect;
 export type NewEnvironment = typeof environments.$inferInsert;
 export type ProjectContract = typeof projectContracts.$inferSelect;
 export type NewProjectContract = typeof projectContracts.$inferInsert;
+export type PreviewShareRow = typeof previewShares.$inferSelect;
+export type NewPreviewShareRow = typeof previewShares.$inferInsert;

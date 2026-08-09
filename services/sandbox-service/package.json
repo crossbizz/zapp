@@ -11,6 +11,14 @@
     "./provider-types": {
       "types": "./dist/provider/types.d.ts",
       "default": "./dist/provider/types.js"
+    },
+    "./preview-tokens": {
+      "types": "./dist/preview/tokens.d.ts",
+      "default": "./dist/preview/tokens.js"
+    },
+    "./preview-transport": {
+      "types": "./dist/preview/transport.d.ts",
+      "default": "./dist/preview/transport.js"
     }
   },
   "scripts": {
@@ -20,15 +28,19 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@node-rs/argon2": "2.0.2",
     "@zapp/config": "workspace:*",
     "@zapp/contracts": "workspace:*",
     "fastify": "^5.11.2",
     "fastify-type-provider-zod": "^4.0.2",
     "modal": "0.9.0",
+    "ws": "^8.21.0",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
+    "@types/ws": "^8.18.1",
     "vitest": "3.2.7"
   }
 }

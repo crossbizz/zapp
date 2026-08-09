@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { ServiceName } from '@zapp/config';
+import websocket from '@fastify/websocket';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -57,6 +58,11 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import {
+  registerPreviewRoutes,
+  rewritePreviewOriginUrl,
+  type PreviewRoutesDeps,
+} from './routes/preview.js';
 import {
   createUnavailableReleasePort,
   registerReleaseRoutes,
@@ -222,6 +228,8 @@ export interface AppDeps {
   readonly limits?: LimitDeps;
   /** Injected in tests so expiry and refill are asserted rather than waited for. */
   readonly now?: () => Date;
+  /** WS-12 durable share/session and authenticated preview data plane. */
+  readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
 }
 
 /**
@@ -308,6 +316,16 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
      * the rate-limit plugin logs it at boot.
      */
     trustProxy: trustProxyOption(proxy),
+    ...(deps.preview === undefined
+      ? {}
+      : {
+          rewriteUrl: (request: RawRequestDefaultExpression) =>
+            rewritePreviewOriginUrl(
+              request.url ?? '/',
+              request.headers.host,
+              deps.preview?.previewBaseDomain ?? '',
+            ),
+        }),
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
@@ -315,6 +333,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
+  void app.register(websocket);
   registerOpenApi(app);
 
   // Liveness only, and deliberately outside `/v1`: it is infrastructure, not API, so
@@ -478,6 +497,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
           });
+          if (deps.preview !== undefined) {
+            registerPreviewRoutes(app, {
+              ...deps.preview,
+              memberships: orgs.organizations,
+              now,
+            });
+          }
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
             permissionContextFor: async (organizationId) =>

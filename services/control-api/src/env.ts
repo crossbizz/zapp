@@ -59,6 +59,34 @@ export function loadRunIntentHmacKey(source: unknown = process.env): Buffer {
   return Buffer.from(defineEnv(RunIntentHmacEnvSchema, source).RUN_INTENT_HMAC_SECRET, 'hex');
 }
 
+const PreviewEnvSchema = z.object({
+  PREVIEW_SHARE_SIGNING_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  PREVIEW_SHARE_KEY_VERSION: z.coerce.number().int().positive().default(1),
+  PREVIEW_BASE_DOMAIN: z.string().trim().min(1),
+  SANDBOX_SERVICE_URL: z
+    .string()
+    .url()
+    .refine((value) => /^https?:\/\//u.test(value), 'SANDBOX_SERVICE_URL must use HTTP(S)'),
+});
+
+export interface PreviewEnv {
+  readonly signingKey: Buffer;
+  readonly keyVersion: number;
+  readonly previewBaseDomain: string;
+  readonly sandboxServiceUrl: string;
+}
+
+/** WS-12 zapp-owned preview ingress configuration. Values are never inferred from Host. */
+export function loadPreviewEnv(source: unknown = process.env): PreviewEnv {
+  const env = defineEnv(PreviewEnvSchema, source);
+  return {
+    signingKey: Buffer.from(env.PREVIEW_SHARE_SIGNING_KEY, 'hex'),
+    keyVersion: env.PREVIEW_SHARE_KEY_VERSION,
+    previewBaseDomain: env.PREVIEW_BASE_DOMAIN.toLowerCase(),
+    sandboxServiceUrl: env.SANDBOX_SERVICE_URL.replace(/\/+$/u, ''),
+  };
+}
+
 /**
  * The master key that wraps every secret's data key (CP-7), and the one
  * variable in this service that *is* a secret.

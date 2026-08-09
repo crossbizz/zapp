@@ -8,6 +8,7 @@ import {
   loadMasterKey,
   loadRedisUrl,
   loadRunIntentHmacKey,
+  loadPreviewEnv,
   loadServiceTokenConfig,
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
@@ -42,6 +43,7 @@ const serviceTokens = loadServiceTokenConfig();
 // malformed means refusal to boot; a process-local production key would strand
 // every retry that reached another instance.
 const runIntentHmacKey = loadRunIntentHmacKey();
+const preview = loadPreviewEnv();
 // Where projects' repositories are actually created (plan 06 GIT-2). Undefined
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
@@ -62,11 +64,13 @@ const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   database: database.db,
   redis,
+  previewRedis: redis,
   eventWakeups: redis,
   runIntentHmacKey,
   auth,
   masterKey,
   serviceTokens,
+  preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,
 });

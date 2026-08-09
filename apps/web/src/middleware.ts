@@ -4,6 +4,10 @@ import { NextResponse, type NextRequest } from 'next/server';
 const publicPaths = new Set(['/login', '/auth/callback']);
 const sessionCookieName = 'zapp_session';
 
+function isPublicPath(pathname: string): boolean {
+  return publicPaths.has(pathname) || pathname.startsWith('/preview/');
+}
+
 function loginUrl(request: NextRequest): URL {
   const login = new URL('/login', request.url);
   if (request.nextUrl.pathname === '/device') {
@@ -31,7 +35,7 @@ function sessionClient(apiBaseUrl: string) {
 }
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
-  if (publicPaths.has(request.nextUrl.pathname)) {
+  if (isPublicPath(request.nextUrl.pathname)) {
     return NextResponse.next();
   }
 

@@ -15,8 +15,6 @@ import {
   CheckpointWorkspaceResultSchema,
   CreateWorkspaceInputSchema,
   CreateWorkspaceResultSchema,
-  PreviewWorkspaceInputSchema,
-  PreviewWorkspaceResultSchema,
   isSandboxBranchLockedError,
   StartWorkspaceInputSchema,
   StartWorkspaceResultSchema,
@@ -36,9 +34,6 @@ const CreateBody = z
   })
   .strict();
 const CheckpointBody = z.object({ kind: CheckpointKindSchema }).strict();
-const PreviewBody = z
-  .object({ port: z.number().int().min(1).max(65_535), ttlSeconds: z.number().int().positive() })
-  .strict();
 type Workspace = Omit<SandboxWorkspace, 'resourceProfile'> & { readonly resourceProfile: string };
 
 export interface WorkspaceRoutesDeps {
@@ -181,39 +176,18 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
     },
     patch: () => ({ status: 'terminated' as const, terminatedAt: deps.now() }),
   });
-  action('preview', {
-    allowed: ['started', 'ready', 'active', 'idle'],
-    requested: 'workspace.preview_requested',
-    completed: 'workspace.previewed',
-    body: PreviewBody,
-    apply: async (workspace, operationKey, body, userId) =>
-      PreviewWorkspaceResultSchema.parse(
-        await deps.sandbox.previewWorkspace(
-          PreviewWorkspaceInputSchema.parse({
-            workspace,
-            port: PreviewBody.parse(body).port,
-            ttlSeconds: PreviewBody.parse(body).ttlSeconds,
-            userId,
-            operationKey,
-          }),
-        ),
-      ),
-    patch: () => ({}),
-  });
   function action(
-    name: 'start' | 'checkpoint' | 'terminate' | 'preview',
+    name: 'start' | 'checkpoint' | 'terminate',
     config: {
       readonly allowed: readonly z.infer<typeof WorkspaceStatusSchema>[];
       readonly requested:
         | 'workspace.start_requested'
         | 'workspace.checkpoint_requested'
-        | 'workspace.terminate_requested'
-        | 'workspace.preview_requested';
+        | 'workspace.terminate_requested';
       readonly completed:
         | 'workspace.started'
         | 'workspace.checkpointed'
-        | 'workspace.terminated'
-        | 'workspace.previewed';
+        | 'workspace.terminated';
       readonly body: z.ZodTypeAny | undefined;
       readonly apply: (
         workspace: Workspace,
@@ -235,12 +209,7 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
         schema: {
           params: WorkspaceParams,
           ...(config.body === undefined ? {} : { body: config.body }),
-          response: {
-            200:
-              name === 'preview'
-                ? z.object({ preview: PreviewWorkspaceResultSchema })
-                : z.object({ workspace: WorkspaceSchema }),
-          },
+          response: { 200: z.object({ workspace: WorkspaceSchema }) },
         },
       },
       async (request) => {
@@ -265,17 +234,13 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
         if (claim === undefined) throw workspaceNotFound();
         if (claim.outcome === 'blocked' || claim.outcome === 'rejected')
           throw invalidWorkspaceState();
-        if (claim.outcome === 'completed')
-          return name === 'preview'
-            ? { preview: previewFromMetadata(claim.metadata) }
-            : { workspace: toWorkspace(claim.entity) };
+        if (claim.outcome === 'completed') return { workspace: toWorkspace(claim.entity) };
         let result: unknown;
         try {
           result = await config.apply(claim.entity, operationKey, request.body, actorOf(request));
         } catch {
           throw sandboxFailed();
         }
-        const preview = name === 'preview' ? PreviewWorkspaceResultSchema.parse(result) : undefined;
         const patch = config.patch(result);
         const completed = await ctx.db.workspaces.completeOperation({
           workspaceId: claim.entity.id,
@@ -291,15 +256,13 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
               metadata: {
                 operationKey,
                 operationState: 'completed',
-                ...(preview === undefined
-                  ? { status: row.status }
-                  : { url: preview.url, expiresAt: preview.expiresAt }),
+                status: row.status,
               },
             });
           },
         });
         if (completed === undefined) throw invalidWorkspaceState();
-        return preview === undefined ? { workspace: toWorkspace(completed) } : { preview };
+        return { workspace: toWorkspace(completed) };
       },
     );
   }
@@ -329,12 +292,4 @@ function sandboxFailed(): ApiError {
     502,
     'The sandbox service could not complete that operation.',
   );
-}
-function previewFromMetadata(metadata: unknown): z.infer<typeof PreviewWorkspaceResultSchema> {
-  const parsed = z
-    .object({ url: z.string(), expiresAt: z.string() })
-    .passthrough()
-    .safeParse(metadata);
-  if (!parsed.success) throw invalidWorkspaceState();
-  return PreviewWorkspaceResultSchema.parse(parsed.data);
 }

@@ -17,6 +17,7 @@ import {
   type ModalWorkspaceSdkPort,
 } from '../../src/provider/modal.js';
 import { BranchLockedError } from '../../src/provider/volumes.js';
+import { createFetchPreviewTransport } from '../../src/preview/transport.js';
 import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 import type {
   WorkspaceLifecycleRow,
@@ -152,6 +153,13 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
           }
         : { ok: false, details: 'workspace agent not ready' },
     );
+  }
+
+  tunnels(): Promise<Readonly<Record<number, { readonly url: string }>>> {
+    return Promise.resolve({
+      8877: { url: 'https://agent.modal.test/' },
+      8080: { url: 'https://preview.modal.test/' },
+    });
   }
 
   terminate(): Promise<void> {
@@ -605,6 +613,25 @@ describe('attach reattach recovery and ownership', () => {
       Buffer.from('file bytes'),
     );
     expect(sdk.creates).toHaveLength(1);
+  });
+
+  it('resolves the encrypted preview tunnel server-side without exposing agent infrastructure', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+
+    await expect(provider.resolvePreviewTunnel(sdk.sandbox.providerWorkspaceId)).resolves.toEqual(
+      new URL('https://preview.modal.test/'),
+    );
+    expect(sdk.getWorkspaceCalls).toBe(1);
+    expect(sdk.closeCalls).toBe(1);
   });
 
   it('resolves child-only secrets and redacts buffered and split streaming output at the route boundary', async () => {
@@ -1313,7 +1340,7 @@ describe('create status terminate and idempotency', () => {
             { mountPath: '/cache', subPath: '/cache' },
           ],
         },
-        encryptedPorts: [8877],
+        encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
         timeoutMs: 14_400_000,
       },
@@ -2032,6 +2059,46 @@ describe('create status terminate and idempotency', () => {
         if (handle !== undefined) await provider.terminateWorkspace(handle.providerWorkspaceId);
       }
       expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('terminated');
+    },
+    120_000,
+  );
+
+  it.skipIf(!hasModalCredentials)(
+    'proxies preview health through the locked real Modal tunnel [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ws12-${Date.now().toString(36)}`,
+      });
+      const transport = createFetchPreviewTransport(provider);
+      let handle: WorkspaceHandle | undefined;
+      try {
+        handle = await provider.createWorkspace({
+          ...createInput(),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        const response = await transport.request({
+          providerWorkspaceId: handle.providerWorkspaceId,
+          method: 'GET',
+          path: '/__zapp/healthz',
+          publicOrigin: new URL('https://acceptance.preview.zapp.test'),
+          headers: { accept: 'application/json' },
+        });
+        const chunks: Buffer[] = [];
+        for await (const chunk of response.body) chunks.push(Buffer.from(chunk));
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual({ status: 'ok' });
+        expect(JSON.stringify(response)).not.toContain('modal');
+      } finally {
+        if (handle !== undefined) await provider.terminateWorkspace(handle.providerWorkspaceId);
+      }
     },
     120_000,
   );

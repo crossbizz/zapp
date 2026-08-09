@@ -98,7 +98,7 @@ function publicRouteTransform(
     route: { readonly preHandler?: unknown; readonly method: string | readonly string[] };
   },
 ) {
-  if (input.schema.hide === true || !input.url.startsWith('/v1/')) {
+  if (!input.url.startsWith('/v1/') || input.schema.hide === true) {
     return { schema: { hide: true }, url: input.url };
   }
 
@@ -176,6 +176,9 @@ function routeSecurity(
       { sessionCookie: [], csrfToken: [] },
       { refreshCookie: [], csrfToken: [] },
     ];
+  }
+  if (input.url === '/v1/organizations/:organizationId/preview-shares/:shareId/sessions') {
+    return [{}, { bearerAuth: [] }, { sessionCookie: [], csrfToken: [] }];
   }
   return undefined;
 }

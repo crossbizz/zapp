@@ -72,7 +72,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-9 Cache volumes + branch locks
 - [x] WS-10 Preview proxy + capture client
 - [x] WS-11 Secret injection + network profiles + redaction
-- [ ] WS-12 Preview tokens + share records
+- [x] WS-12 Preview tokens + share records
 ### Plan 06
 - [x] GIT-4 Nightly bundle backups + restore
 ### Plan 04 — Agent runtime core

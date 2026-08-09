@@ -1356,6 +1356,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/organizations/{organizationId}/preview-shares/{shareId}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    shareId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        bearer: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            expiresAt: string;
+                            grant: string;
+                            /** Format: uri */
+                            previewOrigin: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/organizations/{orgId}": {
         parameters: {
             query?: never;
@@ -1943,6 +2029,88 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/preview/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        grant: string;
+                        organizationId: string;
+                        shareId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            expiresAt: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects": {
         parameters: {
             query?: never;
@@ -2421,6 +2589,95 @@ export interface paths {
                                 projectId: string;
                                 version: number;
                             };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/preview/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            shares: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                /** Format: date-time */
+                                expiresAt: string;
+                                id: string;
+                                /** @enum {string} */
+                                policy: "org" | "anyone_with_link";
+                                projectId: string;
+                                /** Format: date-time */
+                                revokedAt: string | null;
+                                /** Format: uri */
+                                url: string;
+                                workspaceId: string;
+                            }[];
                         };
                     };
                 };
@@ -4930,7 +5187,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/workspaces/{workspaceId}/preview": {
+    "/v1/workspaces/{workspaceId}/preview/shares": {
         parameters: {
             query?: never;
             header?: never;
@@ -4951,11 +5208,97 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        port: number;
-                        ttlSeconds: number;
+                        expiresInSeconds: number;
+                        /** @enum {string} */
+                        policy: "org" | "anyone_with_link";
                     };
                 };
             };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            share: {
+                                /** Format: date-time */
+                                expiresAt: string;
+                                id: string;
+                                /** @enum {string} */
+                                policy: "org" | "anyone_with_link";
+                                /** Format: uri */
+                                url: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/preview/shares/{shareId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    shareId: string;
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
             responses: {
                 /** @description Default Response */
                 "4XX": {
@@ -5000,18 +5343,13 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            preview: {
-                                /** Format: date-time */
-                                expiresAt: string;
-                                /** Format: uri */
-                                url: string;
-                            };
+                            /** @enum {boolean} */
+                            revoked: true;
                         };
                     };
                 };
             };
         };
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;

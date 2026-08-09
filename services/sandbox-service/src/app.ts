@@ -3,6 +3,7 @@ import Fastify, {
   type FastifyServerOptions,
   type preHandlerAsyncHookHandler,
 } from 'fastify';
+import websocket from '@fastify/websocket';
 import {
   serializerCompiler,
   validatorCompiler,
@@ -23,7 +24,9 @@ import {
   type WorkspaceRowBoundary,
 } from './routes/workspaces.js';
 import type { NetworkPolicyRecorder } from './network/profiles.js';
+import { createFetchPreviewTransport, type PreviewTransport } from './preview/transport.js';
 import type { ScopedSecretInjector } from './secrets/injector.js';
+import { registerPreviewRoutes } from './routes/preview.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -55,6 +58,7 @@ interface BuildAppCommonOptions {
   readonly serviceTokens: SandboxServiceTokenVerifier;
   readonly secrets: ScopedSecretInjector;
   readonly networkPolicies: NetworkPolicyRecorder;
+  readonly previewTransport?: PreviewTransport;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
 }
@@ -85,6 +89,7 @@ export function buildApp(options: BuildAppOptions) {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+  void app.register(websocket);
   app.addContentTypeParser(
     'application/octet-stream',
     { parseAs: 'buffer' },
@@ -150,6 +155,20 @@ export function buildApp(options: BuildAppOptions) {
     secrets: options.secrets,
     networkPolicies: options.networkPolicies,
     now,
+  });
+  const previewTransport =
+    options.previewTransport ??
+    createFetchPreviewTransport({
+      async resolvePreviewTunnel(providerWorkspaceId) {
+        if (options.provider.resolvePreviewTunnel === undefined) {
+          throw new Error('Workspace provider does not support preview transport');
+        }
+        return options.provider.resolvePreviewTunnel(providerWorkspaceId);
+      },
+    });
+  void app.register((previewApp, _pluginOptions, done) => {
+    registerPreviewRoutes(previewApp, { rows: options.rows, transport: previewTransport });
+    done();
   });
   return app;
 }

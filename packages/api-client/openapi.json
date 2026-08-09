@@ -8245,7 +8245,7 @@
         }
       }
     },
-    "/v1/workspaces/{workspaceId}/preview": {
+    "/v1/workspaces/{workspaceId}/preview/shares": {
       "post": {
         "requestBody": {
           "required": true,
@@ -8254,20 +8254,22 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "port": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 65535
+                  "policy": {
+                    "type": "string",
+                    "enum": [
+                      "org",
+                      "anyone_with_link"
+                    ]
                   },
-                  "ttlSeconds": {
+                  "expiresInSeconds": {
                     "type": "integer",
-                    "exclusiveMinimum": true,
-                    "minimum": 0
+                    "minimum": 60,
+                    "maximum": 604800
                   }
                 },
                 "required": [
-                  "port",
-                  "ttlSeconds"
+                  "policy",
+                  "expiresInSeconds"
                 ],
                 "additionalProperties": false
               }
@@ -8295,6 +8297,165 @@
           }
         ],
         "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "share": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[0-9a-hjkmnp-tv-z]{26}$"
+                        },
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "pattern": "^https\\:\\/\\/"
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "policy": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "anyone_with_link"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "url",
+                        "expiresAt",
+                        "policy"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "share"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/preview/shares": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
           "200": {
             "description": "Default Response",
             "content": {
@@ -8302,27 +8463,523 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "preview": {
+                    "shares": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[0-9a-hjkmnp-tv-z]{26}$"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "projectId": {
+                            "type": "string",
+                            "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^https\\:\\/\\/"
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "policy": {
+                            "type": "string",
+                            "enum": [
+                              "org",
+                              "anyone_with_link"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "revokedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "projectId",
+                          "url",
+                          "expiresAt",
+                          "policy",
+                          "createdAt",
+                          "revokedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "shares"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
                       "type": "object",
                       "properties": {
-                        "url": {
+                        "code": {
                           "type": "string",
-                          "format": "uri"
+                          "minLength": 1
                         },
-                        "expiresAt": {
+                        "message": {
                           "type": "string",
-                          "format": "date-time"
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
                         }
                       },
                       "required": [
-                        "url",
-                        "expiresAt"
+                        "code",
+                        "message",
+                        "requestId"
                       ],
                       "additionalProperties": false
                     }
                   },
                   "required": [
-                    "preview"
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspaceId}/preview/shares/{shareId}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "workspaceId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-hjkmnp-tv-z]{26}$"
+            },
+            "in": "path",
+            "name": "shareId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/preview-shares/{shareId}/sessions": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "bearer": {
+                    "type": "string",
+                    "pattern": "^psb_[A-Za-z0-9_-]{43}$"
+                  }
+                },
+                "required": [
+                  "bearer"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-hjkmnp-tv-z]{26}$"
+            },
+            "in": "path",
+            "name": "shareId",
+            "required": true
+          }
+        ],
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "previewOrigin": {
+                      "type": "string",
+                      "format": "uri",
+                      "pattern": "^https\\:\\/\\/"
+                    },
+                    "grant": {
+                      "type": "string",
+                      "pattern": "^pbg_[A-Za-z0-9_-]{43}$"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "previewOrigin",
+                    "grant",
+                    "expiresAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/preview/session": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "organizationId": {
+                    "type": "string",
+                    "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  "shareId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-hjkmnp-tv-z]{26}$"
+                  },
+                  "grant": {
+                    "type": "string",
+                    "pattern": "^pbg_[A-Za-z0-9_-]{43}$"
+                  }
+                },
+                "required": [
+                  "organizationId",
+                  "shareId",
+                  "grant"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "expiresAt"
                   ],
                   "additionalProperties": false
                 }

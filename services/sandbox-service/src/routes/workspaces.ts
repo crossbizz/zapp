@@ -140,6 +140,7 @@ export interface WorkspaceLifecycleProvider {
 }
 
 export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
+  resolvePreviewTunnel?(providerWorkspaceId: string): Promise<URL>;
   exec(input: ExecInput, idempotencyKey?: string): Promise<z.infer<typeof ExecResultSchema>>;
   execStream(
     input: ExecInput,

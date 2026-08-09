@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
-import { EnvVarsSchema, HttpsUrlSchema } from './primitives.js';
+import { EnvVarsSchema } from './primitives.js';
 
 export const CleanupFailureStageSchema = z.enum([
   'kill',
@@ -181,32 +181,6 @@ export type CheckpointRef = z.infer<typeof CheckpointRefSchema>;
  * PRD §18.2 `createPreview` input. The port is the in-sandbox preview proxy's
  * (PRD §18.13), not the application's; the proxy forwards to the contract port.
  */
-export const PreviewInputSchema = z.object({
-  providerWorkspaceId: z.string().min(1),
-  port: z.number().int().min(1).max(65_535),
-  ttlSeconds: z.number().int().positive(),
-  /** Short metadata carried by the connect token (PRD §18.11). */
-  userId: idSchema('user'),
-  projectId: idSchema('proj'),
-});
-
-export type PreviewInput = z.infer<typeof PreviewInputSchema>;
-
-/**
- * An authenticated preview session. The URL is a provider connect URL, never a raw
- * public tunnel; sharing goes through a share record with its own expiry (plan 03 WS-12).
- *
- * Carries no revocation identifier, because the PRD §18.2 method set has no revoke
- * call to use one with — see `docs/adr/0003-sandbox-file-io-and-preview-revocation.md`.
- */
-export const PreviewHandleSchema = z.object({
-  providerWorkspaceId: z.string().min(1),
-  url: HttpsUrlSchema,
-  expiresAt: z.string().datetime(),
-});
-
-export type PreviewHandle = z.infer<typeof PreviewHandleSchema>;
-
 /**
  * PRD §18.2 `updateNetworkPolicy` input: the profile plus any extra hosts the
  * project's configured integrations need. Applied where the provider supports it and
@@ -239,7 +213,6 @@ export interface CloudSandboxProvider {
   writeFile(path: string, data: Uint8Array): Promise<void>;
   createCheckpoint(input: CheckpointInput): Promise<CheckpointRef>;
   restoreCheckpoint(ref: CheckpointRef): Promise<WorkspaceHandle>;
-  createPreview(input: PreviewInput): Promise<PreviewHandle>;
   updateNetworkPolicy(input: NetworkPolicyInput): Promise<void>;
   getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus>;
 }

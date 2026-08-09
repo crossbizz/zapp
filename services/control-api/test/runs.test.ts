@@ -136,17 +136,6 @@ class FakeSandboxServicePort {
     return Promise.resolve();
   }
 
-  previewWorkspace(input: {
-    readonly operationKey?: string;
-  }): Promise<{ url: string; expiresAt: string }> {
-    this.calls.push('preview');
-    this.operationKeys.push(input.operationKey);
-    if (this.failures.has('preview')) return Promise.reject(new Error('sandbox preview rejected'));
-    return Promise.resolve({
-      url: 'https://preview.zapp.test/workspace',
-      expiresAt: '2026-08-05T00:00:00.000Z',
-    });
-  }
 }
 
 class ReadCountingOrganizationStore extends InMemoryOrganizationStore {
@@ -938,7 +927,7 @@ describe('the in-memory run-create queue', () => {
 });
 
 describe('workspace passthrough routes', () => {
-  it('creates, reads, starts, checkpoints, previews and terminates a tenant workspace', async () => {
+  it('creates, reads, starts, checkpoints and terminates a tenant workspace', async () => {
     const sandbox = new FakeSandboxServicePort();
     const wired = await wire({ sandbox });
     const project = await createProject(wired);
@@ -985,17 +974,6 @@ describe('workspace passthrough routes', () => {
       'snapshot-01',
     );
 
-    const preview = await wired.built.app.inject({
-      method: 'POST',
-      url: `/v1/workspaces/${workspace.id}/preview`,
-      headers: { ...wired.as(wired.owner), 'idempotency-key': 'workspace-preview-01' },
-      payload: { port: 3000, ttlSeconds: 300 },
-    });
-    expect(preview.statusCode, preview.body).toBe(200);
-    expect(preview.json<{ preview: { url: string } }>().preview.url).toBe(
-      'https://preview.zapp.test/workspace',
-    );
-
     const terminated = await wired.built.app.inject({
       method: 'POST',
       url: `/v1/workspaces/${workspace.id}/terminate`,
@@ -1005,7 +983,7 @@ describe('workspace passthrough routes', () => {
     expect(terminated.json<{ workspace: { status: string } }>().workspace.status).toBe(
       'terminated',
     );
-    expect(sandbox.calls).toEqual(['create', 'start', 'checkpoint', 'preview', 'terminate']);
+    expect(sandbox.calls).toEqual(['create', 'start', 'checkpoint', 'terminate']);
   });
 
   it('returns a tenant-safe 404, denies Viewers, replays creation, and never exposes raw fs or command routes', async () => {
@@ -1054,36 +1032,6 @@ describe('workspace passthrough routes', () => {
     ).toBe(false);
   });
 
-  it('returns 404 for a foreign workspace before denying a Viewer action permission', async () => {
-    const wired = await wire();
-    const viewer = await joinViewer(wired);
-    const foreignWorkspace: Workspace = {
-      id: newId('ws'),
-      organizationId: newId('org'),
-      projectId: newId('proj'),
-      branchId: null,
-      provider: 'modal',
-      providerWorkspaceId: 'foreign-workspace',
-      status: 'active',
-      resourceProfile: 'standard',
-      snapshotRef: null,
-      createdAt: wired.built.now(),
-      lastActiveAt: null,
-      terminatedAt: null,
-    };
-    wired.data.workspaces.push(foreignWorkspace);
-
-    const response = await wired.built.app.inject({
-      method: 'POST',
-      url: `/v1/workspaces/${foreignWorkspace.id}/preview`,
-      headers: { ...wired.as(viewer), 'idempotency-key': 'foreign-workspace-preview-01' },
-      payload: { port: 3000, ttlSeconds: 60 },
-    });
-
-    expect(response.statusCode, response.body).toBe(404);
-    expect(response.json<{ error: { code: string } }>().error.code).toBe('workspace_not_found');
-  });
-
   it('propagates a sandbox creation failure without returning a workspace success', async () => {
     const sandbox = new FakeSandboxServicePort();
     sandbox.failCreates = 1;
@@ -1123,39 +1071,6 @@ describe('workspace passthrough routes', () => {
       code: 'branch_locked',
       message: 'The branch already has an active writer.',
     });
-  });
-
-  it('records a keyed preview intent before a rejected downstream preview and returns no preview success', async () => {
-    const sandbox = new FakeSandboxServicePort();
-    const wired = await wire({ sandbox });
-    const project = await createProject(wired);
-    const created = await wired.built.app.inject({
-      method: 'POST',
-      url: `/v1/projects/${project.id}/workspaces`,
-      headers: { ...wired.as(wired.owner), 'idempotency-key': 'preview-intent-create-01' },
-      payload: {},
-    });
-    const workspaceId = created.json<{ workspace: { id: string } }>().workspace.id;
-    await wired.built.app.inject({
-      method: 'POST',
-      url: `/v1/workspaces/${workspaceId}/start`,
-      headers: { ...wired.as(wired.owner), 'idempotency-key': 'preview-intent-start-01' },
-    });
-    sandbox.failures.add('preview');
-
-    const response = await wired.built.app.inject({
-      method: 'POST',
-      url: `/v1/workspaces/${workspaceId}/preview`,
-      headers: { ...wired.as(wired.owner), 'idempotency-key': 'preview-intent-01' },
-      payload: { port: 3000, ttlSeconds: 60 },
-    });
-
-    expect(response.statusCode, response.body).toBe(502);
-    expect(response.json()).not.toHaveProperty('preview');
-    expect(wired.built.audit.events).toContainEqual(
-      expect.objectContaining({ action: 'workspace.preview_requested', targetId: workspaceId }),
-    );
-    expect(sandbox.operationKeys.at(-1)).toMatch(/^op_/);
   });
 
   it('durably records one workspace intent before dispatch and retries its stable workspace identity', async () => {
@@ -1243,7 +1158,6 @@ describe('workspace passthrough routes', () => {
       ['start', 'provisioning', undefined],
       ['checkpoint', 'started', { kind: 'active' }],
       ['terminate', 'provisioning', undefined],
-      ['preview', 'started', { port: 3000, ttlSeconds: 60 }],
     ] as const) {
       const created = await wired.built.app.inject({
         method: 'POST',
@@ -1311,7 +1225,6 @@ describe('workspace passthrough routes', () => {
       ['start', 'provisioning', undefined],
       ['checkpoint', 'started', { kind: 'active' }],
       ['terminate', 'provisioning', undefined],
-      ['preview', 'started', { port: 3000, ttlSeconds: 60 }],
     ] as const) {
       const seeded: Workspace = {
         id: newId('ws'), organizationId: wired.organizationId, projectId: project.id, branchId: null,

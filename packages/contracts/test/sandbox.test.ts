@@ -3,7 +3,6 @@ import {
   CheckpointKindSchema,
   CreateWorkspaceInputSchema,
   NetworkProfileSchema,
-  PreviewHandleSchema,
   RESOURCE_PROFILES,
   ResourceProfileSchema,
   WorkspacePurposeSchema,
@@ -80,25 +79,6 @@ describe('NetworkProfileSchema', () => {
 describe('CheckpointKindSchema', () => {
   it('is exactly the PRD §18.8 retention classes, in order', () => {
     expect(CheckpointKindSchema.options).toEqual(['active', 'diagnostic', 'release_evidence']);
-  });
-});
-
-describe('PreviewHandleSchema', () => {
-  const handle = {
-    providerWorkspaceId: 'sb-01H9',
-    url: 'https://preview.modal.example/ws/sb-01H9',
-    expiresAt: '2026-08-03T13:00:00.000Z',
-  };
-
-  it('round-trips an authenticated preview session', () => {
-    expect(PreviewHandleSchema.parse(handle)).toEqual(handle);
-  });
-
-  it('rejects a preview served over plain http', () => {
-    expect(
-      PreviewHandleSchema.safeParse({ ...handle, url: 'http://preview.modal.example/ws/sb-01H9' })
-        .success,
-    ).toBe(false);
   });
 });
 

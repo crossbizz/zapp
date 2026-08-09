@@ -7,6 +7,7 @@ import type {
   Environment,
   Project,
   ProjectContract,
+  PreviewShareRow,
   Repository,
   SecretMetadata,
   Specification,
@@ -83,6 +84,7 @@ export class InMemoryTenantData {
   readonly events: AgentEventRow[] = [];
   readonly auditEvents: AuditEvent[] = [];
   readonly workspaces: Workspace[] = [];
+  readonly previewShares: PreviewShareRow[] = [];
   readonly operations = new Map<
     string,
     { readonly key: string; state: 'requested' | 'completed' | 'rejected' }
@@ -174,6 +176,19 @@ async function withRunCreateLock<T>(
 function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
   return {
     organizationId: orgId,
+
+    previewShares: {
+      getById(shareId) {
+        return Promise.resolve(
+          mine(orgId, data.previewShares).find((row) => row.id === shareId),
+        );
+      },
+      listByProject(projectId) {
+        return Promise.resolve(
+          mine(orgId, data.previewShares).filter((row) => row.projectId === projectId),
+        );
+      },
+    },
 
     auditEvents: {
       list(request): Promise<StorePage<AuditEvent>> {

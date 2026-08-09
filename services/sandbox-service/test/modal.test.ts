@@ -667,7 +667,7 @@ describe('Modal image provider facade', () => {
         appName: 'zapp-workspaces',
         digest: 'im-built0123',
         experimentalOptions: { vm_runtime: true },
-        encryptedPorts: [8877],
+        encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
         volumeMountPath: '/workspace-probe',
         tags: {

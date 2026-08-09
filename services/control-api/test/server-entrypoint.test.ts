@@ -28,6 +28,12 @@ const production = vi.hoisted(() => {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const preview = {
+    signingKey: Buffer.alloc(32, 0x44),
+    keyVersion: 1,
+    previewBaseDomain: 'preview.zapp.test',
+    sandboxServiceUrl: 'https://sandbox.internal',
+  };
 
   return {
     app,
@@ -35,6 +41,7 @@ const production = vi.hoisted(() => {
     database,
     eventPublisher,
     eventPublisherLifecycle,
+    preview,
     redis,
     bootstrapControlApiServer: vi
       .fn<(input: unknown) => Promise<void>>()
@@ -59,6 +66,7 @@ const production = vi.hoisted(() => {
     })),
     loadGitServiceUrl: vi.fn(() => undefined),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
+    loadPreviewEnv: vi.fn(() => preview),
     loadRateLimitSettings: vi.fn(() => ({ kind: 'production-rate-limits' })),
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
     loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
@@ -78,6 +86,7 @@ vi.mock('../src/config/rate-limits.js', () => ({
 vi.mock('../src/env.js', () => ({
   loadEnv: production.loadEnv,
   loadMasterKey: production.loadMasterKey,
+  loadPreviewEnv: production.loadPreviewEnv,
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
@@ -125,6 +134,8 @@ describe('control-api production entrypoint', () => {
         redis: production.redis,
         eventWakeups: production.redis,
         runIntentHmacKey: Buffer.alloc(32, 0x33),
+        preview: production.preview,
+        previewRedis: production.redis,
       }),
     );
     expect(production.app.listen).not.toHaveBeenCalled();

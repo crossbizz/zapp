@@ -459,6 +459,43 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/organizations/{organizationId}/preview-shares/{shareId}/sessions": {
+    "post": {
+      "security": [
+        {},
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/preview/session": {
+    "post": {
+      "security": [],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/projects": {
     "get": {
       "security": [
@@ -542,6 +579,27 @@ export const PUBLIC_API_OPERATIONS = {
     }
   },
   "/v1/projects/{projectId}/contract": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/projects/{projectId}/preview/shares": {
     "get": {
       "security": [
         {
@@ -1118,8 +1176,30 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
-  "/v1/workspaces/{workspaceId}/preview": {
+  "/v1/workspaces/{workspaceId}/preview/shares": {
     "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/preview/shares/{shareId}": {
+    "delete": {
       "security": [
         {
           "bearerAuth": []

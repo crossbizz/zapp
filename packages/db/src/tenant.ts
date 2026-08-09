@@ -4,7 +4,12 @@ import { and, desc, eq } from 'drizzle-orm';
 import type { Database } from './client.js';
 import type { AgentEventRow } from './schema/execution.js';
 import { agentRuns, type AgentRun } from './schema/planning.js';
-import { projects, type Project } from './schema/projects.js';
+import {
+  previewShares,
+  projects,
+  type PreviewShareRow,
+  type Project,
+} from './schema/projects.js';
 
 /**
  * Tenant-scoped reads (PRD §22.3, plan 01 FND-6).
@@ -53,11 +58,17 @@ export interface EventRepository {
   byRun(runId: string, range?: EventRange): Promise<AgentEventRow[]>;
 }
 
+export interface PreviewShareRepository {
+  getById(shareId: string): Promise<PreviewShareRow | undefined>;
+  listByProject(projectId: string): Promise<PreviewShareRow[]>;
+}
+
 export interface TenantDb {
   readonly organizationId: string;
   readonly projects: ProjectRepository;
   readonly runs: RunRepository;
   readonly events: EventRepository;
+  readonly previewShares: PreviewShareRepository;
 }
 
 interface RawAgentEventRow {
@@ -303,6 +314,32 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
           }
           reserved.release();
         }
+      },
+    },
+
+    previewShares: {
+      async getById(shareId: string): Promise<PreviewShareRow | undefined> {
+        const [share] = await db
+          .select()
+          .from(previewShares)
+          .where(
+            and(eq(previewShares.organizationId, orgId), eq(previewShares.id, shareId)),
+          )
+          .limit(1);
+        return share;
+      },
+
+      async listByProject(projectId: string): Promise<PreviewShareRow[]> {
+        return await db
+          .select()
+          .from(previewShares)
+          .where(
+            and(
+              eq(previewShares.organizationId, orgId),
+              eq(previewShares.projectId, projectId),
+            ),
+          )
+          .orderBy(desc(previewShares.id));
       },
     },
   };

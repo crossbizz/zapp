@@ -99,7 +99,7 @@ export interface ModalSdkVmSandboxInput {
   readonly tags: SandboxTags;
   readonly environmentVariables: Readonly<Record<string, string>>;
   readonly experimentalOptions: Readonly<{ vm_runtime: true }>;
-  readonly encryptedPorts: readonly [8877];
+  readonly encryptedPorts: readonly [8877, 8080];
   readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
   readonly volumeMountPath: '/workspace-probe';
 }
@@ -651,7 +651,7 @@ async function runSmoke(
     tags,
     environmentVariables,
     experimentalOptions: { vm_runtime: true },
-    encryptedPorts: [8877],
+    encryptedPorts: [8877, 8080],
     readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
     volumeMountPath: '/workspace-probe',
   });
@@ -811,7 +811,7 @@ export interface ModalWorkspaceCreateOptions {
     ];
   }>;
   readonly command: readonly string[];
-  readonly encryptedPorts: readonly [8877];
+  readonly encryptedPorts: readonly [8877, 8080];
   readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
   readonly timeoutMs: number;
 }
@@ -823,6 +823,7 @@ export interface ModalWorkspaceSandbox {
   agentHealth(token: string): Promise<unknown>;
   agentRequest(request: AgentHttpRequest): Promise<AgentHttpResponse>;
   agentStream(request: AgentHttpRequest): Promise<AgentHttpStream>;
+  tunnels(timeoutMs: number): Promise<Readonly<Record<number, ModalSdkTunnel>>>;
   terminate(): Promise<void>;
 }
 
@@ -1129,6 +1130,12 @@ function createModalWorkspaceSdk(
         } catch {
           return { ok: false, details: 'workspace agent returned an invalid health response' };
         }
+      },
+      async tunnels(timeoutMs) {
+        const tunnels = await sandbox.tunnels(timeoutMs);
+        return Object.fromEntries(
+          Object.entries(tunnels).map(([port, tunnel]) => [port, { url: tunnel.url }]),
+        );
       },
       async agentRequest(request) {
         const query = new URLSearchParams(request.query).toString();
@@ -1443,7 +1450,7 @@ export class ModalSandboxProvider {
         sandboxName: volume.sandboxName,
         volume: { name: volume.volumeName, mounts: volume.mounts },
         command: workspaceBootCommand(volume, input.purpose === 'verifier'),
-        encryptedPorts: [8877],
+        encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: HEALTH_PROBE_INTERVAL_MS },
         timeoutMs: WORKSPACE_TIMEOUT_MS,
       });
@@ -1564,6 +1571,22 @@ export class ModalSandboxProvider {
         createdAt: attachment.createdAt.toISOString(),
         expiresAt: new Date(attachment.createdAt.getTime() + WORKSPACE_TIMEOUT_MS).toISOString(),
       });
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async resolvePreviewTunnel(providerWorkspaceId: string): Promise<URL> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      const tunnel = (await sandbox.tunnels(HEALTH_PROBE_TIMEOUT_MS))[8080];
+      if (tunnel === undefined) throw new Error('Workspace preview tunnel was not found');
+      const url = new URL(tunnel.url);
+      if (url.protocol !== 'https:') throw new Error('Workspace preview tunnel is not encrypted');
+      return url;
     } finally {
       sdk.close();
     }

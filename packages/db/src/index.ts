@@ -5,6 +5,7 @@ export {
   type EventRange,
   type EventRepository,
   type ProjectRepository,
+  type PreviewShareRepository,
   type RunRepository,
   type TenantDb,
 } from './tenant.js';
@@ -37,6 +38,7 @@ export {
   branches,
   environments,
   projectContracts,
+  previewShares,
   projects,
   repositories,
   type Branch,
@@ -48,6 +50,8 @@ export {
   type NewRepository,
   type Project,
   type ProjectContract,
+  type PreviewShareRow,
+  type NewPreviewShareRow,
   type Repository,
 } from './schema/projects.js';
 

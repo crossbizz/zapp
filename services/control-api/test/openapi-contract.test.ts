@@ -7,6 +7,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AppInstance } from '../src/app.js';
 import type { AuthIdentity } from '../src/auth/port.js';
 import { PUBLIC_API_OPERATIONS } from '../../../packages/api-client/src/generated-operations.js';
+import {
+  createInMemoryPreviewSessionStore,
+  createInMemoryPreviewShareStore,
+} from '../src/routes/preview.js';
 import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
 
 const GENERATED_TYPES = resolve(
@@ -40,6 +44,18 @@ function documentedHarness(): Harness {
   const built = buildHarness({
     tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
+    },
+    preview: {
+      shares: createInMemoryPreviewShareStore(),
+      sessions: createInMemoryPreviewSessionStore(),
+      proxy: {
+        request: () => Promise.reject(new Error('OpenAPI must not proxy preview traffic.')),
+        openWebSocket: () => Promise.reject(new Error('OpenAPI must not proxy WebSockets.')),
+      },
+      signingKey: Buffer.alloc(32),
+      keyVersion: 1,
+      appBaseUrl: new URL('https://app.zapp.test'),
+      previewBaseDomain: 'preview.zapp.test',
     },
   });
   apps.push(built.app);
