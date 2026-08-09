@@ -1,4 +1,5 @@
 import { ApiErrorSchema, newId } from '@zapp/contracts';
+import type { AgentEventRow, AgentRun } from '@zapp/db';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
@@ -218,7 +219,90 @@ const candidateBody = (wired: Wired) => ({
   specificationId: null,
 });
 
+function seedCompletedRunForCommit(
+  wired: Wired,
+  mode: AgentRun['mode'],
+  commitSha: string,
+): AgentRun {
+  const run: AgentRun = {
+    id: newId('run'),
+    organizationId: wired.organizationId,
+    projectId: wired.projectId,
+    branchId: null,
+    mode,
+    appType: 'web',
+    model: null,
+    requestFingerprint: `${mode}:${commitSha}`,
+    status: 'completed',
+    specificationId: null,
+    temporalWorkflowId: newId('run'),
+    startedBy: wired.owner.userId,
+    budgetJson: null,
+    startedAt: new Date('2026-08-09T18:00:00.000Z'),
+    completedAt: new Date('2026-08-09T18:01:00.000Z'),
+  };
+  const event: AgentEventRow = {
+    id: newId('evt'),
+    organizationId: wired.organizationId,
+    projectId: wired.projectId,
+    runId: run.id,
+    sequence: 1,
+    type: 'commit.created',
+    payloadJson: {
+      commitSha,
+      message: 'feat: complete prototype',
+      diffstat: [],
+      mode,
+    },
+    visibility: 'user',
+    occurredAt: new Date('2026-08-09T18:01:00.000Z'),
+    phaseId: null,
+    taskId: null,
+    agentId: null,
+  };
+  wired.data.runs.push(run);
+  wired.data.events.push(event);
+  return run;
+}
+
 describe('release route shells', () => {
+  it('rejects a prototype-only commit until a Build run owns the same commit', async () => {
+    const wired = await wire();
+    const commitSha = candidateBody(wired).commitSha;
+    seedCompletedRunForCommit(wired, 'prototype', commitSha);
+
+    const rejected = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-prototype-rejected-01'),
+      payload: candidateBody(wired),
+    });
+
+    expect(rejected.statusCode, rejected.body).toBe(409);
+    expect(ApiErrorSchema.parse(rejected.json()).error.code).toBe('prototype_not_deployable');
+    expect(wired.releases.creates).toHaveLength(0);
+
+    const abbreviated = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-prototype-abbreviated-01'),
+      payload: { ...candidateBody(wired), commitSha: commitSha.slice(0, 7) },
+    });
+    expect(abbreviated.statusCode, abbreviated.body).toBe(400);
+    expect(wired.releases.creates).toHaveLength(0);
+
+    seedCompletedRunForCommit(wired, 'build', commitSha);
+    const converted = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-prototype-converted-01'),
+      payload: candidateBody(wired),
+    });
+
+    expect(converted.statusCode, converted.body).toBe(201);
+    expect(wired.releases.creates).toHaveLength(1);
+  });
+
   it('lets Owner create, read, approve, deploy, rollback, and read strict evidence', async () => {
     const wired = await wire();
     const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-create-01'), payload: candidateBody(wired) });

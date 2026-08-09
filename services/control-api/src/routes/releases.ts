@@ -1,4 +1,4 @@
-import { idSchema } from '@zapp/contracts';
+import { CommitShaSchema, idSchema, RunModeSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -13,7 +13,24 @@ import { operationOf } from './runs.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') }).strict();
 const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
-const CommitShaSchema = z.string().regex(/^[a-f0-9]{7,64}$/);
+const CommitCreatedPayloadSchema = z
+  .object({
+    commitSha: CommitShaSchema,
+    message: z.string().min(1).max(10_000),
+    diffstat: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1).max(4_096),
+            additions: z.number().int().nonnegative(),
+            deletions: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(10_000),
+    mode: RunModeSchema,
+  })
+  .strict();
 
 const CreateReleaseBody = z
   .object({
@@ -163,6 +180,23 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     )
       throw projectNotFound();
     authorize(ctx, 'edit_code');
+    const commitRunModes = new Set<z.infer<typeof RunModeSchema>>();
+    for (const run of await ctx.db.runs.byProject(project.id)) {
+      for (const event of await ctx.db.events.byRun(run.id)) {
+        if (event.type !== 'commit.created') continue;
+        const payload = CommitCreatedPayloadSchema.safeParse(event.payloadJson);
+        if (payload.success && payload.data.commitSha === request.body.commitSha) {
+          commitRunModes.add(run.mode);
+        }
+      }
+    }
+    if (commitRunModes.has('prototype') && !commitRunModes.has('build')) {
+      throw new ApiError(
+        'prototype_not_deployable',
+        409,
+        'Prototype-only commits must be converted to Build before release creation.',
+      );
+    }
     const operationKey = operationOf(request);
     const expected = {
       organizationId: ctx.organizationId,

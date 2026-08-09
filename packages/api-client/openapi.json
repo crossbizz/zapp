@@ -10419,7 +10419,7 @@
                   },
                   "commitSha": {
                     "type": "string",
-                    "pattern": "^[a-f0-9]{7,64}$"
+                    "pattern": "^[0-9a-f]{40}$"
                   },
                   "specificationId": {
                     "type": "string",
@@ -11392,7 +11392,7 @@
                         },
                         "commit_sha": {
                           "type": "string",
-                          "pattern": "^[a-f0-9]{7,64}$"
+                          "pattern": "^[0-9a-f]{40}$"
                         },
                         "specification_version": {
                           "type": "integer",

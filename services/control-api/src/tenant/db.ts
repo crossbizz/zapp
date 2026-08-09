@@ -17,6 +17,7 @@ import {
   artifacts,
   auditEvents,
   branches,
+  decisions,
   environments,
   forOrg,
   MAX_EVENT_PAYLOAD_BYTES,
@@ -56,6 +57,7 @@ import {
   type VerificationResult,
 } from '@zapp/db';
 import { and, asc, desc, eq, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
 import type { PageRequest, StorePage } from '../pagination.js';
@@ -70,6 +72,22 @@ import {
   NO_SYNC,
   type SourceType,
 } from './vocabulary.js';
+
+const PrototypeAssumptionsPayloadSchema = z
+  .object({
+    kind: z.literal('prototype_assumptions'),
+    mocks: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1).max(160),
+            reason: z.string().trim().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict();
 
 /**
  * The only database handle a route handler is ever given.
@@ -704,6 +722,28 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               });
             }
             const inserted = await tx.insert(agentEvents).values(pending).returning();
+            const assumptionDecisions = input.events.flatMap((event) => {
+              if (
+                event.type !== 'artifact.created' ||
+                event.payload['kind'] !== 'prototype_assumptions'
+              ) {
+                return [];
+              }
+              return PrototypeAssumptionsPayloadSchema.parse(event.payload).mocks.map((mock) => ({
+                id: newId('dec'),
+                organizationId: orgId,
+                projectId: input.projectId,
+                specificationId: null,
+                question: `May Prototype mode mock ${mock.name}?`,
+                decision: `Mock ${mock.name} for this prototype.`,
+                rationale: mock.reason,
+                madeBy: event.agentId ?? 'builder',
+                createdAt: new Date(event.occurredAt),
+              }));
+            });
+            if (assumptionDecisions.length > 0) {
+              await tx.insert(decisions).values(assumptionDecisions);
+            }
             await tx.execute(sql`select pg_notify('agent_events', ${input.runId})`);
             await input.audit(tx, inserted);
             return { kind: 'stored', events: inserted };

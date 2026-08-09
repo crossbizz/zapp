@@ -241,8 +241,8 @@ behavior is in scope.
 **Files:** Modify: `src/workflows/run.ts`; Create: `test/modes.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior: Ask — toolset filtered to read tools (PRD §11.1), answers must cite files/commits/tests (prompt + a citation lint on output: response missing any `path:line` or commit ref when claims reference code → verifier-style warning event); Prototype — optimizes for preview, may mock (each mock recorded as `assumption` decision row + labeled in UI via event payload `mocks: []`), **not deploy-eligible**: release creation for prototype-only runs rejected (`prototype_not_deployable`) until converted to Build (PRD §11.2); still requires dev-server + smoke gate.
-- [ ] Commit: `feat(orchestrator): ask + prototype modes with guardrails`
+- [x] Binding behavior: Ask — toolset filtered to read tools (PRD §11.1), answers must cite files/commits/tests (prompt + a citation lint on output: response missing any `path:line` or commit ref when claims reference code → verifier-style warning event); Prototype — optimizes for preview, may mock (each mock recorded as `assumption` decision row + labeled in UI via event payload `mocks: []`), **not deploy-eligible**: release creation for prototype-only runs rejected (`prototype_not_deployable`) until converted to Build (PRD §11.2); still requires dev-server + smoke gate.
+- [x] Commit: `feat(orchestrator): ask + prototype modes with guardrails`
 
 ### Task AR-16 [M3]: specification-engine — interview + spec artifact
 
@@ -365,3 +365,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-13 done — Added tenant-scoped Mission Control aggregate and paginated APIs with generated SDK, authoritative table overlays, approved-credit ceilings, terminal agent cleanup, and producer-backed commit diffstats; review passed in round 2 and forced affected verification was 21/21.
 - 2026-08-09 AR-3B-FIX-1 done — Closed the review-cap abort and renewal gaps with AI SDK final-usage settlement and retryable indeterminate renewal handling; model-gateway passed 81/81 and review passed in round 1, while AR-3B remains blocked only on its already-consumed Anthropic cache proof returning HTTP 401.
 - 2026-08-09 AR-14 done — Added exact credit-state budget warnings/cutoff, durable Temporal approval pause/resume or checkpoint-cancel, tenant-scoped stored approval resolution, and the generated public SDK; the explicit API/accounting/storage joins required files beyond the terse task list, and review passed in round 2 after preventing non-budget approval mutation.
+- 2026-08-09 AR-15 done — Added read-only cited Ask runs and durable Prototype mock assumptions, required successful dev-server/smoke evidence, and blocked prototype-only releases with a full-SHA public API guard; review passed in round 2.

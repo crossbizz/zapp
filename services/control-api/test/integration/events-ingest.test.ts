@@ -9,6 +9,7 @@ import {
   agentRuns,
   agentTasks,
   createDb,
+  decisions,
   organizations,
   projects,
   users,
@@ -418,6 +419,56 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
         visibility: 'user',
         payload_json: { message: 'event persisted' },
       }),
+    ]);
+  });
+
+  it('records every Prototype mock as a durable assumption decision in the event transaction', async () => {
+    const response = await post(
+      [
+        event({
+          type: 'artifact.created',
+          visibility: 'user',
+          payload: {
+            kind: 'prototype_assumptions',
+            mocks: [
+              { name: 'payment-provider', reason: 'Preview checkout before provider setup.' },
+              { name: 'email-delivery', reason: 'Preview receipts before mail setup.' },
+            ],
+          },
+        }),
+      ],
+      { key: 'events-prototype-assumptions-01' },
+    );
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(
+      await database.db
+        .select({
+          organizationId: decisions.organizationId,
+          projectId: decisions.projectId,
+          question: decisions.question,
+          decision: decisions.decision,
+          rationale: decisions.rationale,
+          madeBy: decisions.madeBy,
+        })
+        .from(decisions),
+    ).toEqual([
+      {
+        organizationId,
+        projectId,
+        question: 'May Prototype mode mock payment-provider?',
+        decision: 'Mock payment-provider for this prototype.',
+        rationale: 'Preview checkout before provider setup.',
+        madeBy: 'builder',
+      },
+      {
+        organizationId,
+        projectId,
+        question: 'May Prototype mode mock email-delivery?',
+        decision: 'Mock email-delivery for this prototype.',
+        rationale: 'Preview receipts before mail setup.',
+        madeBy: 'builder',
+      },
     ]);
   });
 

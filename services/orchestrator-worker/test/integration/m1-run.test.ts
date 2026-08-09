@@ -348,6 +348,8 @@ describe('AR-8 M1 durable Temporal run', () => {
       mode: 'build',
       model: null,
       prompt: 'Cancel the durable activity.',
+      allowedTools: [],
+      modeInstructions: 'Complete the verified Build task.',
       budget: null,
       idempotencyKey: 'cancel-durable-activity',
     };
@@ -455,6 +457,7 @@ describe('AR-8 M1 durable Temporal run', () => {
       expect(state.events.find((event) => event.type === 'commit.created')?.payload).toEqual({
         commitSha: '0123456789abcdef0123456789abcdef01234567',
         message: 'Complete M1 builder task',
+        mode: 'build',
         diffstat: [{ path: 'src/app.ts', additions: 12, deletions: 3 }],
       });
       expect(state.events.every((event) => event.runId === runId)).toBe(true);

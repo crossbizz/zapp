@@ -64,6 +64,7 @@ export const SessionInputSchema = z
     taskId: z.string().min(1).optional(),
     role: ContextRoleSchema,
     mode: RunModeSchema,
+    modeInstructions: z.string().min(1).max(4_000).optional(),
     context: AssembledContextSchema,
     tools: z.array(z.enum(TOOL_NAMES)).superRefine((tools, validation) => {
       if (new Set(tools).size !== tools.length) {
@@ -106,10 +107,36 @@ export const SessionResultSchema = z
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),
+    completedTools: z.array(z.enum(TOOL_NAMES)).optional(),
+    mocks: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1).max(160),
+            reason: z.string().trim().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .max(100)
+      .optional(),
     pendingApproval: ApprovalRequestSchema.optional(),
   })
   .strict();
 export type SessionResult = z.infer<typeof SessionResultSchema>;
+
+const PrototypeMockSchema = z
+  .object({
+    name: z.string().trim().min(1).max(160),
+    reason: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+const PrototypeCompletionSchema = z
+  .object({
+    summary: z.string().trim().min(1).max(1_000_000),
+    mocks: z.array(PrototypeMockSchema).max(100),
+  })
+  .strict();
 
 export const SessionEventSchema = z
   .object({
@@ -251,12 +278,41 @@ function usedBy(event: Extract<GatewayStreamEvent, { type: 'usage' }>): number {
   return Math.max(event.totalTokens ?? 0, (event.inputTokens ?? 0) + (event.outputTokens ?? 0));
 }
 
+function toolOutcomeSucceeded(output: unknown): boolean {
+  return (
+    typeof output === 'object' &&
+    output !== null &&
+    'ok' in output &&
+    (output as { readonly ok?: unknown }).ok === true
+  );
+}
+
+function parsePrototypeCompletion(
+  value: string,
+  redact: (value: string) => string,
+): z.infer<typeof PrototypeCompletionSchema> {
+  const parsed = PrototypeCompletionSchema.parse(JSON.parse(value) as unknown);
+  return PrototypeCompletionSchema.parse({
+    summary: redact(parsed.summary),
+    mocks: parsed.mocks.map((mock) => ({
+      name: redact(mock.name),
+      reason: redact(mock.reason),
+    })),
+  });
+}
+
 function terminal(transcript: SessionTranscript, pendingApproval?: ApprovalRequest): SessionResult {
   return SessionResultSchema.parse({
     status: transcript.terminalStatus ?? 'needs_approval',
     commits: transcript.commits,
     artifacts: transcript.artifacts,
     summary: transcript.summary,
+    ...(transcript.mode === 'prototype'
+      ? {
+          completedTools: transcript.successfulToolNames,
+          mocks: transcript.prototypeMocks,
+        }
+      : {}),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
   });
 }
@@ -329,7 +385,12 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       if (loaded === undefined) {
         const initial = initialMessages(input);
         provenance = initial.provenance;
-        initial.messages[0] = { role: 'system', content: dependencies.prompts[input.role] };
+        initial.messages[0] = {
+          role: 'system',
+          content: [dependencies.prompts[input.role], input.modeInstructions]
+            .filter((part): part is string => part !== undefined)
+            .join('\n\n'),
+        };
         transcript = await dependencies.transcripts.save(null, {
           key,
           role: input.role,
@@ -343,6 +404,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           tokensUsed: 0,
           inFlightCompletion: null,
           completedToolCallIds: [],
+          completedToolNames: [],
+          successfulToolNames: [],
+          prototypeMocks: [],
           pendingToolCalls: [],
           activeToolCallId: null,
           executionLease: null,
@@ -397,7 +461,13 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         summary: string,
         errorCode: string | null = null,
       ): Promise<SessionResult> => {
-        transcript.summary = dependencies.redact(summary);
+        if (transcript.mode === 'prototype' && status === 'completed') {
+          const completion = parsePrototypeCompletion(summary, dependencies.redact);
+          transcript.summary = completion.summary;
+          transcript.prototypeMocks = completion.mocks;
+        } else {
+          transcript.summary = dependencies.redact(summary);
+        }
         transcript.terminalStatus = status;
         transcript.terminalErrorCode = errorCode;
         await save();
@@ -1009,6 +1079,15 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           });
           transcript.pendingToolCalls.shift();
           transcript.completedToolCallIds.push(call.toolCallId);
+          if (!transcript.completedToolNames.includes(call.toolName)) {
+            transcript.completedToolNames.push(call.toolName);
+          }
+          if (
+            toolOutcomeSucceeded(executed.output) &&
+            !transcript.successfulToolNames.includes(call.toolName)
+          ) {
+            transcript.successfulToolNames.push(call.toolName);
+          }
           transcript.activeToolCallId = null;
           transcript.executionLease = null;
           provenance.push({ trust: 'untrusted', source: `tool:${call.toolName}` });

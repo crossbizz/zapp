@@ -93,6 +93,19 @@ const SessionTranscriptBaseSchema = z
     tokensUsed: z.number().int().nonnegative().safe(),
     inFlightCompletion: InFlightCompletionSchema.nullable().default(null),
     completedToolCallIds: z.array(z.string().min(1)),
+    completedToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
+    successfulToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
+    prototypeMocks: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1).max(160),
+            reason: z.string().trim().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .max(100)
+      .default([]),
     pendingToolCalls: z.array(SessionToolCallSchema),
     activeToolCallId: z.string().min(1).nullable(),
     executionLease: ExecutionLeaseSchema.nullable(),

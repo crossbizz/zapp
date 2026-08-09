@@ -1,4 +1,5 @@
 import {
+  ApplicationFailure,
   condition,
   continueAsNew,
   defineSignal,
@@ -6,6 +7,7 @@ import {
   setHandler,
   type RetryPolicy,
 } from '@temporalio/workflow';
+import { TOOL_GROUPS, TOOL_NAMES, type ToolName } from '@zapp/contracts/tools';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
@@ -54,7 +56,7 @@ export const RunWorkflowResultSchema = z.discriminatedUnion('status', [
   z
     .object({
       status: z.literal('completed'),
-      commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+      commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u).nullable(),
     })
     .strict(),
   z.object({ status: z.literal('cancelled'), checkpointRef: z.string().min(1) }).strict(),
@@ -108,6 +110,54 @@ const BudgetApprovalResolutionSchema = z.discriminatedUnion('decision', [
 export const budgetApprovalResolvedSignal = defineSignal<[unknown]>('budgetApprovalResolved');
 
 const M1_COMMIT_MESSAGE = 'Complete M1 builder task';
+
+const PrototypeMockSchema = z
+  .object({
+    name: z.string().trim().min(1).max(160),
+    reason: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+const ASK_MODE_INSTRUCTIONS =
+  'Use only read-only tools. Cite every code claim with path:line, a commit ref, or test/runtime evidence.';
+const PROTOTYPE_MODE_INSTRUCTIONS =
+  'Optimize for a working preview. Start the dev server, run the preview smoke test, and label every mock or incomplete integration. Finish with exactly one strict JSON object and no other text: {"summary":"<user-facing summary>","mocks":[{"name":"<mock name>","reason":"<why it is mocked>"}]}.';
+const DEFAULT_MODE_INSTRUCTIONS = 'Follow the run mode and complete the requested verified work.';
+
+export interface RunModeGuardrails {
+  readonly allowedTools: readonly ToolName[];
+  readonly modeInstructions: string;
+}
+
+export function runModeGuardrails(mode: RunWorkflowInput['mode']): RunModeGuardrails {
+  if (mode === 'ask') {
+    return { allowedTools: TOOL_GROUPS.read, modeInstructions: ASK_MODE_INSTRUCTIONS };
+  }
+  if (mode === 'prototype') {
+    const forbidden = new Set<ToolName>([
+      'create_release_candidate',
+      'deploy_release',
+      'check_deployment_health',
+      'rollback_release',
+    ]);
+    return {
+      allowedTools: TOOL_NAMES.filter((tool) => !forbidden.has(tool)),
+      modeInstructions: PROTOTYPE_MODE_INSTRUCTIONS,
+    };
+  }
+  return { allowedTools: TOOL_NAMES, modeInstructions: DEFAULT_MODE_INSTRUCTIONS };
+}
+
+function askAnswerNeedsCitation(answer: string): boolean {
+  const claimsAboutCode =
+    /(?:\b(?:code|class|function|method|implemented|implementation|test|tests)\b|[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)/iu.test(
+      answer,
+    );
+  if (!claimsAboutCode) return false;
+  const pathLine = /(?:^|\s)[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:\d+(?=$|[\s,;)])/u.test(answer);
+  const commitRef = /\b(?:commit\s+)?[0-9a-f]{7,64}\b/iu.test(answer);
+  return !pathLine && !commitRef;
+}
 
 function operationKey(input: RunWorkflowInput, step: string): string {
   return `${input.runId}:task-m1:${step}`;
@@ -207,6 +257,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
   if (input.continuation.phase === 'session') {
     let approvedMaxCredits: number | undefined;
     try {
+      const guardrails = runModeGuardrails(input.mode);
       await events.emitEvents({
         events: [event(input, 'agent.started', 'agent-started', { agent: 'builder' })],
       });
@@ -218,6 +269,8 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         mode: input.mode,
         model: input.model,
         prompt: input.prompt,
+        allowedTools: [...guardrails.allowedTools],
+        modeInstructions: guardrails.modeInstructions,
         budget: input.budget,
         idempotencyKey: operationKey(input, `builder-session-${String(budgetAttempt)}`),
       });
@@ -318,6 +371,52 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         case 'cancelled':
           throw new Error(`builder_session_${sessionResult.status}`);
       }
+      if (input.mode === 'ask') {
+        const completedEvents: PendingAgentEvent[] = [
+          event(input, 'agent.completed', 'agent-completed', { agent: 'builder' }),
+        ];
+        if (askAnswerNeedsCitation(sessionResult.summary)) {
+          completedEvents.push(
+            event(input, 'verification.completed', 'ask-citation-warning', {
+              code: 'ask_citation_required',
+              severity: 'warning',
+            }),
+          );
+        }
+        completedEvents.push(
+          event(input, 'run.completed', 'run-completed', { status: 'completed' }),
+        );
+        await events.emitEvents({ events: completedEvents });
+        await events.transitionRunStatus({
+          runId: input.runId,
+          status: 'completed',
+          idempotencyKey: operationKey(input, 'status-completed'),
+        });
+        return RunWorkflowResultSchema.parse({ status: 'completed', commitSha: null });
+      }
+      if (input.mode === 'prototype') {
+        const completedTools = new Set(sessionResult.completedTools ?? []);
+        if (
+          !completedTools.has('run_dev_server') ||
+          !completedTools.has('run_preview_smoke_test')
+        ) {
+          throw ApplicationFailure.nonRetryable(
+            'prototype_preview_gate_incomplete',
+            'prototype_preview_gate_incomplete',
+          );
+        }
+        const mocks = z.array(PrototypeMockSchema).max(100).parse(sessionResult.mocks ?? []);
+        if (mocks.length > 0) {
+          await events.emitEvents({
+            events: [
+              event(input, 'artifact.created', 'prototype-assumptions', {
+                kind: 'prototype_assumptions',
+                mocks,
+              }),
+            ],
+          });
+        }
+      }
     } catch (error: unknown) {
       await events.transitionRunStatus({
         runId: input.runId,
@@ -358,6 +457,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
           commitSha: committed.commitSha,
           message: M1_COMMIT_MESSAGE,
           diffstat: committed.diffstat,
+          mode: input.mode,
         }),
         event(input, 'run.completed', 'run-completed', { status: 'completed' }),
       ],

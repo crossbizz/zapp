@@ -171,6 +171,111 @@ function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
 }
 
 describe('agent session loop', () => {
+  it('places run-mode guardrails in the model system message', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        { type: 'text-delta', text: 'Answer with citations.' },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 2 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await session.run({
+      ...input(),
+      mode: 'ask',
+      modeInstructions: 'Use only read tools and cite every code claim.',
+    });
+
+    expect(scripted.requests[0]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'builder prompt\n\nUse only read tools and cite every code claim.',
+    });
+  });
+
+  it('durably returns strict Prototype mocks without counting a failed smoke result', async () => {
+    const preview: PreviewToolPort = {
+      createPreview: () =>
+        Promise.resolve({ previewId: 'preview-test', url: 'https://preview.example.test' }),
+      runPreviewSmokeTest: () => Promise.resolve({ passed: false, summary: 'route failed' }),
+    };
+    const { registry } = await memoryRegistry({ preview });
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-smoke',
+          toolName: 'run_preview_smoke_test',
+          input: { previewId: 'preview-test' },
+        },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 2 },
+        { type: 'done' },
+      ],
+      [
+        {
+          type: 'text-delta',
+          text: JSON.stringify({
+            summary: 'Prototype needs a healthy preview.',
+            mocks: [{ name: 'payment-provider', reason: 'Provider setup is pending.' }],
+          }),
+        },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 2 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('approved') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    const result = await session.run({
+      ...input(['run_preview_smoke_test']),
+      mode: 'prototype',
+      modeInstructions: 'Return strict Prototype completion JSON.',
+    });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      summary: 'Prototype needs a healthy preview.',
+      mocks: [{ name: 'payment-provider', reason: 'Provider setup is pending.' }],
+      completedTools: [],
+    });
+    const stored = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(stored).toMatchObject({
+      prototypeMocks: [{ name: 'payment-provider', reason: 'Provider setup is pending.' }],
+      successfulToolNames: [],
+    });
+  });
+
+
   it('keeps a foreign completion lease retryable with the durable request intact', async () => {
     const { registry } = await memoryRegistry();
     const transcripts = new MemoryTranscriptStore();

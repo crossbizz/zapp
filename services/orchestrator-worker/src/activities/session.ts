@@ -1,6 +1,6 @@
 import { CompleteAsyncError, Context } from '@temporalio/activity';
 import { ActivityCancelledError } from '@temporalio/client';
-import { idSchema, RunModeSchema } from '@zapp/contracts';
+import { idSchema, RunModeSchema, TOOL_NAMES } from '@zapp/contracts';
 import { z } from 'zod';
 
 import {
@@ -35,6 +35,12 @@ export const RunBuilderSessionInputSchema = z
     mode: RunModeSchema,
     model: z.string().min(1).max(160).nullable(),
     prompt: z.string().min(1).max(20_000),
+    allowedTools: z.array(z.enum(TOOL_NAMES)).superRefine((tools, validation) => {
+      if (new Set(tools).size !== tools.length) {
+        validation.addIssue({ code: z.ZodIssueCode.custom, message: 'Allowed tools must be unique' });
+      }
+    }),
+    modeInstructions: z.string().min(1).max(4_000),
     budget: z
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })
       .strict()
@@ -72,8 +78,13 @@ export function adaptSessionLoop(
 ): BuilderSessionRunner {
   return {
     run(input, context) {
+      const built = buildInput(input);
       return createLoop(context.transcripts).run(
-        SessionInputSchema.parse(buildInput(input)),
+        SessionInputSchema.parse({
+          ...built,
+          tools: input.allowedTools,
+          modeInstructions: input.modeInstructions,
+        }),
         context.signal,
       );
     },
