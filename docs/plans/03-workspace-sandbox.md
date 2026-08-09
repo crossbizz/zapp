@@ -234,9 +234,9 @@ those APIs and by trusted runtimes; no UI-private path may bypass either boundar
 **Files:** Create: `src/cost/recorder.ts`, `src/provider/profiles.ts`, `test/cost.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior: profiles exactly PRD §18.10 table (small 0.5/2 cpu 1/4 GiB, standard 1/4 2/8, large 2/8 4/16); recorder samples agent `/metrics` every 30 s while active, on terminate writes `usage_ledger` rows: `sandbox_cpu_seconds` and `sandbox_mem_gib_seconds` = max(requested, observed) per Modal billing model (PRD §18.14), attributed org/project/run/task; pricing multipliers from config file `config/pricing.json`.
-- [ ] Failing tests: ledger rows computed from fake samples match hand-computed values; attribution fields present.
-- [ ] Commit: `feat(sandbox-service): resource profiles + per-sandbox cost attribution`
+- [x] Binding behavior: profiles exactly PRD §18.10 table (small 0.5/2 cpu 1/4 GiB, standard 1/4 2/8, large 2/8 4/16); recorder samples agent `/metrics` every 30 s while active, on terminate writes `usage_ledger` rows: `sandbox_cpu_seconds` and `sandbox_mem_gib_seconds` = max(requested, observed) per Modal billing model (PRD §18.14), attributed org/project/run/task; pricing multipliers from config file `config/pricing.json`.
+- [x] Failing tests: ledger rows computed from fake samples match hand-computed values; attribution fields present.
+- [x] Commit: `feat(sandbox-service): resource profiles + per-sandbox cost attribution`
 
 ### Task WS-9: Volumes & dependency caches
 
@@ -365,3 +365,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-08 WS-6-FIX-1 done — the locked `c58a416` idle health shape is strictly normalized to `devServer: null` at the shared provider/smoke boundary; focused/package/static checks and one SOL review passed, then one real Modal smoke exited 0.
 - 2026-08-08 WS-6 done — the exact eight-state machine, keyed three-attempt provisioning, resumable CAS reaper, and tenant-scoped drift reconciler passed focused 9/9 and package/static gates; `failed`/`abnormal` remain typed outcomes over persisted `terminated`, and the sole round-2 malformed-provider finding was fixed at the two-round cap while the task's initial smoke blocker was closed by WS-6-FIX-1.
 - 2026-08-08 WS-7 done — deterministic checkpoint/restore claims now bind task input and retries, authoritative encrypted-artifact receipts survive crash/key rotation, optional snapshot failures fall back before target mutation, and tenant/tamper/snapshot-deletion cases passed 9/9 plus package/static and one Modal smoke; four final round-2 defects were fixed at the review cap with no third round.
+- 2026-08-08 WS-8 done — exact profiles and strict 30-second requested-or-observed cost accounting passed 6/6 focused and 83/87 package tests plus static gates; transient metrics and keyed ledger retries are covered, the locked-image Modal smoke passed once, and later OPS-1 owns production ledger/config composition.
