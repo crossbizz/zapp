@@ -155,6 +155,48 @@ export const runEventCounters = pgTable('run_event_counters', {
   lastSequence: bigint('last_sequence', { mode: 'number' }).notNull().default(0),
 });
 
+const ACTIVITY_IDEMPOTENCY_STATUSES = ['running', 'completed'] as const;
+
+/**
+ * AR-9's durable activity fence. Temporal can redeliver an activity after any
+ * worker/process failure; this row distinguishes an owned attempt from an exact
+ * completed replay without relying on process memory.
+ */
+export const activityIdempotency = pgTable(
+  'activity_idempotency',
+  {
+    idempotencyKey: text('idempotency_key').primaryKey(),
+    activityType: text('activity_type').notNull(),
+    inputHash: text('input_hash').notNull(),
+    status: text('status', { enum: ACTIVITY_IDEMPOTENCY_STATUSES }).notNull(),
+    ownerId: text('owner_id'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    resultHash: text('result_hash'),
+    resultJson: jsonb('result_json'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'activity_idempotency_input_hash_check',
+      sql`${t.inputHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'activity_idempotency_result_hash_check',
+      sql`${t.resultHash} is null or ${t.resultHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'activity_idempotency_state_check',
+      sql`(
+        (${t.status} = 'running' and ${t.ownerId} is not null and ${t.leaseExpiresAt} is not null and ${t.resultHash} is null and ${t.resultJson} is null)
+        or
+        (${t.status} = 'completed' and ${t.ownerId} is null and ${t.leaseExpiresAt} is null and ${t.resultHash} is not null and ${t.resultJson} is not null)
+      )`,
+    ),
+    index('activity_idempotency_lease_idx').on(t.status, t.leaseExpiresAt),
+  ],
+);
+
 export const artifacts = pgTable(
   'artifacts',
   {

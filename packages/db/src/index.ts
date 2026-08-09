@@ -1,6 +1,12 @@
 export { createDb, type Database, type Db, type Executor, type Transaction } from './client.js';
 export { nextEventSequence } from './events.js';
 export {
+  createActivityIdempotencyRepository,
+  type ActivityIdempotencyClaim,
+  type ActivityIdempotencyClaimInput,
+  type ActivityIdempotencyRepository,
+} from './activity-idempotency.js';
+export {
   forOrg,
   type EventRange,
   type EventRepository,
@@ -89,6 +95,7 @@ export {
 
 // PRD §23.4 — execution and evidence.
 export {
+  activityIdempotency,
   MAX_EVENT_PAYLOAD_BYTES,
   agentEvents,
   artifacts,

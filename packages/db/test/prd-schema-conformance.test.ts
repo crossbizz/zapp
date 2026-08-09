@@ -65,6 +65,10 @@ const NON_PRD_TABLES = new Map([
     'accounting_leader_leases',
     'the database lease that makes active-run credit reconciliation single-leader and bounded as required by plan 10 OPS-1A',
   ],
+  [
+    'activity_idempotency',
+    'the durable Temporal activity claim, lease, result hash, and replay record required by plan 04 AR-9; it is worker-delivery mechanism rather than a PRD domain row',
+  ],
 ]);
 
 /**

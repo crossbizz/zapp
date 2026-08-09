@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activityIdempotency,
   agentEvents,
   artifacts,
   MAX_EVENT_PAYLOAD_BYTES,
@@ -221,5 +222,29 @@ describe('agent_events', () => {
     expect(sqlType(agentEvents, 'sequence')).toBe('bigint');
     expect(sqlType(agentEvents, 'payload_json')).toBe('jsonb');
     expect(sqlType(agentEvents, 'occurred_at')).toBe('timestamp with time zone');
+  });
+});
+
+describe('activity_idempotency (AR-9)', () => {
+  it('pins the durable claim, lease, hash, and replay columns', () => {
+    expect(columnNames(activityIdempotency)).toEqual([
+      'idempotency_key',
+      'activity_type',
+      'input_hash',
+      'status',
+      'owner_id',
+      'lease_expires_at',
+      'result_hash',
+      'result_json',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(enumValues(activityIdempotency, 'status')).toEqual(['running', 'completed']);
+    expect(checkNames(activityIdempotency)).toEqual([
+      'activity_idempotency_input_hash_check',
+      'activity_idempotency_result_hash_check',
+      'activity_idempotency_state_check',
+    ]);
+    expect(indexNames(activityIdempotency)).toEqual(['activity_idempotency_lease_idx']);
   });
 });

@@ -1,4 +1,4 @@
-import { proxyActivities } from '@temporalio/workflow';
+import { continueAsNew, proxyActivities, type RetryPolicy } from '@temporalio/workflow';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
@@ -33,6 +33,14 @@ export const RunWorkflowInputSchema = z
   .strict();
 export type RunWorkflowInput = z.infer<typeof RunWorkflowInputSchema>;
 
+const RunWorkflowContinuationSchema = z.discriminatedUnion('phase', [
+  z.object({ phase: z.literal('session'), workspaceId: z.string().min(1).max(512) }).strict(),
+  z.object({ phase: z.literal('commit'), workspaceId: z.string().min(1).max(512) }).strict(),
+]);
+const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
+  continuation: RunWorkflowContinuationSchema.optional(),
+}).strict();
+
 export const RunWorkflowResultSchema = z
   .object({
     status: z.literal('completed'),
@@ -41,19 +49,29 @@ export const RunWorkflowResultSchema = z
   .strict();
 export type RunWorkflowResult = z.infer<typeof RunWorkflowResultSchema>;
 
+export const ACTIVITY_RETRY_POLICY: RetryPolicy = {
+  initialInterval: '100 milliseconds',
+  maximumAttempts: 3,
+  nonRetryableErrorTypes: [
+    'activity_idempotency_conflict',
+    'activity_idempotency_key_required',
+    'activity_idempotency_corrupt',
+  ],
+};
+
 const workspace = proxyActivities<WorkspaceActivities>({
   startToCloseTimeout: '2 minutes',
-  retry: { maximumAttempts: 5 },
+  retry: ACTIVITY_RETRY_POLICY,
 });
 const session = proxyActivities<SessionActivities>({
   startToCloseTimeout: '30 minutes',
   heartbeatTimeout: '30 seconds',
   cancellationType: 'WAIT_CANCELLATION_COMPLETED',
-  retry: { initialInterval: '100 milliseconds', maximumAttempts: 5 },
+  retry: ACTIVITY_RETRY_POLICY,
 });
 const events = proxyActivities<EventActivities>({
   startToCloseTimeout: '30 seconds',
-  retry: { maximumAttempts: 5 },
+  retry: ACTIVITY_RETRY_POLICY,
 });
 
 function operationKey(input: RunWorkflowInput, step: string): string {
@@ -79,59 +97,93 @@ function event(
 }
 
 export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
-  const input = RunWorkflowInputSchema.parse(inputValue);
-  try {
-    await events.transitionRunStatus({
-      runId: input.runId,
-      status: 'running',
-      idempotencyKey: operationKey(input, 'status-running'),
-    });
-    await events.emitEvents({
-      events: [
-        event(input, 'run.started', 'run-started', {
-          mode: input.mode,
-          appType: input.appType,
-          model: input.model,
-        }),
-      ],
-    });
+  const input = RunWorkflowStateSchema.parse(inputValue);
+  if (input.continuation === undefined) {
+    let workspaceId: string;
+    try {
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'running',
+        idempotencyKey: operationKey(input, 'status-running'),
+      });
+      await events.emitEvents({
+        events: [
+          event(input, 'run.started', 'run-started', {
+            mode: input.mode,
+            appType: input.appType,
+            model: input.model,
+          }),
+        ],
+      });
 
-    const ensured = await workspace.ensureWorkspace({
-      runId: input.runId,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      branchId: input.branchId,
-      appType: input.appType,
-      idempotencyKey: operationKey(input, 'ensure-workspace'),
-    });
-    await events.emitEvents({
-      events: [event(input, 'agent.started', 'agent-started', { agent: 'builder' })],
-    });
-    const sessionResult = await session.runBuilderSession({
-      runId: input.runId,
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      workspaceId: ensured.workspaceId,
-      mode: input.mode,
-      model: input.model,
-      prompt: input.prompt,
-      budget: input.budget,
-      idempotencyKey: operationKey(input, 'builder-session'),
-    });
-    switch (sessionResult.status) {
-      case 'completed':
-        break;
-      case 'needs_approval':
-      case 'budget_exhausted':
-      case 'failed':
-      case 'cancelled':
-        throw new Error(`builder_session_${sessionResult.status}`);
+      const ensured = await workspace.ensureWorkspace({
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        branchId: input.branchId,
+        appType: input.appType,
+        idempotencyKey: operationKey(input, 'ensure-workspace'),
+      });
+      workspaceId = ensured.workspaceId;
+    } catch (error: unknown) {
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      });
+      throw error;
     }
+    return continueAsNew<typeof runWorkflow>({
+      ...input,
+      continuation: { phase: 'session', workspaceId },
+    });
+  }
+
+  if (input.continuation.phase === 'session') {
+    try {
+      await events.emitEvents({
+        events: [event(input, 'agent.started', 'agent-started', { agent: 'builder' })],
+      });
+      const sessionResult = await session.runBuilderSession({
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        workspaceId: input.continuation.workspaceId,
+        mode: input.mode,
+        model: input.model,
+        prompt: input.prompt,
+        budget: input.budget,
+        idempotencyKey: operationKey(input, 'builder-session'),
+      });
+      switch (sessionResult.status) {
+        case 'completed':
+          break;
+        case 'needs_approval':
+        case 'budget_exhausted':
+        case 'failed':
+        case 'cancelled':
+          throw new Error(`builder_session_${sessionResult.status}`);
+      }
+    } catch (error: unknown) {
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      });
+      throw error;
+    }
+    return continueAsNew<typeof runWorkflow>({
+      ...input,
+      continuation: { phase: 'commit', workspaceId: input.continuation.workspaceId },
+    });
+  }
+
+  try {
     const committed = await workspace.commitAndPush({
       runId: input.runId,
       organizationId: input.organizationId,
       projectId: input.projectId,
-      workspaceId: ensured.workspaceId,
+      workspaceId: input.continuation.workspaceId,
       message: 'Complete M1 builder task',
       idempotencyKey: operationKey(input, 'commit-and-push'),
     });

@@ -1,4 +1,5 @@
 export * from './activities/events.js';
+export * from './activities/idempotency.js';
 export * from './activities/session.js';
 export * from './activities/workspace.js';
 export * from './session/context.js';

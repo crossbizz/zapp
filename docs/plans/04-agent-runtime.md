@@ -161,6 +161,35 @@ Loop: assemble messages → gateway stream → on tool-call: policy check (AR-5)
 
 Binding: queues `agent-runs`, `verification`, `releases`; activity middleware storing `(idempotencyKey → result hash)` in Postgres for all mutating activities; workflow `continueAsNew` after each phase; retry policies: transient 3×, business failures no-retry (typed ApplicationFailure).
 
+#### AR-9 execution expansion (2026-08-09)
+
+The binding behavior necessarily joins the durable DB schema and the existing run workflow. In
+addition to the task's named files, this expansion therefore permits the required package
+exports/manifests/lockfile, `src/workflows/run.ts`, focused worker/workflow tests, and the
+`@zapp/db` execution schema + migration + schema/integration tests. No other activity or workflow
+behavior is in scope.
+
+- [x] **RED — durable activity replay:** add focused tests proving a keyed mutating activity is
+  executed once, a completed replay returns the stored JSON result and hash, a changed
+  activity/input under the same key fails closed, concurrent/live claims are retryable, and an
+  expired claim can be recovered. Run them and confirm the missing middleware/store boundary.
+- [x] **GREEN — Postgres activity middleware:** add the `activity_idempotency` schema/migration
+  and a Temporal inbound activity interceptor backed by an atomic Postgres claim/complete store.
+  Hash canonical inputs/results with SHA-256, require or deterministically derive a key for every
+  registered mutating activity, renew live claims, and use typed `ApplicationFailure` for
+  conflict/in-progress/lease-loss outcomes. Re-run focused unit and real-Postgres integration
+  tests.
+- [x] **RED/GREEN — queues and retries:** prove the production queue vocabulary is exactly
+  `agent-runs`, `verification`, `releases`; wire the interceptor into worker creation; and pin
+  transient activity retries to three attempts while typed business failures are non-retryable.
+- [x] **RED/GREEN — bounded workflow history:** run the Temporal integration path and prove the
+  run continues as new at the workspace and session phase boundaries, preserves workspace state,
+  emits each durable event/commit once, and finishes in the final continuation.
+- [x] **Verify/review/ship:** run orchestrator-worker and DB test/lint/typecheck/build plus the
+  prescribed integration checks; review exit is zero Critical/Important with at most two rounds;
+  then check AR-9 in this plan and `tasks/todo.md`, append one execution-log line, commit
+  `feat(orchestrator): worker queues + idempotent activities`, push `main`, and confirm CI green.
+
 ### Task AR-10 [M2]: Run control signals
 
 **Files:** Modify: `src/workflows/run.ts`; Create: `test/integration/signals.test.ts`
@@ -329,4 +358,5 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-07 AR-8 done — Added the Temporal M1 run with durable transcript checkpoint recovery after worker SIGKILL, per-run CP-13 batching, and idempotent commit retry; the exact tracked pre-push gate passed.
 - 2026-08-09 AR-3A done — Added stable replayable completion requests, exhaustive provider-attributed terminal outcomes, and serialized acknowledged Temporal transcript checkpoints; the review-cap follow-up latched cancellation before queued heartbeats, with model-gateway 64/64, orchestrator-worker 151/151, and forced static checks 11/11.
 - 2026-08-09 AR-3B BLOCKED — Durable claim/replay/reservation, lease renewal, disconnect settlement, usage outbox cutoff ordering, retry/fallback telemetry, and AI SDK v7 instruction/cache boundaries are locally green (model-gateway 79/79, orchestrator-worker 154/154, contracts 132/132, real OPS-1A PostgreSQL/Redis 11/11); the capped second review findings were resolved without a third round, but final Anthropic cache proof stopped at the sole provider call because the configured `ANTHROPIC_API_KEY` returned HTTP 401, so AR-3B remains unchecked.
+- 2026-08-09 AR-9 done — Added exact production queues, Postgres-fenced canonical activity replay with live lease renewal, private two-step continue-as-new state, three-attempt transient retry, and a real Postgres+Temporal production-worker proof; review passed in round 2 after closing all production composition and queue-bypass findings.
 - 2026-08-09 AR-11 done — Added a strict phase/task/budget schema with `{ credits, wallClockMinutes }` task estimates, creation-time dependency/cycle validation, deterministic diamond scheduling, and cross-call one-writer branch ownership; RED/GREEN tests passed 6/6, package static/build gates passed, and review passed in round 2 after fixing ready-state branch reservation.

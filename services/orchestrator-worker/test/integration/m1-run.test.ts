@@ -15,7 +15,7 @@ import {
   createSessionActivities,
   type RunBuilderSessionInput,
 } from '../../src/activities/session.js';
-import { createTemporalOrchestrator } from '../../src/worker.js';
+import { createTestTemporalOrchestrator } from '../../src/worker.js';
 import { runWorkflow } from '../../src/workflows/run.js';
 
 interface DurableFixtureState {
@@ -237,6 +237,7 @@ function workerProgram(): string {
       connection,
       taskQueue,
       activities: { ...eventActivities, ...workspaceActivities, ...sessionActivities },
+      testOnlyBypassActivityIdempotency: true,
     });
     const running = worker.run();
     console.log('AR8_WORKER_READY');
@@ -392,7 +393,7 @@ describe('AR-8 M1 durable Temporal run', () => {
       const firstWorker = startWorkerProcess(childInput);
       children.push(firstWorker);
       await waitForLine(firstWorker, 'AR8_WORKER_READY');
-      const orchestrator = createTemporalOrchestrator({
+      const orchestrator = createTestTemporalOrchestrator({
         client: environment.client,
         taskQueue,
       });
