@@ -21,6 +21,11 @@ import {
   projects,
   releases,
   repositories,
+  modelCompletionJournal,
+  runCreditAccounts,
+  runCreditCeilingAdjustments,
+  usageOutbox,
+  accountingLeaderLeases,
   runEventCounters,
   secretMetadata,
   specifications,
@@ -170,6 +175,78 @@ describe('billing tables', () => {
       'storage_gib_hours',
       'deploy_provider',
       'artifact_storage',
+    ]);
+  });
+
+  it('defines the ADR-0025 authoritative completion-accounting tables', () => {
+    expect(
+      [
+        runCreditAccounts,
+        modelCompletionJournal,
+        runCreditCeilingAdjustments,
+        usageOutbox,
+        accountingLeaderLeases,
+      ].map(tableName),
+    ).toEqual([
+      'run_credit_accounts',
+      'model_completion_journal',
+      'run_credit_ceiling_adjustments',
+      'usage_outbox',
+      'accounting_leader_leases',
+    ]);
+
+    expect(columnNames(runCreditAccounts)).toEqual([
+      'run_id',
+      'organization_id',
+      'base_ceiling',
+      'pricing_version',
+      'pricing_snapshot_json',
+      'used_credits',
+      'reserved_credits',
+      'version',
+      'updated_at',
+    ]);
+    expect(columnNames(modelCompletionJournal)).toEqual([
+      'completion_id',
+      'organization_id',
+      'project_id',
+      'run_id',
+      'task_id',
+      'request_fingerprint',
+      'claim_owner',
+      'claim_expires_at',
+      'reserved_credits',
+      'state',
+      'response_json',
+      'terminal_json',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(columnNames(runCreditCeilingAdjustments)).toEqual([
+      'id',
+      'organization_id',
+      'run_id',
+      'approval_id',
+      'operation_key',
+      'absolute_ceiling',
+      'created_at',
+    ]);
+    expect(columnNames(usageOutbox)).toEqual([
+      'id',
+      'organization_id',
+      'ledger_row_id',
+      'event_json',
+      'status',
+      'attempts',
+      'next_attempt_at',
+      'created_at',
+      'published_at',
+    ]);
+    expect(columnNames(accountingLeaderLeases)).toEqual([
+      'name',
+      'owner',
+      'expires_at',
+      'cursor_run_id',
     ]);
   });
 });

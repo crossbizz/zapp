@@ -274,7 +274,7 @@ export async function setUpTestDatabase(): Promise<TestDatabase> {
           }
         }
         await tx.unsafe(
-          'truncate table "memberships", "organizations", "users" restart identity cascade',
+          'truncate table "accounting_leader_leases", "memberships", "organizations", "users" restart identity cascade',
         );
         for (const table of guardedTables) {
           if (truncatePrivileges.get(table) === false) {

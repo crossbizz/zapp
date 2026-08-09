@@ -1,7 +1,20 @@
-import { check, index, numeric, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
 
 import { oneOf } from './columns.js';
 import { organizations } from './identity.js';
+import { agentRuns, agentTasks, approvals } from './planning.js';
+import { projectTenantForeignKey, projects } from './projects.js';
 
 export const subscriptions = pgTable(
   'subscriptions',
@@ -87,7 +100,133 @@ export const usageLedger = pgTable(
   ],
 );
 
+const COMPLETION_STATES = ['claimed', 'completed'] as const;
+const OUTBOX_STATES = ['pending', 'published'] as const;
+
+/**
+ * ADR-0025's one authoritative accounting row per run. Reservations and usage
+ * settle under the row lock; Redis is only a hot mirror of these values.
+ */
+export const runCreditAccounts = pgTable(
+  'run_credit_accounts',
+  {
+    runId: text('run_id')
+      .primaryKey()
+      .references(() => agentRuns.id),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    baseCeiling: numeric('base_ceiling', { precision: 12, scale: 4 }).notNull(),
+    pricingVersion: text('pricing_version').notNull(),
+    pricingSnapshotJson: jsonb('pricing_snapshot_json').notNull(),
+    usedCredits: numeric('used_credits', { precision: 12, scale: 4 }).notNull().default('0'),
+    reservedCredits: numeric('reserved_credits', { precision: 12, scale: 4 })
+      .notNull()
+      .default('0'),
+    version: bigint('version', { mode: 'number' }).notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('run_credit_accounts_org_idx').on(t.organizationId)],
+);
+
+/**
+ * Replay journal for one stable model completion identity. The neutral response
+ * and terminal outcome are immutable after `state = completed`.
+ */
+export const modelCompletionJournal = pgTable(
+  'model_completion_journal',
+  {
+    completionId: text('completion_id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    taskId: text('task_id').references(() => agentTasks.id),
+    requestFingerprint: text('request_fingerprint').notNull(),
+    claimOwner: text('claim_owner'),
+    claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
+    reservedCredits: numeric('reserved_credits', { precision: 12, scale: 4 }).notNull(),
+    state: text('state', { enum: COMPLETION_STATES }).notNull(),
+    responseJson: jsonb('response_json'),
+    terminalJson: jsonb('terminal_json'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('model_completion_journal_state_check', oneOf('state', COMPLETION_STATES)),
+    index('model_completion_journal_run_idx').on(t.runId),
+    projectTenantForeignKey('model_completion_journal', t.projectId, t.organizationId),
+  ],
+);
+
+/** Append-only approval-backed absolute ceiling history. */
+export const runCreditCeilingAdjustments = pgTable(
+  'run_credit_ceiling_adjustments',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    approvalId: text('approval_id')
+      .notNull()
+      .references(() => approvals.id),
+    operationKey: text('operation_key').notNull(),
+    absoluteCeiling: numeric('absolute_ceiling', { precision: 12, scale: 4 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('run_credit_ceiling_adjustments_operation_idx').on(t.runId, t.operationKey),
+    index('run_credit_ceiling_adjustments_run_created_idx').on(t.runId, t.createdAt),
+  ],
+);
+
+/** One transactional delivery record per immutable ledger row. */
+export const usageOutbox = pgTable(
+  'usage_outbox',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    ledgerRowId: text('ledger_row_id')
+      .notNull()
+      .references(() => usageLedger.id),
+    eventJson: jsonb('event_json').notNull(),
+    status: text('status', { enum: OUTBOX_STATES }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('usage_outbox_ledger_row_idx').on(t.ledgerRowId),
+    index('usage_outbox_pending_idx').on(t.status, t.nextAttemptAt),
+    check('usage_outbox_status_check', oneOf('status', OUTBOX_STATES)),
+  ],
+);
+
+/** Database lease that makes reconciliation single-leader across replicas. */
+export const accountingLeaderLeases = pgTable('accounting_leader_leases', {
+  name: text('name').primaryKey(),
+  owner: text('owner').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  cursorRunId: text('cursor_run_id'),
+});
+
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
 export type UsageLedgerEntry = typeof usageLedger.$inferSelect;
 export type NewUsageLedgerEntry = typeof usageLedger.$inferInsert;
+export type RunCreditAccount = typeof runCreditAccounts.$inferSelect;
+export type ModelCompletionJournal = typeof modelCompletionJournal.$inferSelect;
+export type RunCreditCeilingAdjustment = typeof runCreditCeilingAdjustments.$inferSelect;
+export type UsageOutboxEntry = typeof usageOutbox.$inferSelect;
+export type AccountingLeaderLease = typeof accountingLeaderLeases.$inferSelect;

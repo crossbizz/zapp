@@ -26,6 +26,8 @@ import { createInMemoryDeviceStore, type DeviceStore } from './auth/device.js';
 import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
+import type { PricingConfig } from './usage/pricing.js';
+import type { ModelCompletionRepository } from './usage/model-completions.js';
 import {
   loadRateLimitSettings,
   trustProxyOption,
@@ -40,6 +42,7 @@ import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestr
 import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { registerInternalEventRoutes } from './internal/events.js';
+import { registerInternalModelCompletionRoutes } from './internal/model-completions.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
@@ -150,6 +153,7 @@ export interface TenantDeps {
   readonly integrationPort?: IntegrationPort;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
+  readonly pricing?: PricingConfig;
 }
 
 /**
@@ -230,6 +234,7 @@ export interface AppDeps {
   readonly now?: () => Date;
   /** WS-12 durable share/session and authenticated preview data plane. */
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
+  readonly modelCompletions?: ModelCompletionRepository;
 }
 
 /**
@@ -356,6 +361,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     // decrypt route turns an organization id into one. Without the factory
     // there is nothing to scope either against.
     throw new Error('refusing to start: secrets routes require tenant (AppDeps.tenant)');
+  }
+  if (deps.modelCompletions !== undefined && deps.secrets === undefined) {
+    throw new Error('refusing to start: model completion routes require service authentication');
   }
 
   if (deps.tenant !== undefined && deps.orgs === undefined) {
@@ -492,6 +500,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               );
               return membership?.status === 'active';
             },
+            ...(tenant.pricing === undefined ? {} : { pricing: tenant.pricing }),
           });
           registerWorkspaceRoutes(app, {
             now,
@@ -515,6 +524,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
 
           if (secrets !== undefined) {
             registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
+            if (deps.modelCompletions !== undefined) {
+              registerInternalModelCompletionRoutes(app, deps.modelCompletions);
+            }
             // One vault for both surfaces, so the key that encrypted a value on
             // the way in is by construction the key that unwraps it on the way
             // out — two constructions could disagree, and would do so silently

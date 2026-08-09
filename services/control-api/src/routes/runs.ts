@@ -23,6 +23,7 @@ import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { RunSchema, toRun } from '../tenant/view.js';
+import type { PricingConfig } from '../usage/pricing.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -82,6 +83,7 @@ export interface RunRoutesDeps {
   readonly revalidateEventStream: (
     context: EventStreamAuthorizationContext,
   ) => Promise<boolean>;
+  readonly pricing?: PricingConfig;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -118,6 +120,15 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         throw idempotencyConflict();
       }
       if (run === undefined) {
+        const pricing = deps.pricing;
+        if (pricing === undefined) throw pricingUnavailable();
+        if (
+          request.body.model !== undefined &&
+          pricing.models[request.body.model] === undefined
+        ) {
+          throw pricingUnavailable();
+        }
+        const resolvedBudget = resolveRunBudget(pricing, request.body.budget);
         let explicitModelAllowed = true;
         if (request.body.model !== undefined) {
           const settings = await deps.organizations.getSettings(ctx.organizationId);
@@ -134,7 +145,12 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           mode: request.body.mode,
           appType: request.body.appType,
           model: request.body.model ?? null,
-          budget: request.body.budget ?? null,
+          budget: resolvedBudget,
+          accounting: {
+            baseCeiling: `${String(resolvedBudget.maxCredits)}.0000`,
+            pricingVersion: pricing.version,
+            pricingSnapshot: pricing,
+          },
           startedBy: actorOf(request),
           now: deps.now(),
           authorize: (inserted) => {
@@ -169,7 +185,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             appType: run.appType,
             model: run.model,
             prompt: request.body.prompt,
-            budget: request.body.budget ?? null,
+            budget: RunBudgetSchema.parse(run.budgetJson),
             operationKey,
           }),
         );
@@ -364,5 +380,20 @@ function workflowFailed(): ApiError {
     502,
     'The run workflow could not be started. Please try again.',
   );
+}
+function pricingUnavailable(): ApiError {
+  return new ApiError(
+    'pricing_configuration_invalid',
+    503,
+    'Run pricing is unavailable. Please try again later.',
+  );
+}
+function resolveRunBudget(
+  pricing: PricingConfig,
+  explicit: z.infer<typeof RunBudgetSchema> | undefined,
+): z.infer<typeof RunBudgetSchema> {
+  if (explicit !== undefined) return explicit;
+  const value = Number(pricing.defaultRunCreditCeiling);
+  return RunBudgetSchema.parse({ maxCredits: value });
 }
 export { operationOf, stableId };

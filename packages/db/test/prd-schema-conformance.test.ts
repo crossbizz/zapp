@@ -45,6 +45,26 @@ const NON_PRD_TABLES = new Map([
     'preview_shares',
     'tenant-owned hashed preview bearer metadata and revocation state required by ADR-0023 and plan 03 WS-12; the PRD predates zapp-owned preview ingress',
   ],
+  [
+    'run_credit_accounts',
+    'the authoritative per-run reservation and running-total account required by ADR-0025 and plan 10 OPS-1A; the PRD predates durable model-completion accounting',
+  ],
+  [
+    'model_completion_journal',
+    'the durable idempotent claim and completion replay journal required by ADR-0025 and plan 10 OPS-1A; the PRD models runs rather than provider-call attempts',
+  ],
+  [
+    'run_credit_ceiling_adjustments',
+    'the append-only approval-backed ceiling adjustment history required by ADR-0025 and plan 10 OPS-1A; the PRD has no physical reservation model',
+  ],
+  [
+    'usage_outbox',
+    'the transactional delivery record that couples usage ledger rows to SQS without a database-to-queue loss window, required by plan 10 OPS-1A',
+  ],
+  [
+    'accounting_leader_leases',
+    'the database lease that makes active-run credit reconciliation single-leader and bounded as required by plan 10 OPS-1A',
+  ],
 ]);
 
 /**

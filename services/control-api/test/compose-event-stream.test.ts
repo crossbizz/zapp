@@ -6,7 +6,7 @@ import { composeApp } from '../src/compose.js';
 import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import type { EventWakeupSource } from '../src/events/sse.js';
 import type { RedisCommands } from '../src/redis/client.js';
-import { TEST_AUTH_CONFIG, TEST_MASTER_KEY } from './support/harness.js';
+import { TEST_AUTH_CONFIG, TEST_MASTER_KEY, TEST_PRICING } from './support/harness.js';
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
 const appCapture = vi.hoisted(() => {
@@ -58,6 +58,7 @@ describe('control-api event stream composition', () => {
       masterKey: TEST_MASTER_KEY,
       serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
       rateLimits: loadRateLimitSettings(),
+      pricing: TEST_PRICING,
     });
 
     expect(app).toBe(appCapture.app);

@@ -34,6 +34,7 @@ import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
   TEST_MASTER_KEY,
+  TEST_PRICING,
   TEST_RATE_LIMITS,
   cookieJar,
   cookiesOf,
@@ -74,6 +75,11 @@ import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js'
 const EVENT_TIME = new Date('2026-08-15T12:00:00.000Z');
 /** Fixed only so the PostgreSQL fingerprint assertion has a hand-derived value. */
 const RUN_INTENT_HMAC_KEY = Buffer.alloc(32, 0x7b);
+const RUN_ACCOUNTING: NewRunInput['accounting'] = {
+  baseCeiling: TEST_PRICING.defaultRunCreditCeiling,
+  pricingVersion: TEST_PRICING.version,
+  pricingSnapshot: TEST_PRICING,
+};
 
 /**
  * The value each tenant's secret holds, prefixed with the tenant's slug so a
@@ -524,6 +530,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       tenant: {
         tenantDb: createTenantDbFactory(database.db),
         runIntentHmacKey: RUN_INTENT_HMAC_KEY,
+        pricing: TEST_PRICING,
         orchestrator: {
           startRun: (input) => {
             startCalls.push(input);
@@ -598,6 +605,23 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         select app_type, model from agent_runs where id = ${created.id}
       `;
       expect(row).toEqual({ app_type: 'web', model: null });
+      const [account] = await database.sql<{
+        base_ceiling: string;
+        pricing_version: string;
+        default_ceiling: string;
+      }[]>`
+        select
+          base_ceiling::text as base_ceiling,
+          pricing_version,
+          pricing_snapshot_json ->> 'defaultRunCreditCeiling' as default_ceiling
+        from run_credit_accounts
+        where run_id = ${created.id} and organization_id = ${a.organizationId}
+      `;
+      expect(account).toEqual({
+        base_ceiling: '1000.0000',
+        pricing_version: 'm1-test',
+        default_ceiling: '1000.0000',
+      });
 
       const read = await app.inject({
         method: 'GET',
@@ -870,6 +894,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             appType: 'web',
             model: null,
             budget: null,
+            accounting: RUN_ACCOUNTING,
             startedBy: a.owner.userId,
             now: EVENT_TIME,
           },
@@ -920,6 +945,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             appType: 'mobile',
             model: null,
             budget: null,
+            accounting: RUN_ACCOUNTING,
             startedBy: a.owner.userId,
             now: EVENT_TIME,
           },

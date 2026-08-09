@@ -21,6 +21,7 @@ import {
   projectContracts,
   projects,
   repositories,
+  runCreditAccounts,
   secretCiphertexts,
   secretMetadata,
   specifications,
@@ -48,6 +49,7 @@ import { isUniqueViolation } from '../db/errors.js';
 import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
 import type { SecretEnvelope } from '../secrets/crypto.js';
+import type { PricingConfig } from '../usage/pricing.js';
 import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
@@ -270,6 +272,11 @@ export interface NewRunInput {
   readonly appType: AppType;
   readonly model: ModelIdentifier | null;
   readonly budget: unknown;
+  readonly accounting: {
+    readonly baseCeiling: string;
+    readonly pricingVersion: string;
+    readonly pricingSnapshot: PricingConfig;
+  };
   readonly startedBy: string;
   readonly now: Date;
   /** Runs synchronously only for a row this call inserted; throwing rolls the insertion back. */
@@ -1042,6 +1049,17 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .onConflictDoNothing()
               .returning();
             if (inserted !== undefined) {
+              await tx.insert(runCreditAccounts).values({
+                runId: inserted.id,
+                organizationId: orgId,
+                baseCeiling: input.accounting.baseCeiling,
+                pricingVersion: input.accounting.pricingVersion,
+                pricingSnapshotJson: input.accounting.pricingSnapshot,
+                usedCredits: '0',
+                reservedCredits: '0',
+                version: 0,
+                updatedAt: input.now,
+              });
               input.authorize(inserted);
               await input.audit(tx, inserted);
               return { outcome: 'created', run: inserted };

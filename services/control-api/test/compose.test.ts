@@ -8,7 +8,12 @@ import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
-import { InMemoryUserStore, TEST_AUTH_CONFIG, TEST_MASTER_KEY } from './support/harness.js';
+import {
+  InMemoryUserStore,
+  TEST_AUTH_CONFIG,
+  TEST_MASTER_KEY,
+  TEST_PRICING,
+} from './support/harness.js';
 import { InMemoryOrganizationStore } from './support/org-store.js';
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
@@ -67,6 +72,7 @@ function composed(): AppInstance {
     masterKey: TEST_MASTER_KEY,
     serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
     rateLimits: loadRateLimitSettings(),
+    pricing: TEST_PRICING,
   });
   apps.push(app);
   return app;

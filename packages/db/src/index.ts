@@ -24,11 +24,21 @@ export {
 } from './schema/identity.js';
 export {
   USAGE_CATEGORIES,
+  accountingLeaderLeases,
+  modelCompletionJournal,
+  runCreditAccounts,
+  runCreditCeilingAdjustments,
   subscriptions,
   usageLedger,
+  usageOutbox,
+  type AccountingLeaderLease,
+  type ModelCompletionJournal,
   type NewSubscription,
   type NewUsageLedgerEntry,
+  type RunCreditAccount,
+  type RunCreditCeilingAdjustment,
   type Subscription,
+  type UsageOutboxEntry,
   type UsageCategory,
   type UsageLedgerEntry,
 } from './schema/billing.js';

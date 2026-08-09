@@ -28,6 +28,30 @@ const production = vi.hoisted(() => {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const usageQueue = {
+    send: vi.fn(() => Promise.resolve()),
+    receive: vi.fn(() => Promise.resolve([])),
+    delete: vi.fn(() => Promise.resolve()),
+    close: vi.fn(),
+  };
+  const usageOutboxPublisher = { publishOnce: vi.fn(() => Promise.resolve(0)) };
+  const usagePublisherLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const flexprice = { ingest: vi.fn(() => Promise.resolve()) };
+  const usageConsumer = { consume: vi.fn(() => Promise.resolve()) };
+  const usageConsumerLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const accountingReconciler = {
+    runOnce: vi.fn(() => Promise.resolve({ acquired: true, mirrored: 0 })),
+  };
+  const accountingReconcilerLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
   const preview = {
     signingKey: Buffer.alloc(32, 0x44),
     keyVersion: 1,
@@ -41,8 +65,16 @@ const production = vi.hoisted(() => {
     database,
     eventPublisher,
     eventPublisherLifecycle,
+    flexprice,
+    accountingReconciler,
+    accountingReconcilerLifecycle,
     preview,
     redis,
+    usageConsumer,
+    usageConsumerLifecycle,
+    usageOutboxPublisher,
+    usagePublisherLifecycle,
+    usageQueue,
     bootstrapControlApiServer: vi
       .fn<(input: unknown) => Promise<void>>()
       .mockResolvedValue(undefined),
@@ -57,6 +89,15 @@ const production = vi.hoisted(() => {
     createRedisConnection: vi
       .fn<(url: string, options: unknown) => typeof redis>()
       .mockReturnValue(redis),
+    createSqsUsageQueue: vi.fn(() => usageQueue),
+    createFlexpriceIngestClient: vi.fn(() => flexprice),
+    createUsageEventConsumer: vi.fn(() => usageConsumer),
+    createUsageEventConsumerLifecycle: vi.fn(() => usageConsumerLifecycle),
+    createUsageOutboxPublisher: vi.fn(() => usageOutboxPublisher),
+    createUsageOutboxPublisherLifecycle: vi.fn(() => usagePublisherLifecycle),
+    createAccountingReconciler: vi.fn(() => accountingReconciler),
+    createAccountingReconcilerLifecycle: vi.fn(() => accountingReconcilerLifecycle),
+    createRedisCreditMirror: vi.fn(() => ({ kind: 'credit-mirror' })),
     loadAuthEnv: vi.fn(() => auth),
     loadEnv: vi.fn(() => ({
       HOST: '127.0.0.1',
@@ -65,12 +106,23 @@ const production = vi.hoisted(() => {
       PORT: 4_321,
     })),
     loadGitServiceUrl: vi.fn(() => undefined),
+    loadFlexpriceEnv: vi.fn(() => ({
+      apiKey: 'not-a-real-flexprice-key',
+      baseUrl: 'https://api.cloud.flexprice.io/v1',
+    })),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
     loadPreviewEnv: vi.fn(() => preview),
     loadRateLimitSettings: vi.fn(() => ({ kind: 'production-rate-limits' })),
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
     loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
     loadServiceTokenConfig: vi.fn(() => ({ kind: 'production-service-tokens' })),
+    loadUsageQueueEnv: vi.fn(() => ({
+      region: 'us-east-1',
+      endpoint: 'http://localstack.test',
+      accessKeyId: 'test',
+      secretAccessKey: 'test',
+      queueName: 'zapp-usage-events',
+    })),
     loggerOptions: vi
       .fn<(input: unknown) => { level: string }>()
       .mockReturnValue({ level: 'silent' }),
@@ -85,11 +137,13 @@ vi.mock('../src/config/rate-limits.js', () => ({
 }));
 vi.mock('../src/env.js', () => ({
   loadEnv: production.loadEnv,
+  loadFlexpriceEnv: production.loadFlexpriceEnv,
   loadMasterKey: production.loadMasterKey,
   loadPreviewEnv: production.loadPreviewEnv,
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
+  loadUsageQueueEnv: production.loadUsageQueueEnv,
 }));
 vi.mock('../src/events/lifecycle.js', () => ({
   createEventPublisherLifecycle: production.createEventPublisherLifecycle,
@@ -106,6 +160,19 @@ vi.mock('../src/redis/client.js', () => ({
 }));
 vi.mock('../src/server-bootstrap.js', () => ({
   bootstrapControlApiServer: production.bootstrapControlApiServer,
+}));
+vi.mock('../src/usage/outbox.js', () => ({
+  createFlexpriceIngestClient: production.createFlexpriceIngestClient,
+  createSqsUsageQueue: production.createSqsUsageQueue,
+  createUsageEventConsumer: production.createUsageEventConsumer,
+  createUsageEventConsumerLifecycle: production.createUsageEventConsumerLifecycle,
+  createUsageOutboxPublisher: production.createUsageOutboxPublisher,
+  createUsageOutboxPublisherLifecycle: production.createUsageOutboxPublisherLifecycle,
+}));
+vi.mock('../src/usage/reconciliation.js', () => ({
+  createAccountingReconciler: production.createAccountingReconciler,
+  createAccountingReconcilerLifecycle: production.createAccountingReconcilerLifecycle,
+  createRedisCreditMirror: production.createRedisCreditMirror,
 }));
 
 describe('control-api production entrypoint', () => {
@@ -146,10 +213,38 @@ describe('control-api production entrypoint', () => {
     expect(lifecycleInput?.database).toBe(production.database);
     expect(lifecycleInput?.redis).toBe(production.redis);
     expect(production.bootstrapControlApiServer).toHaveBeenCalledOnce();
-    expect(production.bootstrapControlApiServer).toHaveBeenCalledWith({
-      app: production.app,
-      eventPublisherLifecycle: production.eventPublisherLifecycle,
-    });
+    const bootstrapInput = production.bootstrapControlApiServer.mock.calls[0]?.[0] as
+      | {
+          readonly app: unknown;
+          readonly eventPublisherLifecycle: unknown;
+          readonly usageOutboxLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
+        }
+      | undefined;
+    expect(bootstrapInput?.app).toBe(production.app);
+    expect(bootstrapInput?.eventPublisherLifecycle).toBe(production.eventPublisherLifecycle);
+    expect(bootstrapInput?.usageOutboxLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.usageOutboxLifecycle?.close).toBeTypeOf('function');
+    expect(production.createFlexpriceIngestClient).toHaveBeenCalledOnce();
+    expect(production.createUsageEventConsumer).toHaveBeenCalledWith(production.flexprice);
+    expect(production.createUsageEventConsumerLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queue: production.usageQueue,
+        consumer: production.usageConsumer,
+      }),
+    );
+
+    await bootstrapInput?.usageOutboxLifecycle?.start();
+    expect(production.accountingReconcilerLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.usagePublisherLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.usageConsumerLifecycle.start).toHaveBeenCalledOnce();
+    await bootstrapInput?.usageOutboxLifecycle?.close();
+    expect(production.usageConsumerLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.usagePublisherLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.accountingReconcilerLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.usageQueue.close).toHaveBeenCalledOnce();
 
     await lifecycleInput?.listen();
     expect(production.app.listen).toHaveBeenCalledOnce();

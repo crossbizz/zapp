@@ -6,11 +6,13 @@ import { describe, expect, it } from 'vitest';
 import { loadAuthEnv } from '../src/auth/config.js';
 import {
   loadEnv,
+  loadFlexpriceEnv,
   loadMasterKey,
   loadPreviewEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
+  loadUsageQueueEnv,
 } from '../src/env.js';
 
 /**
@@ -75,6 +77,8 @@ describe('the shipped .env.example', () => {
     expect(() => loadServiceTokenConfig(environment)).not.toThrow();
     expect(() => loadRunIntentHmacKey(environment)).not.toThrow();
     expect(() => loadPreviewEnv(environment)).not.toThrow();
+    expect(() => loadUsageQueueEnv(environment)).not.toThrow();
+    expect(loadFlexpriceEnv(environment)).toBeUndefined();
   });
 
   it('leaves every rotation variable empty, and empty is accepted', () => {
@@ -131,9 +135,31 @@ describe('the shipped .env.example', () => {
       'PREVIEW_SHARE_SIGNING_KEY',
       'PREVIEW_SHARE_KEY_VERSION',
       'SANDBOX_SERVICE_URL',
+      'AWS_REGION',
+      'AWS_ENDPOINT_URL',
     ]) {
       expect(template, name).toHaveProperty(name);
     }
+  });
+});
+
+describe('Flexprice event ingestion configuration', () => {
+  it('enables the production consumer only with a configured API key', () => {
+    expect(
+      loadFlexpriceEnv({
+        FLEXPRICE_API_KEY: 'not-a-real-flexprice-key',
+        FLEXPRICE_BASE_URL: 'https://api.cloud.flexprice.io/v1/',
+      }),
+    ).toEqual({
+      apiKey: 'not-a-real-flexprice-key',
+      baseUrl: 'https://api.cloud.flexprice.io/v1',
+    });
+    expect(
+      loadFlexpriceEnv({
+        FLEXPRICE_API_KEY: 'replace-me',
+        FLEXPRICE_BASE_URL: 'https://api.cloud.flexprice.io/v1',
+      }),
+    ).toBeUndefined();
   });
 });
 

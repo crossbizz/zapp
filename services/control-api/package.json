@@ -21,6 +21,7 @@
     "start": "node --enable-source-maps dist/server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.922.0",
     "@fastify/swagger": "^9.8.1",
     "@fastify/websocket": "11.3.0",
     "@zapp/config": "workspace:*",

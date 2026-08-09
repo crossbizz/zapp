@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { createDb } from '@zapp/db';
 
 import { loadAuthEnv } from './auth/config.js';
@@ -5,11 +7,13 @@ import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import {
   loadEnv,
+  loadFlexpriceEnv,
   loadMasterKey,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadPreviewEnv,
   loadServiceTokenConfig,
+  loadUsageQueueEnv,
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
@@ -17,6 +21,20 @@ import { loadGitServiceUrl } from './git/client.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
+import { loadPricingFile } from './usage/pricing.js';
+import {
+  createFlexpriceIngestClient,
+  createSqsUsageQueue,
+  createUsageEventConsumer,
+  createUsageEventConsumerLifecycle,
+  createUsageOutboxPublisher,
+  createUsageOutboxPublisherLifecycle,
+} from './usage/outbox.js';
+import {
+  createAccountingReconciler,
+  createAccountingReconcilerLifecycle,
+  createRedisCreditMirror,
+} from './usage/reconciliation.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -48,6 +66,9 @@ const preview = loadPreviewEnv();
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
 const gitServiceUrl = loadGitServiceUrl();
+const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
+const usageQueueConfig = loadUsageQueueEnv();
+const flexpriceConfig = loadFlexpriceEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -73,6 +94,7 @@ const app = composeApp({
   preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,
+  pricing,
 });
 
 logRedisError = (error) => {
@@ -115,6 +137,60 @@ const eventPublisherLifecycle = createEventPublisherLifecycle({
   database,
   redis,
 });
+const usageQueue = createSqsUsageQueue(usageQueueConfig);
+const usagePublisherLifecycle = createUsageOutboxPublisherLifecycle({
+  publisher: createUsageOutboxPublisher({
+    database: database.db,
+    queue: usageQueue,
+    onError: (error) => {
+      app.log.error({ err: error }, 'usage outbox publish failed');
+    },
+  }),
+  batchSize: 100,
+  intervalMs: 1_000,
+  onError: (error) => {
+    app.log.error({ err: error }, 'usage outbox poll failed');
+  },
+});
+const usageConsumerLifecycle =
+  flexpriceConfig === undefined
+    ? undefined
+    : createUsageEventConsumerLifecycle({
+        queue: usageQueue,
+        consumer: createUsageEventConsumer(createFlexpriceIngestClient(flexpriceConfig)),
+        batchSize: 10,
+        waitTimeSeconds: 10,
+        visibilityTimeoutSeconds: 30,
+        intervalMs: 1_000,
+        onError: (error) => {
+          app.log.error({ err: error }, 'Flexprice usage ingestion failed');
+        },
+      });
+const accountingReconcilerLifecycle = createAccountingReconcilerLifecycle({
+  reconciler: createAccountingReconciler({
+    database: database.db,
+    mirror: createRedisCreditMirror(redis),
+    owner: `control-api-${randomUUID()}`,
+  }),
+  batchSize: 100,
+  intervalMs: 30_000,
+  onError: (error) => {
+    app.log.error({ err: error }, 'run credit reconciliation failed');
+  },
+});
+const usageOutboxLifecycle = {
+  async start() {
+    await accountingReconcilerLifecycle.start();
+    await usagePublisherLifecycle.start();
+    await usageConsumerLifecycle?.start();
+  },
+  async close() {
+    await usageConsumerLifecycle?.close();
+    await usagePublisherLifecycle.close();
+    await accountingReconcilerLifecycle.close();
+    usageQueue.close?.();
+  },
+};
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
@@ -141,7 +217,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
-  await bootstrapControlApiServer({ app, eventPublisherLifecycle });
+  await bootstrapControlApiServer({ app, eventPublisherLifecycle, usageOutboxLifecycle });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
   process.exit(1);

@@ -3,6 +3,48 @@ import { describe, expect, it } from 'vitest';
 import { bootstrapControlApiServer } from '../src/server-bootstrap.js';
 
 describe('control-api production bootstrap', () => {
+  it('starts usage delivery before accepting traffic and closes it before shared handles', async () => {
+    const order: string[] = [];
+    let onClose: (() => Promise<void>) | undefined;
+
+    await bootstrapControlApiServer({
+      app: {
+        addHook(_name, hook) {
+          onClose = hook;
+        },
+      },
+      usageOutboxLifecycle: {
+        start() {
+          order.push('usage:start');
+          return Promise.resolve();
+        },
+        close() {
+          order.push('usage:close');
+          return Promise.resolve();
+        },
+      },
+      eventPublisherLifecycle: {
+        start() {
+          order.push('events:start-and-listen');
+          return Promise.resolve();
+        },
+        close() {
+          order.push('events:close-shared-handles');
+          return Promise.resolve();
+        },
+      },
+    });
+
+    expect(order).toEqual(['usage:start', 'events:start-and-listen']);
+    await onClose?.();
+    expect(order).toEqual([
+      'usage:start',
+      'events:start-and-listen',
+      'usage:close',
+      'events:close-shared-handles',
+    ]);
+  });
+
   it('starts the event publisher lifecycle', async () => {
     // Break caught: production creates the publisher but never starts it before
     // the server entrypoint finishes booting.

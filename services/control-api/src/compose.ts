@@ -27,6 +27,9 @@ import {
 } from './routes/preview.js';
 import { createDbPreviewShareStore } from './preview/store.js';
 import type { PreviewEnv } from './env.js';
+import type { PricingConfig } from './usage/pricing.js';
+import { createModelCompletionRepository } from './usage/model-completions.js';
+import { createRedisCreditMirror } from './usage/reconciliation.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -78,6 +81,7 @@ export interface ServiceRuntime {
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   readonly preview?: PreviewEnv;
+  readonly pricing: PricingConfig;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -116,6 +120,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     tenant: {
       tenantDb: createTenantDbFactory(database),
       runIntentHmacKey: runtime.runIntentHmacKey,
+      pricing: runtime.pricing,
       ...(runtime.eventWakeups === undefined
         ? {}
         : { eventStream: { wakeups: runtime.eventWakeups } }),
@@ -159,6 +164,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       limiter: createRedisRateLimiter(redis),
       idempotency: createRedisIdempotencyStore(redis),
     },
+    modelCompletions: createModelCompletionRepository({
+      database,
+      mirror: createRedisCreditMirror(redis),
+    }),
     ...(runtime.preview === undefined
       ? {}
       : {

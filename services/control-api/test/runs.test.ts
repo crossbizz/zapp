@@ -10,6 +10,7 @@ import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import {
   buildHarness,
   signIn,
+  TEST_PRICING,
   TEST_RUN_INTENT_HMAC_KEY,
   type Harness,
   type TestSession,
@@ -45,6 +46,7 @@ interface StartCall {
   readonly appType: 'web' | 'mobile';
   readonly model: string | null;
   readonly prompt: string;
+  readonly budget?: { readonly maxCredits: number } | null;
   readonly operationKey?: string;
 }
 
@@ -167,6 +169,23 @@ function newRunInput(id: string) {
     appType: 'web' as const,
     model: null,
     budget: null,
+    accounting: {
+      baseCeiling: '1000.0000',
+      pricingVersion: 'm1-test',
+      pricingSnapshot: {
+        version: 'm1-test',
+        defaultRunCreditCeiling: '1000.0000',
+        creditsPerUsd: '100.0000',
+        models: {
+          'anthropic/claude-sonnet-5': {
+            inputUsdPerMillion: '3.000000',
+            outputUsdPerMillion: '15.000000',
+            cacheReadUsdPerMillion: '0.300000',
+            cacheWriteUsdPerMillion: '3.750000',
+          },
+        },
+      },
+    },
     startedBy: newId('user'),
     now: new Date('2026-08-15T12:00:00.000Z'),
   };
@@ -176,6 +195,7 @@ async function wire(
   options: {
     sandbox?: FakeSandboxServicePort;
     organizations?: InMemoryOrganizationStore;
+    pricing?: typeof TEST_PRICING | null;
   } = {},
 ): Promise<Wired> {
   const data = new InMemoryTenantData();
@@ -186,6 +206,7 @@ async function wire(
     // CP-9 will add this injected dependency. Keeping the fake in the test
     // first lets the HTTP assertion demonstrate the missing route today.
     orchestrator,
+    ...(options.pricing === undefined ? {} : { pricing: options.pricing }),
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
   });
   harnesses.push(built);
@@ -382,6 +403,83 @@ describe('POST /v1/projects/:projectId/runs', () => {
       appType: 'mobile',
       model: 'anthropic/claude-sonnet-5',
     });
+  });
+
+  it('resolves an omitted budget from the pricing snapshot before workflow dispatch', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'default-budget-01' },
+      payload: { mode: 'build', prompt: 'Use the configured budget' },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(wired.data.runs).toHaveLength(1);
+    expect(wired.data.runs[0]?.budgetJson).toEqual({ maxCredits: 1_000 });
+    expect(wired.data.runAccounting.get(wired.data.runs[0]?.id ?? '')).toMatchObject({
+      baseCeiling: '1000.0000',
+      pricingVersion: 'm1-test',
+      pricingSnapshot: { defaultRunCreditCeiling: '1000.0000' },
+    });
+    expect(wired.orchestrator.starts).toHaveLength(1);
+    expect(wired.orchestrator.starts[0]?.budget).toEqual({ maxCredits: 1_000 });
+  });
+
+  it('fails before persistence or dispatch when the pricing configuration is absent', async () => {
+    const wired = await wire({ pricing: null });
+    const project = await createProject(wired);
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'missing-pricing-01' },
+      payload: { mode: 'build', prompt: 'Do not start without pricing' },
+    });
+
+    expect(response.statusCode, response.body).toBe(503);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe(
+      'pricing_configuration_invalid',
+    );
+    expect(wired.data.runs).toEqual([]);
+    expect(wired.data.runAccounting.size).toBe(0);
+    expect(wired.orchestrator.starts).toEqual([]);
+  });
+
+  it('fails before persistence or dispatch when the selected model has no rate', async () => {
+    const openaiPricing = TEST_PRICING.models['openai/gpt-5'];
+    if (openaiPricing === undefined) throw new Error('test pricing is missing openai/gpt-5');
+    const wired = await wire({
+      pricing: {
+        ...TEST_PRICING,
+        models: { 'openai/gpt-5': openaiPricing },
+      },
+    });
+    const project = await createProject(wired);
+    wired.built.organizations.settings.set(wired.organizationId, {
+      builderCanDeploy: false,
+      defaultModelPolicy: { allowedModels: ['anthropic/claude-sonnet-5'] },
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'missing-model-rate-01' },
+      payload: {
+        mode: 'build',
+        prompt: 'Do not start without a model rate',
+        model: 'anthropic/claude-sonnet-5',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(503);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe(
+      'pricing_configuration_invalid',
+    );
+    expect(wired.data.runs).toEqual([]);
+    expect(wired.data.runAccounting.size).toBe(0);
+    expect(wired.orchestrator.starts).toEqual([]);
   });
 
   it('rejects an explicit model absent from the selected organization policy', async () => {

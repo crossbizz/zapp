@@ -80,7 +80,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-1 model-gateway streaming API
 - [x] AR-2 Routing/retry/fallback
 - [x] AR-3A Stable completion identity + exhaustive terminal envelope
-- [ ] OPS-1A Durable completion journal + authoritative usage reservation
+- [x] OPS-1A Durable completion journal + authoritative usage reservation
 - [ ] AR-3B Usage telemetry + budget cutoff + Anthropic cache proof
 - [x] AR-4 agent-tools registry (PRD §16.1 complete)
 - [x] AR-5 agent-policies + injection defense + role prompts

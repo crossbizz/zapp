@@ -22,6 +22,8 @@ import type { ReleasePort } from '../../src/routes/releases.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
+import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
+import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
@@ -77,6 +79,26 @@ export const TEST_RATE_LIMITS: RateLimitConfig = {
 
 /** Trust nothing, like the shipped file — the suites that care set their own. */
 export const TEST_PROXY_TRUST: ProxyTrust = { trustedHops: 0, trustedProxies: [] };
+
+export const TEST_PRICING: PricingConfig = loadPricingConfig({
+  version: 'm1-test',
+  defaultRunCreditCeiling: '1000.0000',
+  creditsPerUsd: '100.0000',
+  models: {
+    'anthropic/claude-sonnet-5': {
+      inputUsdPerMillion: '3.000000',
+      outputUsdPerMillion: '15.000000',
+      cacheReadUsdPerMillion: '0.300000',
+      cacheWriteUsdPerMillion: '3.750000',
+    },
+    'openai/gpt-5': {
+      inputUsdPerMillion: '1.250000',
+      outputUsdPerMillion: '10.000000',
+      cacheReadUsdPerMillion: '0.125000',
+      cacheWriteUsdPerMillion: '1.250000',
+    },
+  },
+});
 
 /** A `UserStore` with a Map behind it, so route tests need no database. */
 export class InMemoryUserStore implements UserStore {
@@ -174,6 +196,9 @@ export interface HarnessOptions {
   readonly serviceTokenSecrets?: { readonly secret?: string; readonly previousSecret?: string };
   /** For the suite that needs a verifier whose replay store cannot answer. */
   readonly serviceTokenVerifier?: ServiceTokenVerifier;
+  /** `null` exercises a tenant surface that fails closed with no pricing config. */
+  readonly pricing?: PricingConfig | null;
+  readonly modelCompletions?: ModelCompletionRepository;
 }
 
 /**
@@ -213,6 +238,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
           tenant: {
             tenantDb: options.tenantDb,
             runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
+            ...(options.pricing === null
+              ? {}
+              : { pricing: options.pricing ?? TEST_PRICING }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
@@ -234,6 +262,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
           },
         }),
     ...(options.preview === undefined ? {} : { preview: options.preview }),
+    ...(options.modelCompletions === undefined
+      ? {}
+      : { modelCompletions: options.modelCompletions }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

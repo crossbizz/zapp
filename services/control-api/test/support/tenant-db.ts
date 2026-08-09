@@ -23,6 +23,7 @@ import {
   type CreatedSecret,
   type DeleteSecretInput,
   type NewProjectInput,
+  type NewRunInput,
   type NewSecretInput,
   type ReadSecretInput,
   type RotateSecretInput,
@@ -81,6 +82,7 @@ export class InMemoryTenantData {
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
+  readonly runAccounting = new Map<string, NewRunInput['accounting']>();
   readonly events: AgentEventRow[] = [];
   readonly auditEvents: AuditEvent[] = [];
   readonly workspaces: Workspace[] = [];
@@ -597,6 +599,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           input.authorize(run);
           await input.audit(NO_TRANSACTION, run);
           data.runs.push(run);
+          data.runAccounting.set(run.id, input.accounting);
           return { outcome: 'created', run } as const;
         });
       },

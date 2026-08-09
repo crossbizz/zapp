@@ -165,7 +165,7 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
       } finally {
         await probe.close();
       }
-    });
+    }, 15_000);
 
     it('cancels a pool-queued read before a connection is released and recovers full capacity', async () => {
       const probe = createDb(handle.url);

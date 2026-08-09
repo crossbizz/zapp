@@ -45,6 +45,78 @@ export function loadRedisUrl(source: unknown = process.env): string {
   return defineEnv(RedisEnvSchema, source).REDIS_URL;
 }
 
+const UsageQueueEnvSchema = z
+  .object({
+    AWS_REGION: z.string().trim().min(1),
+    AWS_ENDPOINT_URL: z.union([z.string().url(), z.literal('')]).optional(),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    SQS_USAGE_QUEUE_NAME: z.string().trim().min(1).default('zapp-usage-events'),
+  })
+  .superRefine((value, context) => {
+    if ((value.AWS_ACCESS_KEY_ID === undefined) !== (value.AWS_SECRET_ACCESS_KEY === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together',
+      });
+    }
+  });
+
+export interface UsageQueueEnv {
+  readonly region: string;
+  readonly endpoint?: string;
+  readonly accessKeyId?: string;
+  readonly secretAccessKey?: string;
+  readonly queueName: string;
+}
+
+export function loadUsageQueueEnv(source: unknown = process.env): UsageQueueEnv {
+  const env = defineEnv(UsageQueueEnvSchema, source);
+  return {
+    region: env.AWS_REGION,
+    ...(env.AWS_ENDPOINT_URL === undefined || env.AWS_ENDPOINT_URL === ''
+      ? {}
+      : { endpoint: env.AWS_ENDPOINT_URL }),
+    ...(env.AWS_ACCESS_KEY_ID === undefined || env.AWS_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        }),
+    queueName: env.SQS_USAGE_QUEUE_NAME,
+  };
+}
+
+const FlexpriceEnvSchema = z.object({
+  FLEXPRICE_API_KEY: z.union([z.string().trim().min(1), z.literal('')]).optional(),
+  FLEXPRICE_BASE_URL: z
+    .string()
+    .url()
+    .refine((value) => /^https?:\/\//u.test(value), 'FLEXPRICE_BASE_URL must use HTTP(S)')
+    .default('https://api.cloud.flexprice.io/v1'),
+});
+
+export interface FlexpriceEnv {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+}
+
+/** A template placeholder means the optional vendor consumer stays dormant. */
+export function loadFlexpriceEnv(source: unknown = process.env): FlexpriceEnv | undefined {
+  const env = defineEnv(FlexpriceEnvSchema, source);
+  if (
+    env.FLEXPRICE_API_KEY === undefined ||
+    env.FLEXPRICE_API_KEY === '' ||
+    env.FLEXPRICE_API_KEY === 'replace-me'
+  ) {
+    return undefined;
+  }
+  return {
+    apiKey: env.FLEXPRICE_API_KEY,
+    baseUrl: env.FLEXPRICE_BASE_URL.replace(/\/+$/u, ''),
+  };
+}
+
 /**
  * Cross-instance key for the HMAC stored with durable run intent. There is no
  * default: retries must derive the same digest on every replica, while a

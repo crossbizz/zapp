@@ -102,6 +102,10 @@ export const SERVICE_TOKEN_AUDIENCES = [
   'control-api:secrets.decrypt',
   /** `POST /internal/runs/:runId/events` — the sequenced orchestration event writer (plan 02 CP-13). */
   'control-api:events.ingest',
+  /** ADR-0025 model completion claim/commit/get boundary. */
+  'control-api:model-completions',
+  /** ADR-0025 approval-backed run ceiling increase boundary. */
+  'control-api:credit-ceilings',
   ...SERVICE_NAMES,
 ] as const;
 
