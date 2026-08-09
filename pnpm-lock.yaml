@@ -1005,9 +1005,15 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: 3.0.22
         version: 3.0.22(zod@3.25.76)
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
       '@zapp/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       ai:
         specifier: 7.0.51
         version: 7.0.51(zod@3.25.76)

@@ -1,7 +1,9 @@
-import type { CompletionBackend } from './app.js';
+import type { CompletionRouteAttempt } from '@zapp/contracts';
 import { ModelsConfigSchema, type ModelsConfig, type ProviderId } from './models.js';
-import type { ProviderAdapter } from './providers/types.js';
+import { ModelTerminalError, ProviderAttemptError, type ProviderAdapter } from './providers/types.js';
 import type { BackendStreamEvent, CompleteRequest } from './schemas.js';
+import { createModelAttemptTelemetry, type ModelAttemptTelemetry } from './telemetry.js';
+import type { ReservableCompletionBackend } from './usage-client.js';
 import { z } from 'zod';
 
 const MAX_ATTEMPTS = 3;
@@ -59,6 +61,7 @@ export interface RoutingDependencies {
   readonly jitter?: (milliseconds: number) => number;
   readonly now?: () => number;
   readonly maxConcurrentStreams?: number;
+  readonly telemetry?: ModelAttemptTelemetry;
 }
 
 export interface CreateRoutingCompletionOptions {
@@ -173,7 +176,17 @@ function providerFor(reference: string, providers: CreateRoutingCompletionOption
   const modelId = reference.slice(separator + 1);
   const provider = providers[providerId];
   if (provider === undefined) throw new Error(`model provider ${providerId} is disabled`);
-  return { provider, modelId };
+  return { provider, providerId, modelId };
+}
+
+function routeAttempt(reference: string, request: CompleteRequest): CompletionRouteAttempt {
+  const separator = reference.indexOf('/');
+  return {
+    provider: reference.slice(0, separator),
+    model: reference.slice(separator + 1),
+    maxInputTokens: request.maxInputTokens,
+    maxOutputTokens: request.maxOutputTokens,
+  };
 }
 
 async function routeFor(
@@ -186,7 +199,7 @@ async function routeFor(
   return parsed?.roles[request.agentRole] ?? models.roles[request.agentRole];
 }
 
-export function createRoutingCompletion(options: CreateRoutingCompletionOptions): CompletionBackend {
+export function createRoutingCompletion(options: CreateRoutingCompletionOptions): ReservableCompletionBackend {
   const routing = options.routing;
   const semaphore = new OrganizationStreamSemaphore(
     MaxConcurrentStreamsSchema.parse(routing?.maxConcurrentStreams ?? DEFAULT_MAX_CONCURRENT_STREAMS),
@@ -195,13 +208,16 @@ export function createRoutingCompletion(options: CreateRoutingCompletionOptions)
   const sleep = routing?.sleep ?? defaultSleep;
   const jitter = routing?.jitter ?? defaultJitter;
   const now = routing?.now ?? Date.now;
+  const telemetry = routing?.telemetry ?? createModelAttemptTelemetry({ now });
 
-  return {
-    stream(request, signal): AsyncIterable<BackendStreamEvent> {
-      return (async function* () {
+  const streamPinned = (
+    request: CompleteRequest,
+    route: ModelRoute,
+    signal: AbortSignal,
+  ): AsyncIterable<BackendStreamEvent> =>
+    (async function* () {
         const release = await semaphore.acquire(request.organizationId, signal);
         try {
-          const route = await routeFor(request, options.models, routing?.organizationPolicies);
           const references = [route.primary, ...route.fallbacks];
           let lastFailure: unknown;
 
@@ -219,16 +235,37 @@ export function createRoutingCompletion(options: CreateRoutingCompletionOptions)
                 timestamp: now(),
               });
               let emitted = false;
+              const separator = reference.indexOf('/');
+              const attemptSpan = telemetry.start({
+                provider: reference.slice(0, separator),
+                model: reference.slice(separator + 1),
+                attempt,
+                organizationId: request.organizationId,
+                runId: request.runId,
+                taskId: request.taskId,
+              });
               try {
                 const { provider, modelId } = providerFor(reference, options.providers);
                 for await (const event of provider.stream({ modelId, request, signal })) {
                   emitted = true;
+                  if (event.type === 'usage') attemptSpan.recordUsage(event);
                   yield event;
                 }
+                attemptSpan.end('ok');
                 return;
               } catch (error) {
-                if (emitted || !retryable(error)) throw error;
-                lastFailure = error;
+                attemptSpan.end('error', error);
+                if (error instanceof ModelTerminalError) throw error;
+                const attributed =
+                  error instanceof ProviderAttemptError
+                    ? error
+                    : new ProviderAttemptError(
+                        reference.slice(0, separator),
+                        reference.slice(separator + 1),
+                        error,
+                      );
+                if (emitted || !retryable(error)) throw attributed;
+                lastFailure = attributed;
                 if (attempt < MAX_ATTEMPTS) {
                   await sleep(jitter(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
                   continue;
@@ -252,6 +289,22 @@ export function createRoutingCompletion(options: CreateRoutingCompletionOptions)
         } finally {
           release();
         }
+      })();
+
+  return {
+    async prepare(request) {
+      const route = await routeFor(request, options.models, routing?.organizationPolicies);
+      return {
+        route: [route.primary, ...route.fallbacks].flatMap((reference) =>
+          Array.from({ length: MAX_ATTEMPTS }, () => routeAttempt(reference, request)),
+        ),
+        stream: (signal) => streamPinned(request, route, signal),
+      };
+    },
+    stream(request, signal): AsyncIterable<BackendStreamEvent> {
+      return (async function* () {
+        const route = await routeFor(request, options.models, routing?.organizationPolicies);
+        yield* streamPinned(request, route, signal);
       })();
     },
   };

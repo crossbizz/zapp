@@ -16,6 +16,10 @@ import {
   type GatewayStreamEvent,
 } from './schemas.js';
 import { ModelTerminalError } from './providers/types.js';
+import {
+  CompletionCommitIndeterminateError,
+  CompletionControlError,
+} from './usage-client.js';
 
 export { ChatMessageSchema, CompleteRequestSchema, NeutralToolSchema } from './schemas.js';
 export type { ChatMessage, CompleteRequest, GatewayStreamEvent, NeutralTool } from './schemas.js';
@@ -307,7 +311,15 @@ export function buildApp(options: BuildAppOptions) {
         stopProvider();
         if (!responseAbortController.signal.aborted && !reply.raw.destroyed) {
           const terminalEvent =
-            error instanceof ModelTerminalError
+            error instanceof CompletionControlError
+              ? { type: 'error' as const, code: error.code, message: error.message }
+              : error instanceof CompletionCommitIndeterminateError
+                ? {
+                    type: 'error' as const,
+                    code: 'completion_retryable' as const,
+                    message: 'The completion accounting result must be retried.',
+                  }
+                : error instanceof ModelTerminalError
               ? { type: 'error' as const, code: error.code, message: error.message }
               : SAFE_PROVIDER_ERROR;
           request.log.warn({ errorCode: terminalEvent.code }, 'provider completion failed');

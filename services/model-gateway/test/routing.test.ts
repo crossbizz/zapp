@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createConfiguredCompletion } from '../src/completion.js';
 import { loadModelsConfig } from '../src/models.js';
 import type { BackendStreamEvent, CompleteRequest } from '../src/schemas.js';
-import type { ProviderAdapter, ProviderInput } from '../src/providers/types.js';
+import { ProviderAttemptError, type ProviderAdapter, type ProviderInput } from '../src/providers/types.js';
 
 const request = {
   completionId: `cmp_${'b'.repeat(64)}`,
@@ -15,6 +15,8 @@ const request = {
   taskId: 'task_1',
   agentRole: 'builder',
   messages: [{ role: 'user', content: 'Build the requested feature.' }],
+  cacheBreakpointMessageIndexes: [],
+  maxInputTokens: 1024,
   maxOutputTokens: 2048,
 } satisfies CompleteRequest;
 
@@ -217,11 +219,17 @@ describe('configured completion routing', () => {
     });
     const events: BackendStreamEvent[] = [];
 
-    await expect(async () => {
+    const error = await (async () => {
       for await (const event of completion.stream(request, new AbortController().signal)) {
         events.push(event);
       }
-    }).rejects.toBe(failure);
+    })().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderAttemptError);
+    expect(error).toMatchObject({
+      provider: 'anthropic',
+      model: 'builder-primary',
+      cause: failure,
+    });
 
     expect(events).toEqual([{ type: 'text-delta', text: 'already sent' }]);
     expect(anthropic.inputs).toHaveLength(1);
@@ -304,9 +312,16 @@ describe('configured completion routing', () => {
       },
     });
 
-    await expect(collect(completion.stream(request, new AbortController().signal))).rejects.toMatchObject({
-      status: 400,
+    const error = await collect(completion.stream(request, new AbortController().signal)).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      provider: 'anthropic',
+      model: 'builder-primary',
     });
+    expect(error).toBeInstanceOf(ProviderAttemptError);
+    if (!(error instanceof ProviderAttemptError)) throw new Error('Expected attributed provider error');
+    expect(error.cause).toMatchObject({ status: 400 });
     expect(anthropic.inputs).toHaveLength(1);
     expect(delays).toEqual([]);
     expect(observations).toMatchObject([

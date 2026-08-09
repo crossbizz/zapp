@@ -39,6 +39,8 @@ const validRequest = {
   taskId: 'task_1',
   agentRole: 'builder',
   messages: [{ role: 'user', content: 'Build the requested feature.' }],
+  cacheBreakpointMessageIndexes: [],
+  maxInputTokens: 1024,
   tools: [
     {
       name: 'read_file',
@@ -1142,6 +1144,7 @@ async function captureAdapter(
     modelId: observed.modelId,
     streamOptions: {
       model: observed.streamOptions?.model,
+      instructions: observed.streamOptions?.instructions,
       messages: observed.streamOptions?.messages,
       tools: normalizedTools,
       maxOutputTokens: observed.streamOptions?.maxOutputTokens,
@@ -1164,12 +1167,14 @@ describe('AI SDK provider adapters', () => {
         },
         "streamOptions": {
           "abortSignal": true,
-          "maxOutputTokens": 2048,
-          "messages": [
+          "instructions": [
             {
               "content": "System instruction.",
               "role": "system",
             },
+          ],
+          "maxOutputTokens": 2048,
+          "messages": [
             {
               "content": "User request.",
               "role": "user",
@@ -1214,12 +1219,14 @@ describe('AI SDK provider adapters', () => {
         },
         "streamOptions": {
           "abortSignal": true,
-          "maxOutputTokens": 2048,
-          "messages": [
+          "instructions": [
             {
               "content": "System instruction.",
               "role": "system",
             },
+          ],
+          "maxOutputTokens": 2048,
+          "messages": [
             {
               "content": "User request.",
               "role": "user",
@@ -1264,12 +1271,14 @@ describe('AI SDK provider adapters', () => {
         },
         "streamOptions": {
           "abortSignal": true,
-          "maxOutputTokens": 2048,
-          "messages": [
+          "instructions": [
             {
               "content": "System instruction.",
               "role": "system",
             },
+          ],
+          "maxOutputTokens": 2048,
+          "messages": [
             {
               "content": "User request.",
               "role": "user",
@@ -1322,12 +1331,14 @@ describe('AI SDK provider adapters', () => {
         },
         "streamOptions": {
           "abortSignal": true,
-          "maxOutputTokens": 2048,
-          "messages": [
+          "instructions": [
             {
               "content": "System instruction.",
               "role": "system",
             },
+          ],
+          "maxOutputTokens": 2048,
+          "messages": [
             {
               "content": "User request.",
               "role": "user",

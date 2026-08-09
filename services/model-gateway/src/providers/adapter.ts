@@ -3,6 +3,7 @@ import {
   tool,
   type LanguageModelUsage,
   type ModelMessage,
+  type SystemModelMessage,
   type ToolResultPart,
 } from 'ai';
 
@@ -43,6 +44,7 @@ function usageEvent(
   finishReason: string,
 ): BackendStreamEvent {
   const cachedInputTokens = usage.inputTokenDetails.cacheReadTokens;
+  const cacheWriteInputTokens = usage.inputTokenDetails.cacheWriteTokens;
   return {
     type: 'usage',
     provider,
@@ -52,6 +54,9 @@ function usageEvent(
     ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
     ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined || cacheWriteInputTokens === 0
+      ? {}
+      : { cacheWriteInputTokens }),
   };
 }
 
@@ -83,19 +88,60 @@ function toolOutput(
   };
 }
 
-function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
-  return messages.map((message): ModelMessage => {
-    if (message.role !== 'tool') return message;
-    return {
-      role: 'tool',
-      content: message.content.map((part) => ({
-        type: 'tool-result',
-        toolCallId: part.toolCallId,
-        toolName: part.toolName,
-        output: toolOutput(part.output),
-      })),
-    };
-  });
+const ANTHROPIC_CACHE_CONTROL = {
+  anthropic: { cacheControl: { type: 'ephemeral' } },
+} as const;
+
+function toModelPrompt(
+  messages: ChatMessage[],
+  cacheBreakpointMessageIndexes: readonly number[],
+  provider: ProviderId,
+): { readonly instructions?: SystemModelMessage[]; readonly messages: ModelMessage[] } {
+  const instructions: SystemModelMessage[] = [];
+  const modelMessages: ModelMessage[] = [];
+  for (const [index, message] of messages.entries()) {
+    const cache = provider === 'anthropic' && cacheBreakpointMessageIndexes.includes(index);
+    if (message.role === 'system') {
+      instructions.push({
+        ...message,
+        ...(cache ? { providerOptions: ANTHROPIC_CACHE_CONTROL } : {}),
+      });
+      continue;
+    }
+    if (cache) {
+      if (message.role === 'user' && typeof message.content === 'string') {
+        modelMessages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: message.content,
+              providerOptions: ANTHROPIC_CACHE_CONTROL,
+            },
+          ],
+        });
+        continue;
+      }
+      throw new Error('A prompt-cache breakpoint must name a cacheable system or user message.');
+    }
+    modelMessages.push(
+      message.role !== 'tool'
+        ? message
+        : {
+            role: 'tool',
+            content: message.content.map((part) => ({
+              type: 'tool-result',
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output: toolOutput(part.output),
+            })),
+          },
+    );
+  }
+  return {
+    ...(instructions.length === 0 ? {} : { instructions }),
+    messages: modelMessages,
+  };
 }
 
 function toolInput(input: unknown): Record<string, JsonValue> {
@@ -117,9 +163,14 @@ export function createAiSdkAdapter(options: {
     provider: options.provider,
     stream: (input) => {
       const tools = convertTools(input);
+      const prompt = toModelPrompt(
+        input.request.messages,
+        input.request.cacheBreakpointMessageIndexes,
+        options.provider,
+      );
       const result = options.dependencies.streamText({
         model: provider(input.modelId),
-        messages: toModelMessages(input.request.messages),
+        ...prompt,
         ...(tools === undefined ? {} : { tools }),
         maxOutputTokens: input.request.maxOutputTokens,
         abortSignal: input.signal,

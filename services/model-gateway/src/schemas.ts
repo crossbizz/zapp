@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CompletionIdSchema, CompletionUsageSchema } from '@zapp/contracts';
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -198,10 +199,30 @@ export const CompleteRequestSchema = z
     agentRole: z.enum(['planner', 'builder', 'verifier', 'summarizer']),
     messages: z.array(ChatMessageSchema),
     tools: z.array(NeutralToolSchema).optional(),
+    cacheBreakpointMessageIndexes: z.array(z.number().int().nonnegative()).max(4).default([]),
+    maxInputTokens: z.number().int().nonnegative(),
     maxOutputTokens: z.number().int().positive(),
     budget: z.object({ remainingCredits: z.number() }).strict().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (new Set(request.cacheBreakpointMessageIndexes).size !== request.cacheBreakpointMessageIndexes.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'cache breakpoint message indexes must be unique',
+        path: ['cacheBreakpointMessageIndexes'],
+      });
+    }
+    for (const index of request.cacheBreakpointMessageIndexes) {
+      if (index >= request.messages.length) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'cache breakpoint message index is outside the message list',
+          path: ['cacheBreakpointMessageIndexes'],
+        });
+      }
+    }
+  });
 
 export type CompleteRequest = z.infer<typeof CompleteRequestSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -228,6 +249,14 @@ const UsageStreamEventSchema = z
     outputTokens: z.number().int().nonnegative().optional(),
     totalTokens: z.number().int().nonnegative().optional(),
     cachedInputTokens: z.number().int().nonnegative().optional(),
+    cacheWriteInputTokens: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+const UsageRecordedStreamEventSchema = z
+  .object({
+    type: z.literal('usage.recorded'),
+    completionId: CompletionIdSchema,
+    usage: z.array(CompletionUsageSchema).min(1).max(16),
   })
   .strict();
 const DoneStreamEventSchema = z.object({ type: z.literal('done') }).strict();
@@ -239,6 +268,9 @@ const ProviderErrorStreamEventSchema = z
       'content_filter',
       'output_limit_exceeded',
       'unknown_finish_reason',
+      'completion_leased',
+      'completion_retryable',
+      'budget_exceeded',
     ]),
     message: z.string(),
   })
@@ -248,12 +280,14 @@ export const BackendStreamEventSchema = z.discriminatedUnion('type', [
   TextDeltaStreamEventSchema,
   ToolCallStreamEventSchema,
   UsageStreamEventSchema,
+  UsageRecordedStreamEventSchema,
 ]);
 
 export const GatewayStreamEventSchema = z.discriminatedUnion('type', [
   TextDeltaStreamEventSchema,
   ToolCallStreamEventSchema,
   UsageStreamEventSchema,
+  UsageRecordedStreamEventSchema,
   DoneStreamEventSchema,
   ProviderErrorStreamEventSchema,
 ]);

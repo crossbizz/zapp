@@ -11,6 +11,14 @@ export { loadModelGatewayEnv } from './env.js';
 export { loadModelsConfig, ModelsConfigSchema } from './models.js';
 export { configureProviders } from './providers/configure.js';
 export {
+  CompletionCommitIndeterminateError,
+  CompletionControlError,
+  createControlPlaneUsageClient,
+  createUsageAccountedCompletion,
+  type CompletionUsageClient,
+  type ReservableCompletionBackend,
+} from './usage-client.js';
+export {
   GatewayStreamEventSchema,
   InputJsonSchema,
   JsonValueSchema,

@@ -171,6 +171,104 @@ function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
 }
 
 describe('agent session loop', () => {
+  it('keeps a foreign completion lease retryable with the durable request intact', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(): AsyncIterable<GatewayStreamEvent> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            code: 'completion_leased',
+            message: 'The completion is owned by another live gateway.',
+          };
+        },
+      },
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await expect(session.run(input())).rejects.toMatchObject({
+      name: 'SessionCompletionRetryableError',
+    });
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(saved?.terminalStatus).toBeNull();
+    expect(saved?.inFlightCompletion).not.toBeNull();
+  });
+
+  it('durably emits usage.recorded before mapping an accounting cutoff to budget_exhausted', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const events: SessionEvent[] = [];
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(request): AsyncIterable<GatewayStreamEvent> {
+          await Promise.resolve();
+          yield {
+            type: 'usage.recorded',
+            completionId: request.completionId,
+            usage: [
+              {
+                provider: 'anthropic',
+                model: 'claude-sonnet-5',
+                inputTokens: 1,
+                outputTokens: 1,
+                cacheReadInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                occurredAt: '2026-08-09T16:00:00.000Z',
+              },
+            ],
+          };
+          yield {
+            type: 'error',
+            code: 'budget_exceeded',
+            message: 'The run credit budget is exhausted.',
+          };
+        },
+      },
+      tools: registry,
+      transcripts,
+      events: { emit: (event) => void events.push(event) },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    const result = await session.run(input());
+
+    expect(result.status).toBe('budget_exhausted');
+    expect(events).toHaveLength(1);
+    const emitted = events[0];
+    expect(emitted?.type).toBe('usage.recorded');
+    expect(emitted?.payload['completionId']).toMatch(/^cmp_/u);
+    const recordedUsage = emitted?.payload['usage'];
+    expect(Array.isArray(recordedUsage)).toBe(true);
+    if (!Array.isArray(recordedUsage)) throw new Error('Expected recorded usage array');
+    expect(recordedUsage[0]).toMatchObject({ provider: 'anthropic', inputTokens: 1 });
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(saved?.eventOutbox).toHaveLength(1);
+    expect(saved?.eventOutbox[0]?.delivered).toBe(true);
+    expect(saved?.eventOutbox[0]?.event.type).toBe('usage.recorded');
+    expect(saved?.terminalErrorCode).toBe('budget_exceeded');
+  });
+
   it('persists a real write result and completes on the second model turn', async () => {
     const { registry, root } = await memoryRegistry();
     const transcripts = new MemoryTranscriptStore();
@@ -480,23 +578,42 @@ describe('agent session loop', () => {
 
   it('treats the token budget as a hard pre-execution limit', async () => {
     const { registry, root } = await memoryRegistry();
-    const scripted = scriptedGateway([
-      [
-        {
+    const requests: CompleteRequest[] = [];
+    const events: SessionEvent[] = [];
+    const gateway = {
+      async *stream(request: CompleteRequest): AsyncIterable<GatewayStreamEvent> {
+        await Promise.resolve();
+        requests.push(request);
+        yield {
           type: 'tool-call',
           toolCallId: 'call-over-token-budget',
           toolName: 'write_file',
           input: { path: 'over-budget.txt', content: 'must not be written' },
-        },
-        { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 8, outputTokens: 8, totalTokens: 1 },
-        { type: 'done' },
-      ],
-    ]);
+        };
+        yield { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 8, outputTokens: 8, totalTokens: 1 };
+        yield {
+          type: 'usage.recorded',
+          completionId: request.completionId,
+          usage: [
+            {
+              provider: 'anthropic',
+              model: 'claude-sonnet-5',
+              inputTokens: 8,
+              outputTokens: 8,
+              cacheReadInputTokens: 0,
+              cacheWriteInputTokens: 0,
+              occurredAt: '2026-08-09T16:00:00.000Z',
+            },
+          ],
+        };
+        yield { type: 'done' };
+      },
+    };
     const session = createSessionLoop({
-      gateway: scripted.gateway,
+      gateway,
       tools: registry,
       transcripts: new MemoryTranscriptStore(),
-      events: { emit: () => undefined },
+      events: { emit: (event) => void events.push(event) },
       approvals: { status: () => Promise.resolve('pending') },
       prompts: {
         builder: 'builder',
@@ -514,10 +631,57 @@ describe('agent session loop', () => {
     });
 
     expect(result.status).toBe('budget_exhausted');
-    expect(scripted.requests).toHaveLength(1);
+    expect(requests).toHaveLength(1);
+    expect(events.map((event) => event.type)).toEqual(['usage.recorded']);
     await expect(readFile(join(root, 'over-budget.txt'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it('preserves a retryable accounting completion after raw usage crosses the token cutoff', async () => {
+    const { registry } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(): AsyncIterable<GatewayStreamEvent> {
+          await Promise.resolve();
+          yield {
+            type: 'usage',
+            ...USAGE_ATTRIBUTION,
+            inputTokens: 8,
+            outputTokens: 8,
+            totalTokens: 16,
+          };
+          yield {
+            type: 'error',
+            code: 'completion_retryable',
+            message: 'The completion accounting result must be retried.',
+          };
+        },
+      },
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await expect(
+      session.run({
+        ...input(),
+        budgets: { maxTurns: 4, maxTokens: 10, maxWallClockMs: 30_000 },
+      }),
+    ).rejects.toMatchObject({ name: 'SessionCompletionRetryableError' });
+    const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(saved?.terminalStatus).toBeNull();
+    expect(saved?.inFlightCompletion).not.toBeNull();
   });
 
   it.each([

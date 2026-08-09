@@ -122,6 +122,7 @@ export const SessionEventSchema = z
       'tool.failed',
       'approval.requested',
       'approval.resolved',
+      'usage.recorded',
     ]),
     occurredAt: z.string().datetime(),
     payload: z.record(z.unknown()),
@@ -168,6 +169,13 @@ export class SessionLeaseBusyError extends Error {
   constructor() {
     super('Session tool execution is owned by another live worker');
     this.name = 'SessionLeaseBusyError';
+  }
+}
+
+export class SessionCompletionRetryableError extends Error {
+  constructor(readonly code: 'completion_leased' | 'completion_retryable') {
+    super('The durable model completion must be retried.');
+    this.name = 'SessionCompletionRetryableError';
   }
 }
 
@@ -524,6 +532,8 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               agentRole: input.role,
               messages: structuredClone(transcript.messages),
               tools,
+              cacheBreakpointMessageIndexes: [0, 1],
+              maxInputTokens: 0,
               maxOutputTokens: 1,
             };
             let request: CompleteRequest;
@@ -556,6 +566,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               );
               request = {
                 ...requestBase,
+                maxInputTokens: requestTokens,
                 maxOutputTokens: outputTokenAllowance,
               };
               reservedTurnTokens = requestTokens + outputTokenAllowance;
@@ -582,6 +593,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             const text: string[] = [];
             const calls: SessionToolCall[] = [];
             let accountedTurnTokens = reservedTurnTokens;
+            let pendingTokenCutoff = false;
             let streamCompleted = false;
             let iterator: AsyncIterator<GatewayStreamEvent> | undefined;
             try {
@@ -612,15 +624,67 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                     accountedTurnTokens = observedTurnTokens;
                     await save();
                     if (transcript.tokensUsed > input.budgets.maxTokens) {
-                      closeIterator(iterator);
-                      return await finish(
-                        'budget_exhausted',
-                        transcript.summary,
-                        'token_budget_exhausted',
-                      );
+                      pendingTokenCutoff = true;
                     }
                   }
                 }
+                if (event.type === 'usage.recorded') {
+                  if (event.completionId !== request.completionId) {
+                    throw new Error('Recorded usage completion identity does not match the request');
+                  }
+                  enqueue(
+                    SessionEventSchema.parse({
+                      eventKey: `${input.runId}:${taskId}:${event.completionId}:usage-recorded`,
+                      runId: input.runId,
+                      taskId,
+                      type: 'usage.recorded',
+                      occurredAt: new Date(now()).toISOString(),
+                      payload: redactJson(
+                        { completionId: event.completionId, usage: event.usage },
+                        dependencies.redact,
+                      ),
+                    }),
+                  );
+                  await save();
+                  await flushOutbox();
+                  if (pendingTokenCutoff) {
+                    closeIterator(iterator);
+                    return await finish(
+                      'budget_exhausted',
+                      transcript.summary,
+                      'token_budget_exhausted',
+                    );
+                  }
+                }
+                if (event.type === 'error') {
+                  closeIterator(iterator);
+                  if (
+                    event.code === 'completion_leased' ||
+                    event.code === 'completion_retryable'
+                  ) {
+                    throw new SessionCompletionRetryableError(event.code);
+                  }
+                  if (event.code === 'budget_exceeded') {
+                    return await finish(
+                      'budget_exhausted',
+                      dependencies.redact(event.message),
+                      event.code,
+                    );
+                  }
+                  if (event.code === 'output_limit_exceeded') {
+                    return await finish(
+                      'budget_exhausted',
+                      dependencies.redact(event.message),
+                      event.code,
+                    );
+                  }
+                  return await finish(
+                    'failed',
+                    dependencies.redact(event.message),
+                    event.code,
+                  );
+                }
+                if (pendingTokenCutoff) continue;
                 if (event.type === 'tool-call') {
                   if (!isToolName(event.toolName)) {
                     closeIterator(iterator);
@@ -652,21 +716,6 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                   calls.push(call);
                   rawInputs.set(call.toolCallId, event.input);
                 }
-                if (event.type === 'error') {
-                  closeIterator(iterator);
-                  if (event.code === 'output_limit_exceeded') {
-                    return await finish(
-                      'budget_exhausted',
-                      dependencies.redact(event.message),
-                      event.code,
-                    );
-                  }
-                  return await finish(
-                    'failed',
-                    dependencies.redact(event.message),
-                    event.code,
-                  );
-                }
                 if (event.type === 'done') {
                   streamCompleted = true;
                   closeIterator(iterator);
@@ -675,6 +724,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               }
             } catch (error: unknown) {
               if (iterator !== undefined) closeIterator(iterator);
+              if (error instanceof SessionCompletionRetryableError) throw error;
               if (isAborted(controller.signal)) {
                 const wallClockExceeded = now() - startedAt >= input.budgets.maxWallClockMs;
                 return await finish(

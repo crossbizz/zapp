@@ -183,6 +183,8 @@ function workerProgram(): string {
                   taskId: 'm1-builder',
                   agentRole: 'builder',
                   messages: [{ role: 'user', content: 'Durable provider request.' }],
+                  cacheBreakpointMessageIndexes: [],
+                  maxInputTokens: 4,
                   tools: [],
                   maxOutputTokens: 8,
                 },

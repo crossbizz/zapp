@@ -214,6 +214,7 @@ export {
   ModelCompletionCommitResponseSchema,
   ModelCompletionGetResponseSchema,
   type CompletionRecord,
+  type CompletionRouteAttempt,
   type CompletionUsage,
   type CreditCeilingIncreaseRequest,
   type CreditState,

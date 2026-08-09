@@ -30,6 +30,7 @@ export const SessionEventRecordSchema = z
       'tool.failed',
       'approval.requested',
       'approval.resolved',
+      'usage.recorded',
     ]),
     occurredAt: z.string().datetime(),
     payload: z.record(z.unknown()),

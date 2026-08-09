@@ -87,6 +87,7 @@ const CompletionUsageEventSchema = z
     outputTokens: z.number().int().nonnegative().optional(),
     totalTokens: z.number().int().nonnegative().optional(),
     cachedInputTokens: z.number().int().nonnegative().optional(),
+    cacheWriteInputTokens: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -201,6 +202,7 @@ export type ModelCompletionClaimRequest = z.infer<typeof ModelCompletionClaimReq
 export type ModelCompletionClaimResponse = z.infer<typeof ModelCompletionClaimResponseSchema>;
 export type ModelCompletionCommitRequest = z.infer<typeof ModelCompletionCommitRequestSchema>;
 export type ModelCompletionCommitResponse = z.infer<typeof ModelCompletionCommitResponseSchema>;
+export type CompletionRouteAttempt = z.infer<typeof CompletionRouteAttemptSchema>;
 export type CompletionRecord = z.infer<typeof CompletionRecordSchema>;
 export type CompletionUsage = z.infer<typeof CompletionUsageSchema>;
 export type CreditState = z.infer<typeof CreditStateSchema>;

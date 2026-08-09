@@ -1,4 +1,11 @@
-import type { LanguageModel, ModelMessage, Schema, TextStreamPart, ToolSet } from 'ai';
+import type {
+  LanguageModel,
+  ModelMessage,
+  Schema,
+  SystemModelMessage,
+  TextStreamPart,
+  ToolSet,
+} from 'ai';
 
 import type { BackendStreamEvent, CompleteRequest } from '../schemas.js';
 import type { ProviderId } from '../models.js';
@@ -30,6 +37,17 @@ export class ModelTerminalError extends Error {
   }
 }
 
+export class ProviderAttemptError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly model: string,
+    cause: unknown,
+  ) {
+    super('The model provider request failed.', { cause });
+    this.name = 'ProviderAttemptError';
+  }
+}
+
 export interface AiSdkTool {
   readonly description: string;
   readonly inputSchema: Schema;
@@ -37,6 +55,7 @@ export interface AiSdkTool {
 
 export interface AiSdkStreamOptions {
   readonly model: LanguageModel;
+  readonly instructions?: SystemModelMessage | SystemModelMessage[];
   readonly messages: ModelMessage[];
   readonly tools?: Record<string, AiSdkTool>;
   readonly maxOutputTokens: number;

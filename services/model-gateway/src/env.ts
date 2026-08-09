@@ -5,11 +5,13 @@ const ServiceEnvSchema = z.object({
   SERVICE_TOKEN_SECRET: z.string().min(32),
   SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
   MODEL_GATEWAY_PORT: z.coerce.number().int().positive().max(65_535).default(4100),
+  CONTROL_API_URL: z.string().url().default('http://127.0.0.1:4000'),
 });
 
 export interface ModelGatewayEnv {
   readonly serviceTokens: ServiceTokenConfig;
   readonly port: number;
+  readonly controlApiUrl: string;
 }
 
 export function loadModelGatewayEnv(source: unknown = process.env): ModelGatewayEnv {
@@ -23,5 +25,6 @@ export function loadModelGatewayEnv(source: unknown = process.env): ModelGateway
         : { previousSecret }),
     },
     port: env.MODEL_GATEWAY_PORT,
+    controlApiUrl: env.CONTROL_API_URL,
   };
 }
