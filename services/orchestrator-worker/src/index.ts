@@ -1,5 +1,6 @@
 export * from './activities/events.js';
 export * from './activities/idempotency.js';
+export * from './activities/merge.js';
 export * from './activities/session.js';
 export * from './activities/workspace.js';
 export * from './session/context.js';
@@ -7,3 +8,4 @@ export * from './session/loop.js';
 export * from './session/transcript.js';
 export * from './worker.js';
 export * from './workflows/run.js';
+export * from './workflows/task.js';

@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createProductionRunWorker,
   TASK_QUEUES,
-  type RunActivities,
+  type ProductionRunActivities,
 } from '../../src/worker.js';
 import { runWorkflow, type RunWorkflowInput } from '../../src/workflows/run.js';
 
@@ -84,7 +84,9 @@ describe('AR-9 production Postgres worker composition', () => {
     try {
       await migrate(database.db, { migrationsFolder: MIGRATIONS_FOLDER });
       environment = await TestWorkflowEnvironment.createLocal();
-      const activities: RunActivities = {
+      const taskActivityNotExpected = (): Promise<never> =>
+        Promise.reject(new Error('AR-9 does not execute AR-12 task activities'));
+      const activities: ProductionRunActivities = {
         transitionRunStatus: () => Promise.resolve(),
         emitEvents: () => Promise.resolve(),
         ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar9-postgres' }),
@@ -96,6 +98,14 @@ describe('AR-9 production Postgres worker composition', () => {
             summary: 'phase complete',
           }),
         commitAndPush: () => Promise.resolve({ commitSha: 'c'.repeat(40) }),
+        recordBaseCommit: taskActivityNotExpected,
+        createTaskWorkspace: taskActivityNotExpected,
+        transitionTaskState: taskActivityNotExpected,
+        runTaskBuilderSession: taskActivityNotExpected,
+        commitAndPushTask: taskActivityNotExpected,
+        mergeTask: taskActivityNotExpected,
+        createConflictTask: taskActivityNotExpected,
+        emitTaskBlocked: taskActivityNotExpected,
       };
       const worker = await createProductionRunWorker({
         connection: environment.nativeConnection,

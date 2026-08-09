@@ -14,9 +14,11 @@ import {
 } from './activities/idempotency.js';
 import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
+import type { TaskWorkflowActivities } from './activities/merge.js';
 import { runWorkflow, RunWorkflowInputSchema } from './workflows/run.js';
 
 export type RunActivities = EventActivities & SessionActivities & WorkspaceActivities;
+export type ProductionRunActivities = RunActivities & TaskWorkflowActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -85,7 +87,8 @@ export function createRunWorker(options: RunWorkerOptions): Promise<Worker> {
 }
 
 export function createProductionRunWorker(
-  options: CommonRunWorkerOptions & {
+  options: Omit<CommonRunWorkerOptions, 'activities'> & {
+    readonly activities: ProductionRunActivities;
     readonly taskQueue: TaskQueue;
     readonly database: Database;
   },

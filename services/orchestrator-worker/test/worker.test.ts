@@ -10,6 +10,7 @@ import {
   createTemporalOrchestrator,
   TASK_QUEUES,
   TaskQueueSchema,
+  type ProductionRunActivities,
   type RunActivities,
 } from '../src/worker.js';
 import { ACTIVITY_RETRY_POLICY, RunWorkflowInputSchema } from '../src/workflows/run.js';
@@ -90,7 +91,7 @@ describe('AR-9 worker queue and activity policy', () => {
       createProductionRunWorker({
         connection: {} as never,
         taskQueue: TASK_QUEUES.agentRuns,
-        activities: {} as RunActivities,
+        activities: {} as ProductionRunActivities,
         database: {} as never,
       }),
     ).resolves.toBe(created);

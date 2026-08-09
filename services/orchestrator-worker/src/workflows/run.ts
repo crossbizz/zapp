@@ -211,3 +211,5 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     throw error;
   }
 }
+
+export { runTaskBatchWorkflow, taskWorkflow } from './task.js';
