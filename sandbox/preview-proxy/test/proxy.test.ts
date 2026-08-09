@@ -2537,9 +2537,14 @@ describe('preview proxy acceptance contract', () => {
     await eventually(() => {
       expect(lateClose).toHaveBeenCalledTimes(1);
     });
-    const recovered = await fetch(`${proxy.url}/__zapp/screenshot`, { method: 'POST' });
+    let recoveredStatus: number | undefined;
+    await eventually(async () => {
+      const recovered = await fetch(`${proxy.url}/__zapp/screenshot`, { method: 'POST' });
+      recoveredStatus = recovered.status;
+      expect(recovered.status).toBe(200);
+    });
 
-    expect(recovered.status).toBe(200);
+    expect(recoveredStatus).toBe(200);
     expect(connect).toHaveBeenCalledTimes(2);
     expect(recoveredClose).toHaveBeenCalledTimes(1);
   });
