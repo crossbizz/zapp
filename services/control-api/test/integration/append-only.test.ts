@@ -24,16 +24,20 @@ import { guardStates, hasDatabase, setUpTestDatabase, type TestDatabase } from '
  *     because a superuser bypasses privilege checks entirely.
  */
 
-const LEDGERS = ['usage_ledger', 'audit_events'] as const;
+const LEDGERS = [
+  'usage_ledger',
+  'audit_events',
+  'run_credit_ceiling_adjustments',
+] as const;
 
 /** An unprivileged stand-in for the role the API connects as in staging and production. */
 const PROBE_ROLE = 'zapp_append_only_probe';
 
-const REVOKE_MIGRATION = fileURLToPath(
-  new URL(
-    '../../../../packages/db/drizzle/0004_append_only_truncate_and_app_role.sql',
-    import.meta.url,
-  ),
+const REVOKE_MIGRATIONS = [
+  '0004_append_only_truncate_and_app_role.sql',
+  '0015_ceiling_adjustment_app_role.sql',
+].map((migration) =>
+  fileURLToPath(new URL(`../../../../packages/db/drizzle/${migration}`, import.meta.url)),
 );
 
 async function sqlstate(query: Promise<unknown>): Promise<string> {
@@ -150,15 +154,17 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
         `grant select, insert, update, delete, truncate on ${tables} to ${PROBE_ROLE}`,
       );
 
-      const statements = readFileSync(REVOKE_MIGRATION, 'utf8')
-        .split('--> statement-breakpoint')
-        .map((statement) => statement.trim())
-        .filter((statement) => statement !== '');
       await database.sql.begin(async (tx) => {
         // `set local`, inside the transaction the DO block reads it from.
         await tx.unsafe(`set local zapp.app_role = '${PROBE_ROLE}'`);
-        for (const statement of statements) {
-          await tx.unsafe(statement);
+        for (const migration of REVOKE_MIGRATIONS) {
+          const statements = readFileSync(migration, 'utf8')
+            .split('--> statement-breakpoint')
+            .map((statement) => statement.trim())
+            .filter((statement) => statement !== '');
+          for (const statement of statements) {
+            await tx.unsafe(statement);
+          }
         }
       });
 
@@ -181,7 +187,7 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
         for (const statement of [
           `update ${table} set organization_id = 'x'`,
           `delete from ${table}`,
-          `truncate table ${table}`,
+          `truncate table ${table} cascade`,
         ]) {
           const code = await sqlstate(
             database.sql.begin(async (tx) => {
@@ -203,7 +209,10 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
     // stand the guards down. Both spellings land on the same SQLSTATE: the
     // table named directly, and the table reached by cascade.
     for (const table of LEDGERS) {
-      expect(await sqlstate(database.sql.unsafe(`truncate table ${table}`)), table).toBe('42501');
+      expect(
+        await sqlstate(database.sql.unsafe(`truncate table ${table} cascade`)),
+        table,
+      ).toBe('42501');
     }
     expect(
       await sqlstate(
@@ -228,7 +237,10 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
 
     // Armed in practice, not just in the catalog.
     for (const table of LEDGERS) {
-      expect(await sqlstate(database.sql.unsafe(`truncate table ${table}`)), table).toBe('42501');
+      expect(
+        await sqlstate(database.sql.unsafe(`truncate table ${table} cascade`)),
+        table,
+      ).toBe('42501');
       expect(await sqlstate(database.sql.unsafe(`delete from ${table}`)), table).toBe('42501');
     }
 
