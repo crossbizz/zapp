@@ -1,0 +1,1 @@
+{"scripts":{"dev":"nest start --watch","build":"nest build","start":"node dist/main.js"},"dependencies":{"@nestjs/core":"latest","express":"latest"}}

@@ -1,0 +1,1 @@
+// Capacitor config marker fixture.

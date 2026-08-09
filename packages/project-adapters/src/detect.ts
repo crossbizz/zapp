@@ -5,7 +5,9 @@ import {
 } from '@zapp/contracts';
 
 import { genericNodeAdapter } from './generic-node.js';
+import { frameworkAdapters } from './frameworks.js';
 
+export * from './frameworks.js';
 export * from './generic-node.js';
 export * from './types.js';
 
@@ -16,7 +18,7 @@ export interface AdapterDetector {
 
 export async function detectProject(
   ctx: DetectionContext,
-  adapters: readonly AdapterDetector[] = [],
+  adapters: readonly AdapterDetector[] = frameworkAdapters,
 ): Promise<DetectionResult[]> {
   const configured = adapters.some((adapter) => adapter.id === genericNodeAdapter.id)
     ? adapters

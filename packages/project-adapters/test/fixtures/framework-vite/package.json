@@ -1,0 +1,1 @@
+{"scripts":{"dev":"vite","build":"vite build","test":"vitest"},"dependencies":{"react":"latest","react-router-dom":"latest"}}

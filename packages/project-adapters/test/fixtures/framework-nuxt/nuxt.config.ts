@@ -1,0 +1,1 @@
+// Nuxt config marker fixture.

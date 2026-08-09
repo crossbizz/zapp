@@ -1,0 +1,1 @@
+{"scripts":{"dev":"vite dev","build":"vite build"},"dependencies":{"@sveltejs/kit":"latest","svelte":"latest"}}
