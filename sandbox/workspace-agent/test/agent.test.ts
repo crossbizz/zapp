@@ -974,8 +974,8 @@ describe('workspace-agent RPC daemon', () => {
       `const path=${JSON.stringify(countPath)};`,
       "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
       "fs.writeFileSync(path,String(count));",
-      `const server=require('node:http').createServer((_request,response)=>response.end('ready'));`,
-      `server.listen(${String(port)},'127.0.0.1',()=>{console.log('boot-'+String(count));setTimeout(()=>server.close(()=>process.exit(1)),750);});`,
+      `const server=require('node:http').createServer((_request,response)=>{response.end('ready',()=>{setTimeout(()=>server.close(()=>process.exit(1)),25);});});`,
+      `server.listen(${String(port)},'127.0.0.1',()=>{console.log('boot-'+String(count));});`,
     ].join('');
     const contract = executionContract(
       `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
