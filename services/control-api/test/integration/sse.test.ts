@@ -462,6 +462,43 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     ]);
   });
 
+  it('replays typed user and assistant messages in sequence order', async () => {
+    await insertEvents([
+      {
+        sequence: 1,
+        visibility: 'user',
+        type: 'message.user',
+        payload: {
+          messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
+          content: 'Make the hero concise.',
+          attachments: [],
+          source: 'api',
+        },
+      },
+      {
+        sequence: 2,
+        visibility: 'user',
+        type: 'message.assistant',
+        payload: {
+          messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+          turnId: 'turn_01J8ME7YQZJ2V9Q0X3T5B6K7NH',
+          content: 'Done.',
+          model: 'anthropic/claude-sonnet-5',
+        },
+      },
+    ]);
+    const controller = new AbortController();
+    const response = await connect({ signal: controller.signal });
+    const messages = await readMessages(response, 2);
+    controller.abort();
+
+    expect(messages.map((message) => message.id)).toEqual([1, 2]);
+    expect(messages.map((message) => AgentEventSchema.parse(message.data).type)).toEqual([
+      'message.user',
+      'message.assistant',
+    ]);
+  });
+
   it.skipIf(!hasRedis)('live-tails a real Redis run channel by rereading PostgreSQL', async () => {
     // Break caught: production composition lacks a Redis subscriber, trusts the
     // ping as event data, or subscribes to a channel other than run:{runId}.
@@ -1562,7 +1599,15 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
   }
 
   async function insertEvents(
-    events: readonly (number | { sequence: number; visibility: 'user' | 'internal' | 'support' })[],
+    events: readonly (
+      | number
+      | {
+          sequence: number;
+          visibility: 'user' | 'internal' | 'support';
+          type?: 'task.started' | 'message.user' | 'message.assistant';
+          payload?: Record<string, unknown>;
+        }
+    )[],
   ): Promise<void> {
     await database.db.insert(agentEvents).values(
       events.map((input) => {
@@ -1573,8 +1618,8 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
           organizationId,
           runId,
           sequence,
-          type: 'task.started' as const,
-          payloadJson: { sequence },
+          type: typeof input === 'number' ? ('task.started' as const) : (input.type ?? 'task.started'),
+          payloadJson: typeof input === 'number' ? { sequence } : (input.payload ?? { sequence }),
           visibility,
           occurredAt: new Date(Date.UTC(2026, 7, 4, 12, 0, 0, sequence % 1_000)),
           projectId,

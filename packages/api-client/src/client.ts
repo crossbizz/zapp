@@ -112,7 +112,7 @@ export type FetchImplementation = (
   init: {
     readonly method?: string;
     readonly headers?: Headers;
-    readonly body?: string;
+    readonly body?: string | FormData;
     readonly signal?: AbortSignal;
     readonly credentials?: RequestCredentials;
     readonly redirect?: RequestRedirect;
@@ -278,7 +278,13 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       const responsePromise = fetch(url, {
         method: runtimeOptions.method,
         headers,
-        ...(runtimeOptions.body === undefined ? {} : { body: JSON.stringify(runtimeOptions.body) }),
+        ...(runtimeOptions.body === undefined
+          ? {}
+          : {
+              body: isFormData(runtimeOptions.body)
+                ? runtimeOptions.body
+                : JSON.stringify(runtimeOptions.body),
+            }),
         ...(runtimeOptions.signal === undefined ? {} : { signal: runtimeOptions.signal }),
         ...(operationUsesCookies(operation) || operationHasRedirect(operation)
           ? { credentials: 'include' }
@@ -578,9 +584,13 @@ async function requestHeaders(
       throw new Error('A non-empty zapp API token is required.');
     }
   }
-  if (body !== undefined && !result.has('content-type'))
+  if (body !== undefined && !isFormData(body) && !result.has('content-type'))
     result.set('content-type', 'application/json');
   return result;
+}
+
+function isFormData(value: unknown): value is FormData {
+  return typeof FormData !== 'undefined' && value instanceof FormData;
 }
 
 async function apiError(response: FetchResponse): Promise<ZappApiError> {

@@ -2,7 +2,9 @@ import { createHash, createHmac } from 'node:crypto';
 
 import {
   AppTypeSchema,
+  AttachmentRefSchema,
   CreditDecimalSchema,
+  MessageUserPayloadSchema,
   idSchema,
   ModelIdentifierSchema,
 } from '@zapp/contracts';
@@ -47,6 +49,16 @@ const CreateRunBody = z
   })
   .strict();
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
+const ContinueRunBody = z
+  .object({
+    content: z.string().trim().min(1).max(20_000),
+    attachments: z.array(AttachmentRefSchema).max(10).default([]),
+  })
+  .strict();
+const AttachmentMetadataSchema = AttachmentRefSchema.omit({ attachmentId: true }).strict();
+const ContinueRunResponse = z
+  .object({ messageId: z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/u), sequence: z.number().int().positive() })
+  .strict();
 const ApprovalParams = z
   .object({ runId: idSchema('run'), approvalId: idSchema('appr') })
   .strict();
@@ -330,6 +342,116 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
   }
 
   app.post(
+    '/v1/runs/:runId/messages',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: RunParams,
+        body: ContinueRunBody,
+        response: { 202: ContinueRunResponse },
+      },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'start_run');
+      const operationKey = operationOf(request);
+      const messageId = stableId('msg', operationKey);
+      const attachments: z.infer<typeof AttachmentRefSchema>[] = [];
+      const attachmentArtifacts: Array<{
+        readonly id: string;
+        readonly type: string;
+        readonly contentHash: string;
+      }> = [];
+      for (const supplied of request.body.attachments) {
+        const artifact = await ctx.db.attachments.getById(supplied.attachmentId);
+        if (artifact === undefined || artifact.projectId !== run.projectId) throw attachmentNotFound();
+        attachmentArtifacts.push(artifact);
+        attachments.push(
+          AttachmentRefSchema.parse({
+            attachmentId: artifact.id,
+            ...AttachmentMetadataSchema.parse(artifact.metadataJson),
+          }),
+        );
+      }
+      const message = MessageUserPayloadSchema.parse({
+        messageId,
+        content: request.body.content,
+        attachments,
+        source: 'api',
+      });
+      const ingested = await ctx.db.events.ingest({
+        runId: run.id,
+        projectId: run.projectId,
+        events: [
+          ...attachmentArtifacts.map((artifact) => ({
+            runId: run.id,
+            organizationId: ctx.organizationId,
+            projectId: run.projectId,
+            occurredAt: deps.now().toISOString(),
+            type: 'artifact.created' as const,
+            visibility: 'user' as const,
+            payload: {
+              artifactId: artifact.id,
+              type: artifact.type,
+              contentHash: artifact.contentHash,
+            },
+          })),
+          {
+            runId: run.id,
+            organizationId: ctx.organizationId,
+            projectId: run.projectId,
+            occurredAt: deps.now().toISOString(),
+            type: 'message.user',
+            visibility: 'user',
+            payload: message,
+          },
+        ],
+        audit: async (tx, events) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.message_created',
+            target: { type: 'run', id: run.id },
+            metadata: {
+              operationKey,
+              messageId,
+              sequence: events[0]?.sequence ?? null,
+              attachmentCount: attachments.length,
+            },
+          });
+        },
+      });
+      if (ingested.kind === 'run_not_found') throw runNotFound();
+      if (ingested.kind === 'run_not_active') throw runNotActive();
+      if (ingested.kind !== 'stored') throw messageIngestFailed();
+      const stored = ingested.events.find((event) => event.type === 'message.user');
+      if (stored === undefined) throw messageIngestFailed();
+      try {
+        const result = SignalRunResultSchema.parse(
+          await deps.orchestrator.signalRun(
+            SignalRunInputSchema.parse({
+              runId: run.id,
+              workflowId: run.temporalWorkflowId ?? run.id,
+              signal: 'message',
+              message,
+              operationKey,
+            }),
+          ),
+        );
+        if (!result.applied) throw runNotActive();
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (error instanceof OrchestratorError || error instanceof z.ZodError) {
+          throw workflowFailed();
+        }
+        throw error;
+      }
+      return await reply.status(202).send({ messageId, sequence: stored.sequence });
+    },
+  );
+
+  app.post(
     '/v1/runs/:runId/approvals/:approvalId',
     {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
@@ -451,7 +573,7 @@ function idempotencyOf(request: {
     throw new ApiError('idempotency_key_required', 400, 'An Idempotency-Key header is required.');
   return request.idempotency;
 }
-function stableId(prefix: 'run' | 'ws', operationKey: string): string {
+function stableId(prefix: 'run' | 'ws' | 'msg' | 'art', operationKey: string): string {
   const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const bytes = createHash('sha256').update(operationKey).digest();
   let bits = 0;
@@ -479,6 +601,15 @@ function branchNotFound(): ApiError {
 }
 function approvalNotFound(): ApiError {
   return new ApiError('approval_not_found', 404, 'That approval does not exist.');
+}
+function attachmentNotFound(): ApiError {
+  return new ApiError('attachment_not_found', 404, 'That attachment does not exist.');
+}
+function runNotActive(): ApiError {
+  return new ApiError('run_not_active', 409, 'That run is not accepting messages.');
+}
+function messageIngestFailed(): ApiError {
+  return new ApiError('message_ingest_failed', 409, 'That message could not be accepted.');
 }
 function approvalConflict(): ApiError {
   return new ApiError('approval_conflict', 409, 'That approval was already resolved differently.');

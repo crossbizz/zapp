@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ServiceAudience } from '@zapp/config';
 import {
+  AgentEventObjectSchema,
   AgentEventSchema,
   newId,
 } from '@zapp/contracts';
@@ -32,7 +33,7 @@ import { TestServiceTokens } from '../support/service-tokens.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 const EVENTS_INGEST_AUDIENCE = 'control-api:events.ingest' as ServiceAudience;
-const EventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
+const EventInputSchema = AgentEventObjectSchema.omit({ id: true, sequence: true }).strict();
 const EventResponseSchema = z.object({ events: z.array(AgentEventSchema) }).strict();
 
 describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
@@ -1125,7 +1126,10 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       post([event({ type: 'run.started' }), event({ type: 'phase.started' })], {
         key: 'events-concurrent-first-01',
       }),
-      post([event({ type: 'task.started' }), event({ type: 'tool.started' })], {
+      post([
+        event({ type: 'task.started' }),
+        event({ type: 'tool.started', payload: { tool: 'read_file', userSummary: 'Read a file' } }),
+      ], {
         key: 'events-concurrent-second-01',
       }),
     ]);

@@ -215,6 +215,42 @@ describe('createZappClient', () => {
     expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(body));
   });
 
+  it('sends generated attachment operations as multipart without overriding the boundary', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          attachmentId: 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NE',
+          kind: 'image',
+          name: 'reference.png',
+          byteSize: 3,
+          contentType: 'image/png',
+        }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'device-token',
+      fetch,
+    });
+    const form = new FormData();
+    form.append('file', new Blob(['png'], { type: 'image/png' }), 'reference.png');
+
+    await expect(
+      client.request('/v1/projects/{projectId}/attachments', {
+        method: 'POST',
+        path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB' },
+        body: form,
+      }),
+    ).resolves.toMatchObject({ attachmentId: 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NE' });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.body).toBe(form);
+    expect(new Headers(init?.headers).has('content-type')).toBe(false);
+  });
+
   it.each([
     'https://attacker.example/collect',
     '//attacker.example/collect',

@@ -64,7 +64,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-14 LISTEN/NOTIFY → Redis fanout
 - [x] CP-15 Resumable SSE stream
 - [x] CP-16 OpenAPI + generated SDK
-- [ ] CP-20 Conversation continuation + attachments API (ADR-0027)
+- [x] CP-20 Conversation continuation + attachments API (ADR-0027)
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
 - [x] WS-2 Modal images (forge-node-base, forge-web-test)

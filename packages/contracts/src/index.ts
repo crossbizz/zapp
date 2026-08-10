@@ -9,11 +9,20 @@ export {
 } from './primitives.js';
 export {
   AGENT_EVENT_TYPES,
+  AgentEventInputObjectSchema,
+  AgentEventInputSchema,
+  AgentEventObjectSchema,
   AgentEventSchema,
   AgentEventVisibilitySchema,
+  AttachmentRefSchema,
+  MessageAssistantPayloadSchema,
+  MessageUserPayloadSchema,
   type AgentEvent,
   type AgentEventType,
   type AgentEventVisibility,
+  type AttachmentRef,
+  type MessageAssistantPayload,
+  type MessageUserPayload,
 } from './events.js';
 export {
   RunModeSchema,

@@ -8,6 +8,7 @@ import { composeApp } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import {
   loadEnv,
+  loadArtifactStorageEnv,
   loadFlexpriceEnv,
   loadMasterKey,
   loadModelGatewayUrl,
@@ -74,6 +75,7 @@ const pricing = await loadPricingFile(new URL('../../../config/pricing.json', im
 const usageQueueConfig = loadUsageQueueEnv();
 const flexpriceConfig = loadFlexpriceEnv();
 const temporalEnv = loadTemporalEnv();
+const artifactStorage = loadArtifactStorageEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -107,6 +109,7 @@ const app = composeApp({
   rateLimits,
   pricing,
   temporal,
+  artifactStorage,
 });
 
 app.addHook('onClose', async () => {

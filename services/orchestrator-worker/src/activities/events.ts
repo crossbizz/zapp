@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { AgentEventSchema } from '@zapp/contracts';
+import { AgentEventInputObjectSchema, AgentEventInputSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
-const AgentEventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
 export type PublishedAgentEvent = z.infer<typeof AgentEventInputSchema>;
 
-export const PendingAgentEventSchema = AgentEventInputSchema.extend({
+export const PendingAgentEventSchema = AgentEventInputObjectSchema.extend({
   eventKey: z.string().min(1).max(1_024),
 }).strict();
 export type PendingAgentEvent = z.infer<typeof PendingAgentEventSchema>;

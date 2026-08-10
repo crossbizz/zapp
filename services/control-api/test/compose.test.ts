@@ -75,6 +75,13 @@ function composed(): AppInstance {
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
     temporal: { workflow: {} as never },
+    artifactStorage: {
+      endpoint: 'http://127.0.0.1:9000',
+      region: 'us-east-1',
+      bucket: 'zapp-artifacts',
+      accessKeyId: 'test-access-key',
+      secretAccessKey: 'test-secret-key',
+    },
   });
   apps.push(app);
   return app;
@@ -114,6 +121,9 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],
   ['GET', '/v1/runs/:runId/events'],
+  ['POST', '/v1/runs/:runId/messages'],
+  ['POST', '/v1/projects/:projectId/attachments'],
+  ['GET', '/v1/attachments/:attachmentId'],
   ['POST', '/v1/local-agent/sessions'],
   ['POST', '/v1/local-agent/sessions/:sessionId/completions'],
   // CP-6's additions to it (PRD §32.1).

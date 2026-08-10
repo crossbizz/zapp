@@ -281,6 +281,28 @@ export interface TenantContractRepository {
   recordScan(input: RecordCapabilityScanInput): Promise<RecordedCapabilityScan | undefined>;
 }
 
+export interface CreateAttachmentInput {
+  readonly id: string;
+  readonly projectId: string;
+  readonly storageRef: string;
+  readonly contentHash: string;
+  readonly metadata: {
+    readonly kind: 'image';
+    readonly name: string;
+    readonly byteSize: number;
+    readonly contentType: string;
+  };
+  readonly createdAt: Date;
+  readonly audit: AuditHook<Artifact>;
+}
+
+export interface TenantAttachmentRepository {
+  /** One image attachment only when both it and its project belong to this tenant. */
+  getById(attachmentId: string): Promise<Artifact | undefined>;
+  /** Idempotently creates the deterministic artifact row after object storage succeeds. */
+  create(input: CreateAttachmentInput): Promise<Artifact | undefined>;
+}
+
 export interface RecordCapabilityScanInput {
   readonly projectId: string;
   readonly scanId: string;
@@ -560,6 +582,7 @@ export interface IngestEventBatchInput {
 export type IngestEventBatchResult =
   | { readonly kind: 'stored'; readonly events: readonly AgentEventRow[] }
   | { readonly kind: 'run_not_found' }
+  | { readonly kind: 'run_not_active' }
   | { readonly kind: 'stale_preview_monitor' }
   | { readonly kind: 'control_acknowledgement_expired' }
   | { readonly kind: 'control_acknowledgement_invalid' }
@@ -629,6 +652,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly branches: TenantBranchRepository;
   readonly environments: TenantEnvironmentRepository;
   readonly contracts: TenantContractRepository;
+  readonly attachments: TenantAttachmentRepository;
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
@@ -714,12 +738,43 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             // This is deliberately the first statement in the transaction. The
             // allocator has no tenant argument, so looking the run up afterward
             // would create a gap for a foreign or malformed request.
-            const [run] = await tx
-              .select()
-              .from(agentRuns)
-              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
-              .limit(1);
+            const userMessage = input.events.find((event) => event.type === 'message.user');
+            const [run] =
+              userMessage === undefined
+                ? await tx
+                    .select()
+                    .from(agentRuns)
+                    .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+                    .limit(1)
+                : await tx
+                    .update(agentRuns)
+                    .set({ status: sql`${agentRuns.status}` })
+                    .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+                    .returning();
             if (run === undefined || run.projectId !== input.projectId) return { kind: 'run_not_found' };
+            if (
+              userMessage !== undefined &&
+              !['queued', 'running', 'paused', 'waiting_for_approval'].includes(run.status)
+            ) {
+              return { kind: 'run_not_active' };
+            }
+            if (userMessage !== undefined) {
+              const messageId = userMessage.payload['messageId'];
+              if (typeof messageId !== 'string') return { kind: 'run_not_found' };
+              const [existing] = await tx
+                .select()
+                .from(agentEvents)
+                .where(
+                  scoped(
+                    agentEvents.organizationId,
+                    eq(agentEvents.runId, input.runId),
+                    eq(agentEvents.type, 'message.user'),
+                    sql`${agentEvents.payloadJson}->>'messageId' = ${messageId}`,
+                  ),
+                )
+                .limit(1);
+              if (existing !== undefined) return { kind: 'stored', events: [existing] };
+            }
 
             for (const event of input.events) {
               if (event.phaseId !== undefined) {
@@ -2092,6 +2147,58 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             const recorded = { contract, artifact };
             await input.audit(tx, recorded);
             return recorded;
+          });
+        },
+      },
+
+      attachments: {
+        async getById(attachmentId: string): Promise<Artifact | undefined> {
+          const [row] = await db
+            .select()
+            .from(artifacts)
+            .where(
+              scoped(
+                artifacts.organizationId,
+                eq(artifacts.id, attachmentId),
+                eq(artifacts.type, 'image_attachment'),
+              ),
+            )
+            .limit(1);
+          return row;
+        },
+        async create(input: CreateAttachmentInput): Promise<Artifact | undefined> {
+          return await db.transaction(async (tx) => {
+            const [project] = await tx
+              .select({ id: projects.id })
+              .from(projects)
+              .where(scoped(projects.organizationId, eq(projects.id, input.projectId)))
+              .for('update')
+              .limit(1);
+            if (project === undefined) return undefined;
+            const [existing] = await tx
+              .select()
+              .from(artifacts)
+              .where(scoped(artifacts.organizationId, eq(artifacts.id, input.id)))
+              .limit(1);
+            if (existing !== undefined) return existing;
+            const [created] = await tx
+              .insert(artifacts)
+              .values({
+                id: input.id,
+                organizationId: orgId,
+                projectId: input.projectId,
+                runId: null,
+                taskId: null,
+                type: 'image_attachment',
+                storageRef: input.storageRef,
+                contentHash: input.contentHash,
+                metadataJson: input.metadata,
+                createdAt: input.createdAt,
+              })
+              .returning();
+            if (created === undefined) throw new Error('attachment insert returned no row');
+            await input.audit(tx, created);
+            return created;
           });
         },
       },

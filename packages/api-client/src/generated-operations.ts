@@ -1,5 +1,26 @@
 /** Generated from the live public OpenAPI document. Do not edit. */
 export const PUBLIC_API_OPERATIONS = {
+  "/v1/attachments/{attachmentId}": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/auth/callback": {
     "get": {
       "security": [],
@@ -622,6 +643,28 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/projects/{projectId}/attachments": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/projects/{projectId}/contract": {
     "get": {
       "security": [
@@ -1127,6 +1170,28 @@ export const PUBLIC_API_OPERATIONS = {
           "body": "required",
           "mediaTypes": [
             "text/event-stream"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/runs/{runId}/messages": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "202": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
           ],
           "requiredHeaders": []
         }

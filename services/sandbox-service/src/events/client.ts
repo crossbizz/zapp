@@ -1,5 +1,5 @@
 import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
-import { AgentEventSchema } from '@zapp/contracts';
+import { AgentEventObjectSchema, AgentEventSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import {
@@ -7,9 +7,9 @@ import {
   type PreviewLifecycleEventPort,
 } from '../routes/workspaces.js';
 
-const EventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
+const EventInputSchema = AgentEventObjectSchema.omit({ id: true, sequence: true }).strict();
 const EventResponseSchema = z
-  .object({ events: z.array(AgentEventSchema.strict()).length(1) })
+  .object({ events: z.array(AgentEventSchema).length(1) })
   .strict();
 
 export interface ControlPlanePreviewEventClientOptions {

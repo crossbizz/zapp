@@ -1,5 +1,6 @@
 import {
   AppTypeSchema,
+  MessageUserPayloadSchema,
   idSchema,
   ModelIdentifierSchema,
   RunModeSchema,
@@ -39,6 +40,13 @@ export const SignalRunInputSchema = z.union([
       ...SignalIdentityShape,
       signal: z.enum(['pause', 'resume', 'cancel', 'redirect']),
       prompt: z.string().min(1).max(20_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...SignalIdentityShape,
+      signal: z.literal('message'),
+      message: MessageUserPayloadSchema,
     })
     .strict(),
   z

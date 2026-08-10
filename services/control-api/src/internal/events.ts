@@ -1,4 +1,4 @@
-import { AgentEventSchema, idSchema } from '@zapp/contracts';
+import { AgentEventInputSchema, AgentEventSchema, idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance, TenantDeps } from '../app.js';
@@ -12,7 +12,7 @@ const MAX_BATCH_EVENTS = 100;
 const MAX_PAYLOAD_BYTES = 65_536;
 
 const EventParams = z.object({ runId: idSchema('run') }).strict();
-const EventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
+const EventInputSchema = AgentEventInputSchema;
 const EventBatchSchema = z.array(EventInputSchema).min(1).max(MAX_BATCH_EVENTS);
 const EventResponseSchema = z.object({ events: z.array(AgentEventSchema) }).strict();
 const ControlMetadataSchema = z
@@ -125,6 +125,9 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         },
       });
       if (result.kind === 'run_not_found') throw runNotFound();
+      if (result.kind === 'run_not_active') {
+        throw new ApiError('run_not_active', 409, 'That run is not accepting messages.');
+      }
       if (result.kind === 'stale_preview_monitor') {
         throw new ApiError(
           'preview_monitor_stale',

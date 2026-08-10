@@ -88,7 +88,7 @@ export async function seedTenant(
       projectId,
       sequence,
       type: 'tool.completed',
-      payloadJson: { tool: 'run_build', exitCode: 0 },
+      payloadJson: { tool: 'run_build', exitCode: 0, userSummary: 'Ran the build' },
       visibility: 'user',
       occurredAt: EVENT_TIME,
     });

@@ -103,8 +103,11 @@ describe('GET /v1/openapi.json', () => {
       '/v1/runs/{runId}/approvals/{approvalId}',
       '/v1/local-agent/sessions',
       '/v1/local-agent/sessions/{sessionId}/completions',
+      '/v1/runs/{runId}/messages',
+      '/v1/projects/{projectId}/attachments',
+      '/v1/attachments/{attachmentId}',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(59);
+    expect(Object.keys(document.paths)).toHaveLength(62);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

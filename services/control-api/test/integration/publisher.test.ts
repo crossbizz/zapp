@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { getEventListeners } from 'node:events';
 
 import type { ServiceAudience } from '@zapp/config';
-import { AgentEventSchema, newId } from '@zapp/contracts';
+import { AgentEventObjectSchema, newId } from '@zapp/contracts';
 import {
   agentRuns,
   organizations,
@@ -37,7 +37,7 @@ import {
 } from './helpers.js';
 
 const EVENTS_INGEST_AUDIENCE = 'control-api:events.ingest' as ServiceAudience;
-const EventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
+const EventInputSchema = AgentEventObjectSchema.omit({ id: true, sequence: true }).strict();
 
 function runId(): string {
   return newId('run');

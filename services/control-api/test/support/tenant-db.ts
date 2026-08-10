@@ -668,6 +668,37 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
     },
 
+    attachments: {
+      getById(attachmentId) {
+        return Promise.resolve(
+          mine(orgId, data.artifacts).find(
+            (row) => row.id === attachmentId && row.type === 'image_attachment',
+          ),
+        );
+      },
+      async create(input) {
+        const project = mine(orgId, data.projects).find((row) => row.id === input.projectId);
+        if (project === undefined) return undefined;
+        const existing = mine(orgId, data.artifacts).find((row) => row.id === input.id);
+        if (existing !== undefined) return existing;
+        const created: Artifact = {
+          id: input.id,
+          organizationId: orgId,
+          projectId: input.projectId,
+          runId: null,
+          taskId: null,
+          type: 'image_attachment',
+          storageRef: input.storageRef,
+          contentHash: input.contentHash,
+          metadataJson: input.metadata,
+          createdAt: input.createdAt,
+        };
+        await input.audit(NO_TRANSACTION, created);
+        data.artifacts.push(created);
+        return created;
+      },
+    },
+
     runs: {
       byProject(projectId): Promise<AgentRun[]> {
         return Promise.resolve(mine(orgId, data.runs).filter((row) => row.projectId === projectId));
@@ -908,8 +939,53 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       byRun(runId): Promise<AgentEventRow[]> {
         return Promise.resolve(mine(orgId, data.events).filter((row) => row.runId === runId));
       },
-      ingest() {
-        return Promise.resolve({ kind: 'run_not_found' } as const);
+      async ingest(input) {
+        const run = mine(orgId, data.runs).find(
+          (row) => row.id === input.runId && row.projectId === input.projectId,
+        );
+        if (run === undefined) return { kind: 'run_not_found' } as const;
+        const userMessage = input.events.find((event) => event.type === 'message.user');
+        if (
+          userMessage !== undefined &&
+          !['queued', 'running', 'paused', 'waiting_for_approval'].includes(run.status)
+        ) {
+          return { kind: 'run_not_active' } as const;
+        }
+        const messageId = userMessage?.payload['messageId'];
+        if (typeof messageId === 'string') {
+          const existing = mine(orgId, data.events).find(
+            (event) =>
+              event.runId === input.runId &&
+              event.type === 'message.user' &&
+              typeof event.payloadJson === 'object' &&
+              event.payloadJson !== null &&
+              (event.payloadJson as Record<string, unknown>)['messageId'] === messageId,
+          );
+          if (existing !== undefined) return { kind: 'stored', events: [existing] } as const;
+        }
+        let sequence = Math.max(
+          0,
+          ...mine(orgId, data.events)
+            .filter((event) => event.runId === input.runId)
+            .map((event) => event.sequence),
+        );
+        const stored: AgentEventRow[] = input.events.map((event) => ({
+          id: newId('evt'),
+          organizationId: orgId,
+          runId: input.runId,
+          sequence: (sequence += 1),
+          projectId: input.projectId,
+          phaseId: event.phaseId ?? null,
+          taskId: event.taskId ?? null,
+          agentId: event.agentId ?? null,
+          type: event.type,
+          visibility: event.visibility,
+          payloadJson: event.payload,
+          occurredAt: new Date(event.occurredAt),
+        }));
+        await input.audit(NO_TRANSACTION, stored);
+        data.events.push(...stored);
+        return { kind: 'stored', events: stored } as const;
       },
     },
 

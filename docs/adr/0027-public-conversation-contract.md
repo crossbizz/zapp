@@ -26,7 +26,7 @@ The public conversation contract is the following four parts, executed as **CP-2
 
 1. **Message events (additive `AgentEvent` types, persisted and sequenced like every
    event):**
-   - `message.user` — `{ messageId, content (markdown), attachments: AttachmentRef[] (≤ 8), source: "web" | "desktop" | "api" }`
+   - `message.user` — `{ messageId, content (markdown), attachments: AttachmentRef[] (≤ 10), source: "web" | "desktop" | "api" }`
    - `message.assistant` — `{ messageId, turnId, content (markdown, inline ≤ 48 KB; larger content stored as an artifact and referenced by contentArtifactId), model }`
    - `tool.started` / `tool.completed` / `tool.failed` payloads gain a **required**
      `userSummary: string` (one user-language line, e.g. "Edited 3 files").
@@ -41,7 +41,8 @@ The public conversation contract is the following four parts, executed as **CP-2
    and the client starts a new run per mode — exactly WEB-6's "continues run or starts
    new one" semantics.
 
-3. **Attachments:** `POST /v1/projects/:projectId/attachments` (multipart, ≤ 8 MiB in
+3. **Attachments:** `POST /v1/projects/:projectId/attachments` (multipart, ≤ 8 MiB per image and
+   at most 10 attachment references per message in
    M1) → `{ attachmentId, kind, name, byteSize, contentType }`, stored through the
    existing artifact conventions (tenant-prefixed R2 keys per FND-7, `artifact.created`
    event) — no new storage subsystem. `GET /v1/attachments/:attachmentId` returns a

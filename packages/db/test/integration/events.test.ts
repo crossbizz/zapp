@@ -277,7 +277,11 @@ describe.skipIf(!hasDatabase)('agent_events', () => {
     // incremented by callers, and a string would compare lexicographically.
     expect(row?.sequence).toBe(1);
     expect(row?.occurredAt).toEqual(EVENT_TIME);
-    expect(row?.payloadJson).toEqual({ tool: 'run_build', exitCode: 0 });
+    expect(row?.payloadJson).toEqual({
+      tool: 'run_build',
+      exitCode: 0,
+      userSummary: 'Ran the build',
+    });
     expect(row?.visibility).toBe('user');
   });
 });

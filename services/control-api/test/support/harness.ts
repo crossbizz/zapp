@@ -23,6 +23,7 @@ import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
 import type { SandboxServicePort } from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
+import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
@@ -256,6 +257,7 @@ export interface HarnessOptions {
   readonly pricing?: PricingConfig | null;
   readonly modelCompletions?: ModelCompletionRepository;
   readonly localAgent?: LocalAgentDeps;
+  readonly attachmentStorage?: AttachmentStoragePort;
 }
 
 /**
@@ -300,6 +302,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { pricing: options.pricing ?? TEST_PRICING }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
+            ...(options.attachmentStorage === undefined
+              ? {}
+              : { attachmentStorage: options.attachmentStorage }),
             capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),

@@ -62,6 +62,13 @@ const production = vi.hoisted(() => {
     previewBaseDomain: 'preview.zapp.test',
     sandboxServiceUrl: 'https://sandbox.internal',
   };
+  const artifactStorage = {
+    endpoint: 'http://minio.test:9000',
+    region: 'us-east-1',
+    bucket: 'zapp-artifacts',
+    accessKeyId: 'test-access-key',
+    secretAccessKey: 'test-secret-key',
+  };
 
   return {
     app,
@@ -73,6 +80,7 @@ const production = vi.hoisted(() => {
     accountingReconciler,
     accountingReconcilerLifecycle,
     preview,
+    artifactStorage,
     redis,
     temporal,
     temporalConnection,
@@ -110,6 +118,7 @@ const production = vi.hoisted(() => {
     createAccountingReconcilerLifecycle: vi.fn(() => accountingReconcilerLifecycle),
     createRedisCreditMirror: vi.fn(() => ({ kind: 'credit-mirror' })),
     loadAuthEnv: vi.fn(() => auth),
+    loadArtifactStorageEnv: vi.fn(() => artifactStorage),
     loadEnv: vi.fn(() => ({
       HOST: '127.0.0.1',
       LOG_LEVEL: 'silent',
@@ -153,6 +162,7 @@ vi.mock('../src/config/rate-limits.js', () => ({
   loadRateLimitSettings: production.loadRateLimitSettings,
 }));
 vi.mock('../src/env.js', () => ({
+  loadArtifactStorageEnv: production.loadArtifactStorageEnv,
   loadEnv: production.loadEnv,
   loadFlexpriceEnv: production.loadFlexpriceEnv,
   loadMasterKey: production.loadMasterKey,
@@ -224,6 +234,7 @@ describe('control-api production entrypoint', () => {
         previewRedis: production.redis,
         modelGatewayUrl: 'http://model-gateway.test:4100',
         temporal: production.temporal,
+        artifactStorage: production.artifactStorage,
       }),
     );
     expect(production.connectTemporal).toHaveBeenCalledWith({

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { loadAuthEnv } from '../src/auth/config.js';
 import {
   loadEnv,
+  loadArtifactStorageEnv,
   loadFlexpriceEnv,
   loadMasterKey,
   loadPreviewEnv,
@@ -80,6 +81,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadPreviewEnv(environment)).not.toThrow();
     expect(() => loadModelGatewayUrl(environment)).not.toThrow();
     expect(() => loadUsageQueueEnv(environment)).not.toThrow();
+    expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
   });
 
@@ -140,6 +142,11 @@ describe('the shipped .env.example', () => {
       'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',
+      'ARTIFACT_ENDPOINT',
+      'ARTIFACT_REGION',
+      'ARTIFACT_BUCKET',
+      'ARTIFACT_KEY',
+      'ARTIFACT_SECRET',
     ]) {
       expect(template, name).toHaveProperty(name);
     }

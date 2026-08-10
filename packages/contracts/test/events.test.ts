@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_EVENT_TYPES, AgentEventSchema, AgentEventVisibilitySchema } from '../src/events.js';
+import {
+  AGENT_EVENT_TYPES,
+  AgentEventSchema,
+  AgentEventVisibilitySchema,
+  AttachmentRefSchema,
+} from '../src/events.js';
 
 // The accepted-event test below intentionally keeps its own literal: it is the
 // PRD §14.4 example verbatim and must not drift with the fixture the rejection
@@ -13,7 +18,7 @@ const baseEvent = {
   projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
   type: 'tool.completed',
   visibility: 'user',
-  payload: { tool: 'run_build', exitCode: 0 },
+  payload: { tool: 'run_build', exitCode: 0, userSummary: 'Ran the build' },
 };
 
 describe('AgentEventSchema', () => {
@@ -27,7 +32,7 @@ describe('AgentEventSchema', () => {
       projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
       type: 'tool.completed',
       visibility: 'user',
-      payload: { tool: 'run_build', exitCode: 0 },
+      payload: { tool: 'run_build', exitCode: 0, userSummary: 'Ran the build' },
     };
     expect(AgentEventSchema.parse(evt)).toMatchObject(evt);
   });
@@ -113,6 +118,8 @@ describe('AGENT_EVENT_TYPES', () => {
       'task.failed',
       'agent.started',
       'agent.completed',
+      'message.user',
+      'message.assistant',
       'tool.started',
       'tool.output',
       'tool.completed',
@@ -135,7 +142,98 @@ describe('AGENT_EVENT_TYPES', () => {
     expect(new Set(AGENT_EVENT_TYPES).size).toBe(AGENT_EVENT_TYPES.length);
   });
   it('event type list matches PRD count', () => {
-    expect(AGENT_EVENT_TYPES).toHaveLength(34);
+    expect(AGENT_EVENT_TYPES).toHaveLength(36);
+  });
+});
+
+describe('conversation event payloads', () => {
+  const attachment = {
+    attachmentId: 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NE',
+    kind: 'image',
+    name: 'screen.png',
+    byteSize: 1234,
+    contentType: 'image/png',
+  };
+
+  it('accepts up to ten typed image attachments on message.user', () => {
+    expect(AttachmentRefSchema.parse(attachment)).toEqual(attachment);
+    expect(
+      AgentEventSchema.safeParse({
+        ...baseEvent,
+        type: 'message.user',
+        payload: {
+          messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
+          content: 'Please match these references.',
+          attachments: Array.from({ length: 10 }, () => attachment),
+          source: 'web',
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an eleventh attachment', () => {
+    expect(
+      AgentEventSchema.safeParse({
+        ...baseEvent,
+        type: 'message.user',
+        payload: {
+          messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
+          content: 'Too many references.',
+          attachments: Array.from({ length: 11 }, () => attachment),
+          source: 'web',
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires exactly one inline or artifact-backed assistant body', () => {
+    const event = {
+      ...baseEvent,
+      type: 'message.assistant',
+      payload: {
+        messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NG',
+        turnId: 'turn_01J8ME7YQZJ2V9Q0X3T5B6K7NH',
+        model: 'anthropic/claude-sonnet-5',
+      },
+    };
+    expect(AgentEventSchema.safeParse({ ...event, payload: { ...event.payload, content: 'Done' } }).success).toBe(true);
+    expect(
+      AgentEventSchema.safeParse({
+        ...event,
+        payload: {
+          ...event.payload,
+          contentArtifactId: 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NJ',
+        },
+      }).success,
+    ).toBe(true);
+    expect(AgentEventSchema.safeParse(event).success).toBe(false);
+    expect(
+      AgentEventSchema.safeParse({
+        ...event,
+        payload: {
+          ...event.payload,
+          content: 'Done',
+          contentArtifactId: 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NJ',
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a non-empty userSummary on user-visible tool lifecycle events', () => {
+    expect(
+      AgentEventSchema.safeParse({
+        ...baseEvent,
+        type: 'tool.started',
+        payload: { tool: 'run_build' },
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentEventSchema.safeParse({
+        ...baseEvent,
+        type: 'tool.failed',
+        payload: { tool: 'run_build', userSummary: 'Build failed' },
+      }).success,
+    ).toBe(true);
   });
 });
 

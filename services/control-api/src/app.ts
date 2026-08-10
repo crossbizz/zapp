@@ -6,6 +6,7 @@ import {
   type CapabilityScanPort,
 } from '@zapp/project-adapters';
 import websocket from '@fastify/websocket';
+import multipart from '@fastify/multipart';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -62,6 +63,12 @@ import {
 import { createInMemoryRateLimiter, rateLimit, type RateLimiter } from './plugins/rate-limit.js';
 import { tenantContext } from './plugins/tenant.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import {
+  createUnavailableAttachmentStorage,
+  MAX_ATTACHMENT_BYTES,
+  registerAttachmentRoutes,
+  type AttachmentStoragePort,
+} from './routes/attachments.js';
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
@@ -168,6 +175,8 @@ export interface TenantDeps {
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
   readonly pricing?: PricingConfig;
+  /** FND-7's tenant-prefixed R2/MinIO object store for public image attachments. */
+  readonly attachmentStorage?: AttachmentStoragePort;
 }
 
 export interface LocalAgentDeps {
@@ -360,6 +369,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
   void app.register(websocket);
+  void app.register(multipart, { limits: { files: 1, fileSize: MAX_ATTACHMENT_BYTES } });
   registerOpenApi(app);
 
   // Liveness only, and deliberately outside `/v1`: it is infrastructure, not API, so
@@ -529,6 +539,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             ...(deps.modelCompletions === undefined
               ? {}
               : { modelCompletions: deps.modelCompletions }),
+          });
+          registerAttachmentRoutes(app, {
+            now,
+            storage: tenant.attachmentStorage ?? createUnavailableAttachmentStorage(),
           });
           registerMissionControlRoutes(app);
           registerWorkspaceRoutes(app, {

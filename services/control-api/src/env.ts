@@ -60,6 +60,33 @@ export function loadTemporalEnv(source: unknown = process.env): TemporalEnv {
   return { address: env.TEMPORAL_ADDRESS, namespace: env.TEMPORAL_NAMESPACE };
 }
 
+const ArtifactStorageEnvSchema = z.object({
+  ARTIFACT_ENDPOINT: z.string().url(),
+  ARTIFACT_REGION: z.string().trim().min(1),
+  ARTIFACT_BUCKET: z.string().trim().min(1),
+  ARTIFACT_KEY: z.string().min(1),
+  ARTIFACT_SECRET: z.string().min(1),
+});
+
+export interface ArtifactStorageEnv {
+  readonly endpoint: string;
+  readonly region: string;
+  readonly bucket: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+}
+
+export function loadArtifactStorageEnv(source: unknown = process.env): ArtifactStorageEnv {
+  const env = defineEnv(ArtifactStorageEnvSchema, source);
+  return {
+    endpoint: env.ARTIFACT_ENDPOINT.replace(/\/+$/u, ''),
+    region: env.ARTIFACT_REGION,
+    bucket: env.ARTIFACT_BUCKET,
+    accessKeyId: env.ARTIFACT_KEY,
+    secretAccessKey: env.ARTIFACT_SECRET,
+  };
+}
+
 const UsageQueueEnvSchema = z
   .object({
     AWS_REGION: z.string().trim().min(1),

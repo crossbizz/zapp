@@ -229,8 +229,9 @@ describe('agent_events', () => {
   });
 
   it('types the event by the PRD §14.4 list and the sequence as a number', () => {
-    // 34 types, and the column refuses anything outside them at compile time.
-    expect(enumValues(agentEvents, 'type')).toHaveLength(34);
+    // The 34 PRD types plus ADR-0027's two additive message types; the column
+    // refuses anything outside the shared contract at compile time.
+    expect(enumValues(agentEvents, 'type')).toHaveLength(36);
     expect(enumValues(agentEvents, 'type').slice(0, 3)).toEqual([
       'run.created',
       'run.started',

@@ -61,6 +61,13 @@ describe('control-api event stream composition', () => {
       rateLimits: loadRateLimitSettings(),
       pricing: TEST_PRICING,
       temporal: { workflow: {} as never },
+      artifactStorage: {
+        endpoint: 'http://127.0.0.1:9000',
+        region: 'us-east-1',
+        bucket: 'zapp-artifacts',
+        accessKeyId: 'test-access-key',
+        secretAccessKey: 'test-secret-key',
+      },
     });
 
     expect(app).toBe(appCapture.app);

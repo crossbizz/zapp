@@ -31,6 +31,8 @@ import {
 } from './routes/preview.js';
 import { createDbPreviewShareStore } from './preview/store.js';
 import type { PreviewEnv } from './env.js';
+import type { ArtifactStorageEnv } from './env.js';
+import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
@@ -92,6 +94,7 @@ export interface ServiceRuntime {
   readonly pricing: PricingConfig;
   /** Temporal client used for the tenant-bound VF-3 verification workflow. */
   readonly temporal: CapabilityScanWorkflowClient;
+  readonly artifactStorage: ArtifactStorageEnv;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -150,6 +153,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
+      attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
     },
     secrets: {
       masterKey: runtime.masterKey,

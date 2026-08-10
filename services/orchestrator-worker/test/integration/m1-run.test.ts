@@ -225,7 +225,11 @@ function workerProgram(): string {
             occurredAt: '2026-08-07T12:00:00.000Z',
             type: 'tool.completed',
             visibility: 'user',
-            payload: { toolCallId: 'call-1', tool: 'write_file' },
+            payload: {
+              toolCallId: 'call-1',
+              tool: 'write_file',
+              userSummary: 'Edited a file',
+            },
           });
           return {
             status: 'completed',
@@ -487,7 +491,7 @@ describe('AR-8 M1 durable Temporal run', () => {
       occurredAt: '2026-08-07T12:00:00.000Z',
       type: 'tool.completed' as const,
       visibility: 'user' as const,
-      payload: {},
+      payload: { userSummary: 'Completed a tool action' },
     };
 
     await Promise.all(

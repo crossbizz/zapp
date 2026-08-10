@@ -84,7 +84,11 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
 
       expect(events.map((event) => event.sequence)).toEqual([1, 2, 3]);
       expect(events.map((event) => event.id)).toEqual(alpha.eventIds);
-      expect(events[0]?.payloadJson).toEqual({ tool: 'run_build', exitCode: 0 });
+      expect(events[0]?.payloadJson).toEqual({
+        tool: 'run_build',
+        exitCode: 0,
+        userSummary: 'Ran the build',
+      });
     });
 
     it('returns [] for another tenant’s run — invisible, not forbidden', async () => {

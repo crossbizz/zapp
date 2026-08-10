@@ -1,5 +1,5 @@
 import {
-  AgentEventSchema,
+  AgentEventObjectSchema,
   CommitShaSchema,
   idSchema,
   newId,
@@ -108,7 +108,7 @@ const VerificationTaskCompletionSchema = z
   })
   .strict();
 
-const VerificationCompletedEventSchema = AgentEventSchema.omit({
+const VerificationCompletedEventSchema = AgentEventObjectSchema.omit({
   id: true,
   sequence: true,
   occurredAt: true,
