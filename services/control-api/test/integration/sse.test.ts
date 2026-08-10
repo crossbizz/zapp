@@ -640,6 +640,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       'text/*;q=0.2, */*;q=0',
       '*/*;q=0.2',
     ];
+    let closedStreams = wakeups.closed;
     for (const accept of permitted) {
       const controller = new AbortController();
       const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
@@ -650,6 +651,10 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       const cancellation = cancelResponseBody(response);
       controller.abort();
       await expectSettlesWithin(cancellation);
+      closedStreams += 1;
+      await eventually(() => {
+        expect(wakeups.closed).toBe(closedStreams);
+      });
     }
   });
 
@@ -676,6 +681,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       'text/event-stream;q=1;extension="quoted value"',
       'text/event-stream;q=1;extension="quoted, value; one range"',
     ];
+    let closedStreams = wakeups.closed;
     for (const accept of permitted) {
       const controller = new AbortController();
       const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
@@ -686,6 +692,10 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       const cancellation = cancelResponseBody(response);
       controller.abort();
       await expectSettlesWithin(cancellation);
+      closedStreams += 1;
+      await eventually(() => {
+        expect(wakeups.closed).toBe(closedStreams);
+      });
     }
   });
 
