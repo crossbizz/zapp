@@ -106,6 +106,12 @@ export function createForgeNodeBaseRecipe(
   const antiSlop = config.node.antiSlop;
   const semgrepWheelPath = new URL(antiSlop.semgrep.linuxX64WheelUrl).pathname;
   const semgrepWheelFileName = semgrepWheelPath.slice(semgrepWheelPath.lastIndexOf('/') + 1);
+  const antiSlopWrapperCommand = ['knip', 'jscpd', 'eslint']
+    .map(
+      (tool) =>
+        `printf '%s\\n' '#!/bin/sh' 'exec ${sourceDirectory}/node_modules/.bin/${tool} "$@"' > /usr/local/bin/${tool}; chmod 0755 /usr/local/bin/${tool};`,
+    )
+    .join(' ');
 
   return ImageRecipeSchema.parse({
     imageName: 'forge-node-base',
@@ -131,6 +137,7 @@ export function createForgeNodeBaseRecipe(
         commands: [
           `RUN set -eux; wheel=/tmp/${semgrepWheelFileName}; curl --fail --show-error --silent --location --output "$wheel" ${antiSlop.semgrep.linuxX64WheelUrl}; printf '${antiSlop.semgrep.linuxX64Sha256}  %s\\n' "$wheel" | sha256sum --check; python3 -m venv /opt/zapp/semgrep; /opt/zapp/semgrep/bin/pip install --require-hashes -r ${sourceDirectory}/infra/modal/semgrep-dependencies.txt; /opt/zapp/semgrep/bin/pip install --no-deps "$wheel"; ln -s /opt/zapp/semgrep/bin/semgrep /usr/local/bin/semgrep; semgrep --version | grep -F '${antiSlop.semgrep.version}'`,
           `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
+          `RUN set -eu; ${antiSlopWrapperCommand}`,
           `RUN export PATH=${sourceDirectory}/node_modules/.bin:$PATH; knip --version | grep -F '${antiSlop.knip}' && jscpd --version | grep -F '${antiSlop.jscpd}' && eslint --version | grep -F 'v${antiSlop.eslint}'`,
           `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,
           `RUN cd ${sourceDirectory} && pnpm --filter @zapp/workspace-agent deploy --prod /opt/zapp/agent && pnpm --filter @zapp/preview-proxy deploy --prod /opt/zapp/proxy`,
