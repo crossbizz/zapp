@@ -122,6 +122,7 @@ const production = vi.hoisted(() => {
       baseUrl: 'https://api.cloud.flexprice.io/v1',
     })),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
+    loadModelGatewayUrl: vi.fn(() => 'http://model-gateway.test:4100'),
     loadPreviewEnv: vi.fn(() => preview),
     loadRateLimitSettings: vi.fn(() => ({ kind: 'production-rate-limits' })),
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
@@ -155,6 +156,7 @@ vi.mock('../src/env.js', () => ({
   loadEnv: production.loadEnv,
   loadFlexpriceEnv: production.loadFlexpriceEnv,
   loadMasterKey: production.loadMasterKey,
+  loadModelGatewayUrl: production.loadModelGatewayUrl,
   loadPreviewEnv: production.loadPreviewEnv,
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
@@ -220,6 +222,7 @@ describe('control-api production entrypoint', () => {
         runIntentHmacKey: Buffer.alloc(32, 0x33),
         preview: production.preview,
         previewRedis: production.redis,
+        modelGatewayUrl: 'http://model-gateway.test:4100',
         temporal: production.temporal,
       }),
     );

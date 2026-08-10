@@ -71,6 +71,7 @@ function composed(): AppInstance {
     },
     masterKey: TEST_MASTER_KEY,
     serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+    modelGatewayUrl: 'http://127.0.0.1:4100',
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
     temporal: { workflow: {} as never },
@@ -113,6 +114,8 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],
   ['GET', '/v1/runs/:runId/events'],
+  ['POST', '/v1/local-agent/sessions'],
+  ['POST', '/v1/local-agent/sessions/:sessionId/completions'],
   // CP-6's additions to it (PRD §32.1).
   ['PATCH', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/contract'],

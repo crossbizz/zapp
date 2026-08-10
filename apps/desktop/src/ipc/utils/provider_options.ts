@@ -1,8 +1,8 @@
 import type { SmartContextMode, UserSettings } from "../../lib/schemas";
 import type { CodebaseFile } from "../../utils/codebase";
 import type { VersionedFiles } from "./versioned_codebase_context";
-import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
-import { OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
+import type { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
+import type { OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
 import {
   getAnthropicProviderOptions,
   getThinkingBudgetEffort,

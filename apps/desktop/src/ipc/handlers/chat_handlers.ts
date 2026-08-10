@@ -12,7 +12,7 @@ import { normalizeStoredChatMode } from "./chat_mode_resolution";
 import {
   blockNewStreamsForChat,
   cancelActiveStreamsForChat,
-} from "./chat_stream_handlers";
+} from "@/zapp/runtime/local-chat-handlers";
 import type { WebContents } from "electron";
 import {
   rendererMessageColumns,

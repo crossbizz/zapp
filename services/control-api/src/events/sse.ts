@@ -163,7 +163,7 @@ function parseHttpParameterValue(value: string): string | undefined {
   return parsed;
 }
 
-function acceptsEventStream(value: string | undefined): boolean {
+export function acceptsEventStream(value: string | undefined): boolean {
   if (value === undefined) return false;
   const entries = splitOutsideQuotedStrings(value, ',');
   if (entries === undefined) return false;

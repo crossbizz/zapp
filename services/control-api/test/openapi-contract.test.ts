@@ -57,6 +57,13 @@ function documentedHarness(): Harness {
       appBaseUrl: new URL('https://app.zapp.test'),
       previewBaseDomain: 'preview.zapp.test',
     },
+    localAgent: {
+      sessions: {
+        ensure: () => Promise.reject(new Error('OpenAPI must not create local sessions.')),
+        get: () => Promise.reject(new Error('OpenAPI must not read local sessions.')),
+      },
+      gateway: { async *stream() {} },
+    },
   });
   apps.push(built.app);
   return built;

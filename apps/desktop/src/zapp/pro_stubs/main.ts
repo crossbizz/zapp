@@ -181,6 +181,7 @@ export function clearPendingLocalAgentInputsForChat(_chatId: number): void {}
  */
 export interface LocalAgentStreamOptions {
   placeholderMessageId: number;
+  acceptedUserMessageId: number;
   systemPrompt: string;
   dyadRequestId: string;
   /** Ask mode: state-modifying tools disabled, no commits or deploys. */
@@ -194,19 +195,49 @@ export interface LocalAgentStreamOptions {
   currentTurnHasOnDiskAttachment?: boolean | undefined;
 }
 
+type ConfiguredLocalAgentStreamHandler = (
+  event: IpcMainInvokeEvent,
+  req: ChatStreamParams,
+  abortController: AbortController,
+  options: LocalAgentStreamOptions,
+) => Promise<boolean>;
+
+let configuredLocalAgentStreamHandler:
+  | ConfiguredLocalAgentStreamHandler
+  | undefined;
+
+/** Installs MAC-6's main-process local session composition after auth restore. */
+export function configureLocalAgentStreamHandler(
+  handler: ConfiguredLocalAgentStreamHandler,
+): void {
+  configuredLocalAgentStreamHandler = handler;
+}
+
 /**
- * The agent loop itself was Pro. Returning `false` is the upstream "stream did
- * not succeed" signal, which keeps quota accounting and error handling on the
- * paths they already take. zapp replaces this wholesale in MAC-6.
+ * The agent loop itself was Pro. MAC-6 installs the zapp-owned local session
+ * composition before the renderer is created. If composition is unavailable,
+ * fail with a typed error so the outer chat coordinator emits its terminal
+ * error/end events instead of leaving the renderer waiting forever.
  */
 export async function handleLocalAgentStream(
-  _event: IpcMainInvokeEvent,
-  _req: ChatStreamParams,
-  _abortController: AbortController,
-  _options: LocalAgentStreamOptions,
+  event: IpcMainInvokeEvent,
+  req: ChatStreamParams,
+  abortController: AbortController,
+  options: LocalAgentStreamOptions,
 ): Promise<boolean> {
+  if (configuredLocalAgentStreamHandler !== undefined) {
+    return await configuredLocalAgentStreamHandler(
+      event,
+      req,
+      abortController,
+      options,
+    );
+  }
   logger.warn(
-    "Local agent mode is unavailable: the upstream implementation lives in src/pro and is not vendored.",
+    "Local agent mode is unavailable until platform authentication is initialized.",
   );
-  return false;
+  throw new DyadError(
+    "Local agent mode is unavailable until platform authentication is initialized.",
+    DyadErrorKind.Precondition,
+  );
 }

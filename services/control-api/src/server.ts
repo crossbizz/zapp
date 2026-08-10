@@ -10,6 +10,7 @@ import {
   loadEnv,
   loadFlexpriceEnv,
   loadMasterKey,
+  loadModelGatewayUrl,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadPreviewEnv,
@@ -64,6 +65,7 @@ const serviceTokens = loadServiceTokenConfig();
 // every retry that reached another instance.
 const runIntentHmacKey = loadRunIntentHmacKey();
 const preview = loadPreviewEnv();
+const modelGatewayUrl = loadModelGatewayUrl();
 // Where projects' repositories are actually created (plan 06 GIT-2). Undefined
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
@@ -99,6 +101,7 @@ const app = composeApp({
   auth,
   masterKey,
   serviceTokens,
+  modelGatewayUrl,
   preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,

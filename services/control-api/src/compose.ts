@@ -34,6 +34,8 @@ import type { PreviewEnv } from './env.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
+import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
+import { createLocalAgentSessionRepository } from './local-agent/store.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -75,6 +77,8 @@ export interface ServiceRuntime {
    * plane that discovered that from a 401 in staging discovered it too late.
    */
   readonly serviceTokens: ServiceTokenConfig;
+  /** MAC-6 public proxy destination; only control-api holds the service credential. */
+  readonly modelGatewayUrl: string;
   /**
    * Where `services/git-service` answers, from `loadGitServiceUrl`
    * (`src/git/client.ts`). Undefined only in development, where the record-only
@@ -175,6 +179,13 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       database,
       mirror: createRedisCreditMirror(redis),
     }),
+    localAgent: {
+      sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
+      gateway: createModelGatewayLocalAgentClient({
+        baseUrl: runtime.modelGatewayUrl,
+        serviceTokens: runtime.serviceTokens,
+      }),
+    },
     ...(runtime.preview === undefined
       ? {}
       : {

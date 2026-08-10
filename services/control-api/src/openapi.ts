@@ -189,7 +189,10 @@ function hasPreHandler(value: unknown, expected: unknown): boolean {
 }
 
 function isEventStreamRoute(url: string): boolean {
-  return url === '/v1/runs/:runId/events';
+  return (
+    url === '/v1/runs/:runId/events' ||
+    url === '/v1/local-agent/sessions/:sessionId/completions'
+  );
 }
 
 function withEventStreamContent(schema: object): object {

@@ -1,6 +1,6 @@
 import { registerAppHandlers } from "./handlers/app_handlers";
 import { registerChatHandlers } from "./handlers/chat_handlers";
-import { registerChatStreamHandlers } from "./handlers/chat_stream_handlers";
+import { registerZappLocalChatHandlers } from "@/zapp/runtime/local-chat-handlers";
 import { registerSettingsHandlers } from "./handlers/settings_handlers";
 import { registerShellHandlers } from "./handlers/shell_handler";
 import { registerDependencyHandlers } from "./handlers/dependency_handlers";
@@ -35,7 +35,7 @@ import { registerThemesHandlers } from "@/zapp/pro_stubs/main";
 import { registerPortalHandlers } from "./handlers/portal_handlers";
 import { registerMigrationHandlers } from "./handlers/migration_handlers";
 import { registerPromptHandlers } from "./handlers/prompt_handlers";
-import { registerHelpBotHandlers } from "./handlers/help_bot_handlers";
+import { registerZappHelpBotHandlers } from "@/zapp/help-bot-disabled";
 import { registerMcpHandlers } from "./handlers/mcp_handlers";
 import { registerSecurityHandlers } from "./handlers/security_handlers";
 // zapp: pro-removed — was "../pro/main/ipc/handlers/visual_editing_handlers"
@@ -62,7 +62,7 @@ export function registerIpcHandlers() {
   // Register all IPC handlers by category
   registerAppHandlers();
   registerChatHandlers();
-  registerChatStreamHandlers();
+  registerZappLocalChatHandlers();
   registerSettingsHandlers();
   registerShellHandlers();
   registerDependencyHandlers();
@@ -96,7 +96,7 @@ export function registerIpcHandlers() {
   registerPortalHandlers();
   registerMigrationHandlers();
   registerPromptHandlers();
-  registerHelpBotHandlers();
+  registerZappHelpBotHandlers();
   registerMcpHandlers();
   registerSecurityHandlers();
   registerVisualEditingHandlers();

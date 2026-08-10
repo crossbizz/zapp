@@ -517,3 +517,15 @@ export const zappLocalAgentCommitIntents = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.runId, table.taskId] })],
 );
+
+export const zappLocalAgentChatSessions = sqliteTable(
+  "zapp_local_agent_chat_sessions",
+  {
+    chatId: integer("chat_id")
+      .primaryKey()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull().unique(),
+    localProjectName: text("local_project_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+);

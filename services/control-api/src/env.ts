@@ -174,6 +174,18 @@ export function loadPreviewEnv(source: unknown = process.env): PreviewEnv {
   };
 }
 
+const ModelGatewayEnvSchema = z.object({
+  MODEL_GATEWAY_URL: z
+    .string()
+    .url()
+    .refine((value) => /^https?:\/\//u.test(value), 'MODEL_GATEWAY_URL must use HTTP(S)'),
+});
+
+/** MAC-6's server-to-server completion hop. No browser or desktop receives this credential. */
+export function loadModelGatewayUrl(source: unknown = process.env): string {
+  return defineEnv(ModelGatewayEnvSchema, source).MODEL_GATEWAY_URL.replace(/\/+$/u, '');
+}
+
 /**
  * The master key that wraps every secret's data key (CP-7), and the one
  * variable in this service that *is* a secret.

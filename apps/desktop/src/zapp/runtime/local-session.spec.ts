@@ -99,6 +99,7 @@ async function initializeGit(runtime: LocalWorkspaceRuntime): Promise<void> {
     ["init"],
     ["config", "user.email", "desktop@example.test"],
     ["config", "user.name", "Desktop Runtime"],
+    ["commit", "--allow-empty", "-m", "Local initial commit"],
   ]) {
     await expect(
       runtime.exec({ cmd: "git", args, timeoutMs: 5_000 }),
@@ -142,7 +143,7 @@ describe("desktop local agent session", () => {
         const result = await super.exec(input);
         if (
           input.cmd === "git" &&
-          input.args[0] === "update-ref" &&
+          input.env?.ZAPP_EXPECTED_REF !== undefined &&
           result.exitCode === 0 &&
           this.loseCommitResponse
         ) {
@@ -286,6 +287,20 @@ describe("desktop local agent session", () => {
         timeoutMs: 5_000,
       }),
     ).resolves.toMatchObject({ stdout: "A  user-staged.txt\n" });
+    await expect(
+      runtime.exec({
+        cmd: "git",
+        args: ["rev-parse", "HEAD"],
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ stdout: `${recoveredCommit}\n` });
+    await expect(
+      runtime.exec({
+        cmd: "git",
+        args: ["status", "--short", "--", "src/App.tsx"],
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ stdout: "" });
     database.$client.close();
   });
 
@@ -299,9 +314,7 @@ describe("desktop local agent session", () => {
       override async exec(input: Parameters<LocalWorkspaceRuntime["exec"]>[0]) {
         if (
           input.cmd === "git" &&
-          ((input.args[0] === "commit" &&
-            input.env?.GIT_INDEX_FILE !== undefined) ||
-            input.args[0] === "update-ref") &&
+          input.env?.ZAPP_EXPECTED_REF !== undefined &&
           !this.movedHead
         ) {
           this.movedHead = true;
@@ -399,17 +412,9 @@ describe("desktop local agent session", () => {
     await expect(
       createLocalAgentSession(options).run(sessionInput()),
     ).resolves.toMatchObject({ status: "yielded" });
-    const agentResult =
-      await createLocalAgentSession(options).run(sessionInput());
-    expect(agentResult).toMatchObject({
-      status: "completed",
-      commits: [expect.any(String)],
-    });
-    if (agentResult.status !== "completed") {
-      throw new Error("Expected a completed fenced local session");
-    }
-    const [agentCommit] = agentResult.commits;
-    if (agentCommit === undefined) throw new Error("Expected an agent commit");
+    await expect(
+      createLocalAgentSession(options).run(sessionInput()),
+    ).rejects.toThrow("Local agent commit reference conflicts with durable state");
     await expect(
       runtime.exec({
         cmd: "git",
@@ -447,12 +452,11 @@ describe("desktop local agent session", () => {
     await expect(
       runtime.exec({
         cmd: "git",
-        args: ["show", `${agentCommit}:src/App.tsx`],
+        args: ["log", "--all", "--format=%B"],
         timeoutMs: 5_000,
       }),
     ).resolves.toMatchObject({
-      exitCode: 0,
-      stdout: "export const App = 'fenced';\n",
+      stdout: expect.not.stringContaining("zapp-local-intent:"),
     });
     await expect(
       runtime.exec({
@@ -635,7 +639,7 @@ describe("desktop local agent session", () => {
     expect(changed.stdout).toContain("A\tsrc/create.txt");
     expect(changed.stdout).toContain("M\tsrc/update.txt");
     expect(changed.stdout).toContain("D\tsrc/delete.txt");
-    expect(changed.stdout).toContain("A\tsrc/renamed.txt");
+    expect(changed.stdout).toContain("R100\tsrc/copied.txt\tsrc/renamed.txt");
     database.$client.close();
   });
 

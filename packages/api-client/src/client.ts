@@ -1,4 +1,5 @@
-import { AgentEventSchema } from '@zapp/contracts';
+import { AgentEventSchema, GatewayStreamEventSchema } from '@zapp/contracts';
+import { createParser, type EventSourceMessage } from 'eventsource-parser';
 
 import { PUBLIC_API_OPERATIONS } from './generated-operations.js';
 import type { paths } from './generated.js';
@@ -169,6 +170,21 @@ export interface ZappClient {
     options: RequestOptions<Path, Method>,
   ): Promise<SuccessfulResponse<Operation<Path, Method>>>;
   subscribeRunEvents(runId: string, options: SubscribeRunEventsOptions): EventSubscription;
+  streamLocalAgentCompletion(
+    sessionId: string,
+    body: LocalAgentCompletionRequest,
+    options: LocalAgentCompletionOptions,
+  ): AsyncIterable<LocalAgentCompletionEvent>;
+}
+
+export type LocalAgentCompletionRequest =
+  paths['/v1/local-agent/sessions/{sessionId}/completions']['post']['requestBody']['content']['application/json'];
+export type LocalAgentCompletionEvent =
+  paths['/v1/local-agent/sessions/{sessionId}/completions']['post']['responses'][200]['content']['text/event-stream'];
+
+export interface LocalAgentCompletionOptions {
+  readonly organizationId: string;
+  readonly signal?: AbortSignal;
 }
 
 /** A public API failure with safe-to-display machine-readable context only. */
@@ -335,7 +351,142 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
 
       return { close, closed };
     },
+
+    streamLocalAgentCompletion(sessionId, body, streamOptions) {
+      return localAgentCompletionStream({
+        baseUrl,
+        fetch,
+        getToken: options.getToken,
+        sessionId,
+        body,
+        options: streamOptions,
+        operation: publicOperation(
+          '/v1/local-agent/sessions/{sessionId}/completions',
+          'POST',
+        ),
+      });
+    },
   };
+}
+
+interface LocalAgentCompletionStreamInput {
+  readonly baseUrl: URL;
+  readonly fetch: FetchImplementation;
+  readonly getToken: ZappClientOptions['getToken'];
+  readonly sessionId: string;
+  readonly body: LocalAgentCompletionRequest;
+  readonly options: LocalAgentCompletionOptions;
+  readonly operation: OperationMetadata;
+}
+
+async function* localAgentCompletionStream(
+  input: LocalAgentCompletionStreamInput,
+): AsyncGenerator<LocalAgentCompletionEvent> {
+  const url = requestUrl(
+    input.baseUrl,
+    '/v1/local-agent/sessions/{sessionId}/completions',
+    { sessionId: input.sessionId },
+  );
+  const headers = await requestHeaders(
+    input.getToken,
+    { accept: 'text/event-stream', 'x-organization-id': input.options.organizationId },
+    input.body,
+    input.operation,
+    input.options.signal,
+  );
+  const responsePromise = input.fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(input.body),
+    ...(input.options.signal === undefined ? {} : { signal: input.options.signal }),
+    ...(operationUsesCookies(input.operation) ? { credentials: 'include' } : {}),
+  });
+  const response =
+    input.options.signal === undefined
+      ? await responsePromise
+      : await raceAbort(responsePromise, input.options.signal);
+  if (!response.ok) throw await apiError(response);
+  assertEventStreamResponse(response);
+  if (response.body === null) throw new SseProtocolError('the stream response has no body.');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const pending: LocalAgentCompletionEvent[] = [];
+  const streamState = { invalid: false, terminal: false };
+  const parser = createParser({
+    onEvent(message: EventSourceMessage) {
+      if (streamState.terminal) {
+        streamState.invalid = true;
+        return;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(message.data) as unknown;
+      } catch {
+        streamState.invalid = true;
+        return;
+      }
+      const event = GatewayStreamEventSchema.safeParse(value);
+      if (!event.success) {
+        streamState.invalid = true;
+        return;
+      }
+      streamState.terminal = event.data.type === 'done' || event.data.type === 'error';
+      pending.push(event.data as LocalAgentCompletionEvent);
+    },
+    onError() {
+      streamState.invalid = true;
+    },
+  });
+
+  const emitPending = function* (): Generator<LocalAgentCompletionEvent> {
+    while (pending.length > 0) yield pending.shift() as LocalAgentCompletionEvent;
+  };
+
+  try {
+    for (;;) {
+      const next =
+        input.options.signal === undefined
+          ? await reader.read()
+          : await raceAbort(reader.read(), input.options.signal);
+      if (next.done) break;
+      try {
+        parser.feed(decoder.decode(next.value, { stream: true }));
+      } catch {
+        throw new SseProtocolError('completion event framing is invalid.');
+      }
+      if (streamState.invalid) {
+        throw new SseProtocolError('completion event data is invalid.');
+      }
+      yield* emitPending();
+    }
+    try {
+      parser.feed(decoder.decode());
+      parser.reset({ consume: true });
+    } catch {
+      throw new SseProtocolError('completion event framing is invalid.');
+    }
+    if (streamState.invalid || !streamState.terminal) {
+      throw new SseProtocolError('completion stream ended without one terminal event.');
+    }
+    yield* emitPending();
+  } finally {
+    try {
+      const cancellation = reader.cancel(
+        input.options.signal?.aborted === true
+          ? abortError(input.options.signal)
+          : undefined,
+      );
+      void cancellation.catch(() => undefined);
+    } catch {
+      // Cancellation is best-effort after the stream has already settled.
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative stream cannot retain the SDK reader lock.
+    }
+  }
 }
 
 function publicOperation(path: string, method: unknown): OperationMetadata {

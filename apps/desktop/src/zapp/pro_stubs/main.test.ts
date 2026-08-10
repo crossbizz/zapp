@@ -9,7 +9,25 @@ import {
   setupHandlerTestHarness,
 } from "@/testing/handler_test_harness";
 
-import { registerThemesHandlers } from "./main";
+import { handleLocalAgentStream, registerThemesHandlers } from "./main";
+
+describe("handleLocalAgentStream", () => {
+  it("fails with a typed precondition before the platform handler is configured", async () => {
+    await expect(
+      handleLocalAgentStream(
+        { sender: {} } as never,
+        { chatId: 1, prompt: "edit" },
+        new AbortController(),
+        {
+          placeholderMessageId: 2,
+          acceptedUserMessageId: 1,
+          systemPrompt: "system",
+          dyadRequestId: "request",
+        },
+      ),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.Precondition });
+  });
+});
 
 /**
  * Built-in theme selection is NOT Pro-only: `apps.theme_id`, `themesData` and

@@ -1,248 +1,60 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-} from "@ai-sdk/provider";
+import { DyadErrorKind } from "@/errors/dyad_error";
+import type { UserSettings } from "@/lib/schemas";
 
-import type { UserSettings } from "../../lib/schemas";
 import {
   createDyadEngine,
   transcribeWithDyadEngine,
 } from "./llm_engine_provider";
 
+function providerOptions(fetch = vi.fn()) {
+  return {
+    apiKey: "not-a-real-key",
+    baseURL: "https://provider.invalid/v1",
+    dyadOptions: {},
+    settings: {} as UserSettings,
+    fetch,
+  };
+}
+
 describe("createDyadEngine", () => {
-  test("uses Anthropic messages API for Anthropic engine models", async () => {
-    const requests: Array<{
-      input: RequestInfo | URL;
-      init?: RequestInit;
-    }> = [];
+  test.each(["chatModel", "freeChatModel", "responses", "anthropic"] as const)(
+    "fails closed for the inherited %s provider entry point",
+    (entryPoint) => {
+      const fetch = vi.fn();
+      const provider = createDyadEngine(providerOptions(fetch));
 
-    const provider = createDyadEngine({
-      apiKey: "dyad-pro-key",
-      baseURL: "https://engine.example.test/v1",
-      dyadOptions: {
-        enableLazyEdits: true,
-        enableSmartFilesContext: true,
-        enableWebSearch: false,
-      },
-      settings: {
-        thinkingBudget: "medium",
-      } as UserSettings,
-      fetch: async (input, init) => {
-        requests.push({ input, init });
-
-        return new Response(
-          JSON.stringify({
-            type: "message",
-            id: "msg_123",
-            model: "claude-sonnet-4-20250514",
-            content: [{ type: "text", text: "ok", citations: [] }],
-            stop_reason: "end_turn",
-            usage: {
-              input_tokens: 1,
-              output_tokens: 1,
-            },
-          }),
-          {
-            headers: { "content-type": "application/json" },
-          },
-        );
-      },
-    });
-
-    const model = provider.anthropic("claude-sonnet-4-20250514", {
-      providerId: "anthropic",
-    }) as LanguageModelV3;
-
-    await model.doGenerate({
-      prompt: [
-        { role: "system", content: "You are concise." },
-        { role: "user", content: [{ type: "text", text: "Hello" }] },
-      ],
-      providerOptions: {
-        "dyad-engine": {
-          dyadAppId: 42,
-          dyadRequestId: "request-1",
-          dyadFiles: [{ path: "src/App.tsx", content: "export {}" }],
-        },
-      },
-    } satisfies LanguageModelV3CallOptions);
-
-    expect(requests).toHaveLength(1);
-    const request = requests[0];
-    expect(String(request.input)).toBe(
-      "https://engine.example.test/v1/messages",
-    );
-    expect(request.init?.headers).toMatchObject({
-      authorization: "Bearer dyad-pro-key",
-      "X-Dyad-Request-Id": "request-1:attempt-1",
-    });
-
-    const body = JSON.parse(String(request.init?.body));
-    expect(body).toMatchObject({
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
-      system: [{ type: "text", text: "You are concise." }],
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "medium" },
-      dyad_options: {
-        app_id: 42,
-        enable_lazy_edits: true,
-        enable_smart_files_context: true,
-        enable_web_search: false,
-        files: [{ path: "src/App.tsx", content: "export {}" }],
-      },
-    });
-    expect(body).not.toHaveProperty("dyadAppId");
-    expect(body).not.toHaveProperty("dyadRequestId");
-    expect(body).not.toHaveProperty("dyadFiles");
-    expect(body).not.toHaveProperty("reasoning_effort");
-  });
-
-  test("applies query params to Anthropic engine requests", async () => {
-    const requests: Array<{
-      input: RequestInfo | URL;
-      init?: RequestInit;
-    }> = [];
-
-    const provider = createDyadEngine({
-      apiKey: "dyad-pro-key",
-      baseURL: "https://engine.example.test/v1",
-      queryParams: {
-        feature: "anthropic-direct",
-        source: "test",
-      },
-      dyadOptions: {},
-      settings: {} as UserSettings,
-      fetch: async (input, init) => {
-        requests.push({ input, init });
-
-        return new Response(
-          JSON.stringify({
-            type: "message",
-            id: "msg_123",
-            model: "claude-sonnet-4-20250514",
-            content: [{ type: "text", text: "ok", citations: [] }],
-            stop_reason: "end_turn",
-            usage: {
-              input_tokens: 1,
-              output_tokens: 1,
-            },
-          }),
-          {
-            headers: { "content-type": "application/json" },
-          },
-        );
-      },
-    });
-
-    const model = provider.anthropic("claude-sonnet-4-20250514", {
-      providerId: "anthropic",
-    }) as LanguageModelV3;
-
-    await model.doGenerate({
-      prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
-    } satisfies LanguageModelV3CallOptions);
-
-    expect(requests).toHaveLength(1);
-    const url = new URL(String(requests[0].input));
-    expect(url.origin + url.pathname).toBe(
-      "https://engine.example.test/v1/messages",
-    );
-    expect(url.searchParams.get("feature")).toBe("anthropic-direct");
-    expect(url.searchParams.get("source")).toBe("test");
-  });
-
-  test("sends stable free quota key separately from attempt request id", async () => {
-    const requests: Array<{
-      input: RequestInfo | URL;
-      init?: RequestInit;
-    }> = [];
-
-    const provider = createDyadEngine({
-      apiKey: "dyad-pro-key",
-      baseURL: "https://engine.example.test/v1",
-      dyadOptions: {},
-      settings: {} as UserSettings,
-      fetch: async (input, init) => {
-        requests.push({ input, init });
-
-        return new Response(
-          JSON.stringify({
-            id: "chatcmpl_123",
-            object: "chat.completion",
-            created: 1,
-            model: "free-pro",
-            choices: [
-              {
-                index: 0,
-                message: { role: "assistant", content: "ok" },
-                finish_reason: "stop",
-              },
-            ],
-            usage: {
-              prompt_tokens: 1,
-              completion_tokens: 1,
-              total_tokens: 2,
-            },
-          }),
-          {
-            headers: { "content-type": "application/json" },
-          },
-        );
-      },
-    });
-
-    const model = provider.freeChatModel("free-pro", {
-      providerId: "auto",
-    }) as LanguageModelV3;
-
-    await model.doGenerate({
-      prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
-      providerOptions: {
-        "dyad-engine": {
-          dyadRequestId: "visible-turn-1",
-        },
-      },
-    } satisfies LanguageModelV3CallOptions);
-
-    expect(requests).toHaveLength(1);
-    expect(String(requests[0].input)).toBe(
-      "https://engine.example.test/v1/free/chat/completions",
-    );
-    expect(requests[0].init?.headers).toMatchObject({
-      "X-Dyad-Request-Id": "visible-turn-1:attempt-1",
-      "X-Dyad-Free-Quota-Key": "visible-turn-1",
-    });
-  });
+      expect(() =>
+        provider[entryPoint]("legacy-model", { providerId: "legacy" }),
+      ).toThrowError(
+        expect.objectContaining({
+          kind: DyadErrorKind.Precondition,
+          message:
+            "The inherited desktop provider engine is disabled; use the zapp model gateway.",
+        }),
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("transcribeWithDyadEngine", () => {
-  test("uses the Dyad transcription model alias", async () => {
-    let request: { input: RequestInfo | URL; init?: RequestInit } | undefined;
+  test("fails closed without sending audio to an inherited provider", async () => {
+    const fetch = vi.fn();
 
-    const text = await transcribeWithDyadEngine(
-      Buffer.from("audio"),
-      "recording.webm",
-      "request-1",
-      {
-        apiKey: "dyad-pro-key",
-        baseURL: "https://engine.example.test/v1",
-        dyadOptions: {},
-        settings: {} as UserSettings,
-        fetch: async (input, init) => {
-          request = { input, init };
-          return Response.json({ text: "transcribed" });
-        },
-      },
-    );
-
-    expect(text).toBe("transcribed");
-    expect(String(request?.input)).toBe(
-      "https://engine.example.test/v1/audio/transcriptions",
-    );
-    const formData = request?.init?.body as FormData;
-    expect(formData.get("model")).toBe("dyad/transcribe");
+    await expect(
+      transcribeWithDyadEngine(
+        Buffer.from("audio"),
+        "recording.webm",
+        "request-1",
+        providerOptions(fetch),
+      ),
+    ).rejects.toMatchObject({
+      kind: DyadErrorKind.Precondition,
+      message:
+        "The inherited desktop provider engine is disabled; use the zapp model gateway.",
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

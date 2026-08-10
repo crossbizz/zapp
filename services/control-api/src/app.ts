@@ -77,6 +77,13 @@ import {
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
+import {
+  registerLocalAgentRoutes,
+} from './routes/local-agent.js';
+import type {
+  LocalAgentCompletionGateway,
+  LocalAgentSessionRepository,
+} from './local-agent/port.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import { registerSpecificationRoutes } from './routes/specifications.js';
@@ -163,6 +170,11 @@ export interface TenantDeps {
   readonly pricing?: PricingConfig;
 }
 
+export interface LocalAgentDeps {
+  readonly sessions: LocalAgentSessionRepository;
+  readonly gateway: LocalAgentCompletionGateway;
+}
+
 /**
  * What the rate-limit and idempotency plugins need (CP-5). Both are always
  * registered — a route that could be added without a limit or without replay
@@ -242,6 +254,8 @@ export interface AppDeps {
   /** WS-12 durable share/session and authenticated preview data plane. */
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   readonly modelCompletions?: ModelCompletionRepository;
+  /** MAC-6's public, user-authenticated desktop local-agent accounting scope. */
+  readonly localAgent?: LocalAgentDeps;
 }
 
 /**
@@ -521,6 +535,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
           });
+          if (deps.localAgent !== undefined) {
+            registerLocalAgentRoutes(app, { ...deps.localAgent, now });
+          }
           if (deps.preview !== undefined) {
             registerPreviewRoutes(app, {
               ...deps.preview,

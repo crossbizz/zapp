@@ -22,9 +22,11 @@ export {
   GatewayStreamEventSchema,
   InputJsonSchema,
   JsonValueSchema,
+  LocalAgentCompletionRequestSchema,
   type ChatMessage,
   type CompleteRequest,
   type GatewayStreamEvent,
   type JsonValue,
+  type LocalAgentCompletionRequest,
   type NeutralTool,
 } from './schemas.js';

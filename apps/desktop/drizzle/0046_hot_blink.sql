@@ -1,0 +1,1 @@
+ALTER TABLE `zapp_local_agent_chat_sessions` ADD `local_project_name` text NOT NULL;

@@ -134,6 +134,13 @@
       "when": 1786352400003,
       "tag": "0018_jittery_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786365956462,
+      "tag": "0019_gifted_lockjaw",
+      "breakpoints": true
     }
   ]
 }

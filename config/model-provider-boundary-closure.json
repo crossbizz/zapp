@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "closedBy": "MAC-6",
+  "adr": "docs/adr/0005-desktop-provider-migration-window.md",
+  "baseline": "config/model-provider-boundary-baseline.json",
+  "files": {}
+}

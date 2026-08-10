@@ -7,7 +7,7 @@ import {
 import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
-import { buildApp, type AppInstance } from '../../src/app.js';
+import { buildApp, type AppInstance, type LocalAgentDeps } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
@@ -255,6 +255,7 @@ export interface HarnessOptions {
   /** `null` exercises a tenant surface that fails closed with no pricing config. */
   readonly pricing?: PricingConfig | null;
   readonly modelCompletions?: ModelCompletionRepository;
+  readonly localAgent?: LocalAgentDeps;
 }
 
 /**
@@ -322,6 +323,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     ...(options.modelCompletions === undefined
       ? {}
       : { modelCompletions: options.modelCompletions }),
+    ...(options.localAgent === undefined ? {} : { localAgent: options.localAgent }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

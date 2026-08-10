@@ -44,9 +44,12 @@ import { handleSupabaseOAuthReturn } from "./supabase_admin/supabase_return_hand
 import { handleDyadProReturn } from "./main/pro";
 import { IS_TEST_BUILD } from "./ipc/utils/test_utils";
 import { BackupManager } from "./backup_manager";
-import { getDatabasePath, initializeDatabase } from "./db";
+import { getDatabasePath, getDb, initializeDatabase } from "./db";
 import { reconcileOrphanTestBranches } from "./ipc/utils/neon_test_branch";
 import { reconcileOrphanTestUsers } from "./ipc/utils/supabase_test_user";
+import { configureLocalAgentStreamHandler } from "./zapp/pro_stubs/main";
+import { createDesktopLocalAgentPlatform } from "./zapp/runtime/local-agent-platform";
+import { createLocalAgentStreamHandler } from "./zapp/runtime/local-agent-handler";
 import { UserSettings } from "./lib/schemas";
 import { handleNeonOAuthReturn } from "./neon_admin/neon_return_handler";
 import { runOAuthReturnExchange } from "./ipc/handlers/connection_flow_handlers";
@@ -400,8 +403,10 @@ export async function onReady() {
     return;
   }
 
+  const controlApiUrl =
+    process.env.ZAPP_CONTROL_API_URL ?? "https://api.zapp.build";
   const platformAuthSession = createElectronPlatformAuthSession({
-    baseUrl: process.env.ZAPP_CONTROL_API_URL ?? "https://api.zapp.build",
+    baseUrl: controlApiUrl,
   });
   try {
     const startup = await restorePlatformAuthForStartup(platformAuthSession);
@@ -422,10 +427,43 @@ export async function onReady() {
       }
     }
   });
+  const localAgentPlatform = createDesktopLocalAgentPlatform({
+    auth: platformAuthSession,
+    baseUrl: controlApiUrl,
+    database: getDb().$client,
+  });
+  configureLocalAgentStreamHandler(
+    createLocalAgentStreamHandler({
+      database: getDb().$client,
+      platform: localAgentPlatform,
+      redact(value) {
+        const bearer = platformAuthSession.authorizationHeader();
+        const registeredValues = [
+          ...(bearer?.startsWith("Bearer ") === true
+            ? [bearer.slice("Bearer ".length)]
+            : []),
+          ...Object.entries(process.env)
+            .filter(([name]) =>
+              /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/u.test(name),
+            )
+            .map(([, secret]) => secret),
+        ]
+          .filter(
+            (secret): secret is string =>
+              secret !== undefined && secret.length >= 8,
+          )
+          .sort((left, right) => right.length - left.length);
+        return registeredValues.reduce(
+          (redacted, secret) => redacted.replaceAll(secret, "[REDACTED]"),
+          value,
+        );
+      },
+    }),
+  );
   registerCloudDashboardHandlers(
     createCloudDashboardApi({
       auth: platformAuthSession,
-      baseUrl: process.env.ZAPP_CONTROL_API_URL ?? "https://api.zapp.build",
+      baseUrl: controlApiUrl,
     }),
   );
 

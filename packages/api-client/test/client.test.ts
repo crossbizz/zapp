@@ -105,6 +105,63 @@ async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<bool
 }
 
 describe('createZappClient', () => {
+  it('streams desktop local-agent completions through the generated public operation', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        stream([
+          'data: {"type":"text-delta","text":"hel',
+          'lo"}\n\ndata: {"type":"done"}\n\n',
+        ]),
+        { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+      ),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'desktop-user-token',
+      fetch,
+    });
+
+    expect(client).toHaveProperty('streamLocalAgentCompletion');
+    const events = [];
+    for await (const event of client.streamLocalAgentCompletion(
+      '01912f8f-6cb0-7a52-9d3d-2b24f32062b0',
+      {
+        completionId: `cmp_${'a'.repeat(64)}`,
+        agentRole: 'builder',
+        messages: [{ role: 'user', content: 'Change the heading' }],
+        cacheBreakpointMessageIndexes: [],
+        maxInputTokens: 8,
+        maxOutputTokens: 64,
+      },
+      { organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA' },
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: 'text-delta', text: 'hello' },
+      { type: 'done' },
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const call = fetch.mock.calls[0];
+    expect(call?.[0]).toEqual(
+      new URL(
+        'https://api.zapp.test/v1/local-agent/sessions/01912f8f-6cb0-7a52-9d3d-2b24f32062b0/completions',
+      ),
+    );
+    const init = call?.[1];
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBeTypeOf('string');
+    const requestHeaders = new Headers(init?.headers);
+    expect(requestHeaders.get('authorization')).toBe('Bearer desktop-user-token');
+    expect(requestHeaders.get('x-organization-id')).toBe(
+      'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+    );
+  });
+
   it('sends structured run intent through the generated create-run operation', async () => {
     // Break caught: generated path typing or runtime request serialization drops
     // the selected app target/model even though the public API accepts both.

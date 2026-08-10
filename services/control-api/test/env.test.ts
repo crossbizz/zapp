@@ -9,6 +9,7 @@ import {
   loadFlexpriceEnv,
   loadMasterKey,
   loadPreviewEnv,
+  loadModelGatewayUrl,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
@@ -77,6 +78,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadServiceTokenConfig(environment)).not.toThrow();
     expect(() => loadRunIntentHmacKey(environment)).not.toThrow();
     expect(() => loadPreviewEnv(environment)).not.toThrow();
+    expect(() => loadModelGatewayUrl(environment)).not.toThrow();
     expect(() => loadUsageQueueEnv(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
   });
@@ -135,6 +137,7 @@ describe('the shipped .env.example', () => {
       'PREVIEW_SHARE_SIGNING_KEY',
       'PREVIEW_SHARE_KEY_VERSION',
       'SANDBOX_SERVICE_URL',
+      'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',
     ]) {

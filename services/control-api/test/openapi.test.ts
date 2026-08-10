@@ -30,6 +30,13 @@ function documentedApp(): AppInstance {
       appBaseUrl: new URL('https://app.zapp.test'),
       previewBaseDomain: 'preview.zapp.test',
     },
+    localAgent: {
+      sessions: {
+        ensure: () => Promise.reject(new Error('OpenAPI must not create local sessions.')),
+        get: () => Promise.reject(new Error('OpenAPI must not read local sessions.')),
+      },
+      gateway: { async *stream() {} },
+    },
   });
   apps.push(built.app);
   return built.app;
@@ -94,8 +101,10 @@ describe('GET /v1/openapi.json', () => {
       '/v1/runs/{runId}/mission-control/tool-calls',
       '/v1/runs/{runId}/mission-control/commits',
       '/v1/runs/{runId}/approvals/{approvalId}',
+      '/v1/local-agent/sessions',
+      '/v1/local-agent/sessions/{sessionId}/completions',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(57);
+    expect(Object.keys(document.paths)).toHaveLength(59);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 
@@ -154,6 +163,13 @@ describe('GET /v1/openapi.json', () => {
     expect(eventProperties).toHaveProperty('sequence');
     expect(eventProperties).toHaveProperty('type');
     expect(eventProperties).toHaveProperty('payload');
+
+    const completionContent = document.paths[
+      '/v1/local-agent/sessions/{sessionId}/completions'
+    ]?.post?.responses?.['200'] as
+      | { content?: Record<string, { schema?: Record<string, unknown> }> }
+      | undefined;
+    expect(completionContent?.content).toHaveProperty('text/event-stream');
   });
 
   it('refuses an unrepresentable route schema instead of silently omitting it', () => {

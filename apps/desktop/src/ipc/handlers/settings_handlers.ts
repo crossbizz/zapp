@@ -1,7 +1,7 @@
 import { createTypedHandler } from "./base";
 import { settingsContracts } from "../types/settings";
 import { writeSettings, readEffectiveSettings } from "../../main/settings";
-import { validateProviderApiKey } from "../services/provider_api_key_validation_service";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 export function registerSettingsHandlers() {
   // Note: Settings handlers intentionally use createTypedHandler without logging
@@ -18,8 +18,11 @@ export function registerSettingsHandlers() {
 
   createTypedHandler(
     settingsContracts.validateProviderApiKey,
-    async (_, params) => {
-      return validateProviderApiKey(params);
+    async () => {
+      throw new DyadError(
+        "Desktop model traffic uses the authenticated zapp platform; direct provider keys are disabled.",
+        DyadErrorKind.Precondition,
+      );
     },
   );
 }

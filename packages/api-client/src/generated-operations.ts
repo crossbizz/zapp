@@ -251,6 +251,50 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/local-agent/sessions": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/local-agent/sessions/{sessionId}/completions": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "text/event-stream"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/me": {
     "get": {
       "security": [

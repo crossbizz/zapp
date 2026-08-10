@@ -1742,3 +1742,22 @@ test('discovers test-looking candidates while excluding type-only uses and the P
   assert.equal(shouldScanProductionFile('workers/testing/provider-runtime.ts'), true);
   assert.equal(shouldScanProductionFile('packages/runtime/__tests__/provider-runtime.ts'), true);
 });
+
+test('MAC-6 closes the production desktop provider exception', async () => {
+  const checkerModule = await import('./check-model-provider-boundary.mjs');
+  const inventory = await checkerModule.scanRepository(projectRoot);
+
+  assert.deepEqual(inventory, {});
+});
+
+test('records the MAC-6 closure without rewriting the immutable ADR-0005 anchor', async () => {
+  const closurePath = path.join(
+    projectRoot,
+    'config/model-provider-boundary-closure.json',
+  );
+  assert.equal(existsSync(closurePath), true, 'MAC-6 closure manifest must be present');
+
+  const checkerModule = await import('./check-model-provider-boundary.mjs');
+  const closure = JSON.parse(readFileSync(closurePath, 'utf8'));
+  assert.deepEqual(checkerModule.validateClosure(closure), {});
+});

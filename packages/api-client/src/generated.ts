@@ -1107,6 +1107,423 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/local-agent/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        localProjectName: string;
+                        /** Format: uuid */
+                        sessionId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            session: {
+                                organizationId: string;
+                                projectId: string;
+                                runId: string;
+                                /** Format: uuid */
+                                sessionId: string;
+                                taskId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/local-agent/sessions/{sessionId}/completions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        agentRole: "planner" | "builder" | "verifier" | "summarizer";
+                        budget?: {
+                            remainingCredits: number;
+                        };
+                        /** @default [] */
+                        cacheBreakpointMessageIndexes?: number[];
+                        completionId: string;
+                        maxInputTokens: number;
+                        maxOutputTokens: number;
+                        messages: ({
+                            content: string;
+                            /** @enum {string} */
+                            role: "system";
+                        } | {
+                            content: string | {
+                                text: string;
+                                /** @enum {string} */
+                                type: "text";
+                            }[];
+                            /** @enum {string} */
+                            role: "user";
+                        } | {
+                            content: string | ({
+                                text: string;
+                                /** @enum {string} */
+                                type: "text";
+                            } | {
+                                input: {
+                                    [key: string]: (string | number | boolean | ("null" | null)) | unknown[] | {
+                                        [key: string]: unknown;
+                                    };
+                                };
+                                toolCallId: string;
+                                toolName: string;
+                                /** @enum {string} */
+                                type: "tool-call";
+                            })[];
+                            /** @enum {string} */
+                            role: "assistant";
+                        } | {
+                            content: {
+                                output: {
+                                    /** @enum {string} */
+                                    type: "text";
+                                    value: string;
+                                } | {
+                                    /** @enum {string} */
+                                    type: "json";
+                                    value: (string | number | boolean | ("null" | null)) | unknown[] | {
+                                        [key: string]: unknown;
+                                    };
+                                } | {
+                                    /** @enum {string} */
+                                    type: "error-text";
+                                    value: string;
+                                } | {
+                                    /** @enum {string} */
+                                    type: "error-json";
+                                    value: (string | number | boolean | ("null" | null)) | unknown[] | {
+                                        [key: string]: unknown;
+                                    };
+                                } | {
+                                    reason?: string;
+                                    /** @enum {string} */
+                                    type: "execution-denied";
+                                };
+                                toolCallId: string;
+                                toolName: string;
+                                /** @enum {string} */
+                                type: "tool-result";
+                            }[];
+                            /** @enum {string} */
+                            role: "tool";
+                        })[];
+                        tools?: {
+                            description: string;
+                            inputJsonSchema: {
+                                additionalProperties?: boolean | ({
+                                    const?: string;
+                                    default?: string;
+                                    description?: string;
+                                    enum?: string[];
+                                    format?: string;
+                                    maxLength?: number;
+                                    minLength?: number;
+                                    pattern?: string;
+                                    /** @enum {string} */
+                                    type: "string";
+                                } | {
+                                    const?: number;
+                                    default?: number;
+                                    description?: string;
+                                    enum?: number[];
+                                    exclusiveMaximum?: number;
+                                    exclusiveMinimum?: number;
+                                    maximum?: number;
+                                    minimum?: number;
+                                    multipleOf?: number;
+                                    /** @enum {string} */
+                                    type: "number" | "integer";
+                                } | {
+                                    const?: boolean;
+                                    default?: boolean;
+                                    description?: string;
+                                    enum?: boolean[];
+                                    /** @enum {string} */
+                                    type: "boolean";
+                                } | {
+                                    description?: string;
+                                    /** @enum {string} */
+                                    type: "null";
+                                } | {
+                                    description?: string;
+                                    items: unknown;
+                                    maxItems?: number;
+                                    minItems?: number;
+                                    /** @enum {string} */
+                                    type: "array";
+                                    uniqueItems?: boolean;
+                                } | {
+                                    additionalProperties?: boolean | unknown;
+                                    description?: string;
+                                    maxProperties?: number;
+                                    minProperties?: number;
+                                    properties: {
+                                        [key: string]: unknown;
+                                    };
+                                    required?: string[];
+                                    /** @enum {string} */
+                                    type: "object";
+                                });
+                                description?: string;
+                                maxProperties?: number;
+                                minProperties?: number;
+                                properties: {
+                                    [key: string]: {
+                                        const?: string;
+                                        default?: string;
+                                        description?: string;
+                                        enum?: string[];
+                                        format?: string;
+                                        maxLength?: number;
+                                        minLength?: number;
+                                        pattern?: string;
+                                        /** @enum {string} */
+                                        type: "string";
+                                    } | {
+                                        const?: number;
+                                        default?: number;
+                                        description?: string;
+                                        enum?: number[];
+                                        exclusiveMaximum?: number;
+                                        exclusiveMinimum?: number;
+                                        maximum?: number;
+                                        minimum?: number;
+                                        multipleOf?: number;
+                                        /** @enum {string} */
+                                        type: "number" | "integer";
+                                    } | {
+                                        const?: boolean;
+                                        default?: boolean;
+                                        description?: string;
+                                        enum?: boolean[];
+                                        /** @enum {string} */
+                                        type: "boolean";
+                                    } | {
+                                        description?: string;
+                                        /** @enum {string} */
+                                        type: "null";
+                                    } | {
+                                        description?: string;
+                                        items: unknown;
+                                        maxItems?: number;
+                                        minItems?: number;
+                                        /** @enum {string} */
+                                        type: "array";
+                                        uniqueItems?: boolean;
+                                    } | {
+                                        additionalProperties?: boolean | unknown;
+                                        description?: string;
+                                        maxProperties?: number;
+                                        minProperties?: number;
+                                        properties: {
+                                            [key: string]: unknown;
+                                        };
+                                        required?: string[];
+                                        /** @enum {string} */
+                                        type: "object";
+                                    };
+                                };
+                                required?: string[];
+                                /** @enum {string} */
+                                type: "object";
+                            };
+                            name: string;
+                        }[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": ({
+                            text: string;
+                            /** @enum {string} */
+                            type: "text-delta";
+                        } | {
+                            input: {
+                                [key: string]: string | number | boolean | ("null" | null) | unknown[] | {
+                                    [key: string]: unknown;
+                                };
+                            };
+                            toolCallId: string;
+                            toolName: string;
+                            /** @enum {string} */
+                            type: "tool-call";
+                        } | {
+                            cachedInputTokens?: number;
+                            cacheWriteInputTokens?: number;
+                            finishReason: string;
+                            inputTokens?: number;
+                            model: string;
+                            outputTokens?: number;
+                            provider: string;
+                            totalTokens?: number;
+                            /** @enum {string} */
+                            type: "usage";
+                        }) | {
+                            completionId: string;
+                            credits: {
+                                ceiling: string;
+                                reserved: string;
+                                used: string;
+                                version: number;
+                            };
+                            /** @enum {string} */
+                            type: "usage.recorded";
+                            usage: {
+                                cacheReadInputTokens: number;
+                                cacheWriteInputTokens: number;
+                                inputTokens: number;
+                                model: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                outputTokens: number;
+                                provider: string;
+                            }[];
+                        } | ({
+                            /** @enum {string} */
+                            type: "done";
+                        } | {
+                            /** @enum {string} */
+                            code: "provider_error" | "content_filter" | "output_limit_exceeded" | "unknown_finish_reason" | "completion_leased" | "completion_retryable" | "budget_exceeded";
+                            message: string;
+                            /** @enum {string} */
+                            type: "error";
+                        });
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me": {
         parameters: {
             query?: never;

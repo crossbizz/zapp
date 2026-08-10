@@ -7,7 +7,7 @@ import {
   isExtractCodebaseActive,
   type ActivitySnapshot,
 } from "./memory_activity";
-import { getActiveStreamCount } from "../ipc/handlers/chat_stream_handlers";
+import { getActiveStreamCount } from "@/zapp/runtime/local-chat-handlers";
 import { runningApps } from "../ipc/utils/process_manager";
 import { typescriptUtilityProcessScheduler } from "../ipc/processors/typescript_utility_process_scheduler";
 

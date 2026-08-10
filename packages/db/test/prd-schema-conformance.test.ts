@@ -66,6 +66,10 @@ const NON_PRD_TABLES = new Map([
     'the database lease that makes active-run credit reconciliation single-leader and bounded as required by plan 10 OPS-1A',
   ],
   [
+    'desktop_local_agent_sessions',
+    'the tenant/user-scoped bridge from a desktop-local transcript to server-owned project, run, task, and accounting identities required by plan 09 MAC-6',
+  ],
+  [
     'activity_idempotency',
     'the durable Temporal activity claim, lease, result hash, and replay record required by plan 04 AR-9; it is worker-delivery mechanism rather than a PRD domain row',
   ],

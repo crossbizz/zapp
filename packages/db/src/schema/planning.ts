@@ -169,6 +169,48 @@ export const agentTasks = pgTable(
   ],
 );
 
+/**
+ * MAC-6's durable join between a desktop-owned local transcript and the strict
+ * project/run/task identities used by model-completion accounting. The project
+ * is archived and never dispatched to Temporal; the model call still crosses
+ * the public control-plane boundary and settles against the ordinary ledger.
+ */
+export const desktopLocalAgentSessions = pgTable(
+  'desktop_local_agent_sessions',
+  {
+    sessionId: text('session_id').notNull(),
+    organizationId: organizationId(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => agentTasks.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('desktop_local_agent_sessions_scope_idx').on(
+      t.organizationId,
+      t.userId,
+      t.sessionId,
+    ),
+    uniqueIndex('desktop_local_agent_sessions_project_idx').on(t.projectId),
+    uniqueIndex('desktop_local_agent_sessions_run_idx').on(t.runId),
+    uniqueIndex('desktop_local_agent_sessions_task_idx').on(t.taskId),
+    projectTenantForeignKey(
+      'desktop_local_agent_sessions',
+      t.projectId,
+      t.organizationId,
+    ),
+  ],
+);
+
 export const approvals = pgTable(
   'approvals',
   {
@@ -203,5 +245,7 @@ export type AgentPhase = typeof agentPhases.$inferSelect;
 export type NewAgentPhase = typeof agentPhases.$inferInsert;
 export type AgentTask = typeof agentTasks.$inferSelect;
 export type NewAgentTask = typeof agentTasks.$inferInsert;
+export type DesktopLocalAgentSession = typeof desktopLocalAgentSessions.$inferSelect;
+export type NewDesktopLocalAgentSession = typeof desktopLocalAgentSessions.$inferInsert;
 export type Approval = typeof approvals.$inferSelect;
 export type NewApproval = typeof approvals.$inferInsert;

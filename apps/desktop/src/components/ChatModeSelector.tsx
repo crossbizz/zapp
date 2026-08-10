@@ -37,6 +37,7 @@ import {
   isFreeProBuildModeCombination,
   isFreeProModel,
 } from "@/lib/freeProModel";
+import { localAutonomousModePolicy } from "@/zapp/runtime/local-mode-policy";
 
 export function ChatModeSelector() {
   const { updateSettings } = useSettings();
@@ -63,6 +64,9 @@ export function ChatModeSelector() {
     useFreeAgentQuota();
   const isDyadFreeSelected = isFreeProModel(settings?.selectedModel);
   const buildUnavailableForDyadFree = isDyadFreeSelected;
+  const autonomousPolicy = localAutonomousModePolicy(
+    settings?.runtimeMode2 ?? "host",
+  );
 
   useEffect(() => {
     if (!chatId || !fallbackReason || !storedChatMode) {
@@ -199,6 +203,19 @@ export function ChatModeSelector() {
           </TooltipContent>
         </Tooltip>
         <SelectContent align="start">
+          {autonomousPolicy.disabled && (
+            <SelectItem value="autonomous" disabled>
+              <div className="flex flex-col items-start">
+                <div className="flex items-center gap-1.5">
+                  <Bot size={14} className="text-muted-foreground" />
+                  <span className="font-medium">Autonomous</span>
+                </div>
+                <span className="text-xs text-muted-foreground ml-[22px]">
+                  {autonomousPolicy.hint}
+                </span>
+              </div>
+            </SelectItem>
+          )}
           {isProEnabled && (
             <SelectItem value="local-agent">
               <div className="flex flex-col items-start">

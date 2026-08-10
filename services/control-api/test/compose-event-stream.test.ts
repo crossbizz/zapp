@@ -57,6 +57,7 @@ describe('control-api event stream composition', () => {
       },
       masterKey: TEST_MASTER_KEY,
       serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+      modelGatewayUrl: 'http://127.0.0.1:4100',
       rateLimits: loadRateLimitSettings(),
       pricing: TEST_PRICING,
       temporal: { workflow: {} as never },

@@ -26,7 +26,7 @@ export type { ChatMessage, CompleteRequest, GatewayStreamEvent, NeutralTool } fr
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 const MODEL_GATEWAY_AUDIENCE = 'model-gateway';
-const MODEL_GATEWAY_CALLER = 'orchestrator-worker';
+const MODEL_GATEWAY_CALLERS = new Set(['orchestrator-worker', 'control-api']);
 
 const SAFE_PROVIDER_ERROR = {
   type: 'error',
@@ -246,7 +246,7 @@ export function buildApp(options: BuildAppOptions) {
             .send({ code: 'service_unauthenticated', message: 'A valid service token is required.' });
           return reply;
         }
-        if (verdict.claims.service !== MODEL_GATEWAY_CALLER) {
+        if (!MODEL_GATEWAY_CALLERS.has(verdict.claims.service)) {
           request.log.warn(
             { errorCode: 'service_not_allowed', service: verdict.claims.service },
             'service not allowed on model completion route',

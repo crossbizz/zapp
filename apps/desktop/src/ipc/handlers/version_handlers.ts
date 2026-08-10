@@ -51,7 +51,7 @@ import {
   blockNewStreamsForApp,
   blockNewStreamsForChat,
   cancelActiveStreamsForApp,
-} from "./chat_stream_handlers";
+} from "@/zapp/runtime/local-chat-handlers";
 
 const logger = log.scope("version_handlers");
 

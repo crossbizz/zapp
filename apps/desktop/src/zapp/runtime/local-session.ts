@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolRegistry } from "@zapp/agent-tools";
@@ -303,22 +303,6 @@ async function findIntentCommit(
   return commit;
 }
 
-async function runGitOrThrow(
-  runtime: WorkspaceRuntime,
-  args: string[],
-  environment?: Record<string, string>,
-): Promise<void> {
-  const result = await runtime.exec({
-    cmd: "git",
-    args,
-    ...(environment === undefined ? {} : { env: environment }),
-    timeoutMs: 30_000,
-  });
-  if (result.exitCode !== 0) {
-    throw new Error("Could not commit local session changes");
-  }
-}
-
 class LocalCommitRefConflictError extends Error {
   constructor() {
     super("Local agent commit reference conflicts with durable state");
@@ -330,17 +314,8 @@ async function commitExactPaths(
   runtime: WorkspaceRuntime,
   intent: CommitIntent,
 ): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "zapp-local-index-"));
-  const indexFile = join(directory, "index");
-  const environment = { GIT_INDEX_FILE: indexFile };
+  const directory = await mkdtemp(join(tmpdir(), "zapp-local-hooks-"));
   try {
-    await runGitOrThrow(
-      runtime,
-      intent.baseRevision === ZERO_REVISION
-        ? ["read-tree", "--empty"]
-        : ["read-tree", intent.baseRevision],
-      environment,
-    );
     const relevantPaths: string[] = [];
     for (const path of intent.paths) {
       let existsInWorkspace = true;
@@ -373,45 +348,51 @@ async function commitExactPaths(
     if (relevantPaths.length === 0) {
       throw new Error("Local commit intent has no material paths");
     }
-    await runGitOrThrow(
-      runtime,
-      ["add", "-A", "--", ...relevantPaths],
-      environment,
-    );
-    const tree = await runtime.exec({
+    const intentToAdd = await runtime.exec({
       cmd: "git",
-      args: ["write-tree"],
-      env: environment,
+      args: ["add", "--intent-to-add", "-A", "--", ...relevantPaths],
       timeoutMs: 30_000,
     });
-    if (tree.exitCode !== 0) {
-      throw new Error("Could not commit local session changes");
+    if (intentToAdd.exitCode !== 0) {
+      throw new Error("Could not prepare local session changes");
     }
-    const treeRevision = GitRevisionSchema.parse(tree.stdout.trim());
+    const hook = join(directory, "pre-commit");
+    await writeFile(
+      hook,
+      `#!/bin/sh
+current_ref=$(git symbolic-ref --quiet HEAD) || exit 1
+test "$current_ref" = "$ZAPP_EXPECTED_REF" || exit 1
+if test "$ZAPP_EXPECTED_REVISION" = "${ZERO_REVISION}"; then
+  git show-ref --verify --quiet "$current_ref" && exit 1
+else
+  current_revision=$(git rev-parse --verify "$current_ref^{commit}") || exit 1
+  test "$current_revision" = "$ZAPP_EXPECTED_REVISION" || exit 1
+fi
+`,
+      { encoding: "utf8", mode: 0o700 },
+    );
+    await chmod(hook, 0o700);
     const commit = await runtime.exec({
       cmd: "git",
       args: [
-        "commit-tree",
-        treeRevision,
-        ...(intent.baseRevision === ZERO_REVISION
-          ? []
-          : ["-p", intent.baseRevision]),
+        "-c",
+        `core.hooksPath=${directory}`,
+        "commit",
+        "--only",
         "-m",
         intent.message,
+        "--",
+        ...relevantPaths,
       ],
+      env: {
+        ZAPP_EXPECTED_REF: intent.baseRef,
+        ZAPP_EXPECTED_REVISION: intent.baseRevision,
+      },
       timeoutMs: 30_000,
     });
     if (commit.exitCode !== 0) {
-      throw new Error("Could not commit local session changes");
+      throw new LocalCommitRefConflictError();
     }
-    const commitRevision = GitRevisionSchema.parse(commit.stdout.trim());
-    const intentRef = `refs/zapp/local-sessions/${intent.intentId}`;
-    const installed = await runtime.exec({
-      cmd: "git",
-      args: ["update-ref", intentRef, commitRevision, ZERO_REVISION],
-      timeoutMs: 30_000,
-    });
-    if (installed.exitCode !== 0) throw new LocalCommitRefConflictError();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -486,9 +467,53 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
       input: Parameters<typeof session.run>[0],
       signal?: AbortSignal,
     ): ReturnType<typeof session.run> {
-      const result = await session.run(input, signal);
-      if (result.status !== "completed") return result;
       const taskId = input.taskId ?? input.context.taskId;
+      let existingTranscript = await transcripts.load({ runId: input.runId, taskId });
+      const previousCommits = new Set(existingTranscript?.commits ?? []);
+      const redirect = input.control?.redirect;
+      if (
+        existingTranscript?.terminalStatus === "completed" &&
+        redirect !== null &&
+        redirect !== undefined &&
+        !existingTranscript.appliedRedirectOperationKeys.includes(
+          redirect.operationKey,
+        )
+      ) {
+        const { version, ...draft } = existingTranscript;
+        existingTranscript = await transcripts.save(version, {
+          ...draft,
+          role: input.role,
+          mode: input.mode,
+          tools: input.tools,
+          budgets: input.budgets,
+          startedAtMs: Date.now(),
+          provenance: [],
+          messages: [
+            {
+              role: "system",
+              content: [options.prompts[input.role], input.modeInstructions]
+                .filter((part): part is string => part !== undefined)
+                .join("\n\n"),
+            },
+          ],
+          completedToolCallIds: [],
+          completedToolNames: [],
+          successfulToolNames: [],
+          prototypeMocks: [],
+        });
+      }
+      const effectiveInput =
+        existingTranscript === undefined && input.control?.redirect !== null
+          ? {
+              ...input,
+              control: {
+                ...(input.control ?? { yieldAfterTool: false }),
+                redirect: null,
+              },
+            }
+          : input;
+      const result = await session.run(effectiveInput, signal);
+      if (result.status !== "completed") return result;
       let transcript = await transcripts.load({ runId: input.runId, taskId });
       if (transcript === undefined)
         throw new Error("Completed local session transcript is missing");
@@ -505,21 +530,29 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
           (await transcripts.load({ runId: input.runId, taskId })) ??
           transcript;
       }
-      if (transcript.commits.length > 0) {
+      const orderedPaths = changedPaths(transcript);
+      if (orderedPaths.length === 0) {
         return {
           ...result,
-          commits: [...new Set([...result.commits, ...transcript.commits])],
+          commits: [...new Set([...result.commits, ...transcript.commits])].filter(
+            (candidate) => !previousCommits.has(candidate),
+          ),
         };
       }
-      const orderedPaths = changedPaths(transcript);
-      if (orderedPaths.length === 0) return result;
       const status = await options.runtime.git({
         operation: "status",
         args: ["--short", "--", ...orderedPaths],
       });
       if (status.exitCode !== 0)
         throw new Error("Could not inspect local session changes");
-      if (status.stdout.trim().length === 0) return result;
+      if (status.stdout.trim().length === 0) {
+        return {
+          ...result,
+          commits: [...new Set([...result.commits, ...transcript.commits])].filter(
+            (candidate) => !previousCommits.has(candidate),
+          ),
+        };
+      }
       const intent = intents.persist(
         createCommitIntent(
           input.runId,
@@ -535,7 +568,12 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
         runtime: options.runtime,
         intent,
       });
-      return { ...result, commits: [...new Set([...result.commits, commit])] };
+      return {
+        ...result,
+        commits: [...new Set([...result.commits, commit])].filter(
+          (candidate) => !previousCommits.has(candidate),
+        ),
+      };
     },
   };
 }

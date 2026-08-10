@@ -146,6 +146,54 @@ export const CreditStateSchema = z
   })
   .strict();
 
+export const CompletionUsageRecordedStreamEventSchema = z
+  .object({
+    type: z.literal('usage.recorded'),
+    completionId: CompletionIdSchema,
+    usage: z.array(CompletionUsageSchema).min(1).max(16),
+    credits: CreditStateSchema,
+  })
+  .strict();
+
+export const GatewayCompletionTerminalSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('done') }).strict(),
+  z
+    .object({
+      type: z.literal('error'),
+      code: z.enum([
+        'provider_error',
+        'content_filter',
+        'output_limit_exceeded',
+        'unknown_finish_reason',
+        'completion_leased',
+        'completion_retryable',
+        'budget_exceeded',
+      ]),
+      message: z.string(),
+    })
+    .strict(),
+]);
+
+/** Strict public SSE contract shared by model-gateway, control-api, and generated clients. */
+export const GatewayStreamEventSchema = z.union([
+  CompletionReplayEventSchema,
+  CompletionUsageRecordedStreamEventSchema,
+  GatewayCompletionTerminalSchema,
+]);
+
+/** Public accounting identity issued for one desktop-hosted local agent session. */
+export const LocalAgentSessionSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    runId: idSchema('run'),
+    taskId: idSchema('task'),
+  })
+  .strict();
+
+export type LocalAgentSession = z.infer<typeof LocalAgentSessionSchema>;
+
 export const ModelCompletionClaimResponseSchema = z.discriminatedUnion('status', [
   z
     .object({
@@ -212,4 +260,5 @@ export type CompletionRouteAttempt = z.infer<typeof CompletionRouteAttemptSchema
 export type CompletionRecord = z.infer<typeof CompletionRecordSchema>;
 export type CompletionUsage = z.infer<typeof CompletionUsageSchema>;
 export type CreditState = z.infer<typeof CreditStateSchema>;
+export type GatewayStreamEvent = z.infer<typeof GatewayStreamEventSchema>;
 export type CreditCeilingIncreaseRequest = z.infer<typeof CreditCeilingIncreaseRequestSchema>;

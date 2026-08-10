@@ -346,6 +346,23 @@ describe('strict gateway stream event schema', () => {
 });
 
 describe('POST /internal/v1/complete authorization and validation', () => {
+  it.each(['orchestrator-worker', 'control-api'] as const)(
+    'accepts the scoped %s service caller',
+    async (service) => {
+      const completion = backend([{ type: 'text-delta', text: 'ok' }]);
+      const response = await appFor(completion).inject({
+        method: 'POST',
+        url: '/internal/v1/complete',
+        headers: { 'x-zapp-service-token': await token(service) },
+        payload: validRequest,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(parseSse(response.payload).at(-1)).toEqual({ type: 'done' });
+      expect(completion.stream).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([
     ['a missing service token', () => Promise.resolve({})],
     [

@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { CompletionIdSchema, CompletionUsageSchema, CreditStateSchema } from '@zapp/contracts';
+import {
+  CompletionIdSchema,
+  CompletionUsageSchema,
+  CreditStateSchema,
+  GatewayStreamEventSchema as PublicGatewayStreamEventSchema,
+  type GatewayStreamEvent as PublicGatewayStreamEvent,
+} from '@zapp/contracts';
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -189,7 +195,7 @@ export const NeutralToolSchema = z
   })
   .strict();
 
-export const CompleteRequestSchema = z
+const CompleteRequestObjectSchema = z
   .object({
     completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
     organizationId: z.string(),
@@ -204,8 +210,12 @@ export const CompleteRequestSchema = z
     maxOutputTokens: z.number().int().positive(),
     budget: z.object({ remainingCredits: z.number() }).strict().optional(),
   })
-  .strict()
-  .superRefine((request, context) => {
+  .strict();
+
+function validateCacheBreakpoints(
+  request: { readonly cacheBreakpointMessageIndexes: number[]; readonly messages: unknown[] },
+  context: z.RefinementCtx,
+): void {
     if (new Set(request.cacheBreakpointMessageIndexes).size !== request.cacheBreakpointMessageIndexes.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -222,9 +232,22 @@ export const CompleteRequestSchema = z
         });
       }
     }
-  });
+}
+
+export const CompleteRequestSchema = CompleteRequestObjectSchema.superRefine(
+  validateCacheBreakpoints,
+);
+
+/** Public desktop payload; the control plane supplies and verifies every accounting identity. */
+export const LocalAgentCompletionRequestSchema = CompleteRequestObjectSchema.omit({
+  organizationId: true,
+  projectId: true,
+  runId: true,
+  taskId: true,
+}).superRefine(validateCacheBreakpoints);
 
 export type CompleteRequest = z.infer<typeof CompleteRequestSchema>;
+export type LocalAgentCompletionRequest = z.infer<typeof LocalAgentCompletionRequestSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type NeutralTool = z.infer<typeof NeutralToolSchema>;
 
@@ -260,23 +283,6 @@ const UsageRecordedStreamEventSchema = z
     credits: CreditStateSchema,
   })
   .strict();
-const DoneStreamEventSchema = z.object({ type: z.literal('done') }).strict();
-const ProviderErrorStreamEventSchema = z
-  .object({
-    type: z.literal('error'),
-    code: z.enum([
-      'provider_error',
-      'content_filter',
-      'output_limit_exceeded',
-      'unknown_finish_reason',
-      'completion_leased',
-      'completion_retryable',
-      'budget_exceeded',
-    ]),
-    message: z.string(),
-  })
-  .strict();
-
 export const BackendStreamEventSchema = z.discriminatedUnion('type', [
   TextDeltaStreamEventSchema,
   ToolCallStreamEventSchema,
@@ -284,14 +290,7 @@ export const BackendStreamEventSchema = z.discriminatedUnion('type', [
   UsageRecordedStreamEventSchema,
 ]);
 
-export const GatewayStreamEventSchema = z.discriminatedUnion('type', [
-  TextDeltaStreamEventSchema,
-  ToolCallStreamEventSchema,
-  UsageStreamEventSchema,
-  UsageRecordedStreamEventSchema,
-  DoneStreamEventSchema,
-  ProviderErrorStreamEventSchema,
-]);
+export const GatewayStreamEventSchema = PublicGatewayStreamEventSchema;
 
 export type BackendStreamEvent = z.infer<typeof BackendStreamEventSchema>;
-export type GatewayStreamEvent = z.infer<typeof GatewayStreamEventSchema>;
+export type GatewayStreamEvent = PublicGatewayStreamEvent;
