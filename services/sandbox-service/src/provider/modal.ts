@@ -898,6 +898,22 @@ export interface ModalSandboxProviderOptions {
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
+export interface ModalNightlyE2eDriverOptions {
+  readonly environment: WorkspaceEnvironmentName;
+  readonly imageLock: unknown;
+  readonly agentToken: string;
+  readonly credentials?: ModalCredentials;
+}
+
+export interface ModalNightlyE2eDriver {
+  checkpointAndKill(providerWorkspaceId: string, ttlMs: number): Promise<string>;
+  restoreSnapshot(input: {
+    readonly snapshotDigest: string;
+    readonly workspace: CreateWorkspaceInput;
+  }): Promise<string>;
+  close(): void;
+}
+
 export const ModalWorkspaceAttachmentSchema = z
   .object({
     resourceProfile: ResourceProfileSchema,
@@ -2100,6 +2116,109 @@ export function createModalSandboxProvider(
   options: ModalSandboxProviderOptions,
 ): ModalSandboxProvider {
   return new ModalSandboxProvider(options);
+}
+
+/**
+ * Provider-owned control surface for WS-14's nightly SDK-churn journey. It is
+ * intentionally narrower than Modal's SDK and keeps the repository's sole
+ * provider import boundary in this module.
+ */
+export function createModalNightlyE2eDriver(
+  options: ModalNightlyE2eDriverOptions,
+): ModalNightlyE2eDriver {
+  const environment = WorkspaceEnvironmentNameSchema.parse(options.environment);
+  const lock = ModalImageLockSchema.parse(options.imageLock);
+  const locked = lock.environments[environment];
+  if (locked === undefined) throw new Error(`No Modal image lock exists for ${environment}`);
+  const agentToken = z.string().min(1).parse(options.agentToken);
+  const credentials = ModalCredentialsSchema.parse(
+    options.credentials ?? credentialsFromEnvironment(),
+  );
+  const client = new ModalClient({
+    tokenId: credentials.tokenId,
+    tokenSecret: credentials.tokenSecret,
+    environment: locked.modalEnvironment,
+  });
+
+  return {
+    async checkpointAndKill(providerWorkspaceId, ttlMs) {
+      const id = z.string().min(1).parse(providerWorkspaceId);
+      const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+      const sandbox = await client.sandboxes.fromId(id);
+      const snapshot = await sandbox.snapshotFilesystem({
+        timeoutMs: 55_000,
+        ttlMs: retentionMs,
+      });
+      await sandbox.terminate({ wait: true });
+      return ImageDigestSchema.parse(snapshot.imageId);
+    },
+
+    async restoreSnapshot(untrustedInput) {
+      const input = z
+        .object({
+          snapshotDigest: ImageDigestSchema,
+          workspace: CreateWorkspaceInputSchema.strict(),
+        })
+        .strict()
+        .parse(untrustedInput);
+      const imageLock =
+        input.workspace.purpose === 'verifier'
+          ? locked.images['forge-web-test']
+          : locked.images['forge-node-base'];
+      if (
+        input.workspace.imageTag !== imageLock.publishedName ||
+        input.workspace.imageTag.includes(':latest')
+      ) {
+        throw new Error('Workspace image must match the immutable image lock');
+      }
+      const resources = RESOURCE_PROFILES[input.workspace.resourceProfile];
+      const volume = createProjectVolumePlan(input.workspace);
+      const tags = SandboxTagsSchema.parse({
+        org_id: input.workspace.organizationId,
+        project_id: input.workspace.projectId,
+        branch_id: input.workspace.branchId,
+        run_id: input.workspace.runId ?? 'unattributed',
+        task_id: input.workspace.taskId ?? 'unattributed',
+        purpose: input.workspace.purpose,
+        environment: locked.modalEnvironment,
+      });
+      const [app, snapshot, projectVolume] = await Promise.all([
+        client.apps.fromName(locked.images['forge-node-base'].appName, {
+          environment: locked.modalEnvironment,
+          createIfMissing: true,
+        }),
+        client.images.fromId(input.snapshotDigest),
+        client.volumes.fromName(volume.volumeName, {
+          environment: locked.modalEnvironment,
+          createIfMissing: true,
+        }),
+      ]);
+      const sandbox = await client.sandboxes.create(app, snapshot, {
+        command: [...workspaceBootCommand(volume, input.workspace.purpose === 'verifier')],
+        env: {
+          ...workspaceEnvironmentVariables(input.workspace.env, agentToken, volume),
+        },
+        name: volume.sandboxName,
+        volumes: {
+          '/cache': projectVolume.withMountOptions({ subPath: '/cache' }),
+        },
+        tags: { ...tags },
+        cpu: resources.cpuRequest,
+        cpuLimit: resources.cpuLimit,
+        memoryMiB: resources.memRequestGiB * 1_024,
+        memoryLimitMiB: resources.memLimitGiB * 1_024,
+        encryptedPorts: [8877, 8080],
+        readinessProbe: Probe.withTcp(8877, { intervalMs: HEALTH_PROBE_INTERVAL_MS }),
+        timeoutMs: WORKSPACE_TIMEOUT_MS,
+        experimentalOptions: { vm_runtime: true },
+      });
+      return z.string().min(1).parse(sandbox.sandboxId);
+    },
+
+    close() {
+      client.close();
+    },
+  };
 }
 
 export function createModalImagePublisher(

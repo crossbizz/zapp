@@ -23,6 +23,7 @@ const ProjectVolumePlanSchema = z
     sandboxName: z.string().regex(/^zapp-writer-[a-f0-9]{32}$/),
     environment: z
       .object({
+        NPM_CONFIG_STORE_DIR: z.literal('/cache/pnpm'),
         PNPM_STORE_DIR: z.literal('/cache/pnpm'),
         PLAYWRIGHT_BROWSERS_PATH: z.literal('/cache/ms-playwright'),
       })
@@ -64,6 +65,7 @@ export function createProjectVolumePlan(untrustedInput: unknown): ProjectVolumeP
     lockFile: posix.join(workspaceRoot, '.zapp-writer.lock'),
     sandboxName,
     environment: {
+      NPM_CONFIG_STORE_DIR: '/cache/pnpm',
       PNPM_STORE_DIR: '/cache/pnpm',
       PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
     },

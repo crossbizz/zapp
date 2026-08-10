@@ -175,6 +175,7 @@ describe('WS-11 scoped secret injection', () => {
     expect(() => {
       assertSandboxEnvironment({
         ZAPP_AGENT_TOKEN: 'name-only-token',
+        NPM_CONFIG_STORE_DIR: '/cache/pnpm',
         PNPM_STORE_DIR: '/cache/pnpm',
         ZAPP_SECRET_NAMES: '["STRIPE_KEY"]',
       });

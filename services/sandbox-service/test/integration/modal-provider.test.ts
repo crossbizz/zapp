@@ -1476,6 +1476,7 @@ describe('create status terminate and idempotency', () => {
         environmentVariables: {
           ZAPP_AGENT_TOKEN: 'agent-test-token',
           ZAPP_WORKSPACE_ROOT: `/workspace/${IDS.branchId}`,
+          NPM_CONFIG_STORE_DIR: '/cache/pnpm',
           PNPM_STORE_DIR: '/cache/pnpm',
           PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
         },

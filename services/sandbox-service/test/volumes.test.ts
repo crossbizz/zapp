@@ -26,6 +26,7 @@ describe('WS-9 project cache volume and branch writer lock', () => {
       lockFile: `/workspace/${BRANCH_ID}/.zapp-writer.lock`,
       sandboxName: '<stable-hash>',
       environment: {
+        NPM_CONFIG_STORE_DIR: '/cache/pnpm',
         PNPM_STORE_DIR: '/cache/pnpm',
         PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
       },

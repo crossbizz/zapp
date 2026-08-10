@@ -1,0 +1,71 @@
+name: Nightly Modal E2E
+
+on:
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-modal-e2e
+  cancel-in-progress: false
+
+jobs:
+  modal-e2e:
+    name: immutable image journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: modal-nightly
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      TURBO_TELEMETRY_DISABLED: '1'
+      DO_NOT_TRACK: '1'
+    steps:
+      - name: Checkout protected default branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the immutable Modal journey once
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-e2e.test.ts
+
+      - name: Page Grafana OnCall after a failed journey
+        if: failure()
+        env:
+          GRAFANA_ONCALL_INTEGRATION_URL: ${{ secrets.GRAFANA_ONCALL_INTEGRATION_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$GRAFANA_ONCALL_INTEGRATION_URL"
+          jq -n \
+            --arg title 'Nightly Modal E2E failed' \
+            --arg message 'The immutable zapp-dev workspace journey failed.' \
+            --arg url "$RUN_URL" \
+            '{alert_uid:"nightly-modal-e2e",title:$title,state:"alerting",message:$message,link_to_upstream_details:$url}' \
+            | curl --fail --silent --show-error \
+                --header 'content-type: application/json' \
+                --request POST \
+                --data-binary @- \
+                "$GRAFANA_ONCALL_INTEGRATION_URL"
