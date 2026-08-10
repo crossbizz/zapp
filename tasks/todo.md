@@ -144,7 +144,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-3 Plan quotas + budget enforcement
 - [x] MAC-4 Platform auth + Keychain
 - [x] MAC-4-FIX-1 Close auth revocation and startup bounds
-- [ ] MAC-5 Unified local+cloud dashboard
+- [x] MAC-5 Unified local+cloud dashboard
+- [x] MAC-5-FIX-1 Preserve cloud creation retry identity
 - [ ] MAC-5.5 Triage 51 Pro-dependent integration test files + fix upstream monaco replaceEditorContent helper (aria-hidden ime-text-area breaks edit_code + editor_commit_menu) (spec source: 13 local_agent_* files; before/with MAC-6)
 - [ ] MAC-6 Local WorkspaceRuntime + local sessions
 

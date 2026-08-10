@@ -30,6 +30,9 @@ import { RefreshCw, Zap } from "lucide-react";
 import { useFirstPromptSend } from "@/first_prompt/FirstPromptProvider";
 import { firstPromptSagaAtom } from "@/first_prompt/projection";
 import { getHomeDefaultChatMode } from "@/lib/homeChatMode";
+import { DesktopProjectsDashboard } from "@/zapp/dashboard/control";
+import { publishCloudProjectOpenIntent } from "@/zapp/dashboard/handoff";
+import { useOpenApp } from "@/hooks/useOpenApp";
 
 // Adding an export for attachments
 export interface HomeSubmitOptions {
@@ -45,6 +48,7 @@ export default function HomePage() {
   const firstPromptSaga = useAtomValue(firstPromptSagaAtom);
   const sendFirstPrompt = useFirstPromptSend();
   const navigate = useNavigate();
+  const openLocalProject = useOpenApp();
   const search = useSearch({ from: "/" });
   const { settings, envVars, loading: isSettingsLoading } = useSettings();
   const { isAnyProviderSetup, isLoading: isLoadingLanguageModelProviders } =
@@ -264,6 +268,10 @@ export default function HomePage() {
         <PrivacyBanner />
       </div>
       <FeaturedAppShowcase />
+      <DesktopProjectsDashboard
+        onOpenCloud={publishCloudProjectOpenIntent}
+        onOpenLocal={openLocalProject}
+      />
     </div>
   );
 }

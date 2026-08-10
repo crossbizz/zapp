@@ -63,6 +63,7 @@ import {
   platformAuthContracts,
   platformAuthEvents,
 } from "@/zapp/auth/contracts";
+import { dashboardContracts } from "@/zapp/dashboard/contracts";
 
 // =============================================================================
 // Invoke Channels (derived from all contracts)
@@ -131,6 +132,7 @@ export const VALID_INVOKE_CHANNELS = [
   ...getInvokeChannels(queueContracts),
   ...getInvokeChannels(userInputContracts),
   ...getInvokeChannels(platformAuthContracts),
+  ...getInvokeChannels(dashboardContracts),
 
   // Test-only channels
   ...TEST_INVOKE_CHANNELS,

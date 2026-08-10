@@ -108,6 +108,8 @@ import { startAutoUpdate } from "@/zapp/auto_update";
 import { createElectronPlatformAuthSession } from "@/zapp/auth/electron";
 import { registerPlatformAuthHandlers } from "@/zapp/auth/handlers";
 import { platformAuthEvents } from "@/zapp/auth/contracts";
+import { createCloudDashboardApi } from "@/zapp/dashboard/api";
+import { registerCloudDashboardHandlers } from "@/zapp/dashboard/handlers";
 import { restorePlatformAuthForStartup } from "@/zapp/auth/startup";
 import {
   applyManagedPnpmToProcessPath,
@@ -420,6 +422,12 @@ export async function onReady() {
       }
     }
   });
+  registerCloudDashboardHandlers(
+    createCloudDashboardApi({
+      auth: platformAuthSession,
+      baseUrl: process.env.ZAPP_CONTROL_API_URL ?? "https://api.zapp.build",
+    }),
+  );
 
   // Reconcile any Neon test branches / Supabase test users leaked by a previous
   // session that crashed mid test-run. Fire-and-forget: best-effort cleanup

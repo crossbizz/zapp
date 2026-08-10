@@ -70,8 +70,17 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/desktop/src/zapp/{dashboard,project-list}/*`
 **Effort:** M
 
-- [ ] Binding behavior: project list/dashboard via api-client (same read models as WEB-4); open cloud project → builder window in cloud mode (MAC-8); create-new routes through home-style composer (WEB-3 pattern, shared components); local projects section lists Dyad-style local folders side-by-side with cloud projects (source badge: Local / Cloud).
-- [ ] Commit: `feat(desktop): unified local+cloud project dashboard`
+- [x] Binding behavior: project list/dashboard via api-client (same read models as WEB-4); open cloud project → builder window in cloud mode (MAC-8); create-new routes through home-style composer (WEB-3 pattern, shared components); local projects section lists Dyad-style local folders side-by-side with cloud projects (source badge: Local / Cloud).
+- [x] Commit: `feat(desktop): unified local+cloud project dashboard`
+
+### Task MAC-5-FIX-1 [M2]: Preserve cloud creation retry identity
+
+**Files:** Modify: `apps/desktop/src/zapp/dashboard/surface.tsx`, `apps/desktop/src/zapp/dashboard/surface.test.tsx`
+**Effort:** S
+
+- [x] Binding behavior: list-load failure and creation failure have distinct recovery controls; the visible creation retry replays the retained strict operation ID, and only prompt change, organization change, or full success clears that pending creation.
+- [x] Failing test: an ambiguous create response followed by the rendered creation-retry control reuses the exact operation ID; list retry cannot clear the pending creation.
+- [x] Commit with MAC-5: `feat(desktop): unified local+cloud project dashboard`
 
 ### Task MAC-6 [M2]: Local runtime adapter
 
@@ -154,3 +163,5 @@ Master plan §Global Constraints, plus:
 - 2026-08-04: MAC-3 done (e050b01 + fix 2816766 + budget e3493f5, fully Approved; 7 real specs, wired as CI job e2e-preserve). PLAN 09 M0 SCOPE COMPLETE (MAC-1/2/3). COST WATCH: a main push touching apps/desktop now spends both package-macos (90m budget) and e2e-preserve (45m) on macos-14 (10x-billed) — if it bites, move e2e-preserve to PR-only + nightly on main.
 - 2026-08-10 MAC-4 done — Keychain-backed device auth is user-reachable through strict IPC and the TitleBar; production reachability required package, main-process, preload, and renderer composition edits beyond the original create-only file list.
 - 2026-08-10 MAC-4-FIX-1 done — Pending logout revocations drain before re-auth, cached identity renders without awaiting the network, and serialized generation-fenced transitions prevent stale refresh resurrection or org rollback.
+- 2026-08-10 MAC-5 done — Unified local/cloud dashboard uses strict IPC and generated public APIs; the separate MAC-5.5 task owns the pre-existing hybrid desktop-suite failures discovered during verification.
+- 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
