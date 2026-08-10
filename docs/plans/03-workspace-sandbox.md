@@ -385,6 +385,12 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 - [ ] **GREEN:** project only organization/project/branch IDs into the strict volume planner during snapshot restore and prove the SDK receives the same tags, environment, named volume, and snapshot filesystem.
 - [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-3's single immutable-image Modal journey. On success, close WS-14 plus all three fix tasks, push, and watch authoritative CI/Security green.
 
+#### WS-14-FIX-4 — deterministic mounted-cache proof
+
+- [ ] **RED/evidence:** retain FIX-3's single provider result: the second install was `39.56%` faster and correctly failed the binding `≥40%` assertion by `6.18 ms`; no result is rounded into success.
+- [ ] **GREEN:** make the second install use pnpm's strict offline mode so success proves every dependency came from the mounted project store, while preserving the exact `≥40%` timing assertion and standalone-workspace boundary.
+- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-4's single immutable-image Modal journey. On success, close WS-14 plus all four fix tasks, push, and watch authoritative CI/Security green.
+
 ### Task WS-15 [M2]: Runaway-compute governor
 
 **Files:** Create: `src/lifecycle/governor.ts`

@@ -2172,7 +2172,11 @@ export function createModalNightlyE2eDriver(
         throw new Error('Workspace image must match the immutable image lock');
       }
       const resources = RESOURCE_PROFILES[input.workspace.resourceProfile];
-      const volume = createProjectVolumePlan(input.workspace);
+      const volume = createProjectVolumePlan({
+        organizationId: input.workspace.organizationId,
+        projectId: input.workspace.projectId,
+        branchId: input.workspace.branchId,
+      });
       const tags = SandboxTagsSchema.parse({
         org_id: input.workspace.organizationId,
         project_id: input.workspace.projectId,

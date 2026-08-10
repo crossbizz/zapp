@@ -3,6 +3,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+
+import { newId } from '@zapp/contracts';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 interface ModalSdkState {
@@ -55,6 +57,10 @@ vi.mock('modal', async (importOriginal) => {
             modalSdkState.volumeCloseCount += 1;
           },
         }),
+      fromName: () =>
+        Promise.resolve({
+          withMountOptions: (options: unknown) => options,
+        }),
     };
 
     readonly sandboxes = {
@@ -92,6 +98,7 @@ vi.mock('modal', async (importOriginal) => {
   };
 });
 import {
+  createModalNightlyE2eDriver,
   createModalSandboxProvider,
   createModalImagePublisher,
   imageDockerfileCommands,
@@ -391,6 +398,71 @@ describe('Modal workspace agent adapter', () => {
 });
 
 describe('Modal image provider facade', () => {
+  test('restores a snapshot using the strict workspace volume identity', async () => {
+    modalSdkState.sandbox = { sandboxId: 'sb-restored' };
+    const imageLock = {
+      version: 1,
+      environments: {
+        dev: {
+          modalEnvironment: 'zapp-dev',
+          sourceRevision: 'c58a416cba65f57ea64ba3e3e90f3646efca9b62',
+          tag: '2026-08-08-c58a416',
+          images: {
+            'forge-node-base': {
+              appName: 'zapp-workspaces',
+              digest: 'im-9NCxx8merCgh67jj0YLM84',
+              publishedName: 'forge-node-base:2026-08-08-c58a416',
+            },
+            'forge-web-test': {
+              appName: 'zapp-browser-verify',
+              digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+              publishedName: 'forge-web-test:2026-08-08-c58a416',
+            },
+          },
+        },
+      },
+    } as const;
+    const workspace = {
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      branchId: newId('br'),
+      runId: newId('run'),
+      taskId: newId('task'),
+      purpose: 'builder',
+      resourceProfile: 'standard',
+      imageTag: imageLock.environments.dev.images['forge-node-base'].publishedName,
+      env: {},
+      networkProfile: 'dependency_install',
+    } as const;
+    const driver = createModalNightlyE2eDriver({
+      environment: 'dev',
+      imageLock,
+      agentToken: 'agent-test-token',
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+
+    await expect(
+      driver.restoreSnapshot({ snapshotDigest: 'im-snapshot0123', workspace }),
+    ).resolves.toBe('sb-restored');
+
+    expect(modalSdkState.createCalls).toHaveLength(1);
+    const createOptions = modalSdkState.createCalls[0]?.[2] as {
+      readonly env: Readonly<Record<string, string>>;
+      readonly tags: Readonly<Record<string, string>>;
+      readonly volumes: Readonly<Record<string, unknown>>;
+    };
+    expect(createOptions.env.ZAPP_WORKSPACE_ROOT).toBe(`/workspace/${workspace.branchId}`);
+    expect(createOptions.tags).toMatchObject({
+      org_id: workspace.organizationId,
+      project_id: workspace.projectId,
+      branch_id: workspace.branchId,
+      run_id: workspace.runId,
+      task_id: workspace.taskId,
+    });
+    expect(createOptions.volumes).toEqual({ '/cache': { subPath: '/cache' } });
+    driver.close();
+  });
+
   test('creates the VM-runtime sandbox atomically with all seven tags', async () => {
     const commands: string[][] = [];
     modalSdkState.sandbox = sdkSandbox(successfulSandbox(commands, () => undefined));
