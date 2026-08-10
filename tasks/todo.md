@@ -121,6 +121,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-13-FIX-8 Cancellation-settled SSE replay gate
 - [x] WS-13-FIX-9 Scheduler-independent replay framing gate
 - [ ] WS-14 Nightly Modal E2E suite
+- [ ] WS-14-FIX-1 Explicit cache environment for agent exec
+- [ ] WS-14-FIX-2 Standalone fixture install inside sparse checkout
 - [ ] WS-15 Runaway-compute governor
 - [ ] WEB-7 Preview panel + states + capture drawer
 - [ ] WEB-8 Element selection attachments

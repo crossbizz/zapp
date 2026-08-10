@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import { type ExecutionContract, newId } from '@zapp/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createModalNightlyE2eDriver,
@@ -15,6 +15,10 @@ const REPOSITORY_URL = 'https://github.com/crossbizz/zapp.git';
 const TEMPLATE_PATH = 'source/apps/desktop/e2e-tests/fixtures/import-app/minimal';
 const INSTALL_TIMEOUT_MS = 120_000;
 const JOURNEY_TIMEOUT_MS = 10 * 60_000;
+const CACHE_EXEC_ENV = {
+  NPM_CONFIG_STORE_DIR: '/cache/pnpm',
+  PNPM_STORE_DIR: '/cache/pnpm',
+} as const;
 
 const hasModalCredentials =
   typeof process.env.MODAL_TOKEN_ID === 'string' &&
@@ -23,12 +27,13 @@ const hasModalCredentials =
   process.env.MODAL_TOKEN_SECRET !== '';
 
 async function runOrThrow(
-  provider: ReturnType<typeof createModalSandboxProvider>,
+  provider: Pick<ReturnType<typeof createModalSandboxProvider>, 'exec'>,
   providerWorkspaceId: string,
   input: {
     readonly command: string;
     readonly args: readonly string[];
     readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
     readonly timeoutMs?: number;
   },
 ): Promise<WorkspaceAgentExecResult> {
@@ -37,6 +42,7 @@ async function runOrThrow(
     command: input.command,
     args: [...input.args],
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    ...(input.env === undefined ? {} : { env: input.env }),
     timeoutMs: input.timeoutMs ?? 60_000,
   });
   if (result.exitCode !== 0) {
@@ -92,6 +98,28 @@ describe('WS-14 nightly Modal journey wiring', () => {
     expect(workflow).toContain('test -n "$MODAL_TOKEN_SECRET"');
     expect(workflow).toContain('if: failure()');
     expect(workflow).toContain('secrets.GRAFANA_ONCALL_INTEGRATION_URL');
+  });
+
+  it('forwards the supported pnpm cache configuration to the agent exec request', async () => {
+    const exec = vi.fn().mockResolvedValue({
+      durationMs: 1,
+      exitCode: 0,
+      stderr: '',
+      stdout: '/cache/pnpm/v3\n',
+      truncated: false,
+    } satisfies WorkspaceAgentExecResult);
+
+    await runOrThrow({ exec }, 'sb_ws14', {
+      command: 'pnpm',
+      args: ['store', 'path'],
+      env: CACHE_EXEC_ENV,
+    });
+
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: CACHE_EXEC_ENV,
+      }),
+    );
   });
 });
 
@@ -188,6 +216,7 @@ describe('WS-14 real Modal E2E', () => {
           command: 'pnpm',
           args: ['store', 'path'],
           cwd: TEMPLATE_PATH,
+          env: CACHE_EXEC_ENV,
         });
         expect(storePath.stdout.trim()).toMatch(/^\/cache\/pnpm(?:\/|$)/u);
 
@@ -195,6 +224,7 @@ describe('WS-14 real Modal E2E', () => {
           command: 'pnpm',
           args: ['install', '--frozen-lockfile'],
           cwd: TEMPLATE_PATH,
+          env: CACHE_EXEC_ENV,
           timeoutMs: INSTALL_TIMEOUT_MS,
         });
         await runOrThrow(provider, firstWorkspaceId, {
@@ -209,6 +239,7 @@ describe('WS-14 real Modal E2E', () => {
           command: 'pnpm',
           args: ['install', '--frozen-lockfile', '--prefer-offline'],
           cwd: TEMPLATE_PATH,
+          env: CACHE_EXEC_ENV,
           timeoutMs: INSTALL_TIMEOUT_MS,
         });
         expect(cachedInstall.durationMs).toBeLessThanOrEqual(firstInstall.durationMs * 0.6);

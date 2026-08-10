@@ -367,6 +367,18 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 - [ ] Nightly (not per-PR) against `zapp-dev` Modal env: full journey — create(std profile) → clone template → `pnpm install` (cache volume speeds 2nd run — assert ≥ 40% faster) → dev server → preview proxy healthz through connect URL → checkpoint → kill sandbox via Modal API directly (simulate OOM) → restore → dev server again → terminate. Alert on failure (Grafana Alerting → OnCall). Pins SDK; this suite is the Modal-SDK-churn early-warning (master risk table).
 - [ ] Commit: `test(sandbox-service): nightly Modal E2E journey`
 
+#### WS-14-FIX-1 — explicit cache environment for agent exec
+
+- [ ] **RED/evidence:** retain the one WS-14 provider failure: the mounted project Volume existed, but `pnpm store path` inside an agent exec resolved to `/root/.local/share/pnpm/store/v3` because the agent intentionally inherits only its safe base environment into child commands.
+- [ ] **GREEN:** make the nightly install requests carry the supported `NPM_CONFIG_STORE_DIR=/cache/pnpm` child environment explicitly; prove the provider request preserves it and the real journey resolves the store under `/cache/pnpm` before timing the second install.
+- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-1's single immutable-image Modal journey. On success, close WS-14 and FIX-1 together, run the repository push gate, and watch authoritative CI/Security green.
+
+#### WS-14-FIX-2 — standalone fixture install inside the sparse source checkout
+
+- [ ] **RED/evidence:** retain FIX-1's single provider result: the cache path resolved under `/cache/pnpm`, then the first install exited `254` because pnpm discovered the sparse checkout's repository-level workspace instead of treating the nested fixture as a standalone project.
+- [ ] **GREEN:** invoke both fixture installs with pnpm's supported `--ignore-workspace` option and cover the exact command boundary locally, without changing or rebuilding the immutable Modal image.
+- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-2's single immutable-image Modal journey. On success, close WS-14 plus both fix tasks, push, and watch authoritative CI/Security green.
+
 ### Task WS-15 [M2]: Runaway-compute governor
 
 **Files:** Create: `src/lifecycle/governor.ts`
