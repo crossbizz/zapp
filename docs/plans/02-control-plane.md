@@ -196,6 +196,18 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 
 - [x] Steps: serve `/v1/openapi.json` from zod route schemas → generate `packages/api-client` via openapi-typescript + a thin fetch wrapper (`createZappClient({ baseUrl, getToken })`, SSE helper `subscribeRunEvents(runId, { after, onEvent })` with auto-reconnect + Last-Event-ID) → contract test: generated types compile against a live app instance's JSON → commit: `feat(api-client): generated typed SDK with SSE helper`
 
+### Task CP-20 [M1]: Conversation continuation + attachments API (ADR-0027)
+
+**Files:** Modify: `packages/contracts/src/events.ts` (additive `message.*` events + required tool `userSummary`), `src/routes/runs.ts`, `src/openapi.ts`, `packages/api-client/*` (regenerated); Create: `src/routes/attachments.ts`, `test/integration/messages.test.ts`
+**Interfaces produced (binding for plans 04, 08, 09 — full payload contracts in ADR-0027):**
+- `AgentEvent` additions: `message.user` `{ messageId, content, attachments: AttachmentRef[] (≤ 8), source }`; `message.assistant` `{ messageId, turnId, content (inline ≤ 48 KB, overflow → contentArtifactId), model }`; `tool.started/completed/failed` payloads gain **required** `userSummary: string`. Assistant deltas are explicitly M2.
+- `POST /v1/runs/:runId/messages` `{ content, attachments? }` → 202 `{ messageId, sequence }`: idempotency-keyed, org-scoped 404, persists + emits `message.user` via CP-13 ingest, signals the AR-8 workflow; run not accepting input → 409 typed `run_not_active`.
+- `POST /v1/projects/:projectId/attachments` (multipart ≤ 8 MiB) → `{ attachmentId, kind, name, byteSize, contentType }` stored via existing artifact conventions (FND-7 tenant-prefixed R2, `artifact.created`); `GET /v1/attachments/:attachmentId` → short-TTL signed URL.
+**Effort:** M
+
+- [ ] Failing tests first: duplicate idempotent message POST → single `message.user` event and sequence; message to a completed run → 409 `run_not_active`; cross-tenant runId → 404; attachment round-trip incl. 413 over size cap and content-type allowlist; SSE replay returns `message.*` in sequence order; OpenAPI snapshot diff is additive only (breaking-change detector green).
+- [ ] Commit: `feat(control-api): public conversation continuation + attachments (ADR-0027)`
+
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
 **Files:** Create: `src/jobs/retention.ts`, `src/jobs/deletion.ts`, `test/integration/deletion.test.ts`
