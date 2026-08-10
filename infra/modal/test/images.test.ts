@@ -53,6 +53,10 @@ describe('forge-node-base image policy', () => {
   test('validates configuration and consumes every pinned recipe assumption', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION, ALTERNATE_CONFIG);
     const commands = recipeCommands(recipe).join('\n');
+    const semgrepWheelPath = new URL(
+      ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64WheelUrl,
+    ).pathname;
+    const semgrepWheelFileName = semgrepWheelPath.slice(semgrepWheelPath.lastIndexOf('/') + 1);
 
     expect(recipe.base).toEqual({ kind: 'registry', ref: ALTERNATE_CONFIG.node.baseImage });
     expect(commands).toContain(ALTERNATE_CONFIG.node.debianSnapshot);
@@ -64,6 +68,7 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain('gitleaks version');
     expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64WheelUrl);
     expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64Sha256);
+    expect(commands).toContain(`wheel=/tmp/${semgrepWheelFileName}`);
     expect(commands).toContain(`semgrep --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.semgrep.version}'`);
     expect(commands).toContain(`knip --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.knip}'`);
     expect(commands).toContain(`jscpd --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.jscpd}'`);
