@@ -52,6 +52,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-9 Await cancelled SSE replay before connection reuse
 - [x] M1-GATE-10 Settle SSE Accept-probe streams before connection reuse
 - [x] M1-GATE-11 Bound the real PostgreSQL 100-way sequence allocation proof
+- [x] M1-GATE-12 Bound Plan 03 clean-gate cleanup probes
 
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes

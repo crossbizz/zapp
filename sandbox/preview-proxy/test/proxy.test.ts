@@ -994,9 +994,15 @@ describe('preview proxy acceptance contract', () => {
 
     if (!proxy) return;
     const events = await openSse(proxy.url);
-    cleanups.push(() => events.close());
+    const eventCleanupIndex = cleanups.push(() => events.close()) - 1;
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
-    cleanups.push(() => browser.close());
+    cleanups[eventCleanupIndex] = async () => {
+      try {
+        await events.close();
+      } finally {
+        await browser.close();
+      }
+    };
     const page = await browser.newPage();
     await page.goto(`${proxy.url}/`);
 

@@ -3202,8 +3202,6 @@ describe('workspace-agent RPC daemon', () => {
         cpu: { userMicros: number; systemMicros: number };
         memory: { rssBytes: number };
       }>();
-      const childUsage = await execFileAsync('ps', ['-o', 'rss=', '-p', String(childPid)]);
-      const childRssBytes = Number(childUsage.stdout.trim()) * 1_024;
       const staleKill = await activeApp.inject({
         method: 'POST',
         url: `/exec/${String(leaderPid)}/kill`,
@@ -3213,10 +3211,7 @@ describe('workspace-agent RPC daemon', () => {
 
       expect(staleKill.json()).toEqual({ killed: false });
       expect(active.activeChildren).toBe(1);
-      expect(childRssBytes).toBeGreaterThan(32 * 1024 * 1024);
-      expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThanOrEqual(
-        childRssBytes - 8 * 1024 * 1024,
-      );
+      expect(active.memory.rssBytes - daemonMemory.rss).toBeGreaterThan(32 * 1024 * 1024);
       expect(active.cpu.userMicros).toBeGreaterThanOrEqual(daemonCpu.user);
       expect(active.cpu.systemMicros).toBeGreaterThanOrEqual(daemonCpu.system);
 

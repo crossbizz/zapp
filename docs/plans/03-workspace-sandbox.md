@@ -430,6 +430,14 @@ Review exit (maximum two fresh rounds): zero Critical/Important findings. This f
 - [x] **GREEN:** poll the strict preview health response within the existing 30-second image-readiness deadline; do not weaken the response schema or hide a terminal failure.
 - [x] **Verify/review/provider/ship:** run focused/package/static gates and at most two SOL High rounds, then run FIX-2's one final immutable-image Modal smoke; on success close WS-15/FIX-1/FIX-2, commit once, push, and watch CI + Security green.
 
+#### M1-GATE-12 — bound Plan 03 clean-gate cleanup probes
+
+Review exit (maximum two rounds): zero Critical/Important findings. Test-only; no provider call.
+
+- [x] **RED:** retain the cold/warm root-gate failures where the real Chrome fixture times out while its SSE reader is still open and the leader-exit metrics fixture loses the child between its aggregate sample and a second `ps` probe.
+- [x] **GREEN:** close the SSE reader before the launched browser and assert the already-sampled real descendant RSS directly from the aggregate plus `activeChildren`, preserving the 96 MiB real child/group proof without a post-snapshot process race.
+- [x] **Verify/review/ship:** run both exact focused tests, the two affected package suites/static gates, and root `pnpm verify`; close within two SOL High rounds; check the tracker, append one execution-log line, commit `test(plan03): bound clean-gate cleanup probes`, push `main`, and watch CI + Security green.
+
 ---
 
 ## Testing strategy
@@ -507,3 +515,4 @@ Review exit (maximum two fresh rounds): zero Critical/Important findings. This f
 - 2026-08-09 WS-15 done — added required atomic plan-limit/capacity ports, one durable tenant+run deadline, typed replayable quota denial, fenced wall-clock termination, control-api-only audited organization kill switch, and create/attach/terminate release joins; capped review findings were closed by FIX-1.
 - 2026-08-09 WS-15-FIX-1 done — one-row expiry leasing, exact-token renewal/takeover, abortable shutdown including delayed-claim release, and admitted terminal-replay compensation closed all capped lifecycle findings in two review rounds.
 - 2026-08-09 WS-15-FIX-2 done — the first WS-15 smoke exposed agent/proxy concurrent-start refusal; strict preview health now retries with an exact remaining 30-second curl budget, and FIX-2's single immutable-image smoke passed for dev.
+- 2026-08-10 M1-GATE-12 done — cold/full-contention verification exposed real-Chrome SSE/browser cleanup ordering and a post-snapshot leader-exit `ps` race; focused and affected package gates, root `pnpm verify`, and one zero-Critical/Important review passed without a provider call.
