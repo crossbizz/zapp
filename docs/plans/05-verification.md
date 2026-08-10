@@ -111,9 +111,9 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 **Files:** Create: `packages/verification-engine/src/generate/{smoke,acceptance}.ts`, `test/generate.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior: smoke specs generated from discovered routes (template: goto → `expect(page).toHaveTitle(/.+/)` + root visible + zero console errors); acceptance specs generated from AC via builder-role session with a constrained prompt (input: AC text + route map + component inventory; output: spec file using `data-testid`; generation adds missing testids via code edit task); generated files land under `e2e/zapp/*.spec.ts` in the project repo (committed — user owns their tests, PRD §3.2 data portability); determinism rules: no `waitForTimeout`, network-idle waits banned by lint on generated code (custom check).
-- [ ] Failing tests: template generation snapshot for fixture route map; lint rejects a `waitForTimeout` fixture.
-- [ ] Commit: `feat(verification-engine): smoke + acceptance test generation`
+- [x] Binding behavior: smoke specs generated from discovered routes (template: goto → `expect(page).toHaveTitle(/.+/)` + root visible + zero console errors); acceptance specs generated from AC via builder-role session with a constrained prompt (input: AC text + route map + component inventory; output: spec file using `data-testid`; generation adds missing testids via code edit task); generated files land under `e2e/zapp/*.spec.ts` in the project repo (committed — user owns their tests, PRD §3.2 data portability); determinism rules: no `waitForTimeout`, network-idle waits banned by lint on generated code (custom check).
+- [x] Failing tests: template generation snapshot for fixture route map; lint rejects a `waitForTimeout` fixture.
+- [x] Commit: `feat(verification-engine): smoke + acceptance test generation`
 
 ### Task VF-9 [M3]: Acceptance-criteria traceability
 
@@ -203,3 +203,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-09 VF-5 done — shipped six deterministic gates behind a branded artifact-redaction boundary, baked checksum-pinned Gitleaks 8.26.0, and passed the one real Modal publisher smoke with a redacted planted diff at immutable tag `2026-08-09-6b22eea` after two review rounds.
 - 2026-08-09 VF-2 done — added ranked P0 framework adapters, exact filesystem route discovery, deployment/output metadata, and Capacitor native-preservation semantics; explicit detect/export joins extended the terse create-only file list.
 - 2026-08-10 VF-3 done — production-composed tenant-scoped capability scans through Temporal, sandbox-service, and R2 with stable retry identity; real DB/Temporal integration and one immutable-image Modal smoke passed.
+- 2026-08-10 VF-8 done — Added keyed committed smoke/acceptance generation with exact criterion traceability, stable-selector enforcement, validated edit receipts, and clean-index isolation; after the two-round review cap, the cold gate exposed inherited 5s envelopes preempting real-Git diagnostics under contention, so those fixtures adopted the existing bounded 60s precedent; 27/27 package tests passed with no interface deviations.

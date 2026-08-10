@@ -834,6 +834,9 @@ importers:
       '@zapp/workspace-runtime':
         specifier: workspace:*
         version: link:../workspace-runtime
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76
