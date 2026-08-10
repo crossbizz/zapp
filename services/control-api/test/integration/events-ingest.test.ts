@@ -424,6 +424,157 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     ]);
   });
 
+  it('atomically rejects an expired control acknowledgement and applies a live one', async () => {
+    const expired = await post(
+      [
+        event({
+          type: 'run.paused',
+          visibility: 'user',
+          payload: {
+            checkpointRef: 'checkpoint-expired-control',
+            control: {
+              operationKey: `op_${'e'.repeat(64)}`,
+              acknowledgementDeadlineAt: new Date(Date.now() - 1_000).toISOString(),
+            },
+          },
+        }),
+      ],
+      { key: 'events-expired-control-ack-01' },
+    );
+
+    expect(expired.statusCode, expired.body).toBe(409);
+    expect(expired.json<{ error: { code: string } }>().error.code).toBe(
+      'control_acknowledgement_expired',
+    );
+    expect(await count('agent_events')).toBe(0);
+    expect(await count('audit_events')).toBe(0);
+    expect(await counter()).toBeUndefined();
+    expect(
+      await database.db
+        .select({ status: agentRuns.status })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, runId)),
+    ).toEqual([{ status: 'running' }]);
+
+    const forged = await post(
+      [
+        event({
+          type: 'run.paused',
+          visibility: 'user',
+          payload: {
+            checkpointRef: 'checkpoint-forged-control',
+            control: {
+              operationKey: `op_${'a'.repeat(64)}`,
+              acknowledgementDeadlineAt: new Date(Date.now() + 30_000).toISOString(),
+            },
+          },
+        }),
+      ],
+      {
+        key: 'events-forged-control-ack-01',
+        service: 'sandbox-service',
+      },
+    );
+
+    expect(forged.statusCode, forged.body).toBe(403);
+    expect(await count('agent_events')).toBe(0);
+    expect(await count('audit_events')).toBe(0);
+    expect(await counter()).toBeUndefined();
+    expect(
+      await database.db
+        .select({ status: agentRuns.status })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, runId)),
+    ).toEqual([{ status: 'running' }]);
+
+    const live = await post(
+      [
+        event({
+          type: 'run.paused',
+          visibility: 'user',
+          payload: {
+            checkpointRef: 'checkpoint-live-control',
+            control: {
+              operationKey: `op_${'f'.repeat(64)}`,
+              acknowledgementDeadlineAt: new Date(Date.now() + 30_000).toISOString(),
+            },
+          },
+        }),
+      ],
+      { key: 'events-live-control-ack-01' },
+    );
+
+    expect(live.statusCode, live.body).toBe(201);
+    expect(await count('agent_events')).toBe(1);
+    expect(await count('audit_events')).toBe(1);
+    expect(await counter()).toBe(1);
+    expect(
+      await database.db
+        .select({ status: agentRuns.status })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, runId)),
+    ).toEqual([{ status: 'paused' }]);
+  });
+
+  it('rolls back a control acknowledgement whose row-lock wait crosses its deadline', async () => {
+    let markLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      markLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const locker = database.sql.begin(async (tx) => {
+      await tx`
+        update agent_runs set status = status
+        where id = ${runId}
+      `;
+      markLocked();
+      await release;
+    });
+    await locked;
+
+    const pending = post(
+      [
+        event({
+          type: 'run.paused',
+          visibility: 'user',
+          payload: {
+            checkpointRef: 'checkpoint-lock-deadline',
+            control: {
+              operationKey: `op_${'b'.repeat(64)}`,
+              acknowledgementDeadlineAt: new Date(Date.now() + 250).toISOString(),
+            },
+          },
+        }),
+      ],
+      { key: 'events-lock-deadline-01' },
+    );
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    } finally {
+      releaseLock();
+      await locker;
+    }
+    const response = await pending;
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe(
+      'control_acknowledgement_expired',
+    );
+    expect(await count('agent_events')).toBe(0);
+    expect(await count('audit_events')).toBe(0);
+    expect(await counter()).toBeUndefined();
+    expect(
+      await database.db
+        .select({ status: agentRuns.status })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, runId)),
+    ).toEqual([{ status: 'running' }]);
+  });
+
   it('records every Prototype mock as a durable assumption decision in the event transaction', async () => {
     const response = await post(
       [

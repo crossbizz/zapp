@@ -99,7 +99,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M2 — Agentic core + Mission Control (Weeks 8–14)
 
 - [x] AR-9 Worker/queues/idempotency hardening
-- [ ] AR-10 Pause/resume/cancel/redirect signals
+- [x] AR-10 Pause/resume/cancel/redirect signals
+- [x] AR-10-FIX-1 Bound control acknowledgements + truthful approval status query
+- [x] AR-10-FIX-2 Receiver-enforced atomic control acknowledgement deadline
 - [x] AR-11 planning-engine schema + scheduler
 - [x] AR-12 Isolated task workflows + merge/conflict tasks
 - [x] AR-13 Mission Control read model

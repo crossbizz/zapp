@@ -302,12 +302,18 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           });
           throw invalidRunState();
         }
+        if (action !== 'redirect') {
+          // Pause, resume, and cancel are acknowledged only after the workflow
+          // reaches its durable control boundary. CP-13 atomically closes the
+          // requested operation, run status, event, audit, and notification.
+          return { run: toRun(claim.entity) };
+        }
         const updated = await ctx.db.runs.completeOperation({
           runId: claim.entity.id,
           operationKey,
           expectedStatus: claim.entity.status,
           status: config.status,
-          completedAt: action === 'cancel' ? deps.now() : null,
+          completedAt: null,
           audit: async (tx, row) => {
             await request.audit(tx, {
               organizationId: ctx.organizationId,

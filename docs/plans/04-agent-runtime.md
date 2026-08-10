@@ -196,9 +196,27 @@ behavior is in scope.
 **Files:** Modify: `src/workflows/run.ts`; Create: `test/integration/signals.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior: signals `pause` (finish current tool call, checkpoint, status `paused`, ack event ≤ 5 s), `resume`, `cancel` (best-effort tool termination via sandbox-service kill, workspace checkpointed, status `cancelled`), `redirect(instruction)` (v1: queue instruction for next session turn; full plan-diff in AR-26); query `getStatus` returns phase/task snapshot for reconnecting clients.
-- [ ] Failing integration tests for each signal incl. pause→resume mid-run continuity and cancel ack latency < 5 s.
-- [ ] Commit: `feat(orchestrator): pause/resume/cancel/redirect signals`
+- [x] Binding behavior: signals `pause` (finish current tool call, checkpoint, status `paused`, ack event ≤ 5 s), `resume`, `cancel` (best-effort tool termination via sandbox-service kill, workspace checkpointed, status `cancelled`), `redirect(instruction)` (v1: queue instruction for next session turn; full plan-diff in AR-26); query `getStatus` returns phase/task snapshot for reconnecting clients.
+- [x] Failing integration tests for each signal incl. pause→resume mid-run continuity and cancel ack latency < 5 s.
+- [x] Commit: `feat(orchestrator): pause/resume/cancel/redirect signals`
+
+### Task AR-10-FIX-1 [M2]: Bounded control acknowledgement + truthful status query
+
+**Files:** Modify: `src/workflows/run.ts`, `test/integration/signals.test.ts`, `test/ar14-budgets.test.ts`
+**Effort:** S
+
+- [x] Failing tests: a stalled control-boundary activity cannot produce an acknowledgement after the five-second contract; `getStatus` reports `waiting_for_approval` during the AR-14 approval wait.
+- [x] Minimal fix: use a no-retry control-boundary activity path whose sequential deadlines total less than five seconds; expose and transition the truthful approval-wait status.
+- [x] Verify locally, pass a fresh two-round-max Critical/Important review, then close AR-10 and this follow-up together.
+
+### Task AR-10-FIX-2 [M2]: Receiver-enforced control acknowledgement deadline
+
+**Files:** Modify: `services/orchestrator-worker/src/workflows/run.ts`, `services/orchestrator-worker/test/integration/signals.test.ts`, `services/control-api/src/internal/events.ts`, `services/control-api/src/tenant/db.ts`, `services/control-api/test/integration/events-ingest.test.ts`
+**Effort:** S
+
+- [x] Failing integration test: CP-13 rejects a control acknowledgement received after its stable workflow deadline, with no run-status, event, audit, or counter mutation.
+- [x] Minimal fix: include the stable operation key and acknowledgement deadline in pause/resume/user-cancel events; have the PostgreSQL receiver validate its own clock and commit the run transition, event, audit, and notification atomically.
+- [x] Verify the full affected packages, pass a fresh two-round-max Critical/Important review, and close AR-10 plus both bounded follow-ups together.
 
 ### Task AR-11 [M2]: planning-engine — plan schema + task graph
 
@@ -367,3 +385,6 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-14 done — Added exact credit-state budget warnings/cutoff, durable Temporal approval pause/resume or checkpoint-cancel, tenant-scoped stored approval resolution, and the generated public SDK; the explicit API/accounting/storage joins required files beyond the terse task list, and review passed in round 2 after preventing non-budget approval mutation.
 - 2026-08-09 AR-15 done — Added read-only cited Ask runs and durable Prototype mock assumptions, required successful dev-server/smoke evidence, and blocked prototype-only releases with a full-SHA public API guard; review passed in round 2.
 - 2026-08-09 AR-15-FIX-1 done — Gave the real Chrome console-trap acceptance a bounded 30-second clean-CI budget after authoritative Linux timed out at 15 seconds; all assertions remained intact, preview-proxy passed 109/109, and review passed in round 1.
+- 2026-08-09 AR-10 done — Added durable pause/resume/cancel/redirect signals at real session-tool boundaries, truthful reconnect status, cancellation-before-checkpoint ordering, and stable operation-key replay; orchestrator-worker passed 189/189.
+- 2026-08-09 AR-10-FIX-1 done — Bounded no-retry control activities below five seconds, flushed acknowledgements immediately, and exposed the live budget-approval wait; the remaining receiver-side late-commit gap was re-scoped into FIX-2.
+- 2026-08-09 AR-10-FIX-2 done — Made CP-13 enforce stable acknowledgement deadlines and atomically close run status, event, audit, notification, and operation replay; control-api passed 485/485 unit plus 232 passed/25 visible integration skips, and final review passed in round 2.

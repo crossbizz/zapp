@@ -93,6 +93,10 @@ const SessionTranscriptBaseSchema = z
     tokensUsed: z.number().int().nonnegative().safe(),
     inFlightCompletion: InFlightCompletionSchema.nullable().default(null),
     completedToolCallIds: z.array(z.string().min(1)),
+    appliedRedirectOperationKeys: z
+      .array(z.string().regex(/^op_[a-f0-9]{64}$/u))
+      .max(100)
+      .default([]),
     completedToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
     successfulToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
     prototypeMocks: z

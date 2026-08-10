@@ -98,7 +98,19 @@ const TerminalPreviewFailurePayloadSchema = z
   })
   .strict();
 
+const RunControlAcknowledgementPayloadSchema = z
+  .object({
+    control: z
+      .object({
+        operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+        acknowledgementDeadlineAt: z.string().datetime(),
+      })
+      .strict(),
+  })
+  .passthrough();
+
 class StalePreviewMonitorError extends Error {}
+class ExpiredControlAcknowledgementError extends Error {}
 
 /**
  * The only database handle a route handler is ever given.
@@ -526,6 +538,9 @@ export type IngestEventBatchResult =
   | { readonly kind: 'stored'; readonly events: readonly AgentEventRow[] }
   | { readonly kind: 'run_not_found' }
   | { readonly kind: 'stale_preview_monitor' }
+  | { readonly kind: 'control_acknowledgement_expired' }
+  | { readonly kind: 'control_acknowledgement_invalid' }
+  | { readonly kind: 'control_acknowledgement_conflict' }
   | { readonly kind: 'payload_too_large' };
 
 export interface TenantEventRepository extends EventRepository {
@@ -717,6 +732,59 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               }
             }
 
+            const controlAcknowledgements = input.events.filter(
+              (event) =>
+                event.type === 'run.paused' ||
+                event.type === 'run.resumed' ||
+                (event.type === 'run.cancelled' && event.payload['reason'] === 'user_requested'),
+            );
+            if (controlAcknowledgements.length > 1) {
+              return { kind: 'control_acknowledgement_invalid' };
+            }
+            const controlAcknowledgement = controlAcknowledgements[0];
+            if (controlAcknowledgement !== undefined) {
+              const parsed = RunControlAcknowledgementPayloadSchema.safeParse(
+                controlAcknowledgement.payload,
+              );
+              if (!parsed.success) return { kind: 'control_acknowledgement_invalid' };
+              const [deadline] = await tx.execute<{ live: boolean }>(
+                sql`select clock_timestamp() <= ${parsed.data.control.acknowledgementDeadlineAt}::timestamptz as live`,
+              );
+              if (deadline?.live !== true) {
+                return { kind: 'control_acknowledgement_expired' };
+              }
+
+              const targetStatus =
+                controlAcknowledgement.type === 'run.paused'
+                  ? 'paused'
+                  : controlAcknowledgement.type === 'run.resumed'
+                    ? 'running'
+                    : 'cancelled';
+              const sourceStatusAllowed =
+                (targetStatus === 'paused' && run.status === 'running') ||
+                (targetStatus === 'running' && run.status === 'paused') ||
+                (targetStatus === 'cancelled' &&
+                  ['queued', 'running', 'paused', 'waiting_for_approval'].includes(run.status));
+              if (!sourceStatusAllowed) {
+                return { kind: 'control_acknowledgement_conflict' };
+              }
+              const [updatedRun] = await tx
+                .update(agentRuns)
+                .set({ status: targetStatus })
+                .where(
+                  scoped(
+                    agentRuns.organizationId,
+                    eq(agentRuns.id, input.runId),
+                    eq(agentRuns.projectId, input.projectId),
+                    eq(agentRuns.status, run.status),
+                  ),
+                )
+                .returning({ id: agentRuns.id });
+              if (updatedRun === undefined) {
+                return { kind: 'control_acknowledgement_conflict' };
+              }
+            }
+
             const persistedPayloads = new Map<NewAgentEvent, Record<string, unknown>>();
             for (const event of input.events) {
               if (
@@ -796,11 +864,23 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             }
             await tx.execute(sql`select pg_notify('agent_events', ${input.runId})`);
             await input.audit(tx, inserted);
+            if (controlAcknowledgement !== undefined) {
+              const parsed = RunControlAcknowledgementPayloadSchema.parse(
+                controlAcknowledgement.payload,
+              );
+              const [deadline] = await tx.execute<{ live: boolean }>(
+                sql`select clock_timestamp() <= ${parsed.control.acknowledgementDeadlineAt}::timestamptz as live`,
+              );
+              if (deadline?.live !== true) throw new ExpiredControlAcknowledgementError();
+            }
             return { kind: 'stored', events: inserted };
             });
           } catch (error) {
             if (error instanceof StalePreviewMonitorError) {
               return { kind: 'stale_preview_monitor' };
+            }
+            if (error instanceof ExpiredControlAcknowledgementError) {
+              return { kind: 'control_acknowledgement_expired' };
             }
             throw error;
           }

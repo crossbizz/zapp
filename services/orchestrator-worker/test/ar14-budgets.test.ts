@@ -2,7 +2,11 @@ import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
-import { runWorkflow, type RunWorkflowInput } from '../src/workflows/run.js';
+import {
+  getRunStatusQuery,
+  runWorkflow,
+  type RunWorkflowInput,
+} from '../src/workflows/run.js';
 
 const id = (prefix: 'run' | 'org' | 'proj'): string =>
   `${prefix}_01J00000000000000000000000`;
@@ -97,6 +101,11 @@ describe('AR-14 durable run budget approval loop', () => {
             Promise.reject(error instanceof Error ? error : new Error('workflow failed')),
         ),
       ]);
+      await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({
+        status: 'waiting_for_approval',
+        phase: 'session',
+        taskId: 'task-m1',
+      });
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000000',
         decision: 'approved',

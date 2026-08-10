@@ -66,6 +66,19 @@ export const SessionInputSchema = z
     mode: RunModeSchema,
     modeInstructions: z.string().min(1).max(4_000).optional(),
     context: AssembledContextSchema,
+    control: z
+      .object({
+        yieldAfterTool: z.boolean(),
+        redirect: z
+          .object({
+            operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+            instruction: z.string().trim().min(1).max(20_000),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .optional(),
     tools: z.array(z.enum(TOOL_NAMES)).superRefine((tools, validation) => {
       if (new Set(tools).size !== tools.length) {
         validation.addIssue({ code: z.ZodIssueCode.custom, message: 'Tools must be unique' });
@@ -103,7 +116,14 @@ export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
 export const SessionResultSchema = z
   .object({
-    status: z.enum(['completed', 'needs_approval', 'budget_exhausted', 'failed', 'cancelled']),
+    status: z.enum([
+      'completed',
+      'yielded',
+      'needs_approval',
+      'budget_exhausted',
+      'failed',
+      'cancelled',
+    ]),
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),
@@ -119,6 +139,7 @@ export const SessionResultSchema = z
       )
       .max(100)
       .optional(),
+    redirectApplied: z.boolean().optional(),
     pendingApproval: ApprovalRequestSchema.optional(),
   })
   .strict();
@@ -301,7 +322,11 @@ function parsePrototypeCompletion(
   });
 }
 
-function terminal(transcript: SessionTranscript, pendingApproval?: ApprovalRequest): SessionResult {
+function terminal(
+  transcript: SessionTranscript,
+  pendingApproval?: ApprovalRequest,
+  redirectApplied = false,
+): SessionResult {
   return SessionResultSchema.parse({
     status: transcript.terminalStatus ?? 'needs_approval',
     commits: transcript.commits,
@@ -314,6 +339,17 @@ function terminal(transcript: SessionTranscript, pendingApproval?: ApprovalReque
         }
       : {}),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
+    ...(redirectApplied ? { redirectApplied: true } : {}),
+  });
+}
+
+function yielded(transcript: SessionTranscript, redirectApplied: boolean): SessionResult {
+  return SessionResultSchema.parse({
+    status: 'yielded',
+    commits: transcript.commits,
+    artifacts: transcript.artifacts,
+    summary: transcript.summary,
+    ...(redirectApplied ? { redirectApplied: true } : {}),
   });
 }
 
@@ -404,6 +440,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           tokensUsed: 0,
           inFlightCompletion: null,
           completedToolCallIds: [],
+          appliedRedirectOperationKeys: [],
           completedToolNames: [],
           successfulToolNames: [],
           prototypeMocks: [],
@@ -429,6 +466,29 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           throw new Error('Session input does not match its durable transcript');
         }
         provenance = [...transcript.provenance];
+      }
+
+      let redirectApplied = false;
+      const redirect = input.control?.redirect;
+      if (redirect !== null && redirect !== undefined) {
+        if (transcript.appliedRedirectOperationKeys.includes(redirect.operationKey)) {
+          redirectApplied = true;
+        } else if (
+          transcript.pendingToolCalls.length === 0 &&
+          transcript.activeToolCallId === null &&
+          (transcript.terminalStatus === null || transcript.terminalStatus === 'completed')
+        ) {
+          transcript.messages.push({ role: 'user', content: redirect.instruction });
+          transcript.appliedRedirectOperationKeys.push(redirect.operationKey);
+          transcript.terminalStatus = null;
+          transcript.terminalErrorCode = null;
+          transcript.summary = '';
+          transcript = await dependencies.transcripts.save(
+            transcript.version,
+            transcriptDraft(transcript),
+          );
+          redirectApplied = true;
+        }
       }
 
       const controller = new AbortController();
@@ -457,7 +517,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         );
       };
       const finish = async (
-        status: Exclude<SessionResult['status'], 'needs_approval'>,
+        status: Exclude<SessionResult['status'], 'needs_approval' | 'yielded'>,
         summary: string,
         errorCode: string | null = null,
       ): Promise<SessionResult> => {
@@ -472,7 +532,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         transcript.terminalErrorCode = errorCode;
         await save();
         await flushOutbox();
-        return terminal(transcript);
+        return terminal(transcript, undefined, redirectApplied);
       };
       const eventFor = (
         type: SessionEvent['type'],
@@ -514,7 +574,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       }
       if (transcript.terminalStatus !== null) {
         cleanup();
-        return terminal(transcript);
+        return terminal(transcript, undefined, redirectApplied);
       }
 
       if (transcript.activeToolCallId !== null) {
@@ -558,7 +618,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         await save();
         await flushOutbox();
         cleanup();
-        return terminal(transcript);
+        return terminal(transcript, undefined, redirectApplied);
       }
 
       try {
@@ -877,6 +937,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             transcript.pendingToolCalls.shift();
             await save();
             await flushOutbox();
+            if (input.control?.yieldAfterTool === true) {
+              return yielded(transcript, redirectApplied);
+            }
             continue;
           }
           const rawInput = rawInputs.get(call.toolCallId) ?? call.input;
@@ -920,7 +983,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               );
               await save();
               await flushOutbox();
-              return terminal(transcript, approval);
+              return terminal(transcript, approval, redirectApplied);
             }
             enqueue(eventFor('approval.resolved', call, 'approval-resolved', { decision: status }));
             if (status === 'denied') {
@@ -940,6 +1003,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               transcript.pendingToolCalls.shift();
               await save();
               await flushOutbox();
+              if (input.control?.yieldAfterTool === true) {
+                return yielded(transcript, redirectApplied);
+              }
               continue;
             }
           }
@@ -960,6 +1026,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             transcript.pendingToolCalls.shift();
             await save();
             await flushOutbox();
+            if (input.control?.yieldAfterTool === true) {
+              return yielded(transcript, redirectApplied);
+            }
             continue;
           }
           enqueue(eventFor('tool.started', call, 'started', {}));
@@ -1049,6 +1118,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             transcript.executionLease = null;
             await save();
             await flushOutbox();
+            if (input.control?.yieldAfterTool === true) {
+              return yielded(transcript, redirectApplied);
+            }
             continue;
           }
           const executed = executionOutcome;
@@ -1098,6 +1170,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           enqueue(eventFor('tool.completed', call, 'completed', { audit: executed.auditPayload }));
           await save();
           await flushOutbox();
+          if (input.control?.yieldAfterTool === true) {
+            return yielded(transcript, redirectApplied);
+          }
         }
       } finally {
         cleanup();

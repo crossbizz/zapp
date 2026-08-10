@@ -22,11 +22,26 @@ export type EventBatch = z.infer<typeof EventBatchSchema>;
 export const RunStatusTransitionSchema = z
   .object({
     runId: z.string().min(1),
-    status: z.enum(['running', 'waiting_for_approval', 'completed', 'failed', 'cancelled']),
+    status: z.enum([
+      'running',
+      'paused',
+      'waiting_for_approval',
+      'completed',
+      'failed',
+      'cancelled',
+    ]),
     idempotencyKey: z.string().min(1).max(512),
   })
   .strict();
 export type RunStatusTransition = z.infer<typeof RunStatusTransitionSchema>;
+
+const EmitEventsInputSchema = z
+  .object({
+    events: z.array(PendingAgentEventSchema).min(1).max(20),
+    flushImmediately: z.boolean().optional(),
+  })
+  .strict();
+export type EmitEventsInput = z.infer<typeof EmitEventsInputSchema>;
 
 export interface EventBatchClientOptions {
   readonly flushIntervalMs?: number;
@@ -69,6 +84,28 @@ export class EventBatchClient {
   }
 
   emit(eventValue: PendingAgentEvent): Promise<void> {
+    return this.enqueue(eventValue).completion;
+  }
+
+  async emitMany(
+    eventValues: readonly PendingAgentEvent[],
+    options: { readonly flushImmediately?: boolean } = {},
+  ): Promise<void> {
+    const queued = eventValues.map((event) => this.enqueue(event));
+    if (options.flushImmediately === true) {
+      const states = new Map(queued.map(({ scope, state }) => [scope, state]));
+      states.forEach((state, scope) => {
+        this.requestFlush(scope, state);
+      });
+    }
+    await Promise.all(queued.map(({ completion }) => completion));
+  }
+
+  private enqueue(eventValue: PendingAgentEvent): QueuedEvent & {
+    readonly completion: Promise<void>;
+    readonly scope: string;
+    readonly state: QueueState;
+  } {
     const event = PendingAgentEventSchema.parse(eventValue);
     const scope = `${event.organizationId}\n${event.projectId}\n${event.runId}`;
     const state = this.queues.get(scope) ?? {
@@ -77,8 +114,10 @@ export class EventBatchClient {
       tail: Promise.resolve(),
     };
     this.queues.set(scope, state);
+    let queuedEvent!: QueuedEvent;
     const completion = new Promise<void>((resolve, reject) => {
-      state.queued.push({ event, resolve, reject });
+      queuedEvent = { event, resolve, reject };
+      state.queued.push(queuedEvent);
     });
     if (state.queued.length >= 20) {
       this.requestFlush(scope, state);
@@ -87,7 +126,7 @@ export class EventBatchClient {
         this.requestFlush(scope, state);
       }, this.flushIntervalMs);
     }
-    return completion;
+    return { ...queuedEvent, completion, scope, state };
   }
 
   private requestFlush(scope: string, state: QueueState): void {
@@ -145,7 +184,7 @@ export class EventBatchClient {
 }
 
 export interface EventActivities {
-  emitEvents(input: { readonly events: readonly PendingAgentEvent[] }): Promise<void>;
+  emitEvents(input: EmitEventsInput): Promise<void>;
   transitionRunStatus(input: RunStatusTransition): Promise<void>;
 }
 
@@ -157,11 +196,13 @@ export interface EventActivityDependencies {
 export function createEventActivities(dependencies: EventActivityDependencies): EventActivities {
   return {
     async emitEvents(inputValue) {
-      const input = z
-        .object({ events: z.array(PendingAgentEventSchema).min(1).max(20) })
-        .strict()
-        .parse(inputValue);
-      await Promise.all(input.events.map((event) => dependencies.client.emit(event)));
+      const input = EmitEventsInputSchema.parse(inputValue);
+      await dependencies.client.emitMany(
+        input.events,
+        input.flushImmediately === undefined
+          ? {}
+          : { flushImmediately: input.flushImmediately },
+      );
     },
     async transitionRunStatus(inputValue) {
       const input = RunStatusTransitionSchema.parse(inputValue);

@@ -18,6 +18,10 @@ import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
 import {
   budgetApprovalResolvedSignal,
+  cancelRunSignal,
+  pauseRunSignal,
+  redirectRunSignal,
+  resumeRunSignal,
   runWorkflow,
   RunWorkflowInputSchema,
 } from './workflows/run.js';
@@ -144,8 +148,11 @@ function createTemporalOrchestratorForQueue(
     async signalRun(inputValue) {
       const input = z
         .object({
+          runId: z.string().regex(/^run_[0-9A-HJKMNP-TV-Z]{26}$/u),
           workflowId: z.string().min(1).max(255),
           signal: z.string().min(1).max(100),
+          operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+          prompt: z.string().trim().min(1).max(20_000).optional(),
           approvalId: z.string().optional(),
           decision: z.enum(['approved', 'rejected']).optional(),
           absoluteCeiling: z.string().optional(),
@@ -161,8 +168,29 @@ function createTemporalOrchestratorForQueue(
             ? {}
             : { absoluteCeiling: input.absoluteCeiling }),
         });
+      } else if (input.signal === 'pause') {
+        await handle.signal(pauseRunSignal, {
+          runId: input.runId,
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'resume') {
+        await handle.signal(resumeRunSignal, {
+          runId: input.runId,
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'cancel') {
+        await handle.signal(cancelRunSignal, {
+          runId: input.runId,
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'redirect') {
+        await handle.signal(redirectRunSignal, {
+          runId: input.runId,
+          instruction: z.string().trim().min(1).max(20_000).parse(input.prompt),
+          operationKey: input.operationKey,
+        });
       } else {
-        await handle.signal(input.signal);
+        throw new TypeError('Unsupported run signal');
       }
       return { applied: true };
     },

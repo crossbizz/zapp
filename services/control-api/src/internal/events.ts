@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { AppInstance, TenantDeps } from '../app.js';
 import { ApiError } from '../errors.js';
+import { serviceOf } from './service-auth.js';
 
 /** The route-specific audience prevents a token for another internal operation being reused here. */
 export const EVENTS_INGEST_AUDIENCE = 'control-api:events.ingest' as const;
@@ -14,6 +15,12 @@ const EventParams = z.object({ runId: idSchema('run') }).strict();
 const EventInputSchema = AgentEventSchema.omit({ id: true, sequence: true }).strict();
 const EventBatchSchema = z.array(EventInputSchema).min(1).max(MAX_BATCH_EVENTS);
 const EventResponseSchema = z.object({ events: z.array(AgentEventSchema) }).strict();
+const ControlMetadataSchema = z
+  .object({
+    operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+    acknowledgementDeadlineAt: z.string().datetime(),
+  })
+  .strict();
 
 export interface InternalEventRoutesDeps {
   readonly tenantDb: TenantDeps['tenantDb'];
@@ -77,6 +84,21 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         throw runNotFound();
       }
 
+      const controlEvent = request.body.find(
+        (event) =>
+          event.type === 'run.paused' ||
+          event.type === 'run.resumed' ||
+          (event.type === 'run.cancelled' && event.payload['reason'] === 'user_requested'),
+      );
+      if (controlEvent !== undefined && serviceOf(request).service !== 'orchestrator-worker') {
+        throw new ApiError(
+          'service_forbidden',
+          403,
+          'This service is not allowed to publish run-control acknowledgements.',
+        );
+      }
+      const control = ControlMetadataSchema.safeParse(controlEvent?.payload['control']);
+
       const result = await deps.tenantDb(first.organizationId).events.ingest({
         runId: request.params.runId,
         projectId: first.projectId,
@@ -91,6 +113,13 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
               count: events.length,
               firstSequence: sequences[0] ?? null,
               lastSequence: sequences.at(-1) ?? null,
+              ...(control.success && controlEvent !== undefined
+                ? {
+                    operationKey: control.data.operationKey,
+                    operationState: 'completed',
+                    controlEventType: controlEvent.type,
+                  }
+                : {}),
             },
           });
         },
@@ -101,6 +130,27 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
           'preview_monitor_stale',
           409,
           'That preview monitor generation is no longer active.',
+        );
+      }
+      if (result.kind === 'control_acknowledgement_expired') {
+        throw new ApiError(
+          'control_acknowledgement_expired',
+          409,
+          'That run-control acknowledgement deadline has expired.',
+        );
+      }
+      if (result.kind === 'control_acknowledgement_invalid') {
+        throw new ApiError(
+          'control_acknowledgement_invalid',
+          400,
+          'That run-control acknowledgement is invalid.',
+        );
+      }
+      if (result.kind === 'control_acknowledgement_conflict') {
+        throw new ApiError(
+          'control_acknowledgement_conflict',
+          409,
+          'That run-control acknowledgement no longer matches the run state.',
         );
       }
       if (result.kind === 'payload_too_large') {

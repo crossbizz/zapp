@@ -45,6 +45,19 @@ export const RunBuilderSessionInputSchema = z
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })
       .strict()
       .nullable(),
+    control: z
+      .object({
+        yieldAfterTool: z.boolean(),
+        redirect: z
+          .object({
+            operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+            instruction: z.string().trim().min(1).max(20_000),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .optional(),
     idempotencyKey: z.string().min(1).max(512),
   })
   .strict();
@@ -84,6 +97,7 @@ export function adaptSessionLoop(
           ...built,
           tools: input.allowedTools,
           modeInstructions: input.modeInstructions,
+          ...(input.control === undefined ? {} : { control: input.control }),
         }),
         context.signal,
       );
@@ -101,7 +115,7 @@ export function createSessionActivities(
     .int()
     .positive()
     .max(10_000)
-    .parse(options.heartbeatIntervalMs ?? 10_000);
+    .parse(options.heartbeatIntervalMs ?? 1_000);
   return {
     async runBuilderSession(inputValue) {
       const input = RunBuilderSessionInputSchema.parse(inputValue);

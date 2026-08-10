@@ -766,11 +766,16 @@ describe('POST /v1/projects/:projectId/runs', () => {
     const wired = await wire();
     const project = await createProject(wired);
 
-    for (const [action, payload, auditAction] of [
-      ['pause', undefined, 'run.paused'],
-      ['resume', undefined, 'run.resumed'],
-      ['cancel', undefined, 'run.cancelled'],
-      ['redirect', { prompt: 'Use a different implementation approach' }, 'run.redirected'],
+    for (const [action, payload, auditAction, acknowledgedStatus] of [
+      ['pause', undefined, 'run.pause_requested', 'queued'],
+      ['resume', undefined, 'run.resume_requested', 'paused'],
+      ['cancel', undefined, 'run.cancel_requested', 'queued'],
+      [
+        'redirect',
+        { prompt: 'Use a different implementation approach' },
+        'run.redirected',
+        'queued',
+      ],
     ] as const) {
       const created = await wired.built.app.inject({
         method: 'POST',
@@ -792,6 +797,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       });
 
       expect(response.statusCode, response.body).toBe(200);
+      expect(response.json<{ run: { status: string } }>().run.status).toBe(acknowledgedStatus);
       expect(wired.orchestrator.signals).toContainEqual(
         expect.objectContaining({ runId, signal: action }),
       );

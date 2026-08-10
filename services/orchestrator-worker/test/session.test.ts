@@ -444,6 +444,87 @@ describe('agent session loop', () => {
     expect(saved?.completedToolCallIds).toEqual(['call-write']);
   });
 
+  it('yields after a real tool and durably applies one redirect at the next model turn', async () => {
+    const { registry, root } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-controlled-write',
+          toolName: 'write_file',
+          input: { path: 'controlled.txt', content: 'first tool finished' },
+        },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'Redirect applied before this turn.' },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+    const redirect = {
+      operationKey: `op_${'b'.repeat(64)}`,
+      instruction: 'Keep the existing API and use the repository adapter.',
+    };
+
+    await expect(
+      session.run({
+        ...input(),
+        control: { yieldAfterTool: true, redirect: null },
+      }),
+    ).resolves.toMatchObject({ status: 'yielded' });
+    expect(await readFile(join(root, 'controlled.txt'), 'utf8')).toBe('first tool finished');
+    expect(scripted.requests).toHaveLength(1);
+
+    await expect(
+      session.run({
+        ...input(),
+        control: { yieldAfterTool: true, redirect },
+      }),
+    ).resolves.toMatchObject({
+      status: 'completed',
+      summary: 'Redirect applied before this turn.',
+      redirectApplied: true,
+    });
+    expect(scripted.requests).toHaveLength(2);
+    expect(scripted.requests[1]?.messages).toContainEqual({
+      role: 'user',
+      content: redirect.instruction,
+    });
+
+    await expect(
+      session.run({
+        ...input(),
+        control: { yieldAfterTool: true, redirect },
+      }),
+    ).resolves.toMatchObject({ status: 'completed', redirectApplied: true });
+    expect(scripted.requests).toHaveLength(2);
+    const stored = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
+    expect(stored?.appliedRedirectOperationKeys).toEqual([redirect.operationKey]);
+    expect(
+      stored?.messages.filter(
+        (message) => message.role === 'user' && message.content === redirect.instruction,
+      ),
+    ).toHaveLength(1);
+  });
+
   it('surfaces a code-side policy denial to the model without executing the mutation', async () => {
     const { registry, root } = await memoryRegistry();
     const events: SessionEvent[] = [];
