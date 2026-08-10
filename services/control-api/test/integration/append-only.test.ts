@@ -221,36 +221,40 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
     ).toBe('42501');
   });
 
-  it('re-arms every guard after the harness resets the database', async () => {
-    await seed();
+  it(
+    're-arms every guard after the harness resets the database',
+    async () => {
+      await seed();
 
-    await database.truncateIdentity();
+      await database.truncateIdentity();
 
-    // `'O'` is the armed position. A reset that left one of these disabled would
-    // silently turn an append-only ledger into an ordinary table for every test
-    // that ran afterwards — and for anything else pointed at this database.
-    const states = await guardStates(database.sql);
-    expect(states.size).toBe(LEDGERS.length * 2);
-    for (const [trigger, enabled] of states) {
-      expect(enabled, trigger).toBe('O');
-    }
+      // `'O'` is the armed position. A reset that left one of these disabled would
+      // silently turn an append-only ledger into an ordinary table for every test
+      // that ran afterwards — and for anything else pointed at this database.
+      const states = await guardStates(database.sql);
+      expect(states.size).toBe(LEDGERS.length * 2);
+      for (const [trigger, enabled] of states) {
+        expect(enabled, trigger).toBe('O');
+      }
 
-    // Armed in practice, not just in the catalog.
-    for (const table of LEDGERS) {
-      expect(
-        await sqlstate(database.sql.unsafe(`truncate table ${table} cascade`)),
-        table,
-      ).toBe('42501');
-      expect(await sqlstate(database.sql.unsafe(`delete from ${table}`)), table).toBe('42501');
-    }
+      // Armed in practice, not just in the catalog.
+      for (const table of LEDGERS) {
+        expect(
+          await sqlstate(database.sql.unsafe(`truncate table ${table} cascade`)),
+          table,
+        ).toBe('42501');
+        expect(await sqlstate(database.sql.unsafe(`delete from ${table}`)), table).toBe('42501');
+      }
 
-    // …and the reset did its job: the cascade emptied the ledgers on the way.
-    const [remaining] = await database.sql<{ count: string }[]>`
-      select count(*)::text as count from audit_events
-    `;
-    expect(remaining?.count).toBe('0');
-    organizationId = '';
-  });
+      // …and the reset did its job: the cascade emptied the ledgers on the way.
+      const [remaining] = await database.sql<{ count: string }[]>`
+        select count(*)::text as count from audit_events
+      `;
+      expect(remaining?.count).toBe('0');
+      organizationId = '';
+    },
+    15_000,
+  );
 
   it('still accepts the INSERT the ledger exists for', async () => {
     await seed();
