@@ -86,6 +86,31 @@ interface StoredOperationReceiptRow {
   readonly commits_json: string | null;
 }
 
+const localSessionWriterTails = new Map<string, Promise<void>>();
+
+async function withLocalSessionWriter<T>(
+  runId: string,
+  taskId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = `${runId}\u0000${taskId}`;
+  const previous = localSessionWriterTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  localSessionWriterTails.set(key, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (localSessionWriterTails.get(key) === current) {
+      localSessionWriterTails.delete(key);
+    }
+  }
+}
+
 export class SqliteTranscriptStore implements TranscriptStore {
   constructor(private readonly database: Database.Database) {}
 
@@ -223,7 +248,7 @@ class SqliteCommitIntentStore {
   }
 }
 
-class SqliteOperationReceiptStore {
+export class SqliteOperationReceiptStore {
   constructor(private readonly database: Database.Database) {}
 
   load(
@@ -338,6 +363,8 @@ class SqliteOperationReceiptStore {
     readonly summary: string;
     readonly commits: readonly string[];
   }): OperationReceipt {
+    const existing = this.load(input.runId, input.taskId, input.operationKey);
+    if (existing !== undefined && existing.status !== null) return existing;
     const completed = OperationReceiptSchema.parse({
       ...input,
       commits: input.commits,
@@ -967,217 +994,224 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
       signal?: AbortSignal,
     ): ReturnType<typeof session.run> {
       const taskId = input.taskId ?? input.context.taskId;
-      let existingTranscript = await transcripts.load({
-        runId: input.runId,
-        taskId,
-      });
-      const redirect = input.control?.redirect;
-      let receipt =
-        redirect === null || redirect === undefined
-          ? undefined
-          : receipts.load(input.runId, taskId, redirect.operationKey);
-      if (receipt?.status !== null && receipt !== undefined) {
-        return completedReceiptResult(receipt);
-      }
-      const hasUnknownToolOutcome =
-        existingTranscript !== undefined &&
-        (existingTranscript.activeToolCallId !== null ||
-          existingTranscript.executionLease !== null ||
-          existingTranscript.pendingToolCalls.length > 0);
-      if (hasUnknownToolOutcome) {
-        throw new LocalToolOutcomeUnknownError();
-      }
-      const pendingReceipt = receipts.pending(input.runId, taskId);
-      if (
-        redirect !== null &&
-        redirect !== undefined &&
-        pendingReceipt !== undefined &&
-        pendingReceipt.operationKey !== redirect.operationKey
-      ) {
-        if (
-          existingTranscript?.terminalStatus === null ||
-          existingTranscript === undefined ||
-          !existingTranscript.appliedRedirectOperationKeys.includes(
-            pendingReceipt.operationKey,
-          )
-        ) {
-          throw new LocalOperationBusyError();
+      return await withLocalSessionWriter(input.runId, taskId, async () => {
+        let existingTranscript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+        const redirect = input.control?.redirect;
+        let receipt =
+          redirect === null || redirect === undefined
+            ? undefined
+            : receipts.load(input.runId, taskId, redirect.operationKey);
+        if (receipt?.status !== null && receipt !== undefined) {
+          return completedReceiptResult(receipt);
         }
-        await commitTerminalChanges(input.runId, taskId);
-        existingTranscript = await transcripts.load({
-          runId: input.runId,
-          taskId,
-        });
-        if (
-          existingTranscript === undefined ||
-          existingTranscript.terminalStatus === null
-        ) {
-          throw new Error("Terminal local operation transcript is missing");
+        const hasUnknownToolOutcome =
+          existingTranscript !== undefined &&
+          (existingTranscript.activeToolCallId !== null ||
+            existingTranscript.executionLease !== null ||
+            existingTranscript.pendingToolCalls.length > 0);
+        if (hasUnknownToolOutcome) {
+          throw new LocalToolOutcomeUnknownError();
         }
-        receipts.complete({
-          ...pendingReceipt,
-          status: existingTranscript.terminalStatus,
-          summary: existingTranscript.summary,
-          commits: existingTranscript.commits.slice(
-            pendingReceipt.baseCommitCount,
-          ),
-        });
-      }
-      if (
-        redirect !== null &&
-        redirect !== undefined &&
-        receipt === undefined &&
-        existingTranscript?.terminalStatus !== null &&
-        existingTranscript?.terminalStatus !== undefined &&
-        !existingTranscript.appliedRedirectOperationKeys.includes(
-          redirect.operationKey,
-        )
-      ) {
-        await commitTerminalChanges(input.runId, taskId);
-        existingTranscript = await transcripts.load({
-          runId: input.runId,
-          taskId,
-        });
-      }
-      if (
-        redirect !== null &&
-        redirect !== undefined &&
-        receipt === undefined
-      ) {
-        receipt = receipts.begin({
-          runId: input.runId,
-          taskId,
-          operationKey: redirect.operationKey,
-          baseCommitCount: existingTranscript?.commits.length ?? 0,
-        });
-      }
-      if (
-        receipt !== undefined &&
-        existingTranscript?.terminalStatus !== null &&
-        existingTranscript?.terminalStatus !== undefined &&
-        existingTranscript.appliedRedirectOperationKeys.includes(
-          receipt.operationKey,
-        )
-      ) {
-        await commitTerminalChanges(input.runId, taskId);
-        existingTranscript = await transcripts.load({
-          runId: input.runId,
-          taskId,
-        });
+        const pendingReceipt = receipts.pending(input.runId, taskId);
         if (
-          existingTranscript === undefined ||
-          existingTranscript.terminalStatus === null
+          redirect !== null &&
+          redirect !== undefined &&
+          pendingReceipt !== undefined &&
+          pendingReceipt.operationKey !== redirect.operationKey
         ) {
-          throw new Error("Terminal local operation transcript is missing");
-        }
-        return completedReceiptResult(
+          if (
+            existingTranscript?.terminalStatus === null ||
+            existingTranscript === undefined ||
+            !existingTranscript.appliedRedirectOperationKeys.includes(
+              pendingReceipt.operationKey,
+            )
+          ) {
+            throw new LocalOperationBusyError();
+          }
+          await commitTerminalChanges(input.runId, taskId);
+          existingTranscript = await transcripts.load({
+            runId: input.runId,
+            taskId,
+          });
+          if (
+            existingTranscript === undefined ||
+            existingTranscript.terminalStatus === null
+          ) {
+            throw new Error("Terminal local operation transcript is missing");
+          }
           receipts.complete({
-            ...receipt,
+            ...pendingReceipt,
             status: existingTranscript.terminalStatus,
             summary: existingTranscript.summary,
-            commits: existingTranscript.commits.slice(receipt.baseCommitCount),
-          }),
-        );
-      }
-      const previousCommits = new Set(existingTranscript?.commits ?? []);
-      if (
-        existingTranscript?.terminalStatus !== null &&
-        existingTranscript?.terminalStatus !== undefined &&
-        redirect !== null &&
-        redirect !== undefined &&
-        !existingTranscript.appliedRedirectOperationKeys.includes(
-          redirect.operationKey,
-        )
-      ) {
-        await commitTerminalChanges(input.runId, taskId);
-        existingTranscript = await transcripts.load({
-          runId: input.runId,
-          taskId,
-        });
-        if (existingTranscript === undefined) {
-          throw new Error("Terminal local session transcript is missing");
+            commits: existingTranscript.commits.slice(
+              pendingReceipt.baseCommitCount,
+            ),
+          });
         }
-        const { version, ...draft } = existingTranscript;
-        const budgets = {
-          ...input.budgets,
-          maxTurns: existingTranscript.turns + input.budgets.maxTurns,
-        };
-        existingTranscript = await transcripts.save(version, {
-          ...draft,
-          role: input.role,
-          mode: input.mode,
-          tools: input.tools,
-          budgets,
-          startedAtMs: Date.now(),
-          provenance: [],
-          messages: [
-            {
-              role: "system",
-              content: [options.prompts[input.role], input.modeInstructions]
-                .filter((part): part is string => part !== undefined)
-                .join("\n\n"),
-            },
-          ],
-          tokensUsed: 0,
-          inFlightCompletion: null,
-          completedToolCallIds: [],
-          completedToolNames: [],
-          successfulToolNames: [],
-          prototypeMocks: [],
-          pendingToolCalls: [],
-          activeToolCallId: null,
-          executionLease: null,
-          changedPaths: [],
-          summary: "",
-          terminalStatus: null,
-          terminalErrorCode: null,
-        });
-      }
-      const effectiveInput =
-        existingTranscript === undefined
-          ? input
-          : { ...input, budgets: existingTranscript.budgets };
-      const result = await session.run(effectiveInput, signal);
-      if (
-        result.status === "completed" ||
-        result.status === "failed" ||
-        result.status === "cancelled" ||
-        result.status === "budget_exhausted"
-      ) {
-        await commitTerminalChanges(input.runId, taskId);
-      }
-      const transcript = await transcripts.load({ runId: input.runId, taskId });
-      if (transcript === undefined) return result;
-      if (
-        receipt !== undefined &&
-        transcript.terminalStatus !== null &&
-        (result.status === "completed" ||
-          result.status === "failed" ||
-          result.status === "cancelled" ||
-          result.status === "budget_exhausted")
-      ) {
         if (
-          !transcript.appliedRedirectOperationKeys.includes(
+          redirect !== null &&
+          redirect !== undefined &&
+          receipt === undefined &&
+          existingTranscript?.terminalStatus !== null &&
+          existingTranscript?.terminalStatus !== undefined &&
+          !existingTranscript.appliedRedirectOperationKeys.includes(
+            redirect.operationKey,
+          )
+        ) {
+          await commitTerminalChanges(input.runId, taskId);
+          existingTranscript = await transcripts.load({
+            runId: input.runId,
+            taskId,
+          });
+        }
+        if (
+          redirect !== null &&
+          redirect !== undefined &&
+          receipt === undefined
+        ) {
+          receipt = receipts.begin({
+            runId: input.runId,
+            taskId,
+            operationKey: redirect.operationKey,
+            baseCommitCount: existingTranscript?.commits.length ?? 0,
+          });
+        }
+        if (
+          receipt !== undefined &&
+          existingTranscript?.terminalStatus !== null &&
+          existingTranscript?.terminalStatus !== undefined &&
+          existingTranscript.appliedRedirectOperationKeys.includes(
             receipt.operationKey,
           )
         ) {
-          throw new LocalOperationBusyError();
+          await commitTerminalChanges(input.runId, taskId);
+          existingTranscript = await transcripts.load({
+            runId: input.runId,
+            taskId,
+          });
+          if (
+            existingTranscript === undefined ||
+            existingTranscript.terminalStatus === null
+          ) {
+            throw new Error("Terminal local operation transcript is missing");
+          }
+          return completedReceiptResult(
+            receipts.complete({
+              ...receipt,
+              status: existingTranscript.terminalStatus,
+              summary: existingTranscript.summary,
+              commits: existingTranscript.commits.slice(
+                receipt.baseCommitCount,
+              ),
+            }),
+          );
         }
-        return completedReceiptResult(
-          receipts.complete({
-            ...receipt,
-            status: transcript.terminalStatus,
-            summary: transcript.summary,
-            commits: transcript.commits.slice(receipt.baseCommitCount),
-          }),
-        );
-      }
-      return {
-        ...result,
-        commits: [
-          ...new Set([...result.commits, ...transcript.commits]),
-        ].filter((candidate) => !previousCommits.has(candidate)),
-      };
+        const previousCommits = new Set(existingTranscript?.commits ?? []);
+        if (
+          existingTranscript?.terminalStatus !== null &&
+          existingTranscript?.terminalStatus !== undefined &&
+          redirect !== null &&
+          redirect !== undefined &&
+          !existingTranscript.appliedRedirectOperationKeys.includes(
+            redirect.operationKey,
+          )
+        ) {
+          await commitTerminalChanges(input.runId, taskId);
+          existingTranscript = await transcripts.load({
+            runId: input.runId,
+            taskId,
+          });
+          if (existingTranscript === undefined) {
+            throw new Error("Terminal local session transcript is missing");
+          }
+          const { version, ...draft } = existingTranscript;
+          const budgets = {
+            ...input.budgets,
+            maxTurns: existingTranscript.turns + input.budgets.maxTurns,
+          };
+          existingTranscript = await transcripts.save(version, {
+            ...draft,
+            role: input.role,
+            mode: input.mode,
+            tools: input.tools,
+            budgets,
+            startedAtMs: Date.now(),
+            provenance: [],
+            messages: [
+              {
+                role: "system",
+                content: [options.prompts[input.role], input.modeInstructions]
+                  .filter((part): part is string => part !== undefined)
+                  .join("\n\n"),
+              },
+            ],
+            tokensUsed: 0,
+            inFlightCompletion: null,
+            completedToolCallIds: [],
+            completedToolNames: [],
+            successfulToolNames: [],
+            prototypeMocks: [],
+            pendingToolCalls: [],
+            activeToolCallId: null,
+            executionLease: null,
+            changedPaths: [],
+            summary: "",
+            terminalStatus: null,
+            terminalErrorCode: null,
+          });
+        }
+        const effectiveInput =
+          existingTranscript === undefined
+            ? input
+            : { ...input, budgets: existingTranscript.budgets };
+        const result = await session.run(effectiveInput, signal);
+        if (
+          result.status === "completed" ||
+          result.status === "failed" ||
+          result.status === "cancelled" ||
+          result.status === "budget_exhausted"
+        ) {
+          await commitTerminalChanges(input.runId, taskId);
+        }
+        const transcript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+        if (transcript === undefined) return result;
+        if (
+          receipt !== undefined &&
+          transcript.terminalStatus !== null &&
+          (result.status === "completed" ||
+            result.status === "failed" ||
+            result.status === "cancelled" ||
+            result.status === "budget_exhausted")
+        ) {
+          if (
+            !transcript.appliedRedirectOperationKeys.includes(
+              receipt.operationKey,
+            )
+          ) {
+            throw new LocalOperationBusyError();
+          }
+          return completedReceiptResult(
+            receipts.complete({
+              ...receipt,
+              status: transcript.terminalStatus,
+              summary: transcript.summary,
+              commits: transcript.commits.slice(receipt.baseCommitCount),
+            }),
+          );
+        }
+        return {
+          ...result,
+          commits: [
+            ...new Set([...result.commits, ...transcript.commits]),
+          ].filter((candidate) => !previousCommits.has(candidate)),
+        };
+      });
     },
   };
 }

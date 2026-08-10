@@ -14,6 +14,7 @@ import {
   createLocalAgentOwnedPathStore,
   createLocalAgentSession,
   type LocalAgentSessionOptions,
+  SqliteOperationReceiptStore,
   SqliteTranscriptStore,
 } from "./local-session";
 
@@ -1040,6 +1041,248 @@ describe("desktop local agent session", () => {
       ),
     ).rejects.toThrow(/local message operation is already in progress/iu);
     expect(gateway.calls).toBe(0);
+    database.$client.close();
+  });
+
+  it("holds one writer through terminal Git and receipt finalization", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "zapp-local-finalization-owner-"),
+    );
+    roots.push(root);
+    await mkdir(join(root, "src"));
+    const firstUpdateRefStarted = deferred();
+    const releaseFirstUpdateRef = deferred();
+    const overlappingUpdateRef = deferred();
+    class PausedFinalizationRuntime extends LocalWorkspaceRuntime {
+      updateRefCalls = 0;
+
+      override async exec(input: Parameters<LocalWorkspaceRuntime["exec"]>[0]) {
+        if (input.cmd === "git" && input.env?.ZAPP_EXPECTED_REF !== undefined) {
+          this.updateRefCalls += 1;
+          if (this.updateRefCalls === 1) {
+            firstUpdateRefStarted.resolve();
+            await releaseFirstUpdateRef.promise;
+          } else {
+            overlappingUpdateRef.resolve();
+          }
+        }
+        return await super.exec(input);
+      }
+    }
+    const runtime = new PausedFinalizationRuntime(root);
+    await initializeGit(runtime);
+    const initialHead = await runtime.exec({
+      cmd: "git",
+      args: ["rev-parse", "HEAD"],
+      timeoutMs: 5_000,
+    });
+    expect(initialHead.exitCode).toBe(0);
+    const database = createInMemoryTestDb();
+    const gateway = scriptedGateway([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "operation-a-write",
+          toolName: "write_file",
+          input: {
+            path: "src/OperationA.ts",
+            content: "export const operationA = true;\n",
+          },
+        },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "tool-calls",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+      [
+        { type: "text-delta", text: "Operation A is exact." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+      [
+        { type: "text-delta", text: "Operation B follows A." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+    ]);
+    const options = {
+      database: database.$client,
+      gateway,
+      tools: toolRegistry(runtime),
+      runtime,
+      redact,
+      prompts: {
+        builder: "Build safely.",
+        planner: "Plan safely.",
+        verifier: "Verify safely.",
+        summarizer: "Summarize safely.",
+      },
+    } as const;
+    const operationA = {
+      operationKey: `op_${"1".repeat(64)}`,
+      instruction: "Complete operation A.",
+    };
+    const operationB = {
+      operationKey: `op_${"2".repeat(64)}`,
+      instruction: "Complete operation B after A.",
+    };
+    const uninterrupted = (redirect: typeof operationA): SessionInput => {
+      const input = sessionInput(["write_file"], redirect, "finalization");
+      return {
+        ...input,
+        control: { yieldAfterTool: false, redirect },
+      };
+    };
+
+    const runA = createLocalAgentSession(options).run(
+      uninterrupted(operationA),
+    );
+    await firstUpdateRefStarted.promise;
+    let operationBSettled = false;
+    const runB = createLocalAgentSession(options)
+      .run(uninterrupted(operationB))
+      .finally(() => {
+        operationBSettled = true;
+      });
+    const overlap = await Promise.race([
+      overlappingUpdateRef.promise.then(() => "overlapped" as const),
+      new Promise<"blocked">((resolve) => {
+        setTimeout(() => resolve("blocked"), 500);
+      }),
+    ]);
+    expect(gateway.calls).toBe(2);
+    expect(operationBSettled).toBe(false);
+    expect(
+      database.$client
+        .prepare<
+          [string, string],
+          { readonly operation_key: string; readonly status: string | null }
+        >(
+          `SELECT operation_key, status
+             FROM zapp_local_agent_operation_receipts
+            WHERE run_id = ? AND task_id = ?
+            ORDER BY operation_key`,
+        )
+        .all("local-run-finalization", "local-task-finalization"),
+    ).toEqual([{ operation_key: operationA.operationKey, status: null }]);
+    await expect(
+      runtime.exec({
+        cmd: "git",
+        args: ["rev-parse", "HEAD"],
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0, stdout: initialHead.stdout });
+    releaseFirstUpdateRef.resolve();
+    const [resultA, resultB] = await Promise.allSettled([runA, runB]);
+
+    expect(overlap).toBe("blocked");
+    expect(runtime.updateRefCalls).toBe(1);
+    expect(gateway.calls).toBe(3);
+    expect(resultA).toMatchObject({
+      status: "fulfilled",
+      value: {
+        status: "completed",
+        summary: "Operation A is exact.",
+        commits: [expect.any(String)],
+      },
+    });
+    expect(resultB).toMatchObject({
+      status: "fulfilled",
+      value: {
+        status: "completed",
+        summary: "Operation B follows A.",
+        commits: [],
+      },
+    });
+    expect(
+      database.$client
+        .prepare<
+          [string, string],
+          {
+            readonly operation_key: string;
+            readonly status: string;
+            readonly summary: string;
+            readonly commits_json: string;
+          }
+        >(
+          `SELECT operation_key, status, summary, commits_json
+             FROM zapp_local_agent_operation_receipts
+            WHERE run_id = ? AND task_id = ?
+            ORDER BY operation_key`,
+        )
+        .all("local-run-finalization", "local-task-finalization"),
+    ).toEqual([
+      {
+        operation_key: operationA.operationKey,
+        status: "completed",
+        summary: "Operation A is exact.",
+        commits_json: expect.stringMatching(/^\["[a-f0-9]{40}"\]$/u),
+      },
+      {
+        operation_key: operationB.operationKey,
+        status: "completed",
+        summary: "Operation B follows A.",
+        commits_json: "[]",
+      },
+    ]);
+    database.$client.close();
+  });
+
+  it("returns an authoritative completed receipt before comparing stale recovery data", () => {
+    const database = createInMemoryTestDb();
+    const receipts = new SqliteOperationReceiptStore(database.$client);
+    const operationKey = `op_${"3".repeat(64)}`;
+    const commit = "4".repeat(40);
+    receipts.begin({
+      runId: "local-run-receipt-replay",
+      taskId: "local-task-receipt-replay",
+      operationKey,
+      baseCommitCount: 0,
+    });
+    const authoritative = receipts.complete({
+      runId: "local-run-receipt-replay",
+      taskId: "local-task-receipt-replay",
+      operationKey,
+      baseCommitCount: 0,
+      status: "completed",
+      summary: "Authoritative operation result.",
+      commits: [commit],
+    });
+
+    expect(
+      receipts.complete({
+        runId: "local-run-receipt-replay",
+        taskId: "local-task-receipt-replay",
+        operationKey,
+        baseCommitCount: 0,
+        status: "failed",
+        summary: "Stale caller-derived result.",
+        commits: [],
+      }),
+    ).toEqual(authoritative);
+    expect(
+      receipts.load(
+        "local-run-receipt-replay",
+        "local-task-receipt-replay",
+        operationKey,
+      ),
+    ).toEqual(authoritative);
     database.$client.close();
   });
 
