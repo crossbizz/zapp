@@ -21,6 +21,7 @@
     "@zapp/config": "workspace:*",
     "@zapp/contracts": "workspace:*",
     "@zapp/db": "workspace:*",
+    "@zapp/model-gateway": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.2",
     "fastify-type-provider-zod": "^4.0.2",
