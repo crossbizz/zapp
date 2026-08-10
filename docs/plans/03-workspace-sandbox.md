@@ -353,6 +353,12 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 - [x] **GREEN:** use postgres.js's public `PendingQuery.cancel()` and hold the reserved connection until that same query settles; remove the private driver-shape cancellation and auxiliary fence query.
 - [x] **Verify/review/ship:** pass the focused cancellation unit tests, real PostgreSQL A→B regression, full database package gate, and two-round capped review before the final repository gate and WS-13 shipment.
 
+#### WS-13-FIX-9 — scheduler-independent replay framing gate
+
+- [x] **RED:** retain authoritative CI run `31352923637`: the 10,000-byte streamed replay was exact and below the 64 KiB retained-response ceiling, but a contended clean runner crossed the non-contractual four-record timing threshold (five records).
+- [x] **GREEN:** keep the exact output, replay equality, single side effect, and 64 KiB structural byte-cap assertions while removing only the scheduler-dependent record-count heuristic.
+- [x] **Verify/review/ship:** pass the focused replay regression and full workspace-agent test/lint/typecheck/build gate; close at zero Critical/Important within two review rounds; then run the repository push gate and authoritative CI without another Modal call.
+
 ### Task WS-14 [M2]: Modal integration test suite (real dev env)
 
 **Files:** Create: `test/integration/modal-e2e.test.ts`, CI nightly workflow
@@ -435,3 +441,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-09 WS-12 done — encrypted server-only Modal preview transport, durable hashed shares/grants/sessions, exact-origin isolated bootstrap, Redis revocation fanout, generated SDK, and web E2E passed local package gates plus one locked-image Modal health acceptance; two review rounds exposed and closed streaming, abort, header/redirect confinement, SDK-cookie, and idempotency-scope defects, with no third review per the cap.
 - 2026-08-09 M1-CI-preview-timeout done — clean CI exposed a 25 ms healthy-origin header deadline under full contention; the fixture now preserves silent-origin timeout and rotation with a 500 ms/2 s proof budget, while production's 10-second boundary is unchanged; focused 1/1, preview-proxy 109/109, static gates, and one Critical/Important review passed.
 - 2026-08-09 WS-13 done — supervised preview processes now expose bounded cursor logs, deterministic crash recovery, durable fenced lifecycle monitoring, and cancellation-settled Modal/SSE streams; two-round-capped reviews closed FIX-1..8, the one immutable-image Modal acceptance passed, and `pnpm verify` closed 82/82 concurrent tasks, 16/16 serialized integration tasks, tenant isolation 54/54, and Gate 5 1/1 with external-credential skips visible.
+- 2026-08-09 WS-13-FIX-9 done — authoritative CI exposed a scheduler-dependent four-record replay heuristic; the gate now proves the load-bearing exact replay, one side effect, and 64 KiB retained-response ceiling, with the WS-13 provider acceptance intentionally not repeated.
