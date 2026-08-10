@@ -379,6 +379,12 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 - [ ] **GREEN:** invoke both fixture installs with pnpm's supported `--ignore-workspace` option and cover the exact command boundary locally, without changing or rebuilding the immutable Modal image.
 - [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-2's single immutable-image Modal journey. On success, close WS-14 plus both fix tasks, push, and watch authoritative CI/Security green.
 
+#### WS-14-FIX-3 — strict restore volume input
+
+- [ ] **RED/evidence:** retain FIX-2's single provider result: cache/install/dev-server/checkpoint/direct-kill passed, then restore rejected the full workspace input as unrecognized keys at `createProjectVolumePlan` before creating a replacement sandbox.
+- [ ] **GREEN:** project only organization/project/branch IDs into the strict volume planner during snapshot restore and prove the SDK receives the same tags, environment, named volume, and snapshot filesystem.
+- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-3's single immutable-image Modal journey. On success, close WS-14 plus all three fix tasks, push, and watch authoritative CI/Security green.
+
 ### Task WS-15 [M2]: Runaway-compute governor
 
 **Files:** Create: `src/lifecycle/governor.ts`

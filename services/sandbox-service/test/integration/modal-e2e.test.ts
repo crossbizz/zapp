@@ -53,6 +53,25 @@ async function runOrThrow(
   return result;
 }
 
+async function installFixtureDependencies(
+  provider: Pick<ReturnType<typeof createModalSandboxProvider>, 'exec'>,
+  providerWorkspaceId: string,
+  preferOffline: boolean,
+): Promise<WorkspaceAgentExecResult> {
+  return runOrThrow(provider, providerWorkspaceId, {
+    command: 'pnpm',
+    args: [
+      'install',
+      '--ignore-workspace',
+      '--frozen-lockfile',
+      ...(preferOffline ? ['--prefer-offline'] : []),
+    ],
+    cwd: TEMPLATE_PATH,
+    env: CACHE_EXEC_ENV,
+    timeoutMs: INSTALL_TIMEOUT_MS,
+  });
+}
+
 async function expectPreviewHealthy(
   provider: ReturnType<typeof createModalSandboxProvider>,
   providerWorkspaceId: string,
@@ -117,6 +136,34 @@ describe('WS-14 nightly Modal journey wiring', () => {
 
     expect(exec).toHaveBeenCalledWith(
       expect.objectContaining({
+        env: CACHE_EXEC_ENV,
+      }),
+    );
+  });
+
+  it('installs the sparse fixture as a standalone project', async () => {
+    const exec = vi.fn().mockResolvedValue({
+      durationMs: 1,
+      exitCode: 0,
+      stderr: '',
+      stdout: '',
+      truncated: false,
+    } satisfies WorkspaceAgentExecResult);
+
+    await installFixtureDependencies({ exec }, 'sb_ws14', false);
+    await installFixtureDependencies({ exec }, 'sb_ws14', true);
+
+    expect(exec).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        args: ['install', '--ignore-workspace', '--frozen-lockfile'],
+        env: CACHE_EXEC_ENV,
+      }),
+    );
+    expect(exec).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        args: ['install', '--ignore-workspace', '--frozen-lockfile', '--prefer-offline'],
         env: CACHE_EXEC_ENV,
       }),
     );
@@ -220,13 +267,7 @@ describe('WS-14 real Modal E2E', () => {
         });
         expect(storePath.stdout.trim()).toMatch(/^\/cache\/pnpm(?:\/|$)/u);
 
-        const firstInstall = await runOrThrow(provider, firstWorkspaceId, {
-          command: 'pnpm',
-          args: ['install', '--frozen-lockfile'],
-          cwd: TEMPLATE_PATH,
-          env: CACHE_EXEC_ENV,
-          timeoutMs: INSTALL_TIMEOUT_MS,
-        });
+        const firstInstall = await installFixtureDependencies(provider, firstWorkspaceId, false);
         await runOrThrow(provider, firstWorkspaceId, {
           command: 'node',
           args: [
@@ -235,13 +276,7 @@ describe('WS-14 real Modal E2E', () => {
           ],
           cwd: TEMPLATE_PATH,
         });
-        const cachedInstall = await runOrThrow(provider, firstWorkspaceId, {
-          command: 'pnpm',
-          args: ['install', '--frozen-lockfile', '--prefer-offline'],
-          cwd: TEMPLATE_PATH,
-          env: CACHE_EXEC_ENV,
-          timeoutMs: INSTALL_TIMEOUT_MS,
-        });
+        const cachedInstall = await installFixtureDependencies(provider, firstWorkspaceId, true);
         expect(cachedInstall.durationMs).toBeLessThanOrEqual(firstInstall.durationMs * 0.6);
 
         await provider.startDevServer(firstWorkspaceId, contract);
