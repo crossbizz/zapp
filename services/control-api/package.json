@@ -21,12 +21,14 @@
     "start": "node --enable-source-maps dist/server.js"
   },
   "dependencies": {
+    "@temporalio/client": "1.22.0",
     "@aws-sdk/client-sqs": "^3.922.0",
     "@fastify/swagger": "^9.8.1",
     "@fastify/websocket": "11.3.0",
     "@zapp/config": "workspace:*",
     "@zapp/contracts": "workspace:*",
     "@zapp/db": "workspace:*",
+    "@zapp/project-adapters": "workspace:*",
     "@zapp/sandbox-service": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.2",

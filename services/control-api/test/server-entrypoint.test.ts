@@ -18,9 +18,13 @@ const production = vi.hoisted(() => {
     publish: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const temporalEnv = { address: 'temporal.test:7233', namespace: 'zapp-test' };
+  const temporalConnection = { close: vi.fn(() => Promise.resolve()) };
+  const temporal = { workflow: { kind: 'production-temporal-client' } };
   const app = {
     listen: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
+    addHook: vi.fn(),
     log: { error: vi.fn(), info: vi.fn() },
   };
   const eventPublisher = { kind: 'production-event-publisher' };
@@ -70,6 +74,9 @@ const production = vi.hoisted(() => {
     accountingReconcilerLifecycle,
     preview,
     redis,
+    temporal,
+    temporalConnection,
+    temporalEnv,
     usageConsumer,
     usageConsumerLifecycle,
     usageOutboxPublisher,
@@ -89,6 +96,10 @@ const production = vi.hoisted(() => {
     createRedisConnection: vi
       .fn<(url: string, options: unknown) => typeof redis>()
       .mockReturnValue(redis),
+    connectTemporal: vi.fn(() => Promise.resolve(temporalConnection)),
+    TemporalClient: vi.fn(function TemporalClient() {
+      return temporal;
+    }),
     createSqsUsageQueue: vi.fn(() => usageQueue),
     createFlexpriceIngestClient: vi.fn(() => flexprice),
     createUsageEventConsumer: vi.fn(() => usageConsumer),
@@ -116,6 +127,7 @@ const production = vi.hoisted(() => {
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
     loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
     loadServiceTokenConfig: vi.fn(() => ({ kind: 'production-service-tokens' })),
+    loadTemporalEnv: vi.fn(() => temporalEnv),
     loadUsageQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
       endpoint: 'http://localstack.test',
@@ -130,6 +142,10 @@ const production = vi.hoisted(() => {
 });
 
 vi.mock('@zapp/db', () => ({ createDb: production.createDb }));
+vi.mock('@temporalio/client', () => ({
+  Client: production.TemporalClient,
+  Connection: { connect: production.connectTemporal },
+}));
 vi.mock('../src/auth/config.js', () => ({ loadAuthEnv: production.loadAuthEnv }));
 vi.mock('../src/compose.js', () => ({ composeApp: production.composeApp }));
 vi.mock('../src/config/rate-limits.js', () => ({
@@ -143,6 +159,7 @@ vi.mock('../src/env.js', () => ({
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
+  loadTemporalEnv: production.loadTemporalEnv,
   loadUsageQueueEnv: production.loadUsageQueueEnv,
 }));
 vi.mock('../src/events/lifecycle.js', () => ({
@@ -203,8 +220,16 @@ describe('control-api production entrypoint', () => {
         runIntentHmacKey: Buffer.alloc(32, 0x33),
         preview: production.preview,
         previewRedis: production.redis,
+        temporal: production.temporal,
       }),
     );
+    expect(production.connectTemporal).toHaveBeenCalledWith({
+      address: production.temporalEnv.address,
+    });
+    expect(production.TemporalClient).toHaveBeenCalledWith({
+      connection: production.temporalConnection,
+      namespace: production.temporalEnv.namespace,
+    });
     expect(production.app.listen).not.toHaveBeenCalled();
     expect(production.createEventPublisherLifecycle).toHaveBeenCalledOnce();
     const lifecycleInput = production.createEventPublisherLifecycle.mock.calls[0]?.[0];

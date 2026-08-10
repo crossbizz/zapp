@@ -18,6 +18,8 @@ import type { ApprovalActivities } from '../activities/approvals.js';
 import type { SessionActivities } from '../activities/session.js';
 import type { WorkspaceActivities } from '../activities/workspace.js';
 
+export { capabilityScanWorkflow } from './capability-scan.js';
+
 const workflowIdSchema = (prefix: 'run' | 'org' | 'proj' | 'br'): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
 

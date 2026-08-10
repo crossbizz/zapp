@@ -33,6 +33,7 @@ import { InMemoryTenantData } from '../support/tenant-db.js';
 import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
+  TEST_CAPABILITY_SCAN,
   TEST_MASTER_KEY,
   TEST_PRICING,
   TEST_RATE_LIMITS,
@@ -531,6 +532,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         tenantDb: createTenantDbFactory(database.db),
         runIntentHmacKey: RUN_INTENT_HMAC_KEY,
         pricing: TEST_PRICING,
+        capabilityScan: TEST_CAPABILITY_SCAN,
         orchestrator: {
           startRun: (input) => {
             startCalls.push(input);

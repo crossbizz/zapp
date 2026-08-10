@@ -1,4 +1,11 @@
-import { PageSchema, idSchema } from '@zapp/contracts';
+import { IdempotencyHeader, PageSchema, idSchema, newId } from '@zapp/contracts';
+import {
+  CapabilityScanOutputSchema,
+  CapabilityScanUnavailableError,
+  capabilityScanActivityIdempotencyKey,
+  capabilityScanArtifactStorageRef,
+  type CapabilityScanPort,
+} from '@zapp/project-adapters';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -136,25 +143,15 @@ const ProjectResourcesSchema = z.object({
 });
 
 /**
- * What a scan request answers with until plan 05 VF-3 wires the real pipeline.
- *
- * `id` is this request's id — the one already stamped at the edge (CP-1), echoed
- * in the error envelope and carried through the logs — and it is deliberately
- * not a TypeID: a scan has no row of its own in PRD §23, so minting an id that
- * looked like one would be inventing an entity nobody can then look up. VF-3
- * replaces this shape with the durable identity of the workflow it starts, and
- * the contract version it produces is readable at
- * `GET /v1/projects/:projectId/contract` either way.
+ * The scan activity is keyed by the edge request id. A scan has no row of its
+ * own in PRD §23, so minting a TypeID would invent an entity nobody can look up.
+ * The durable result is the versioned contract returned by
+ * `GET /v1/projects/:projectId/contract`.
  */
 const ScanSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  /**
-   * `accepted`, not `queued`: nothing is enqueued, and a status that says
-   * otherwise is a client waiting for a worker that does not exist (plan 02 CP-6
-   * review). It matches the 202 the route answers with, and VF-3 is free to add
-   * `queued` when there is a queue to be in.
-   */
+  /** The Temporal activity completed and its result was accepted durably. */
   status: z.literal('accepted'),
   requestedAt: z.string().datetime(),
 });
@@ -166,10 +163,12 @@ export interface ProjectRoutesDeps {
   readonly now: () => Date;
   /** Creates the internal repository, inside the creating transaction (plan 06 GIT-2). */
   readonly git: GitServicePort;
+  /** Starts VF-3's tenant-bound Temporal scan activity. */
+  readonly capabilityScan: CapabilityScanPort;
 }
 
 export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps): void {
-  const { now, git } = deps;
+  const { now, git, capabilityScan } = deps;
 
   app.post(
     '/v1/projects',
@@ -446,27 +445,89 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
         throw projectNotFound();
       }
 
-      /**
-       * 202, and nothing is enqueued: plan 05's VF-3 owns the capability scan
-       * pipeline (detection → `ExecutionContract` → `project_contracts` row →
-       * support level), and this route is the surface it attaches to. The
-       * acceptance is therefore honest about what has happened — the request was
-       * accepted, no contract exists yet — rather than reporting a scan that no
-       * worker will run. `GET /v1/projects/:projectId/contract` answers 404
-       * until VF-3 lands, which is the same answer it gives for a project whose
-       * first scan has not finished.
-       */
+      // The activity owns the workspace scan. Only its strict output is stored;
+      // a missing production binding fails closed rather than fabricating a
+      // contract from control-plane state.
       const requestedAt = now();
-      await request.auditDetached({
+      const idempotencyHeader = request.headers[IdempotencyHeader];
+      const submittedScanId = Array.isArray(idempotencyHeader)
+        ? idempotencyHeader[0]
+        : idempotencyHeader;
+      const scanId = submittedScanId?.trim() || request.id;
+      const projectBranches = await ctx.db.branches.byProject(project.id);
+      const branch =
+        projectBranches.find(({ name, status }) => name === 'main' && status === 'active') ??
+        projectBranches.find(({ status }) => status === 'active');
+      if (branch === undefined) {
+        throw new ApiError(
+          'capability_scan_unavailable',
+          503,
+          'The project has no active branch to scan. Please try again.',
+        );
+      }
+      const idempotencyKey = capabilityScanActivityIdempotencyKey({
         organizationId: ctx.organizationId,
-        action: 'project.scan_requested',
-        target: { type: 'project', id: project.id },
-        metadata: { scanId: request.id },
+        projectId: project.id,
+        scanId,
       });
+      const scanInput = {
+        scanId,
+        idempotencyKey,
+        organizationId: ctx.organizationId,
+        projectId: project.id,
+        branchId: branch.id,
+        branchName: branch.name,
+        workspaceId: newId('ws'),
+        runId: newId('run'),
+        taskId: newId('task'),
+        workspaceCreatedAt: requestedAt.toISOString(),
+      } as const;
+      let scanOutput: z.infer<typeof CapabilityScanOutputSchema>;
+      try {
+        scanOutput = CapabilityScanOutputSchema.parse(
+          await capabilityScan.scan(scanInput),
+        );
+      } catch (error) {
+        if (error instanceof CapabilityScanUnavailableError) {
+          throw new ApiError(
+            'capability_scan_unavailable',
+            503,
+            'The capability scan service is unavailable. Please try again.',
+          );
+        }
+        throw error;
+      }
+
+      const expectedStorageRef = capabilityScanArtifactStorageRef(scanInput);
+      if (scanOutput.reportArtifact.storageRef !== expectedStorageRef) {
+        throw new ApiError(
+          'capability_scan_invalid_result',
+          502,
+          'The capability scan service returned an invalid artifact receipt.',
+        );
+      }
+
+      const persisted = await ctx.db.contracts.recordScan({
+        projectId: project.id,
+        scanId,
+        result: scanOutput.result,
+        reportArtifact: scanOutput.reportArtifact,
+        createdAt: requestedAt,
+        audit: (tx) =>
+          request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'project.scan_requested',
+            target: { type: 'project', id: project.id },
+            metadata: { scanId },
+          }),
+      });
+      if (persisted === undefined) {
+        throw projectNotFound();
+      }
 
       return await reply.status(202).send({
         scan: {
-          id: request.id,
+          id: scanId,
           projectId: project.id,
           status: 'accepted',
           requestedAt: requestedAt.toISOString(),

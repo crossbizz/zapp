@@ -45,6 +45,21 @@ export function loadRedisUrl(source: unknown = process.env): string {
   return defineEnv(RedisEnvSchema, source).REDIS_URL;
 }
 
+const TemporalEnvSchema = z.object({
+  TEMPORAL_ADDRESS: z.string().trim().min(1),
+  TEMPORAL_NAMESPACE: z.string().trim().min(1).default('default'),
+});
+
+export interface TemporalEnv {
+  readonly address: string;
+  readonly namespace: string;
+}
+
+export function loadTemporalEnv(source: unknown = process.env): TemporalEnv {
+  const env = defineEnv(TemporalEnvSchema, source);
+  return { address: env.TEMPORAL_ADDRESS, namespace: env.TEMPORAL_NAMESPACE };
+}
+
 const UsageQueueEnvSchema = z
   .object({
     AWS_REGION: z.string().trim().min(1),

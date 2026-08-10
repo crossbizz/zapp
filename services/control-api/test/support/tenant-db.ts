@@ -87,6 +87,7 @@ export class InMemoryTenantData {
   yieldSpecificationCreates = false;
   readonly specificationLocks = new Map<string, Promise<void>>();
   readonly runCreateLocks = new Map<string, Promise<void>>();
+  readonly capabilityScanLocks = new Map<string, Promise<void>>();
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
@@ -187,6 +188,28 @@ async function withRunCreateLock<T>(
   } finally {
     unlock();
     if (data.runCreateLocks.get(runId) === current) data.runCreateLocks.delete(runId);
+  }
+}
+
+async function withCapabilityScanLock<T>(
+  data: InMemoryTenantData,
+  projectId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = data.capabilityScanLocks.get(projectId) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.capabilityScanLocks.set(projectId, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.capabilityScanLocks.get(projectId) === current) {
+      data.capabilityScanLocks.delete(projectId);
+    }
   }
 }
 
@@ -573,6 +596,75 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           .filter((row) => row.projectId === projectId)
           .sort((left, right) => right.version - left.version);
         return Promise.resolve(rows[0]);
+      },
+      async recordScan(input) {
+        return await withCapabilityScanLock(data, input.projectId, async () => {
+          const project = mine(orgId, data.projects).find((row) => row.id === input.projectId);
+          if (project === undefined) return undefined;
+          const existingArtifact = mine(orgId, data.artifacts).find(
+            (row) =>
+              row.projectId === project.id &&
+              row.type === 'capability_scan_report' &&
+              (row.metadataJson as { scanId?: unknown }).scanId === input.scanId,
+          );
+          if (existingArtifact !== undefined) {
+            const contractId = (existingArtifact.metadataJson as { contractId?: unknown })
+              .contractId;
+            const existingContract = mine(orgId, data.contracts).find(
+              (row) => row.projectId === project.id && row.id === contractId,
+            );
+            if (existingContract === undefined) {
+              throw new Error('capability scan replay references a missing contract');
+            }
+            return { contract: existingContract, artifact: existingArtifact };
+          }
+        const version =
+          Math.max(
+            0,
+            ...mine(orgId, data.contracts)
+              .filter((row) => row.projectId === project.id)
+              .map((row) => row.version),
+          ) + 1;
+        const contract: ProjectContract = {
+          id: newId('pc'),
+          organizationId: orgId,
+          projectId: project.id,
+          version,
+          detectedFramework: input.result.detectedFramework,
+          contractJson: input.result.contract,
+          createdAt: input.createdAt,
+        };
+        const artifact: Artifact = {
+          id: newId('art'),
+          organizationId: orgId,
+          projectId: project.id,
+          runId: null,
+          taskId: null,
+          type: 'capability_scan_report',
+          storageRef: input.reportArtifact.storageRef,
+          contentHash: input.reportArtifact.contentHash,
+          metadataJson: {
+            scanId: input.scanId,
+            contractId: contract.id,
+            verifiedEligible: input.result.verifiedEligible,
+            database: input.result.database,
+            auth: input.result.auth,
+            deployment: input.result.deployment,
+            tests: input.result.tests,
+            observability: input.result.observability,
+            reportCard: input.result.reportCard,
+          },
+          createdAt: input.createdAt,
+        };
+          await input.audit(NO_TRANSACTION, { contract, artifact });
+          data.contracts.push(contract);
+          data.artifacts.push(artifact);
+        data.projects.splice(data.projects.indexOf(project), 1, {
+          ...project,
+          supportLevel: input.result.supportLevel,
+        });
+          return { contract, artifact };
+        });
       },
     },
 

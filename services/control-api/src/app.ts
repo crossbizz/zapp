@@ -1,6 +1,10 @@
 import { randomBytes } from 'node:crypto';
 
 import type { ServiceName } from '@zapp/config';
+import {
+  createUnavailableCapabilityScanPort,
+  type CapabilityScanPort,
+} from '@zapp/project-adapters';
 import websocket from '@fastify/websocket';
 import Fastify, {
   type FastifyBaseLogger,
@@ -147,6 +151,8 @@ export interface TenantDeps {
   readonly git?: GitServicePort;
   /** CP-9's durable-workflow boundary. Omitted only where mutations must fail closed. */
   readonly orchestrator?: OrchestratorPort;
+  /** VF-3's Temporal workspace activity client. Missing deployments fail closed. */
+  readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
@@ -476,7 +482,11 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // never ship.
         if (tenant !== undefined) {
           registerAuditRoutes(app, { organizations: orgs.organizations });
-          registerProjectRoutes(app, { now, git: tenant.git ?? createRecordOnlyGitService() });
+          registerProjectRoutes(app, {
+            now,
+            git: tenant.git ?? createRecordOnlyGitService(),
+            capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
+          });
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,

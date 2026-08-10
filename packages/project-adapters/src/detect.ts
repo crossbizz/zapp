@@ -9,6 +9,7 @@ import { frameworkAdapters } from './frameworks.js';
 
 export * from './frameworks.js';
 export * from './generic-node.js';
+export * from './scan.js';
 export * from './types.js';
 
 export interface AdapterDetector {

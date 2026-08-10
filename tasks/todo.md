@@ -109,7 +109,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-15 Ask + Prototype modes
 - [x] VF-1 Adapter framework + generic node
 - [x] VF-2 Framework adapters (P0 set)
-- [ ] VF-3 Capability scan pipeline
+- [x] VF-3 Capability scan pipeline
 - [x] VF-4 Gate registry + §24.2 policy matrix
 - [x] VF-5 Deterministic gates (build/type/lint/unit/secret/dev-server)
 - [x] WS-13 Dev-server supervisor + logs

@@ -1,11 +1,21 @@
 import { ApiErrorSchema, IdempotencyHeader } from '@zapp/contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import {
+  CapabilityScanUnavailableError,
+  type CapabilityScanPort,
+} from '@zapp/project-adapters';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import { GitServiceError, type GitServicePort } from '../src/git/port.js';
 import { IDEMPOTENT_REPLAY_HEADER } from '../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
-import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
+import {
+  TEST_CAPABILITY_SCAN,
+  buildHarness,
+  signIn,
+  type Harness,
+  type TestSession,
+} from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
 /**
@@ -81,11 +91,14 @@ interface Wired {
 }
 
 /** A harness with the tenant surface wired, one organization, and its Owner. */
-async function wire(options: { git?: GitServicePort } = {}): Promise<Wired> {
+async function wire(
+  options: { git?: GitServicePort; capabilityScan?: CapabilityScanPort } = {},
+): Promise<Wired> {
   const data = new InMemoryTenantData();
   const built = buildHarness({
     tenantDb: data.factory,
     ...(options.git === undefined ? {} : { git: options.git }),
+    ...(options.capabilityScan === undefined ? {} : { capabilityScan: options.capabilityScan }),
   });
   harnesses.push(built);
 
@@ -145,7 +158,7 @@ interface CreatedProject {
     supportLevel: string;
   };
   readonly repository: { id: string; internalRepoRef: string; defaultBranch: string };
-  readonly branches: { name: string; status: string }[];
+  readonly branches: { id: string; name: string; status: string }[];
   readonly environments: { name: string; type: string }[];
 }
 
@@ -710,8 +723,9 @@ describe('the execution contract', () => {
 });
 
 describe('requesting a capability scan', () => {
-  it('accepts it, audits it, and promises nothing it has not done', async () => {
-    const wired = await wire();
+  it('runs the activity, appends the contract, records its report, and audits the request', async () => {
+    const scan = vi.fn(TEST_CAPABILITY_SCAN.scan.bind(TEST_CAPABILITY_SCAN));
+    const wired = await wire({ capabilityScan: { scan } });
     const created = await create(wired, { name: 'To Scan' });
 
     const response = await wired.built.app.inject({
@@ -721,24 +735,101 @@ describe('requesting a capability scan', () => {
     });
 
     expect(response.statusCode, response.body).toBe(202);
-    const scan = response.json<{ scan: { id: string; projectId: string; status: string } }>().scan;
-    // `accepted`, not `queued`: nothing is enqueued, and a client polling for a
-    // worker that does not exist is a promise this route must not make.
-    expect(scan).toMatchObject({ projectId: created.project.id, status: 'accepted' });
-    expect(scan.id).not.toBe('');
+    const responseScan = response.json<{ scan: { id: string; projectId: string; status: string } }>().scan;
+    expect(responseScan).toMatchObject({ projectId: created.project.id, status: 'accepted' });
+    expect(responseScan.id).not.toBe('');
+    expect(scan).toHaveBeenCalledOnce();
+    const scanInput = scan.mock.calls[0]?.[0];
+    expect(scanInput).toMatchObject({
+      branchId: created.branches[0]?.id,
+      branchName: 'main',
+    });
+    expect(scanInput?.idempotencyKey).toMatch(/^capability-scan:/u);
 
     expect(
       wired.built.audit.events.find((event) => event.action === 'project.scan_requested'),
     ).toMatchObject({ targetType: 'project', targetId: created.project.id });
 
-    // Nothing was produced, and the contract route says so rather than
-    // inventing an empty one.
     const contract = await wired.built.app.inject({
       method: 'GET',
       url: `/v1/projects/${created.project.id}/contract`,
       headers: wired.as(wired.owner),
     });
-    expect(contract.statusCode).toBe(404);
+    expect(contract.statusCode, contract.body).toBe(200);
+    expect(
+      contract.json<{ contract: { version: number; detectedFramework: string | null } }>().contract,
+    ).toMatchObject({ version: 1, detectedFramework: null });
+    expect(wired.data.artifacts).toHaveLength(1);
+    expect(wired.data.artifacts[0]).toMatchObject({
+      projectId: created.project.id,
+      type: 'capability_scan_report',
+    });
+  });
+
+  it('fails closed when the Temporal scan binding is unavailable', async () => {
+    const wired = await wire({
+      capabilityScan: {
+        scan: () => Promise.reject(new CapabilityScanUnavailableError()),
+      },
+    });
+    const created = await create(wired, { name: 'Not Falsely Scanned' });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${created.project.id}/scan`,
+      headers: wired.as(wired.owner),
+    });
+
+    expect(response.statusCode, response.body).toBe(503);
+    expect(errorOf(response)).toBe('capability_scan_unavailable');
+    expect(wired.data.contracts).toEqual([]);
+    expect(wired.data.artifacts).toEqual([]);
+  });
+
+  it('rejects an artifact receipt outside the tenant and project prefix', async () => {
+    const wired = await wire({
+      capabilityScan: {
+        async scan(input) {
+          const output = await TEST_CAPABILITY_SCAN.scan(input);
+          return {
+            ...output,
+            reportArtifact: {
+              ...output.reportArtifact,
+              storageRef: `org/${'org_0'.padEnd(30, '0')}/project/${input.projectId}/capability-scan/${input.scanId}.json`,
+            },
+          };
+        },
+      },
+    });
+    const created = await create(wired, { name: 'Tenant Bound Report' });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${created.project.id}/scan`,
+      headers: wired.as(wired.owner),
+    });
+
+    expect(response.statusCode, response.body).toBe(502);
+    expect(errorOf(response)).toBe('capability_scan_invalid_result');
+    expect(wired.data.contracts).toEqual([]);
+    expect(wired.data.artifacts).toEqual([]);
+  });
+
+  it('rolls the contract and report back when their audit row cannot be written', async () => {
+    const wired = await wire();
+    const created = await create(wired, { name: 'Audited Scan' });
+    const failingAudit = wired.built.audit as unknown as { record: () => Promise<void> };
+    failingAudit.record = () => Promise.reject(new Error('audit sink unavailable'));
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${created.project.id}/scan`,
+      headers: wired.as(wired.owner),
+    });
+
+    expect(response.statusCode, response.body).toBe(500);
+    expect(wired.data.contracts).toEqual([]);
+    expect(wired.data.artifacts).toEqual([]);
   });
 
   it('refuses a Viewer', async () => {

@@ -73,6 +73,7 @@ function composed(): AppInstance {
     serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
+    temporal: { workflow: {} as never },
   });
   apps.push(app);
   return app;

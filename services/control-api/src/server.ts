@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createDb } from '@zapp/db';
+import { Client, Connection } from '@temporalio/client';
 
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
@@ -14,6 +15,7 @@ import {
   loadPreviewEnv,
   loadServiceTokenConfig,
   loadUsageQueueEnv,
+  loadTemporalEnv,
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
@@ -69,6 +71,7 @@ const gitServiceUrl = loadGitServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
 const flexpriceConfig = loadFlexpriceEnv();
+const temporalEnv = loadTemporalEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -79,6 +82,11 @@ const redis = createRedisConnection(redisUrl, {
   onError: (error) => {
     logRedisError(error);
   },
+});
+const temporalConnection = await Connection.connect({ address: temporalEnv.address });
+const temporal = new Client({
+  connection: temporalConnection,
+  namespace: temporalEnv.namespace,
 });
 
 const app = composeApp({
@@ -95,6 +103,11 @@ const app = composeApp({
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,
   pricing,
+  temporal,
+});
+
+app.addHook('onClose', async () => {
+  await temporalConnection.close();
 });
 
 logRedisError = (error) => {

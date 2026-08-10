@@ -1,4 +1,8 @@
 import type { ServiceName } from '@zapp/config';
+import {
+  capabilityScanArtifactStorageRef,
+  type CapabilityScanPort,
+} from '@zapp/project-adapters';
 
 import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
@@ -36,6 +40,57 @@ export const TEST_SECRET = 'a'.repeat(64);
 export const TEST_PREVIOUS_SECRET = 'b'.repeat(64);
 /** Fixed only for deterministic fingerprint assertions. Never a deployed key. */
 export const TEST_RUN_INTENT_HMAC_KEY = Buffer.alloc(32, 0x5a);
+
+/** Deterministic completed scan used by route suites that are not testing detection itself. */
+export const TEST_CAPABILITY_SCAN: CapabilityScanPort = {
+  scan(input) {
+    return Promise.resolve({
+      result: {
+        supportLevel: 'compatible',
+        verifiedEligible: false,
+        detectedFramework: null,
+        detections: [{ adapterId: 'generic-node', confidence: 0.25, evidence: ['package.json'] }],
+        contract: {
+          version: 1,
+          package_manager: 'pnpm',
+          workspace_root: '.',
+          install: { command: 'pnpm install --frozen-lockfile' },
+          develop: { command: 'pnpm run dev', port: 3000 },
+        },
+        database: null,
+        auth: null,
+        deployment: null,
+        tests: { unit: false, integration: false, browser: false },
+        observability: [],
+        reportCard: {
+          evidence: ['package.json'],
+          missingCapabilities: [
+            'database',
+            'auth',
+            'deployment',
+            'unit_tests',
+            'integration_tests',
+            'browser_tests',
+            'observability',
+          ],
+          hardenProjectInput: [
+            'database',
+            'auth',
+            'deployment',
+            'unit_tests',
+            'integration_tests',
+            'browser_tests',
+            'observability',
+          ],
+        },
+      },
+      reportArtifact: {
+        storageRef: capabilityScanArtifactStorageRef(input),
+        contentHash: 'a'.repeat(64),
+      },
+    });
+  },
+};
 
 /**
  * The vault's master key for tests: a fixed byte pattern, and the *shipping*
@@ -179,6 +234,7 @@ export interface HarnessOptions {
   readonly git?: GitServicePort;
   /** CP-9's workflow boundary, normally a recording fake in route tests. */
   readonly orchestrator?: OrchestratorPort;
+  readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
   readonly releasePort?: ReleasePort;
   readonly integrationPort?: IntegrationPort;
@@ -243,6 +299,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { pricing: options.pricing ?? TEST_PRICING }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
+            capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
             ...(options.integrationPort === undefined

@@ -59,6 +59,7 @@ describe('control-api event stream composition', () => {
       serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
       rateLimits: loadRateLimitSettings(),
       pricing: TEST_PRICING,
+      temporal: { workflow: {} as never },
     });
 
     expect(app).toBe(appCapture.app);

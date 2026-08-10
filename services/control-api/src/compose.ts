@@ -16,6 +16,10 @@ import { createDbAuditSink } from './plugins/audit.js';
 import { createRedisIdempotencyStore } from './plugins/idempotency.js';
 import { createRedisRateLimiter } from './plugins/rate-limit.js';
 import type { RedisCommands, RedisConnection } from './redis/client.js';
+import {
+  createTemporalCapabilityScanPort,
+  type CapabilityScanWorkflowClient,
+} from './orchestrator/capability-scan.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
@@ -82,6 +86,8 @@ export interface ServiceRuntime {
   readonly rateLimits: RateLimitSettings;
   readonly preview?: PreviewEnv;
   readonly pricing: PricingConfig;
+  /** Temporal client used for the tenant-bound VF-3 verification workflow. */
+  readonly temporal: CapabilityScanWorkflowClient;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -139,6 +145,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         baseUrl: runtime.gitServiceUrl,
         serviceTokens: runtime.serviceTokens,
       }),
+      capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
     },
     secrets: {
       masterKey: runtime.masterKey,

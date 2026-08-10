@@ -1,3 +1,5 @@
+export * from './activities/capability-scan.js';
+export * from './activities/capability-scan-production.js';
 export * from './activities/events.js';
 export * from './activities/idempotency.js';
 export * from './activities/merge.js';
@@ -6,6 +8,8 @@ export * from './activities/workspace.js';
 export * from './session/context.js';
 export * from './session/loop.js';
 export * from './session/transcript.js';
+export * from './runtime/capability-scan-worker.js';
 export * from './worker.js';
+export * from './workflows/capability-scan.js';
 export * from './workflows/run.js';
 export * from './workflows/task.js';

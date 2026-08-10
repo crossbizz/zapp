@@ -1,0 +1,27 @@
+{
+  "name": "scan-next-supabase",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:integration": "vitest run test/integration",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@sentry/nextjs": "latest",
+    "@supabase/ssr": "latest",
+    "@supabase/supabase-js": "latest",
+    "next": "latest",
+    "posthog-js": "latest",
+    "react": "latest"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

@@ -127,6 +127,13 @@
       "when": 1786352400002,
       "tag": "0017_peaceful_makkari",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786352400003,
+      "tag": "0018_jittery_the_hand",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,18 @@
+import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { ApiErrorSchema, IdempotencyHeader, newId } from '@zapp/contracts';
 import { projectContracts } from '@zapp/db';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  CapabilityScanArtifactMetadataSchema,
+  capabilityScanActivityIdempotencyKey,
+  capabilityScanArtifactStorageRef,
+  scanProjectCapabilities,
+  type CapabilityScanPort,
+} from '@zapp/project-adapters';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
@@ -12,8 +24,46 @@ import { IDEMPOTENT_REPLAY_HEADER } from '../../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { TEST_AUTH_CONFIG, TEST_RATE_LIMITS, cookieJar, cookiesOf } from '../support/harness.js';
+import {
+  TEST_AUTH_CONFIG,
+  TEST_RATE_LIMITS,
+  cookieJar,
+  cookiesOf,
+} from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
+
+const scanFixture = fileURLToPath(
+  new URL('../../../../packages/project-adapters/test/fixtures/scan-next-supabase', import.meta.url),
+);
+
+async function fixtureFiles(root: string, directory = root): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(directory, entry.name);
+      return entry.isDirectory() ? await fixtureFiles(root, path) : [relative(root, path)];
+    }),
+  );
+  return nested.flat().sort();
+}
+
+const fixtureCapabilityScan: CapabilityScanPort = {
+  async scan(input) {
+    const result = await scanProjectCapabilities({
+      workspaceRoot: '.',
+      listFiles: async () => await fixtureFiles(scanFixture),
+      readFile: async (path) => await readFile(join(scanFixture, path), 'utf8'),
+    });
+    const bytes = JSON.stringify(result.reportCard);
+    return {
+      result,
+      reportArtifact: {
+        storageRef: capabilityScanArtifactStorageRef(input),
+        contentHash: createHash('sha256').update(bytes).digest('hex'),
+      },
+    };
+  },
+};
 
 /**
  * The project lifecycle against a real PostgreSQL (CP-6).
@@ -165,7 +215,11 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
       logger: false,
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations: store, audit: createDbAuditSink(database.db) },
-      tenant: { tenantDb: createTenantDbFactory(database.db), git },
+      tenant: {
+        tenantDb: createTenantDbFactory(database.db),
+        git,
+        capabilityScan: fixtureCapabilityScan,
+      },
       limits: { config: TEST_RATE_LIMITS },
     });
     await app.ready();
@@ -510,7 +564,7 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     });
   });
 
-  it('accepts a scan request and records it, without inventing a contract', async () => {
+  it('persists a versioned scan contract and its project report artifact atomically', async () => {
     const created = await create({ name: 'To Scan', slug: 'to-scan' });
 
     const response = await app.inject({
@@ -520,9 +574,41 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     });
 
     expect(response.statusCode, response.body).toBe(202);
-    // `accepted`: the request was taken, nothing was enqueued (plan 02 CP-6
-    // review). A `queued` a worker will never dequeue is a promise, not a status.
-    expect(response.json<{ scan: { status: string } }>().scan.status).toBe('accepted');
+    const scan = response.json<{ scan: { id: string; status: string } }>().scan;
+    expect(scan.status).toBe('accepted');
+
+    const replayOutput = await fixtureCapabilityScan.scan({
+      scanId: scan.id,
+      idempotencyKey: capabilityScanActivityIdempotencyKey({
+        scanId: scan.id,
+        organizationId,
+        projectId: created.project.id,
+      }),
+      organizationId,
+      projectId: created.project.id,
+      branchId: created.branches[0]?.id ?? '',
+      branchName: created.branches[0]?.name ?? '',
+      workspaceId: newId('ws'),
+      runId: newId('run'),
+      taskId: newId('task'),
+      workspaceCreatedAt: new Date().toISOString(),
+    });
+    const replayAudit = vi.fn(() => Promise.resolve());
+    const tenantDb = createTenantDbFactory(database.db)(organizationId);
+    const replayInput = {
+      projectId: created.project.id,
+      scanId: scan.id,
+      result: replayOutput.result,
+      reportArtifact: replayOutput.reportArtifact,
+      createdAt: new Date(),
+      audit: replayAudit,
+    };
+    const [leftReplay, rightReplay] = await Promise.all([
+      tenantDb.contracts.recordScan(replayInput),
+      tenantDb.contracts.recordScan(replayInput),
+    ]);
+    expect(leftReplay?.contract.id).toBe(rightReplay?.contract.id);
+    expect(replayAudit).not.toHaveBeenCalled();
 
     const audit = await database.sql<{ action: string }[]>`
       select action from audit_events
@@ -530,9 +616,25 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     `;
     expect(audit).toHaveLength(1);
 
-    const contracts = await database.sql<{ id: string }[]>`
-      select id from project_contracts where project_id = ${created.project.id}
+    const contracts = await database.sql<
+      { version: number; detected_framework: string | null; contract_json: unknown }[]
+    >`
+      select version, detected_framework, contract_json
+        from project_contracts where project_id = ${created.project.id}
     `;
-    expect(contracts).toEqual([]);
+    expect(contracts).toEqual([
+      expect.objectContaining({ version: 1, detected_framework: 'next' }),
+    ]);
+    const reports = await database.sql<
+      { type: string; storage_ref: string; content_hash: string; metadata_json: unknown }[]
+    >`
+      select type, storage_ref, content_hash, metadata_json
+        from artifacts where project_id = ${created.project.id}
+    `;
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ type: 'capability_scan_report' });
+    const report = CapabilityScanArtifactMetadataSchema.parse(reports[0]?.metadata_json);
+    expect(report.verifiedEligible).toBe(true);
+    expect(report.database?.provider).toBe('supabase');
   });
 });

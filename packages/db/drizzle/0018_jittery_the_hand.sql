@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "artifacts_capability_scan_operation_idx" ON "artifacts" USING btree ("organization_id","project_id",("metadata_json"->>'scanId')) WHERE "artifacts"."type" = 'capability_scan_report';

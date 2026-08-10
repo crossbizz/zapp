@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ActivityIdempotencyStore } from '../src/activities/idempotency.js';
 import {
   createBusinessFailure,
+  createProductionCapabilityScanWorker,
   createProductionRunWorker,
   createRunWorker,
   createTemporalOrchestrator,
@@ -96,6 +97,25 @@ describe('AR-9 worker queue and activity policy', () => {
       }),
     ).resolves.toBe(created);
     expect(create.mock.calls[0]?.[0].interceptors?.activity).toHaveLength(1);
+    create.mockRestore();
+  });
+
+  it('registers the capability scan activity on the production verification queue', async () => {
+    const created = { run: vi.fn() };
+    const create = vi.spyOn(Worker, 'create').mockResolvedValueOnce(created as never);
+    const activities = { scanProjectCapabilities: vi.fn() };
+
+    await expect(
+      createProductionCapabilityScanWorker({
+        connection: {} as never,
+        activities,
+        database: {} as never,
+      }),
+    ).resolves.toBe(created);
+    const options = create.mock.calls[0]?.[0];
+    expect(options?.taskQueue).toBe('verification');
+    expect(options?.activities).toBe(activities);
+    expect(options?.interceptors?.activity).toHaveLength(1);
     create.mockRestore();
   });
 

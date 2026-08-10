@@ -52,9 +52,9 @@ services/verification-service/src/{app,browser-agent/{session,driver},routes}.ts
 **Files:** Create: `packages/project-adapters/src/scan.ts`; Modify: CP-6 scan route wiring; Create: `test/integration/scan.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §17.1): `POST /v1/projects/:id/scan` → Temporal activity in workspace: run detection → derive `ExecutionContract` → detect DB provider (env/DATABASE_URL/supabase config/drizzle|prisma configs), auth provider, deployment config (vercel.json/fly.toml/Dockerfile), existing unit/integration/browser tests (ADR-0014), observability (sentry/faro/otel/posthog imports — detection covers tools users already have, independent of zapp's own stack) → store `project_contracts` row (version++) → compute support level: `compatible` always; `verified`-eligible flag when build+typecheck+test contracts known; report card artifact with missing-capability list ("Harden this project" input, PRD §10.2 step 8).
-- [ ] Failing integration test: scan a fixture next+supabase project → contract row with framework=next, database=supabase, eligibility flags correct.
-- [ ] Commit: `feat: capability scan pipeline producing execution contracts + support level`
+- [x] Binding behavior (PRD §17.1): `POST /v1/projects/:id/scan` → Temporal activity in workspace: run detection → derive `ExecutionContract` → detect DB provider (env/DATABASE_URL/supabase config/drizzle|prisma configs), auth provider, deployment config (vercel.json/fly.toml/Dockerfile), existing unit/integration/browser tests (ADR-0014), observability (sentry/faro/otel/posthog imports — detection covers tools users already have, independent of zapp's own stack) → store `project_contracts` row (version++) → compute support level: `compatible` always; `verified`-eligible flag when build+typecheck+test contracts known; report card artifact with missing-capability list ("Harden this project" input, PRD §10.2 step 8).
+- [x] Failing integration test: scan a fixture next+supabase project → contract row with framework=next, database=supabase, eligibility flags correct.
+- [x] Commit: `feat: capability scan pipeline producing execution contracts + support level`
 
 ### Task VF-4: Gate engine core + policy matrix
 
@@ -202,3 +202,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-09 VF-4 done — encoded all 45 PRD gate-policy cells, explicit actor-attributed waivers, and the public workspace-runtime gate registry; repaired the clean-CI export test to require no stale `dist/`.
 - 2026-08-09 VF-5 done — shipped six deterministic gates behind a branded artifact-redaction boundary, baked checksum-pinned Gitleaks 8.26.0, and passed the one real Modal publisher smoke with a redacted planted diff at immutable tag `2026-08-09-6b22eea` after two review rounds.
 - 2026-08-09 VF-2 done — added ranked P0 framework adapters, exact filesystem route discovery, deployment/output metadata, and Capacitor native-preservation semantics; explicit detect/export joins extended the terse create-only file list.
+- 2026-08-10 VF-3 done — production-composed tenant-scoped capability scans through Temporal, sandbox-service, and R2 with stable retry identity; real DB/Temporal integration and one immutable-image Modal smoke passed.

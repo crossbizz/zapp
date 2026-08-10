@@ -928,6 +928,9 @@ importers:
       '@fastify/websocket':
         specifier: 11.3.0
         version: 11.3.0
+      '@temporalio/client':
+        specifier: 1.22.0
+        version: 1.22.0
       '@zapp/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -937,6 +940,9 @@ importers:
       '@zapp/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@zapp/project-adapters':
+        specifier: workspace:*
+        version: link:../../packages/project-adapters
       '@zapp/sandbox-service':
         specifier: workspace:*
         version: link:../sandbox-service
@@ -1093,6 +1099,9 @@ importers:
 
   services/orchestrator-worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.1103.0
+        version: 3.1103.0
       '@temporalio/activity':
         specifier: 1.22.0
         version: 1.22.0
@@ -1111,6 +1120,9 @@ importers:
       '@zapp/agent-tools':
         specifier: workspace:*
         version: link:../../packages/agent-tools
+      '@zapp/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@zapp/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -1120,6 +1132,9 @@ importers:
       '@zapp/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@zapp/project-adapters':
+        specifier: workspace:*
+        version: link:../../packages/project-adapters
       zod:
         specifier: ^3.23.8
         version: 3.25.76

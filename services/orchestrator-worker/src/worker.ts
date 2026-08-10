@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import type { EventActivities } from './activities/events.js';
 import type { ApprovalActivities } from './activities/approvals.js';
+import type { CapabilityScanActivities } from './activities/capability-scan.js';
 import {
   createActivityIdempotencyInterceptor,
   type ActivityIdempotencyStore,
@@ -117,6 +118,30 @@ export function createProductionRunWorker(
     ...(options.maxHeartbeatThrottleInterval === undefined
       ? {}
       : { maxHeartbeatThrottleInterval: options.maxHeartbeatThrottleInterval }),
+  });
+}
+
+export function createProductionCapabilityScanWorker(options: {
+  readonly connection: NativeConnection;
+  readonly activities: CapabilityScanActivities;
+  readonly database: Database;
+  readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
+}): Promise<Worker> {
+  return Worker.create({
+    connection: options.connection,
+    taskQueue: TASK_QUEUES.verification,
+    workflowsPath: workflowPath(),
+    activities: options.activities,
+    interceptors: {
+      activity: [
+        createActivityIdempotencyInterceptor({
+          store: createActivityIdempotencyRepository(options.database),
+        }),
+      ],
+    },
+    ...(options.shutdownGraceTime === undefined
+      ? {}
+      : { shutdownGraceTime: options.shutdownGraceTime }),
   });
 }
 

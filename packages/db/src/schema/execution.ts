@@ -16,6 +16,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 import { oneOf, organizationId } from './columns.js';
@@ -251,6 +252,9 @@ export const artifacts = pgTable(
   (t) => [
     index('artifacts_project_created_at_idx').on(t.projectId, t.createdAt),
     index('artifacts_run_idx').on(t.runId),
+    uniqueIndex('artifacts_capability_scan_operation_idx')
+      .on(t.organizationId, t.projectId, sql`(${t.metadataJson}->>'scanId')`)
+      .where(sql`${t.type} = 'capability_scan_report'`),
     projectTenantForeignKey('artifacts', t.projectId, t.organizationId),
   ],
 );

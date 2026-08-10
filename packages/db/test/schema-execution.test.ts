@@ -164,6 +164,7 @@ describe('execution and evidence (PRD §23.4)', () => {
     expect(indexNames(artifacts)).toEqual([
       'artifacts_project_created_at_idx',
       'artifacts_run_idx',
+      'artifacts_capability_scan_operation_idx',
     ]);
     expect(indexNames(testRuns)).toEqual(['test_runs_run_idx']);
     expect(indexNames(testCases)).toEqual(['test_cases_test_run_idx']);

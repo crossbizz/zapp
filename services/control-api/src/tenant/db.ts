@@ -57,6 +57,10 @@ import {
   type Workspace,
   type VerificationResult,
 } from '@zapp/db';
+import {
+  CapabilityScanArtifactMetadataSchema,
+  type CapabilityScanResult,
+} from '@zapp/project-adapters';
 import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -273,6 +277,25 @@ export interface TenantContractRepository {
    * one rather than overwriting (PRD §17.2), so "latest" is "highest version".
    */
   latestForProject(projectId: string): Promise<ProjectContract | undefined>;
+  /** Atomically appends the versioned contract and its project-level report artifact. */
+  recordScan(input: RecordCapabilityScanInput): Promise<RecordedCapabilityScan | undefined>;
+}
+
+export interface RecordCapabilityScanInput {
+  readonly projectId: string;
+  readonly scanId: string;
+  readonly result: CapabilityScanResult;
+  readonly reportArtifact: {
+    readonly storageRef: string;
+    readonly contentHash: string;
+  };
+  readonly createdAt: Date;
+  readonly audit: AuditHook<RecordedCapabilityScan>;
+}
+
+export interface RecordedCapabilityScan {
+  readonly contract: ProjectContract;
+  readonly artifact: Artifact;
 }
 
 export interface NewSpecificationInput {
@@ -1963,6 +1986,113 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .orderBy(desc(projectContracts.version))
             .limit(1);
           return row;
+        },
+        async recordScan(
+          input: RecordCapabilityScanInput,
+        ): Promise<RecordedCapabilityScan | undefined> {
+          return await db.transaction(async (tx) => {
+            const [project] = await tx
+              .select()
+              .from(projects)
+              .where(scoped(projects.organizationId, eq(projects.id, input.projectId)))
+              .for('update')
+              .limit(1);
+            if (project === undefined) return undefined;
+
+            const [existingArtifact] = await tx
+              .select()
+              .from(artifacts)
+              .where(
+                and(
+                  scoped(artifacts.organizationId, eq(artifacts.projectId, project.id)),
+                  eq(artifacts.type, 'capability_scan_report'),
+                  sql`${artifacts.metadataJson}->>'scanId' = ${input.scanId}`,
+                ),
+              )
+              .limit(1);
+            if (existingArtifact !== undefined) {
+              const metadata = CapabilityScanArtifactMetadataSchema.parse(
+                existingArtifact.metadataJson,
+              );
+              const [existingContract] = await tx
+                .select()
+                .from(projectContracts)
+                .where(
+                  scoped(
+                    projectContracts.organizationId,
+                    sql`${projectContracts.projectId} = ${project.id} and ${projectContracts.id} = ${metadata.contractId}`,
+                  ),
+                )
+                .limit(1);
+              if (existingContract === undefined) {
+                throw new Error('capability scan replay references a missing contract');
+              }
+              return { contract: existingContract, artifact: existingArtifact };
+            }
+
+            const [latest] = await tx
+              .select({ version: projectContracts.version })
+              .from(projectContracts)
+              .where(
+                scoped(
+                  projectContracts.organizationId,
+                  eq(projectContracts.projectId, project.id),
+                ),
+              )
+              .orderBy(desc(projectContracts.version))
+              .limit(1);
+            const [contract] = await tx
+              .insert(projectContracts)
+              .values({
+                id: newId('pc'),
+                organizationId: orgId,
+                projectId: project.id,
+                version: (latest?.version ?? 0) + 1,
+                detectedFramework: input.result.detectedFramework,
+                contractJson: input.result.contract,
+                createdAt: input.createdAt,
+              })
+              .returning();
+            if (contract === undefined) {
+              throw new Error('capability scan contract persistence returned no row');
+            }
+            const [artifact] = await tx
+              .insert(artifacts)
+              .values({
+                id: newId('art'),
+                organizationId: orgId,
+                projectId: project.id,
+                runId: null,
+                taskId: null,
+                type: 'capability_scan_report',
+                storageRef: input.reportArtifact.storageRef,
+                contentHash: input.reportArtifact.contentHash,
+                metadataJson: CapabilityScanArtifactMetadataSchema.parse({
+                  scanId: input.scanId,
+                  contractId: contract.id,
+                  verifiedEligible: input.result.verifiedEligible,
+                  database: input.result.database,
+                  auth: input.result.auth,
+                  deployment: input.result.deployment,
+                  tests: input.result.tests,
+                  observability: input.result.observability,
+                  reportCard: input.result.reportCard,
+                }),
+                createdAt: input.createdAt,
+              })
+              .returning();
+            if (artifact === undefined) {
+              throw new Error('capability scan artifact persistence returned no row');
+            }
+
+            await tx
+              .update(projects)
+              .set({ supportLevel: input.result.supportLevel })
+              .where(scoped(projects.organizationId, eq(projects.id, project.id)));
+            const recorded = { contract, artifact };
+            await input.audit(tx, recorded);
+            return recorded;
+          });
         },
       },
     };
