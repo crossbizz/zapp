@@ -102,8 +102,16 @@ describe('VF-11 Playwright browser-agent driver', () => {
     const screenshot = await driver.screenshot('profile-saved');
     expect(screenshot.source).toBe('screenshot');
     expect(screenshot.attachment).toMatchObject({ contentType: 'image/png' });
-    expect([...screenshot.attachment?.body.slice(0, 8) ?? []]).toEqual([
+    expect([...(screenshot.attachment?.body.slice(0, 8) ?? [])]).toEqual([
       137, 80, 78, 71, 13, 10, 26, 10,
     ]);
+
+    driver.resetFlowState();
+    expect(ConsoleResultSchema.parse((await driver.readConsole()).modelValue)).toEqual({
+      entries: [],
+    });
+    expect(
+      FailedRequestsResultSchema.parse((await driver.readFailedRequests()).modelValue),
+    ).toEqual({ requests: [] });
   });
 });

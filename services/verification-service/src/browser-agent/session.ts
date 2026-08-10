@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 import {
   BrowserPrimitiveObservationSchema,
+  BrowserPrimitiveSourceSchema,
   type BrowserAgentDriver,
   type BrowserPrimitiveObservation,
   type BrowserPrimitiveSource,
@@ -73,7 +74,10 @@ const EvidenceRecordInputSchema = z
 export type BrowserAgentEvidenceRecord = z.infer<typeof EvidenceRecordInputSchema>;
 
 export interface BrowserAgentEvidenceSink {
-  record(value: BrowserAgentEvidenceRecord): Promise<{ readonly evidenceArtifactId: string }>;
+  record(
+    value: BrowserAgentEvidenceRecord,
+    signal: AbortSignal,
+  ): Promise<{ readonly evidenceArtifactId: string }>;
 }
 
 export interface BrowserAgentGateway {
@@ -88,6 +92,19 @@ export interface BrowserAgentDependencies {
   readonly countRequestTokens: (request: CompleteRequest) => number;
 }
 
+export interface BrowserAgentFlowDriverHandle {
+  readonly driver: BrowserAgentDriver;
+  dispose(): void;
+}
+
+export interface BrowserAgentSessionDependencies {
+  readonly gateway: BrowserAgentGateway;
+  readonly evidence: BrowserAgentEvidenceSink;
+  readonly redact: (value: string) => string;
+  readonly countRequestTokens: (request: CompleteRequest) => number;
+  createFlowDriver(flow: BrowserFlow, flowIndex: number): BrowserAgentFlowDriverHandle;
+}
+
 const BrowserAgentStepSchema = z
   .object({
     tool: z.enum(BROWSER_AGENT_TOOL_NAMES),
@@ -98,6 +115,24 @@ const BrowserAgentStepSchema = z
   .strict();
 export type BrowserAgentStep = z.infer<typeof BrowserAgentStepSchema>;
 
+export const BrowserAgentEvidenceRefSchema = z
+  .object({
+    evidenceArtifactId: idSchema('art'),
+    source: BrowserPrimitiveSourceSchema,
+  })
+  .strict();
+export type BrowserAgentEvidenceRef = z.infer<typeof BrowserAgentEvidenceRefSchema>;
+
+export const BrowserAgentFindingSchema = z
+  .object({
+    flow: z.string().trim().min(1).max(256),
+    steps: z.array(BrowserAgentStepSchema),
+    status: z.enum(['passed', 'failed']),
+    evidence: z.array(BrowserAgentEvidenceRefSchema).min(1),
+  })
+  .strict();
+export type BrowserAgentFinding = z.infer<typeof BrowserAgentFindingSchema>;
+
 export const BrowserAgentFlowResultSchema = z
   .object({
     status: z.enum(['completed', 'budget_exhausted', 'failed']),
@@ -107,6 +142,55 @@ export const BrowserAgentFlowResultSchema = z
   })
   .strict();
 export type BrowserAgentFlowResult = z.infer<typeof BrowserAgentFlowResultSchema>;
+
+const BrowserAgentSessionOutcomeSchema = z
+  .object({
+    flow: z.string().trim().min(1).max(256),
+    status: z.enum(['completed', 'dropped', 'budget_exhausted', 'failed']),
+    errorCode: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((outcome, context) => {
+    if (outcome.status === 'completed' && outcome.errorCode !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['errorCode'],
+        message: 'Completed browser-agent outcomes cannot contain an error code',
+      });
+    }
+    if (outcome.status !== 'completed' && outcome.errorCode === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['errorCode'],
+        message: 'Non-completed browser-agent outcomes require an error code',
+      });
+    }
+  });
+export type BrowserAgentSessionOutcome = z.infer<typeof BrowserAgentSessionOutcomeSchema>;
+
+export const BrowserAgentSessionResultSchema = z
+  .object({
+    findings: z.array(BrowserAgentFindingSchema),
+    outcomes: z.array(BrowserAgentSessionOutcomeSchema),
+  })
+  .strict();
+export type BrowserAgentSessionResult = z.infer<typeof BrowserAgentSessionResultSchema>;
+
+const BrowserAgentFinalResponseSchema = z
+  .object({
+    status: z.enum(['passed', 'failed']),
+    evidenceArtifactIds: z.array(idSchema('art')).min(1),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    if (new Set(response.evidenceArtifactIds).size !== response.evidenceArtifactIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['evidenceArtifactIds'],
+        message: 'Evidence artifact ids must be unique',
+      });
+    }
+  });
 
 const EMPTY_INPUT = {
   type: 'object' as const,
@@ -391,6 +475,18 @@ function failed(steps: BrowserAgentStep[], errorCode: string): BrowserAgentFlowR
   return BrowserAgentFlowResultSchema.parse({ status: 'failed', steps, errorCode });
 }
 
+function budgetExhausted(
+  driver: BrowserAgentDriver,
+  steps: BrowserAgentStep[],
+): BrowserAgentFlowResult {
+  driver.cancelPending();
+  return BrowserAgentFlowResultSchema.parse({
+    status: 'budget_exhausted',
+    steps,
+    errorCode: 'flow_budget_exhausted',
+  });
+}
+
 export async function runBrowserAgentFlow(
   unparsedInput: BrowserAgentFlowInput,
   dependencies: BrowserAgentDependencies,
@@ -408,15 +504,12 @@ export async function runBrowserAgentFlow(
     { role: 'user', content: userPrompt(input.flow) },
   ];
   const steps: BrowserAgentStep[] = [];
+  dependencies.driver.resetFlowState();
 
   try {
     for (let turn = 0; turn < MAX_AGENT_TURNS; turn += 1) {
       if (controller.signal.aborted) {
-        return BrowserAgentFlowResultSchema.parse({
-          status: 'budget_exhausted',
-          steps,
-          errorCode: 'flow_budget_exhausted',
-        });
+        return budgetExhausted(dependencies.driver, steps);
       }
 
       let request: CompleteRequest;
@@ -440,11 +533,7 @@ export async function runBrowserAgentFlow(
           const next = await raceWithAbort(iterator.next(), controller.signal);
           if (next === ABORTED) {
             closeIterator(iterator);
-            return BrowserAgentFlowResultSchema.parse({
-              status: 'budget_exhausted',
-              steps,
-              errorCode: 'flow_budget_exhausted',
-            });
+            return budgetExhausted(dependencies.driver, steps);
           }
           if (next.done) break;
           const event = GatewayStreamEventSchema.parse(next.value);
@@ -505,11 +594,7 @@ export async function runBrowserAgentFlow(
           const pendingObservation = invokeTool(dependencies.driver, tool, call.input);
           const observed = await raceWithAbort(pendingObservation, controller.signal);
           if (observed === ABORTED) {
-            return BrowserAgentFlowResultSchema.parse({
-              status: 'budget_exhausted',
-              steps,
-              errorCode: 'flow_budget_exhausted',
-            });
+            return budgetExhausted(dependencies.driver, steps);
           }
           observation = BrowserPrimitiveObservationSchema.parse(observed);
           if (observation.source !== sourceForTool(tool)) {
@@ -524,7 +609,7 @@ export async function runBrowserAgentFlow(
           observation.attachment?.body ?? new TextEncoder().encode(JSON.stringify(modelValue));
         let evidenceArtifactId: string;
         try {
-          const recorded = await dependencies.evidence.record(
+          const pendingRecord = dependencies.evidence.record(
             EvidenceRecordInputSchema.parse({
               flow: input.flow.flow,
               stepIndex: steps.length,
@@ -533,7 +618,12 @@ export async function runBrowserAgentFlow(
               contentType: observation.attachment?.contentType ?? 'application/json',
               body,
             }),
+            controller.signal,
           );
+          const recorded = await raceWithAbort(pendingRecord, controller.signal);
+          if (recorded === ABORTED) {
+            return budgetExhausted(dependencies.driver, steps);
+          }
           evidenceArtifactId = idSchema('art').parse(recorded.evidenceArtifactId);
         } catch {
           return failed(steps, 'evidence_write_failed');
@@ -570,4 +660,124 @@ export async function runBrowserAgentFlow(
   } finally {
     clearTimeout(budgetTimer);
   }
+}
+
+function parseFinding(
+  flow: BrowserFlow,
+  result: BrowserAgentFlowResult,
+): BrowserAgentFinding | undefined {
+  if (result.status !== 'completed' || result.finalResponse === undefined) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(result.finalResponse) as unknown;
+  } catch {
+    return undefined;
+  }
+  const response = BrowserAgentFinalResponseSchema.safeParse(decoded);
+  if (!response.success) return undefined;
+
+  const evidenceById = new Map(
+    result.steps.map((step) => [step.evidenceArtifactId, step] as const),
+  );
+  const evidence: BrowserAgentEvidenceRef[] = [];
+  for (const evidenceArtifactId of response.data.evidenceArtifactIds) {
+    const step = evidenceById.get(evidenceArtifactId);
+    if (step === undefined) return undefined;
+    evidence.push(BrowserAgentEvidenceRefSchema.parse({ evidenceArtifactId, source: step.source }));
+  }
+  if (
+    !evidence.some((reference) =>
+      ['dom', 'accessibility', 'network', 'console'].includes(reference.source),
+    )
+  ) {
+    return undefined;
+  }
+
+  return BrowserAgentFindingSchema.parse({
+    flow: flow.flow,
+    steps: result.steps,
+    status: response.data.status,
+    evidence,
+  });
+}
+
+export async function runBrowserAgentSession(
+  unparsedInput: BrowserAgentSessionInput,
+  dependencies: BrowserAgentSessionDependencies,
+): Promise<BrowserAgentSessionResult> {
+  const input = BrowserAgentSessionInputSchema.parse(unparsedInput);
+  const findings: BrowserAgentFinding[] = [];
+  const outcomes: BrowserAgentSessionOutcome[] = [];
+  const usedDrivers = new Set<BrowserAgentDriver>();
+
+  for (const [flowIndex, flow] of input.flows.entries()) {
+    let handle: BrowserAgentFlowDriverHandle;
+    try {
+      handle = dependencies.createFlowDriver(flow, flowIndex);
+    } catch {
+      outcomes.push(
+        BrowserAgentSessionOutcomeSchema.parse({
+          flow: flow.flow,
+          status: 'failed',
+          errorCode: 'driver_creation_failed',
+        }),
+      );
+      continue;
+    }
+    if (usedDrivers.has(handle.driver)) {
+      handle.dispose();
+      outcomes.push(
+        BrowserAgentSessionOutcomeSchema.parse({
+          flow: flow.flow,
+          status: 'failed',
+          errorCode: 'driver_reused_across_flows',
+        }),
+      );
+      continue;
+    }
+    usedDrivers.add(handle.driver);
+
+    let flowResult: BrowserAgentFlowResult;
+    try {
+      flowResult = await runBrowserAgentFlow(
+        { ...input, flowIndex, flow },
+        {
+          gateway: dependencies.gateway,
+          driver: handle.driver,
+          evidence: dependencies.evidence,
+          redact: dependencies.redact,
+          countRequestTokens: dependencies.countRequestTokens,
+        },
+      );
+    } finally {
+      handle.dispose();
+    }
+    if (flowResult.status !== 'completed') {
+      outcomes.push(
+        BrowserAgentSessionOutcomeSchema.parse({
+          flow: flow.flow,
+          status: flowResult.status,
+          errorCode: flowResult.errorCode ?? 'browser_agent_failed',
+        }),
+      );
+      continue;
+    }
+
+    const finding = parseFinding(flow, flowResult);
+    if (finding === undefined) {
+      outcomes.push(
+        BrowserAgentSessionOutcomeSchema.parse({
+          flow: flow.flow,
+          status: 'dropped',
+          errorCode: 'unsupported_finding',
+        }),
+      );
+      continue;
+    }
+
+    findings.push(finding);
+    outcomes.push(BrowserAgentSessionOutcomeSchema.parse({ flow: flow.flow, status: 'completed' }));
+  }
+
+  return BrowserAgentSessionResultSchema.parse({ findings, outcomes });
 }

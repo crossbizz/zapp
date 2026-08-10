@@ -29,7 +29,11 @@ export const InteractiveElementsResultSchema = z
   .object({ elements: z.array(InteractiveElementSchema).max(MAX_INTERACTIVE_ELEMENTS) })
   .strict();
 export const ClickResultSchema = z
-  .object({ ref: InteractiveElementSchema.shape.ref, clicked: z.literal(true), url: z.string().url() })
+  .object({
+    ref: InteractiveElementSchema.shape.ref,
+    clicked: z.literal(true),
+    url: z.string().url(),
+  })
   .strict();
 export const FillResultSchema = z
   .object({ ref: InteractiveElementSchema.shape.ref, filled: z.literal(true) })
@@ -65,9 +69,7 @@ const FailedRequestSchema = z
 export const FailedRequestsResultSchema = z
   .object({ requests: z.array(FailedRequestSchema).max(MAX_CAPTURED_ENTRIES) })
   .strict();
-const ScreenshotResultSchema = z
-  .object({ label: z.string().min(1).max(128) })
-  .strict();
+const ScreenshotResultSchema = z.object({ label: z.string().min(1).max(128) }).strict();
 
 const BrowserPrimitiveModelValueSchema = z.union([
   AccessibilitySnapshotResultSchema,
@@ -120,6 +122,8 @@ const ScreenshotInputSchema = z
   .strict();
 
 export interface BrowserAgentDriver {
+  resetFlowState(): void;
+  cancelPending(): void;
   snapshotAccessibilityTree(): Promise<BrowserPrimitiveObservation>;
   listInteractive(): Promise<BrowserPrimitiveObservation>;
   click(ref: string): Promise<BrowserPrimitiveObservation>;
@@ -229,6 +233,17 @@ export class PlaywrightBrowserAgentDriver implements BrowserAgentDriver {
     this.#interactive.clear();
   }
 
+  resetFlowState(): void {
+    this.#consoleEntries.length = 0;
+    this.#failedRequests.length = 0;
+    this.#interactive.clear();
+  }
+
+  cancelPending(): void {
+    this.dispose();
+    void this.#page.close({ runBeforeUnload: false }).catch(() => undefined);
+  }
+
   async snapshotAccessibilityTree(): Promise<BrowserPrimitiveObservation> {
     EmptyInputSchema.parse({});
     const result = AccessibilitySnapshotResultSchema.parse({
@@ -265,16 +280,18 @@ export class PlaywrightBrowserAgentDriver implements BrowserAgentDriver {
           readonly disabled?: boolean;
         };
         const label = control.labels?.[0]?.textContent ?? null;
-        const name = [
-          element.getAttribute('aria-label'),
-          label,
-          element.textContent,
-          element.getAttribute('placeholder'),
-          element.getAttribute('alt'),
-          element.getAttribute('title'),
-        ].find((candidate): candidate is string =>
-          typeof candidate === 'string' && candidate.trim() !== '',
-        ) ?? '';
+        const name =
+          [
+            element.getAttribute('aria-label'),
+            label,
+            element.textContent,
+            element.getAttribute('placeholder'),
+            element.getAttribute('alt'),
+            element.getAttribute('title'),
+          ].find(
+            (candidate): candidate is string =>
+              typeof candidate === 'string' && candidate.trim() !== '',
+          ) ?? '';
         const disabled =
           element.getAttribute('aria-disabled') === 'true' || control.disabled === true;
         return { tag, role, name: name.replace(/\s+/gu, ' ').trim().slice(0, 512), disabled };
@@ -294,11 +311,15 @@ export class PlaywrightBrowserAgentDriver implements BrowserAgentDriver {
     const locator = this.#interactive.get(ref);
     if (locator === undefined) throw new Error('browser_agent_unknown_interactive_ref');
     await locator.click();
-    return observation('dom', `click-${ref}`, ClickResultSchema.parse({
-      ref,
-      clicked: true,
-      url: this.#page.url(),
-    }));
+    return observation(
+      'dom',
+      `click-${ref}`,
+      ClickResultSchema.parse({
+        ref,
+        clicked: true,
+        url: this.#page.url(),
+      }),
+    );
   }
 
   async fill(refValue: string, value: string): Promise<BrowserPrimitiveObservation> {
@@ -349,11 +370,9 @@ export class PlaywrightBrowserAgentDriver implements BrowserAgentDriver {
   async screenshot(labelValue: string): Promise<BrowserPrimitiveObservation> {
     const { label } = ScreenshotInputSchema.parse({ label: labelValue });
     const body = new Uint8Array(await this.#page.screenshot({ type: 'png' }));
-    return observation(
-      'screenshot',
-      label,
-      ScreenshotResultSchema.parse({ label }),
-      { contentType: 'image/png', body },
-    );
+    return observation('screenshot', label, ScreenshotResultSchema.parse({ label }), {
+      contentType: 'image/png',
+      body,
+    });
   }
 }
