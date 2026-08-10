@@ -18,8 +18,8 @@
     "start:verification": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run --exclude test/integration/ar9-postgres-worker.test.ts --exclude test/integration/verifier.test.ts",
-    "test:integration": "vitest run test/integration/ar9-postgres-worker.test.ts test/integration/verifier.test.ts --no-file-parallelism"
+    "test": "vitest run --exclude test/integration/ar9-postgres-worker.test.ts --exclude test/integration/verifier.test.ts --exclude test/integration/repair.test.ts",
+    "test:integration": "vitest run test/integration/ar9-postgres-worker.test.ts test/integration/verifier.test.ts test/integration/repair.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1103.0",

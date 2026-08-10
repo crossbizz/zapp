@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 
+import {
+  RepairBuilderContextSchema,
+  RepairFailureSchema,
+  type RepairBuilderContext,
+  type RepairFailure,
+} from '@zapp/verification-engine';
 import { z } from 'zod';
 
 const IdentifierSchema = z.string().min(1).max(256);
@@ -636,6 +642,57 @@ export interface ContextServiceDependencies {
 export interface ContextService {
   assembleContext(role: unknown, run: unknown, task: unknown): Promise<AssembledContext>;
   compact(request: unknown): Promise<SummaryArtifact>;
+}
+
+/** AR-7 repair slice: builder receives only the failed gate, related files, and criterion. */
+export function redactRepairFailure(
+  failureValue: unknown,
+  scrub: (value: string) => string,
+): RepairFailure {
+  const failure = parseBoundary(RepairFailureSchema, failureValue, 'MALFORMED_INPUT');
+  return parseBoundary(
+    RepairFailureSchema,
+    {
+      ...failure,
+      output: scrubText(failure.output, scrub),
+      criterion: {
+        ...failure.criterion,
+        text: scrubText(failure.criterion.text, scrub),
+      },
+      diff: {
+        ...failure.diff,
+        summary: scrubText(failure.diff.summary, scrub),
+      },
+    },
+    'SCRUBBER_FAILURE',
+  );
+}
+
+export function repairBuilderContextFromFailure(failureValue: unknown): RepairBuilderContext {
+  const failure = parseBoundary(RepairFailureSchema, failureValue, 'MALFORMED_INPUT');
+  return parseBoundary(
+    RepairBuilderContextSchema,
+    {
+      criterion: {
+        id: failure.criterion.id,
+        text: failure.criterion.text,
+      },
+      failingGate: {
+        gateId: failure.gateId,
+        output: failure.output,
+        evidenceArtifactIds: failure.evidenceArtifactIds,
+      },
+      relatedFiles: failure.relatedFiles,
+    },
+    'SCRUBBER_FAILURE',
+  );
+}
+
+export function assembleRepairBuilderContext(
+  failureValue: unknown,
+  scrub: (value: string) => string,
+): RepairBuilderContext {
+  return repairBuilderContextFromFailure(redactRepairFailure(failureValue, scrub));
 }
 
 type SectionSeed = Omit<AssembledContextSection, 'tokenCount'>;

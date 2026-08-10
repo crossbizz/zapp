@@ -3,6 +3,8 @@ export * from './activities/capability-scan-production.js';
 export * from './activities/events.js';
 export * from './activities/idempotency.js';
 export * from './activities/merge.js';
+export * from './activities/repair.js';
+export * from './activities/repair-production.js';
 export * from './activities/session.js';
 export * from './activities/workspace.js';
 export * from './activities/verify-phase.js';

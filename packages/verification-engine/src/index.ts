@@ -12,4 +12,6 @@ export * from './criteria.js';
 export * from './generate/acceptance.js';
 export * from './generate/smoke.js';
 export * from './policy-matrix.js';
+export * from './repair/classify.js';
+export * from './repair/loop.js';
 export * from './verifier/decision.js';

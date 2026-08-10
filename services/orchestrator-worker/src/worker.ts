@@ -17,6 +17,7 @@ import {
 import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
+import type { RepairActivities } from './activities/repair.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
   budgetApprovalResolvedSignal,
@@ -34,7 +35,10 @@ export type RunActivities =
   & WorkspaceActivities
   & ApprovalActivities;
 export type ProductionRunActivities = RunActivities & TaskWorkflowActivities;
-export type ProductionVerificationActivities = CapabilityScanActivities & VerifyPhaseActivities;
+export type ProductionVerificationActivities =
+  & CapabilityScanActivities
+  & VerifyPhaseActivities
+  & RepairActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',

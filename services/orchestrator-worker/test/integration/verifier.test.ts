@@ -434,17 +434,18 @@ describe('VF-10 independent verifyPhase activity', () => {
     const create = vi.spyOn(Worker, 'create').mockResolvedValueOnce(created as never);
     const scanProjectCapabilities = vi.fn();
     const verifyPhase = vi.fn();
+    const repairTask = vi.fn();
     try {
       await expect(
         createProductionVerificationWorker({
           connection: {} as never,
-          activities: { scanProjectCapabilities, verifyPhase },
+          activities: { scanProjectCapabilities, verifyPhase, repairTask },
           database: {} as never,
         }),
       ).resolves.toBe(created);
       expect(create.mock.calls[0]?.[0]).toMatchObject({
         taskQueue: 'verification',
-        activities: { scanProjectCapabilities, verifyPhase },
+        activities: { scanProjectCapabilities, verifyPhase, repairTask },
       });
     } finally {
       create.mockRestore();
