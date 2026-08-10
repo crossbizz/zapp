@@ -91,3 +91,27 @@ blocker does not require another approval. Re-scope it, record it, and continue.
 Stop only when progress needs genuinely new authority, a vendor/architecture
 substitution, destructive action, or a plan conflict the existing instructions
 do not resolve.
+
+## 2026-08-08 — Reconcile every cross-plan interface at plan-authoring time
+
+**What happened:** WEB-6 sat blocked for two days on a public conversation
+contract (message events, tool `userSummary`, a continuation route, attachment
+upload) that plan 08 consumed and no task in plans 02/04 was ever assigned to
+produce. The plan set was authored in one pass, plan-by-plan, each faithful to
+its own PRD sections — the UX plan assumed capabilities the API/runtime plans
+never enumerated, and API-first (correctly) turned each gap into a hard block
+instead of a silent workaround. A post-hoc audit (2026-08-08, see
+`docs/plans/interface-audit-2026-08-08.md`) traced ~105 consumed interfaces
+across plans 05–09: 66 owned, **17 orphaned, 6 uncertain** — including one
+broken M1 exit criterion (nothing seeds template repos) and a five-orphan
+cluster in WEB-11 that conflicts with PRD §32.3.
+
+**Rule:** A plan set is not done until every interface a task consumes names
+the task that produces it — exact event types, route paths, SDK operations,
+read models, image capabilities, not prose. Build the consumer→producer matrix
+at authoring time and re-run it after every plan amendment; an orphaned
+interface is an authoring defect to fix before execution reaches it, not a
+blocker for the consuming agent to discover at implementation time. When a
+consumer audit names a missing public contract, the fix is an ADR-defined
+contract plus producing tasks (the ADR-0027 pattern) — never a workaround in
+the consumer, and never re-deriving scope inside the consuming task.
