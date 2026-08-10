@@ -7,11 +7,13 @@ import type { ToolRegistry } from "@zapp/agent-tools";
 import type { CompleteRequest } from "@zapp/model-gateway";
 import {
   createSessionLoop,
+  SessionResultSchema,
   SessionTranscriptSchema,
   TranscriptConflictError,
   TranscriptKeySchema,
   type SessionEvent,
   type SessionGateway,
+  type SessionResult,
   type SessionTranscript,
   type SessionTranscriptDraft,
   type TranscriptStore,
@@ -19,7 +21,7 @@ import {
 import { resolveInRoot, type WorkspaceRuntime } from "@zapp/workspace-runtime";
 import { z } from "zod";
 
-import type { LocalWorkspaceRuntime } from "./local";
+import type { LocalAgentOwnedPathStore, LocalWorkspaceRuntime } from "./local";
 
 interface StoredTranscriptRow {
   readonly version: number;
@@ -27,6 +29,13 @@ interface StoredTranscriptRow {
 }
 
 const ChangedPathsSchema = z.array(z.string().min(1).max(4_096)).max(10_000);
+const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
+const TerminalStatusSchema = z.enum([
+  "completed",
+  "budget_exhausted",
+  "failed",
+  "cancelled",
+]);
 const GitRevisionSchema = z.string().regex(/^[a-f0-9]{40}$/u);
 const GitBranchRefSchema = z
   .string()
@@ -54,6 +63,27 @@ interface StoredCommitIntentRow {
   readonly base_revision: string;
   readonly paths_json: string;
   readonly message: string;
+}
+
+const OperationReceiptSchema = z
+  .object({
+    runId: z.string().min(1),
+    taskId: z.string().min(1),
+    operationKey: OperationKeySchema,
+    baseCommitCount: z.number().int().nonnegative().safe(),
+    status: TerminalStatusSchema.nullable(),
+    summary: z.string().nullable(),
+    commits: z.array(GitRevisionSchema).nullable(),
+  })
+  .strict();
+type OperationReceipt = z.infer<typeof OperationReceiptSchema>;
+
+interface StoredOperationReceiptRow {
+  readonly operation_key: string;
+  readonly base_commit_count: number;
+  readonly status: string | null;
+  readonly summary: string | null;
+  readonly commits_json: string | null;
 }
 
 export class SqliteTranscriptStore implements TranscriptStore {
@@ -190,6 +220,156 @@ class SqliteCommitIntentStore {
           WHERE run_id = ? AND task_id = ? AND intent_id = ?`,
       )
       .run(intent.runId, intent.taskId, intent.intentId);
+  }
+}
+
+class SqliteOperationReceiptStore {
+  constructor(private readonly database: Database.Database) {}
+
+  load(
+    runId: string,
+    taskId: string,
+    operationKey: string,
+  ): OperationReceipt | undefined {
+    const parsedOperationKey = OperationKeySchema.parse(operationKey);
+    const row = this.database
+      .prepare<[string, string, string], StoredOperationReceiptRow>(
+        `SELECT operation_key, base_commit_count, status, summary, commits_json
+           FROM zapp_local_agent_operation_receipts
+          WHERE run_id = ? AND task_id = ? AND operation_key = ?`,
+      )
+      .get(runId, taskId, parsedOperationKey);
+    if (row === undefined) return undefined;
+    return OperationReceiptSchema.parse({
+      runId,
+      taskId,
+      operationKey: parsedOperationKey,
+      baseCommitCount: row.base_commit_count,
+      status: row.status,
+      summary: row.summary,
+      commits:
+        row.commits_json === null
+          ? null
+          : (JSON.parse(row.commits_json) as unknown),
+    });
+  }
+
+  pending(runId: string, taskId: string): OperationReceipt | undefined {
+    const row = this.database
+      .prepare<[string, string], StoredOperationReceiptRow>(
+        `SELECT operation_key, base_commit_count, status, summary, commits_json
+           FROM zapp_local_agent_operation_receipts
+          WHERE run_id = ? AND task_id = ? AND status IS NULL`,
+      )
+      .get(runId, taskId);
+    return row === undefined
+      ? undefined
+      : OperationReceiptSchema.parse({
+          runId,
+          taskId,
+          operationKey: row.operation_key,
+          baseCommitCount: row.base_commit_count,
+          status: row.status,
+          summary: row.summary,
+          commits: null,
+        });
+  }
+
+  begin(input: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly operationKey: string;
+    readonly baseCommitCount: number;
+  }): OperationReceipt {
+    const receipt = OperationReceiptSchema.parse({
+      ...input,
+      status: null,
+      summary: null,
+      commits: null,
+    });
+    const now = Date.now();
+    try {
+      this.database
+        .prepare(
+          `INSERT INTO zapp_local_agent_operation_receipts
+          (run_id, task_id, operation_key, base_commit_count, status, summary,
+           commits_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+         ON CONFLICT (run_id, task_id, operation_key) DO NOTHING`,
+        )
+        .run(
+          receipt.runId,
+          receipt.taskId,
+          receipt.operationKey,
+          receipt.baseCommitCount,
+          now,
+          now,
+        );
+    } catch (error: unknown) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        String(error.code).startsWith("SQLITE_CONSTRAINT")
+      ) {
+        throw new LocalOperationBusyError();
+      }
+      throw error;
+    }
+    const stored = this.load(
+      receipt.runId,
+      receipt.taskId,
+      receipt.operationKey,
+    );
+    if (
+      stored === undefined ||
+      stored.baseCommitCount !== receipt.baseCommitCount
+    ) {
+      throw new Error("Local operation receipt conflicts with durable state");
+    }
+    return stored;
+  }
+
+  complete(input: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly operationKey: string;
+    readonly baseCommitCount: number;
+    readonly status: z.infer<typeof TerminalStatusSchema>;
+    readonly summary: string;
+    readonly commits: readonly string[];
+  }): OperationReceipt {
+    const completed = OperationReceiptSchema.parse({
+      ...input,
+      commits: input.commits,
+    });
+    this.database
+      .prepare(
+        `UPDATE zapp_local_agent_operation_receipts
+            SET status = ?, summary = ?, commits_json = ?, updated_at = ?
+          WHERE run_id = ? AND task_id = ? AND operation_key = ?
+            AND status IS NULL`,
+      )
+      .run(
+        completed.status,
+        completed.summary,
+        JSON.stringify(completed.commits),
+        Date.now(),
+        completed.runId,
+        completed.taskId,
+        completed.operationKey,
+      );
+    const stored = this.load(
+      completed.runId,
+      completed.taskId,
+      completed.operationKey,
+    );
+    if (
+      stored === undefined ||
+      JSON.stringify(stored) !== JSON.stringify(completed)
+    ) {
+      throw new Error("Local operation result conflicts with durable state");
+    }
+    return stored;
   }
 }
 
@@ -647,6 +827,84 @@ async function reconcileCommitIntent(input: {
   return commit;
 }
 
+export function createLocalAgentOwnedPathStore(
+  database: Database.Database,
+  runId: string,
+  taskId: string,
+): LocalAgentOwnedPathStore {
+  const key = TranscriptKeySchema.parse({ runId, taskId });
+  return {
+    load(): readonly string[] {
+      const rows = database
+        .prepare<[string, string], { readonly path: string }>(
+          `SELECT path
+             FROM zapp_local_agent_owned_paths
+            WHERE run_id = ? AND task_id = ?
+            ORDER BY path`,
+        )
+        .all(key.runId, key.taskId);
+      return ChangedPathsSchema.parse(rows.map((row) => row.path));
+    },
+    apply(input): void {
+      const add = [...new Set(ChangedPathsSchema.parse(input.add))].sort();
+      const remove = [
+        ...new Set(ChangedPathsSchema.parse(input.remove)),
+      ].sort();
+      database.transaction(() => {
+        const removePath = database.prepare(
+          `DELETE FROM zapp_local_agent_owned_paths
+            WHERE run_id = ? AND task_id = ? AND path = ?`,
+        );
+        for (const path of remove) {
+          removePath.run(key.runId, key.taskId, path);
+        }
+        const addPath = database.prepare(
+          `INSERT INTO zapp_local_agent_owned_paths
+            (run_id, task_id, path, created_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (run_id, task_id, path) DO NOTHING`,
+        );
+        for (const path of add) {
+          addPath.run(key.runId, key.taskId, path, Date.now());
+        }
+      })();
+    },
+  };
+}
+
+export class LocalToolOutcomeUnknownError extends Error {
+  constructor() {
+    super(
+      "A local filesystem tool outcome is unknown; the next turn is blocked.",
+    );
+    this.name = "LocalToolOutcomeUnknownError";
+  }
+}
+
+export class LocalOperationBusyError extends Error {
+  constructor() {
+    super("A local message operation is already in progress.");
+    this.name = "LocalOperationBusyError";
+  }
+}
+
+function completedReceiptResult(receipt: OperationReceipt): SessionResult {
+  if (
+    receipt.status === null ||
+    receipt.summary === null ||
+    receipt.commits === null
+  ) {
+    throw new Error("Local operation result is still pending");
+  }
+  return SessionResultSchema.parse({
+    status: receipt.status,
+    commits: receipt.commits,
+    artifacts: [],
+    summary: receipt.summary,
+    redirectApplied: true,
+  });
+}
+
 /** Builds the packaged AR-6 loop over the desktop's durable SQLite database. */
 export function createLocalAgentSession(options: LocalAgentSessionOptions) {
   if (typeof options.redact !== "function") {
@@ -654,6 +912,7 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
   }
   const transcripts = new SqliteTranscriptStore(options.database);
   const intents = new SqliteCommitIntentStore(options.database);
+  const receipts = new SqliteOperationReceiptStore(options.database);
   const session = createSessionLoop({
     gateway: options.gateway,
     tools: options.tools,
@@ -712,8 +971,115 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
         runId: input.runId,
         taskId,
       });
-      const previousCommits = new Set(existingTranscript?.commits ?? []);
       const redirect = input.control?.redirect;
+      let receipt =
+        redirect === null || redirect === undefined
+          ? undefined
+          : receipts.load(input.runId, taskId, redirect.operationKey);
+      if (receipt?.status !== null && receipt !== undefined) {
+        return completedReceiptResult(receipt);
+      }
+      const hasUnknownToolOutcome =
+        existingTranscript !== undefined &&
+        (existingTranscript.activeToolCallId !== null ||
+          existingTranscript.executionLease !== null ||
+          existingTranscript.pendingToolCalls.length > 0);
+      if (hasUnknownToolOutcome) {
+        throw new LocalToolOutcomeUnknownError();
+      }
+      const pendingReceipt = receipts.pending(input.runId, taskId);
+      if (
+        redirect !== null &&
+        redirect !== undefined &&
+        pendingReceipt !== undefined &&
+        pendingReceipt.operationKey !== redirect.operationKey
+      ) {
+        if (
+          existingTranscript?.terminalStatus === null ||
+          existingTranscript === undefined ||
+          !existingTranscript.appliedRedirectOperationKeys.includes(
+            pendingReceipt.operationKey,
+          )
+        ) {
+          throw new LocalOperationBusyError();
+        }
+        await commitTerminalChanges(input.runId, taskId);
+        existingTranscript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+        if (
+          existingTranscript === undefined ||
+          existingTranscript.terminalStatus === null
+        ) {
+          throw new Error("Terminal local operation transcript is missing");
+        }
+        receipts.complete({
+          ...pendingReceipt,
+          status: existingTranscript.terminalStatus,
+          summary: existingTranscript.summary,
+          commits: existingTranscript.commits.slice(
+            pendingReceipt.baseCommitCount,
+          ),
+        });
+      }
+      if (
+        redirect !== null &&
+        redirect !== undefined &&
+        receipt === undefined &&
+        existingTranscript?.terminalStatus !== null &&
+        existingTranscript?.terminalStatus !== undefined &&
+        !existingTranscript.appliedRedirectOperationKeys.includes(
+          redirect.operationKey,
+        )
+      ) {
+        await commitTerminalChanges(input.runId, taskId);
+        existingTranscript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+      }
+      if (
+        redirect !== null &&
+        redirect !== undefined &&
+        receipt === undefined
+      ) {
+        receipt = receipts.begin({
+          runId: input.runId,
+          taskId,
+          operationKey: redirect.operationKey,
+          baseCommitCount: existingTranscript?.commits.length ?? 0,
+        });
+      }
+      if (
+        receipt !== undefined &&
+        existingTranscript?.terminalStatus !== null &&
+        existingTranscript?.terminalStatus !== undefined &&
+        existingTranscript.appliedRedirectOperationKeys.includes(
+          receipt.operationKey,
+        )
+      ) {
+        await commitTerminalChanges(input.runId, taskId);
+        existingTranscript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+        if (
+          existingTranscript === undefined ||
+          existingTranscript.terminalStatus === null
+        ) {
+          throw new Error("Terminal local operation transcript is missing");
+        }
+        return completedReceiptResult(
+          receipts.complete({
+            ...receipt,
+            status: existingTranscript.terminalStatus,
+            summary: existingTranscript.summary,
+            commits: existingTranscript.commits.slice(receipt.baseCommitCount),
+          }),
+        );
+      }
+      const previousCommits = new Set(existingTranscript?.commits ?? []);
       if (
         existingTranscript?.terminalStatus !== null &&
         existingTranscript?.terminalStatus !== undefined &&
@@ -782,6 +1148,30 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
       }
       const transcript = await transcripts.load({ runId: input.runId, taskId });
       if (transcript === undefined) return result;
+      if (
+        receipt !== undefined &&
+        transcript.terminalStatus !== null &&
+        (result.status === "completed" ||
+          result.status === "failed" ||
+          result.status === "cancelled" ||
+          result.status === "budget_exhausted")
+      ) {
+        if (
+          !transcript.appliedRedirectOperationKeys.includes(
+            receipt.operationKey,
+          )
+        ) {
+          throw new LocalOperationBusyError();
+        }
+        return completedReceiptResult(
+          receipts.complete({
+            ...receipt,
+            status: transcript.terminalStatus,
+            summary: transcript.summary,
+            commits: transcript.commits.slice(receipt.baseCommitCount),
+          }),
+        );
+      }
       return {
         ...result,
         commits: [

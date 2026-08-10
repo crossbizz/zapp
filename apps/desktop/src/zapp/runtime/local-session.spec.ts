@@ -9,14 +9,26 @@ import type { GatewayStreamEvent } from "@zapp/model-gateway";
 import type { SessionInput } from "@zapp/orchestrator-worker/session";
 import { afterEach, describe, expect, it } from "vitest";
 import { createInMemoryTestDb } from "@/testing/test_db";
-import { LocalWorkspaceRuntime } from "./local";
+import { LocalAgentWorkspaceRuntime, LocalWorkspaceRuntime } from "./local";
 import {
+  createLocalAgentOwnedPathStore,
   createLocalAgentSession,
   type LocalAgentSessionOptions,
   SqliteTranscriptStore,
 } from "./local-session";
 
 const roots: string[] = [];
+
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 function redact(value: string): string {
   return value.replaceAll("planted-local-secret", "[REDACTED]");
@@ -923,6 +935,205 @@ describe("desktop local agent session", () => {
       status: "completed",
       summary: "Recovered after budget exhaustion.",
     });
+    database.$client.close();
+  });
+
+  it("hydrates durable agent-owned paths before a resumed local tool reads them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-owned-resume-"));
+    roots.push(root);
+    await mkdir(join(root, "src"));
+    const database = createInMemoryTestDb();
+    const ownership = createLocalAgentOwnedPathStore(
+      database.$client,
+      "local-run-1",
+      "local-task-1",
+    );
+    const runtime = new LocalAgentWorkspaceRuntime(root, ownership);
+    await initializeGit(runtime);
+    await runtime.writeFile(
+      "src/Owned.ts",
+      new TextEncoder().encode("export const owned = true;\n"),
+    );
+
+    const resumed = new LocalAgentWorkspaceRuntime(root, ownership);
+    await resumed.hydrateOwnedPaths(ownership.load());
+
+    await expect(resumed.readFile("src/Owned.ts")).resolves.toEqual(
+      new TextEncoder().encode("export const owned = true;\n"),
+    );
+    await resumed.renameFile({
+      source: "src/Owned.ts",
+      destination: "src/Renamed.ts",
+      overwrite: "replace",
+    });
+    await resumed.deleteFile("src/Renamed.ts");
+    await writeFile(join(root, "src/Owned.ts"), "user secret at old source\n");
+    await writeFile(
+      join(root, "src/Renamed.ts"),
+      "user secret at deleted destination\n",
+    );
+    const restarted = new LocalAgentWorkspaceRuntime(root, ownership);
+    await restarted.hydrateOwnedPaths(ownership.load());
+    await expect(restarted.readFile("src/Owned.ts")).rejects.toThrow(
+      /tracked or owned/iu,
+    );
+    await expect(restarted.readFile("src/Renamed.ts")).rejects.toThrow(
+      /tracked or owned/iu,
+    );
+    database.$client.close();
+  });
+
+  it("serializes distinct local message operations before the next gateway turn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-operation-owner-"));
+    roots.push(root);
+    const runtime = new LocalWorkspaceRuntime(root);
+    const database = createInMemoryTestDb();
+    database.$client
+      .prepare(
+        `INSERT INTO zapp_local_agent_operation_receipts
+          (run_id, task_id, operation_key, base_commit_count, status, summary,
+           commits_json, created_at, updated_at)
+         VALUES (?, ?, ?, 0, NULL, NULL, NULL, 1, 1)`,
+      )
+      .run(
+        "local-run-serialized",
+        "local-task-serialized",
+        `op_${"a".repeat(64)}`,
+      );
+    const gateway = scriptedGateway([
+      [
+        { type: "text-delta", text: "This turn must not start." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+    ]);
+    const options = {
+      database: database.$client,
+      gateway,
+      tools: toolRegistry(runtime),
+      runtime,
+      redact,
+      prompts: {
+        builder: "Build safely.",
+        planner: "Plan safely.",
+        verifier: "Verify safely.",
+        summarizer: "Summarize safely.",
+      },
+    } as const;
+
+    await expect(
+      createLocalAgentSession(options).run(
+        sessionInput(
+          [],
+          {
+            operationKey: `op_${"b".repeat(64)}`,
+            instruction: "A distinct operation must wait.",
+          },
+          "serialized",
+        ),
+      ),
+    ).rejects.toThrow(/local message operation is already in progress/iu);
+    expect(gateway.calls).toBe(0);
+    database.$client.close();
+  });
+
+  it("fails closed before a new turn while a cancelled filesystem outcome is unknown", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-unknown-write-"));
+    roots.push(root);
+    await mkdir(join(root, "src"));
+    const writeStarted = deferred();
+    const releaseWrite = deferred();
+    const writeFinished = deferred();
+    class DelayedRuntime extends LocalAgentWorkspaceRuntime {
+      override async writeFile(path: string, data: Uint8Array): Promise<void> {
+        writeStarted.resolve();
+        await releaseWrite.promise;
+        await super.writeFile(path, data);
+        writeFinished.resolve();
+      }
+    }
+    const runtime = new DelayedRuntime(root);
+    await initializeGit(runtime);
+    const database = createInMemoryTestDb();
+    const gateway = scriptedGateway([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "late-write",
+          toolName: "write_file",
+          input: {
+            path: "src/Late.ts",
+            content: "export const late = true;\n",
+          },
+        },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "tool-calls",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+    ]);
+    const options = {
+      database: database.$client,
+      gateway,
+      tools: toolRegistry(runtime),
+      runtime,
+      redact,
+      prompts: {
+        builder: "Build safely.",
+        planner: "Plan safely.",
+        verifier: "Verify safely.",
+        summarizer: "Summarize safely.",
+      },
+    } as const;
+    const controller = new AbortController();
+    const active = createLocalAgentSession(options).run(
+      sessionInput(),
+      controller.signal,
+    );
+    await writeStarted.promise;
+    controller.abort(new Error("cancelled by user"));
+    await expect(active).resolves.toMatchObject({ status: "cancelled" });
+    const transcripts = new SqliteTranscriptStore(database.$client);
+    const crashed = await transcripts.load({
+      runId: "local-run-1",
+      taskId: "local-task-1",
+    });
+    if (crashed?.executionLease === null || crashed === undefined) {
+      throw new Error("Expected a durable active filesystem lease");
+    }
+    const { version, ...crashedDraft } = crashed;
+    await transcripts.save(version, {
+      ...crashedDraft,
+      terminalStatus: null,
+      terminalErrorCode: null,
+      executionLease: { ...crashed.executionLease, expiresAtMs: 0 },
+    });
+
+    await expect(
+      createLocalAgentSession(options).run(
+        sessionInput(["write_file"], {
+          operationKey: `op_${"f".repeat(64)}`,
+          instruction: "Start another write.",
+        }),
+      ),
+    ).rejects.toThrow(/tool outcome is unknown/iu);
+    expect(gateway.calls).toBe(1);
+
+    releaseWrite.resolve();
+    await writeFinished.promise;
+    await expect(readFile(join(root, "src/Late.ts"), "utf8")).resolves.toBe(
+      "export const late = true;\n",
+    );
     database.$client.close();
   });
 

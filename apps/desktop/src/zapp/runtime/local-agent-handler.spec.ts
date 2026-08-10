@@ -469,7 +469,7 @@ describe("desktop local-agent chat composition", () => {
     database.$client.close();
   });
 
-  it("replays the first accepted message without another completion or clearing its commit", async () => {
+  it("reconciles the first accepted message after its session commit response is lost", async () => {
     const root = await mkdtemp(join(tmpdir(), "zapp-local-first-replay-"));
     roots.push(root);
     await mkdir(join(root, "src"));
@@ -567,6 +567,11 @@ describe("desktop local-agent chat composition", () => {
     const first = database.$client
       .prepare("SELECT content, commit_hash FROM messages WHERE id = ?")
       .get(103);
+    database.$client
+      .prepare(
+        "UPDATE messages SET content = '', commit_hash = NULL WHERE id = ?",
+      )
+      .run(103);
     await expect(invoke()).resolves.toBe(true);
 
     expect(gatewayCalls).toBe(2);

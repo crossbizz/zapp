@@ -136,6 +136,17 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - [ ] Verify: focused recovery/containment tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
 - [ ] Commit: `fix(desktop): durably reconcile local agent turns`
 
+### Task MAC-6-FIX-3 [M2]: Single-writer local operation finalization
+
+**Files:** Modify: `apps/desktop/src/zapp/runtime/local-session.ts`, its existing spec, `tasks/todo.md`, this plan
+**Effort:** S
+
+- [ ] RED: pause operation A after its terminal transcript and before its receipt completes; prove distinct operation B cannot start, mutate the Git ref, or replace A's exact terminal result.
+- [ ] GREEN: hold one process-lifetime writer for each `(runId, taskId)` through session execution, commit reconciliation, and receipt completion; a crash releases the writer while the pending receipt remains recoverable by the same operation key.
+- [ ] GREEN: make receipt completion idempotently return an already-completed exact receipt before comparing caller-derived recovery data.
+- [ ] Verify: focused concurrent finalization/replay tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [ ] Commit: `fix(desktop): serialize local agent finalization`
+
 ### Task MAC-7 [M4]: Docker runtime adapter
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/docker.ts`
@@ -213,3 +224,4 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.
 - 2026-08-10 MAC-6A done — Added the safe local runtime, packaged resumable AR-6 session state, exact changed-path commit refs, and fail-closed guarded writes; MAC-6 remains open for the public user-authenticated model-gateway/accounting and UI/mode join plus explicit commit application.
 - 2026-08-10 MAC-6-FIX-1 BLOCKED — Containment, config-independent exact commits, terminal continuation, and truthful partial-commit reporting are focused-green (20/20), but the capped final review found missing keyed-result crash recovery, unresolved mutation-lease fencing, and durable owned-path hydration; provider acceptance was not consumed and MAC-6-FIX-2 owns the bounded closure.
+- 2026-08-10 MAC-6-FIX-2 BLOCKED — Exact keyed receipts, nonterminal unknown-outcome fencing, and exact durable owned-path add/remove recovery are focused-green (22/22), but the capped final review found terminal Git/receipt finalization can still overlap a distinct operation; provider acceptance was not consumed and MAC-6-FIX-3 owns the single-writer closure.

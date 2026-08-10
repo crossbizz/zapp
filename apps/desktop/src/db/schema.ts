@@ -518,6 +518,38 @@ export const zappLocalAgentCommitIntents = sqliteTable(
   (table) => [primaryKey({ columns: [table.runId, table.taskId] })],
 );
 
+export const zappLocalAgentOperationReceipts = sqliteTable(
+  "zapp_local_agent_operation_receipts",
+  {
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    operationKey: text("operation_key").notNull(),
+    baseCommitCount: integer("base_commit_count").notNull(),
+    status: text("status"),
+    summary: text("summary"),
+    commitsJson: text("commits_json"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.runId, table.taskId, table.operationKey] }),
+    uniqueIndex("zapp_local_agent_operation_receipts_one_pending")
+      .on(table.runId, table.taskId)
+      .where(sql`${table.status} IS NULL`),
+  ],
+);
+
+export const zappLocalAgentOwnedPaths = sqliteTable(
+  "zapp_local_agent_owned_paths",
+  {
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    path: text("path").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.runId, table.taskId, table.path] })],
+);
+
 export const zappLocalAgentChatSessions = sqliteTable(
   "zapp_local_agent_chat_sessions",
   {

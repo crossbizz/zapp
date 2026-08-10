@@ -253,6 +253,14 @@ export class LocalAgentPathDeniedError extends Error {
   }
 }
 
+export interface LocalAgentOwnedPathStore {
+  load(): readonly string[];
+  apply(input: {
+    readonly add: readonly string[];
+    readonly remove: readonly string[];
+  }): void;
+}
+
 /**
  * Model-facing local runtime. It exposes only Git-tracked files and files
  * created by this agent instance; ignored/untracked host files and Git
@@ -260,6 +268,20 @@ export class LocalAgentPathDeniedError extends Error {
  */
 export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
   private readonly ownedPaths = new Set<string>();
+
+  constructor(
+    root: string,
+    private readonly ownership?: LocalAgentOwnedPathStore,
+  ) {
+    super(root);
+  }
+
+  async hydrateOwnedPaths(paths: readonly string[]): Promise<void> {
+    const normalized = await Promise.all(
+      paths.map(async (path) => await this.modelPath(path)),
+    );
+    for (const path of normalized) this.ownedPaths.add(path);
+  }
 
   private async modelPath(path: string): Promise<string> {
     const resolved = await resolveInRoot(this.root, path);
@@ -332,6 +354,7 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
   override async writeFile(path: string, data: Uint8Array): Promise<void> {
     const normalized = await this.assertWritable(path);
     await super.writeFile(normalized, data);
+    this.ownership?.apply({ add: [normalized], remove: [] });
     this.ownedPaths.add(normalized);
   }
 
@@ -345,6 +368,10 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
       })),
     );
     await super.writeFilesAtomically(normalized);
+    this.ownership?.apply({
+      add: normalized.map((file) => file.path),
+      remove: [],
+    });
     for (const file of normalized) this.ownedPaths.add(file.path);
   }
 
@@ -379,6 +406,7 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
   override async deleteFile(path: string): Promise<void> {
     const normalized = await this.assertReadable(path);
     await super.deleteFile(normalized);
+    this.ownership?.apply({ add: [], remove: [normalized] });
     this.ownedPaths.delete(normalized);
   }
 
@@ -386,6 +414,7 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
     const source = await this.assertReadable(input.source);
     const destination = await this.assertWritable(input.destination);
     await super.renameFile({ source, destination, overwrite: input.overwrite });
+    this.ownership?.apply({ add: [destination], remove: [source] });
     this.ownedPaths.delete(source);
     this.ownedPaths.add(destination);
   }

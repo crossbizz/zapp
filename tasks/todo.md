@@ -153,6 +153,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] MAC-6 Local WorkspaceRuntime + local sessions
 - [ ] MAC-6-FIX-1 Structural local-agent containment + terminal recovery
 - [ ] MAC-6-FIX-2 Durable local turn results + mutation recovery
+- [ ] MAC-6-FIX-3 Single-writer local operation finalization
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
 

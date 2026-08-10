@@ -330,6 +330,20 @@
       "when": 1786367097390,
       "tag": "0046_hot_blink",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1786374944412,
+      "tag": "0047_past_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1786375580803,
+      "tag": "0048_tense_misty_knight",
+      "breakpoints": true
     }
   ]
 }

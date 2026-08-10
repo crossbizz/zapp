@@ -22,7 +22,10 @@ import { hashPrefix } from "@/lib/prefixHash";
 import { getDyadAppPath } from "@/paths/paths";
 
 import { LocalAgentWorkspaceRuntime } from "./local";
-import { createLocalAgentSession } from "./local-session";
+import {
+  createLocalAgentOwnedPathStore,
+  createLocalAgentSession,
+} from "./local-session";
 
 const LocalProjectSchema = z
   .object({ name: z.string().min(1), path: z.string().min(1) })
@@ -203,9 +206,16 @@ export function createLocalAgentStreamHandler(input: {
         localProjectName: project.name,
       }),
     );
+    const ownership = createLocalAgentOwnedPathStore(
+      input.database,
+      accounting.runId,
+      accounting.taskId,
+    );
     const runtime = new LocalAgentWorkspaceRuntime(
       getDyadAppPath(project.path),
+      ownership,
     );
+    await runtime.hydrateOwnedPaths(ownership.load());
     const gateway = gatewayWithRendererUpdates({
       gateway: input.platform.gateway(accounting),
       database: input.database,
