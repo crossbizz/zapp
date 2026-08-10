@@ -310,3 +310,4 @@ export const IdempotencyHeader = "idempotency-key";
 - 2026-08-03: FND-9 done (fadc872 + fix 8197e8e, review Approved; eslint rule 29 tests + CI gate w/ 19-case self-test over apps+packages roots). Commented-import tradeoff documented in ADR-0001 + job header.
 - 2026-08-04: FND-6 done (5a0a463 + ed9b4e5 + hardening 3259eac, review fully Approved). 28/28 tables PRD-conformance-tested permanently; composite tenant FKs on 13 tables; UTC partition bounds; IdPrefix 26. PLAN 01 COMPLETE (11/11).
 - 2026-08-06 FND-4 interface extension approved — ADR-0014 adds optional strict `test.integration` while retaining the at-least-one-suite invariant required by AR-4 and VF-3.
+- 2026-08-10 M1-GATE-11 done — retained the exact 100-way gapless sequence proof while giving the real PostgreSQL contention fixture a bounded 15-second gate budget.

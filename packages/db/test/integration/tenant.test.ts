@@ -366,7 +366,7 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           .where(eq(runEventCounters.runId, beta.runId)),
       );
       expect(counter.lastSequence).toBe(103);
-    });
+    }, 15_000);
 
     it('starts a run that has never emitted an event at 1', async () => {
       const fresh = await seedTenant(handle.db, { slug: 'gamma' });
