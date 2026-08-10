@@ -120,9 +120,9 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 **Files:** Create: `src/criteria.ts`, `test/criteria.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §24.3): `CriterionRecord = { criterionId, specificationVersion, taskIds[], testCaseIds[], result: "passed"|"failed"|"unverified"|"waived", evidenceArtifactIds[], verifierComments }`; assembly joins plan (AC↔task) + test runs (test↔AC via annotation `// @zapp-criterion AC-3` in generated specs, parsed from test titles `[AC-3]`); **completion-report rule: any final message/evidence omitting failed or unverified criteria is a policy violation** — enforced by the report builder (it always enumerates all criteria; no filtering path exists).
-- [ ] Failing tests: mapping from fixture plan+results; unverified criterion always present in report output.
-- [ ] Commit: `feat(verification-engine): criteria traceability records`
+- [x] Binding behavior (PRD §24.3): `CriterionRecord = { criterionId, specificationVersion, taskIds[], testCaseIds[], result: "passed"|"failed"|"unverified"|"waived", evidenceArtifactIds[], verifierComments }`; assembly joins plan (AC↔task) + test runs (test↔AC via annotation `// @zapp-criterion AC-3` in generated specs, parsed from test titles `[AC-3]`); **completion-report rule: any final message/evidence omitting failed or unverified criteria is a policy violation** — enforced by the report builder (it always enumerates all criteria; no filtering path exists).
+- [x] Failing tests: mapping from fixture plan+results; unverified criterion always present in report output.
+- [x] Commit: `feat(verification-engine): criteria traceability records`
 
 ### Task VF-10 [M3]: Verifier decision engine
 
@@ -206,3 +206,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-10 VF-8 done — Added keyed committed smoke/acceptance generation with exact criterion traceability, stable-selector enforcement, validated edit receipts, and clean-index isolation; after the two-round review cap, the cold gate exposed inherited 5s envelopes preempting real-Git diagnostics under contention, so those fixtures adopted the existing bounded 60s precedent; 27/27 package tests passed with no interface deviations.
 - 2026-08-10 VF-6 done — Added strict preview-health and capped adapter-route Playwright smoke gates with per-route screenshot, console, and request evidence; the single capped review found and fixed visited-route cap loss and failure-path screenshot omission; package gates and root lint/typecheck passed with no provider run required.
 - 2026-08-10 VF-7 done — Added keyed exact-commit `forge-web-test` execution, tenant-scoped rows, R2-linked failure evidence, targeted flaky retry visibility, reclaimable leases, preview-proxy routing, and registered-secret redaction; the single capped review found six Important issues and all were fixed; the real two-case Chromium fixture plus package and root gates passed with no provider run prescribed.
+- 2026-08-10 VF-9 done — Added strict criterion assembly across specification criteria, plan tasks, annotated test cases, evidence, and actor-attributed waivers; the completion-report builder accepts the full assembly input and always renders every failed and unverified criterion; the single capped review found no Critical or Important issues, and package plus root gates passed with no provider run prescribed.

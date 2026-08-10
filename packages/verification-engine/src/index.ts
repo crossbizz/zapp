@@ -7,6 +7,7 @@ export * from './gates/preview-health.js';
 export * from './gates/secret-scan.js';
 export * from './gates/typecheck.js';
 export * from './gates/unit-tests.js';
+export * from './criteria.js';
 export * from './generate/acceptance.js';
 export * from './generate/smoke.js';
 export * from './policy-matrix.js';

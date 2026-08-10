@@ -160,7 +160,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-6 Preview health + browser smoke gates
 - [x] VF-7 Playwright runner + evidence artifacts
 - [x] VF-8 Smoke + acceptance test generation
-- [ ] VF-9 Criteria traceability
+- [x] VF-9 Criteria traceability
 - [ ] VF-10 Verifier decision engine (rejection authority)
 - [ ] VF-11 Browser agent (exploratory)
 - [ ] VF-12 Accessibility gate
