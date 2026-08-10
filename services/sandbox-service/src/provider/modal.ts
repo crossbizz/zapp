@@ -137,6 +137,8 @@ export interface ModalSdkPort {
 interface ModalImagePublisherOptions {
   readonly credentials?: ModalCredentials;
   readonly sdkFactory?: (environment: ModalEnvironment) => ModalSdkPort;
+  readonly clockMs?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
 function shellQuote(value: string): string {
@@ -614,9 +616,51 @@ async function waitForAgentHealth(
   throw new Error(`${lastFailure} before the 30 second readiness deadline`);
 }
 
+async function waitForPreviewProxyHealth(
+  sandbox: ModalSdkSandboxPort,
+  clockMs: () => number,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<void> {
+  const deadline = clockMs() + HEALTH_PROBE_TIMEOUT_MS;
+  let lastFailure = 'preview proxy did not answer its health probe';
+  while (clockMs() < deadline) {
+    const remainingMs = deadline - clockMs();
+    const response = ModalSdkRunResultSchema.parse(
+      await sandbox.exec([
+        'curl',
+        '--max-time',
+        (remainingMs / 1_000).toFixed(3),
+        '--fail-with-body',
+        '--silent',
+        '--show-error',
+        'http://127.0.0.1:8080/__zapp/healthz',
+      ]),
+    );
+    if (response.exitCode === 0) {
+      try {
+        const health = PreviewProxyHealthSchema.safeParse(
+          JSON.parse(response.stdout) as unknown,
+        );
+        if (health.success) return;
+        lastFailure = 'preview proxy returned an invalid health response';
+      } catch {
+        lastFailure = 'preview proxy returned invalid JSON';
+      }
+    } else {
+      lastFailure = `preview proxy health probe exited ${String(response.exitCode)}`;
+    }
+    const remainingAfterProbeMs = deadline - clockMs();
+    if (remainingAfterProbeMs <= 0) break;
+    await sleep(Math.min(HEALTH_PROBE_INTERVAL_MS, remainingAfterProbeMs));
+  }
+  throw new Error(`${lastFailure} before the 30 second readiness deadline`);
+}
+
 async function runSmoke(
   sdk: ModalSdkPort,
   untrustedInput: Parameters<ModalImagePublisher['smokeImage']>[0],
+  clockMs: () => number,
+  sleep: (milliseconds: number) => Promise<void>,
 ) {
   const input = SmokeImageInputSchema.parse(untrustedInput);
   const resolvedDigest = await sdk.resolvePublishedImage({
@@ -665,23 +709,7 @@ async function runSmoke(
     }
 
     const health = await waitForAgentHealth(sandbox, input.agentToken);
-    PreviewProxyHealthSchema.parse(
-      JSON.parse(
-        (
-          await execOrThrow(
-            sandbox,
-            [
-              'curl',
-              '--fail-with-body',
-              '--silent',
-              '--show-error',
-              'http://127.0.0.1:8080/__zapp/healthz',
-            ],
-            'preview proxy health probe',
-          )
-        ).stdout,
-      ) as unknown,
-    );
+    await waitForPreviewProxyHealth(sandbox, clockMs, sleep);
     await execOrThrow(
       sandbox,
       ['sh', '-lc', credentialAbsenceCommand(true)],
@@ -2232,6 +2260,8 @@ export function createModalImagePublisher(
     options.sdkFactory ??
     ((environment) =>
       createSdkPort(options.credentials ?? credentialsFromEnvironment(), environment));
+  const clockMs = options.clockMs ?? Date.now;
+  const sleep = options.sleep ?? delay;
 
   return {
     async publishImage(untrustedInput) {
@@ -2277,7 +2307,7 @@ export function createModalImagePublisher(
       const input = SmokeImageInputSchema.parse(untrustedInput);
       const sdk = sdkFactory(input.environment);
       try {
-        return await runSmoke(sdk, input);
+        return await runSmoke(sdk, input, clockMs, sleep);
       } finally {
         sdk.close();
       }

@@ -399,10 +399,36 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 
 ### Task WS-15 [M2]: Runaway-compute governor
 
-**Files:** Create: `src/lifecycle/governor.ts`
+**Files:** Create: `src/lifecycle/governor.ts`, `test/governor.test.ts`; Modify (required production joins only): `src/app.ts`, `src/routes/workspaces.ts`, `test/integration/modal-provider.test.ts`, `test/integration/git-clone.test.ts`
 **Effort:** M. **[expand-at-execution]**
 
 Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS-3 exposes limits); exceeding → 429 `sandbox_quota_exceeded` with queue-position hint; support kill-switch `POST /internal/orgs/:id/terminate-all` (audited, used by OPS-17 console); per-run wall-clock budget enforcement (default interactive 4 h / autonomous phase 8 h per PRD §18.9).
+
+#### WS-15 execution expansion
+
+Review exit (maximum two rounds): zero Critical/Important findings. Real-provider acceptance runs once, after the local suites and review are closed; review fixes rerun local suites only.
+
+- [x] **15a RED — governor contract:** add strict unit cases for atomic global/per-org admission, idempotent replay, deterministic positive queue position, release, purpose-derived 4 h/8 h run deadlines, and malformed boundary values. Run the focused test and retain the missing-module/behavior failure.
+- [x] **15a GREEN — governor contract:** implement the Zod-owned `RunawayComputeGovernor` over required OPS-3 plan-limit and durable atomic-capacity ports. A denied admission throws typed `SandboxQuotaExceededError`; no in-process counter or permissive fallback is allowed.
+- [x] **15b RED — lifecycle enforcement:** extend the same focused suite with fake-clock cases proving the renewable durable deadline claimant checkpoints then terminates each expired run exactly once, releases a failed claim for retry, and stops its scheduler cleanly. Run and retain the behavioral failure.
+- [x] **15b GREEN — lifecycle enforcement:** add bounded scheduler start/stop plus fenced expiry claim/complete/release operations. Builder/preview are interactive (4 h); verifier/scan are autonomous work (8 h), matching WS-6's binding purpose split.
+- [x] **15c RED — HTTP joins:** add focused app tests proving create denial returns exact 429 `{ code: "sandbox_quota_exceeded", queuePosition }` before a provider call; create failure and ordinary termination release capacity; and `POST /internal/orgs/:id/terminate-all` requires service auth, a matching idempotency key, strict support actor/reason input, tenant scope, and an audit success before terminating only that organization's workspaces. Run and retain the route failures.
+- [x] **15c GREEN — HTTP joins:** require the governor in `buildApp` (no default), join admission/release to create/terminate compensation, register the support route, map the typed error, and tie governor scheduler lifetime to Fastify readiness/close. OPS-3 supplies plan limits later; OPS-17 calls the already-versioned internal kill boundary later.
+- [x] **Verify/review/provider/ship:** run focused governor/routes, the full sandbox-service test/lint/typecheck/build chain, and `git diff --check`; complete at most two SOL High review rounds; run exactly one immutable-image Modal smoke; then check WS-15 in this plan and `tasks/todo.md`, append one execution-log line, commit `feat(sandbox-service): runaway-compute governor`, push `main`, and watch authoritative CI + Security green.
+
+#### WS-15-FIX-1 — fenced sweep and shutdown closure
+
+Review exit (maximum two fresh rounds): zero Critical/Important findings. This fix task owns only the three findings remaining at WS-15's capped review.
+
+- [x] **RED:** prove expiry rows are claimed one at a time (so an unprocessed lease cannot age behind a long action), a transient pre-decision create failure followed by a successful terminal-row replay releases capacity, and `stop()` aborts a signal-bound stalled action and clears its renewal.
+- [x] **GREEN:** loop over at most the bounded sweep limit while claiming one row per iteration; retain active fenced controllers/renewal handles for shutdown; release any successful admission before rejecting an existing non-ready row.
+- [x] **Verify/review/provider/ship:** rerun focused/package/static gates; close within two SOL High rounds; then consume WS-15's one final immutable-image Modal smoke, complete WS-15/FIX-1 bookkeeping in the same task commit, push `main`, and watch CI + Security green.
+
+#### WS-15-FIX-2 — preview-proxy smoke readiness
+
+- [x] **RED:** retain WS-15's one provider result (`preview proxy health probe failed with exit code 7`) and add a deterministic publisher regression where the agent is healthy before the concurrently booted proxy accepts connections.
+- [x] **GREEN:** poll the strict preview health response within the existing 30-second image-readiness deadline; do not weaken the response schema or hide a terminal failure.
+- [x] **Verify/review/provider/ship:** run focused/package/static gates and at most two SOL High rounds, then run FIX-2's one final immutable-image Modal smoke; on success close WS-15/FIX-1/FIX-2, commit once, push, and watch CI + Security green.
 
 ---
 
@@ -478,3 +504,6 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-09 WS-14-FIX-3 done — snapshot restore now projects only strict org/project/branch volume identity; its one provider run honestly retained a 39.56% cache result below the required 40%, resolved structurally by FIX-4.
 - 2026-08-09 WS-14-FIX-4 done — cached installation now runs fully offline from the mounted project store while preserving the exact ≥40% threshold; local gates, one-round review, and the single final Modal journey passed.
 - 2026-08-09 WS-14-FIX-5 done — the contended real-curl explicit-kill fixture now has a bounded five-second observation budget and 15-second test ceiling while production stays at 30 seconds; focused/package/static gates and one-round review passed without another provider call.
+- 2026-08-09 WS-15 done — added required atomic plan-limit/capacity ports, one durable tenant+run deadline, typed replayable quota denial, fenced wall-clock termination, control-api-only audited organization kill switch, and create/attach/terminate release joins; capped review findings were closed by FIX-1.
+- 2026-08-09 WS-15-FIX-1 done — one-row expiry leasing, exact-token renewal/takeover, abortable shutdown including delayed-claim release, and admitted terminal-replay compensation closed all capped lifecycle findings in two review rounds.
+- 2026-08-09 WS-15-FIX-2 done — the first WS-15 smoke exposed agent/proxy concurrent-start refusal; strict preview health now retries with an exact remaining 30-second curl budget, and FIX-2's single immutable-image smoke passed for dev.

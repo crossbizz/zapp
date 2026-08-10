@@ -393,6 +393,18 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       provider,
       rows,
       previewMonitors,
+      governor: {
+        admit: () =>
+          Promise.resolve({
+            status: 'admitted' as const,
+            deadlineAt: new Date('2026-08-09T16:00:00.000Z'),
+          }),
+        release: () => Promise.resolve(),
+        sweepExpired: () => Promise.resolve(),
+        terminateAll: () => Promise.resolve({ terminated: 0 }),
+        start() {},
+        stop: () => Promise.resolve(),
+      },
       secrets: createScopedSecretInjector({
         decrypt: () => Promise.reject(new Error('Unexpected secret decrypt')),
       }),

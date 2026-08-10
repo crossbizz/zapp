@@ -1432,6 +1432,93 @@ jq() {
     expect(healthAttempts).toBe(2);
   });
 
+  test('retries the preview proxy health probe after agent readiness', async () => {
+    let previewAttempts = 0;
+    const sandbox = successfulSandbox([], () => undefined);
+    const exec = sandbox.exec.bind(sandbox);
+    sandbox.exec = (command) => {
+      if (command[0] === 'curl' && command.at(-1)?.endsWith('/__zapp/healthz')) {
+        previewAttempts += 1;
+        if (previewAttempts === 1) {
+          return Promise.resolve({ exitCode: 7, stdout: '', stderr: 'connection refused' });
+        }
+      }
+      return exec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({ sdkFactory: () => sdk });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        health: { ok: true, details: 'workspace-agent ready', devServer: null },
+      }),
+    );
+    expect(previewAttempts).toBe(2);
+  });
+
+  test('bounds a stalled preview proxy probe by the remaining readiness deadline', async () => {
+    let clockMs = 0;
+    let terminationCount = 0;
+    const maxTimes: string[] = [];
+    const sleep = vi.fn(() => Promise.resolve());
+    const sandbox = successfulSandbox([], () => {
+      terminationCount += 1;
+    });
+    const exec = sandbox.exec.bind(sandbox);
+    sandbox.exec = (command) => {
+      if (command[0] === 'curl' && command.at(-1)?.endsWith('/__zapp/healthz')) {
+        const maxTimeIndex = command.indexOf('--max-time');
+        const maxTime = command[maxTimeIndex + 1];
+        if (maxTime === undefined) throw new Error('preview curl max-time missing');
+        maxTimes.push(maxTime);
+        clockMs += Number.parseFloat(maxTime) * 1_000;
+        return Promise.resolve({ exitCode: 28, stdout: '', stderr: 'timed out' });
+      }
+      return exec(command);
+    };
+    const sdk: ModalSdkPort = {
+      buildImage: () => Promise.reject(new Error('not used')),
+      resolvePublishedImage: () => Promise.resolve('im-built0123'),
+      publishImageId: () => Promise.reject(new Error('not used')),
+      createVmSandbox: () => Promise.resolve(sandbox),
+      close() {},
+    };
+    const publisher = createModalImagePublisher({
+      sdkFactory: () => sdk,
+      clockMs: () => clockMs,
+      sleep,
+    });
+
+    await expect(
+      publisher.smokeImage({
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: 'im-built0123',
+        publishedName: `forge-node-base:${TAG}`,
+        agentToken: randomUUID(),
+      }),
+    ).rejects.toThrow(
+      'preview proxy health probe exited 28 before the 30 second readiness deadline',
+    );
+    expect(maxTimes).toEqual(['30.000']);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(terminationCount).toBe(1);
+  });
+
   test.each([
     {
       state: 'locked c58 legacy idle',

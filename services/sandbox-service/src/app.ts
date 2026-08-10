@@ -35,6 +35,10 @@ import {
   createControlPlanePreviewEventClient,
   type ControlPlanePreviewEventClientOptions,
 } from './events/client.js';
+import {
+  SandboxQuotaExceededError,
+  type RunawayComputeGovernor,
+} from './lifecycle/governor.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -56,6 +60,13 @@ declare module 'fastify' {
   interface FastifyInstance {
     requireService: preHandlerAsyncHookHandler;
   }
+
+  interface FastifyRequest {
+    authenticatedServiceClaims: {
+      readonly service: string;
+      readonly audience: string;
+    } | null;
+  }
 }
 
 export type SandboxServiceApp = FastifyInstance;
@@ -64,6 +75,7 @@ interface BuildAppCommonOptions {
   readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
   readonly previewMonitors: PreviewMonitorCoordinator;
+  readonly governor: RunawayComputeGovernor;
   readonly previewMonitorOwnerId?: string;
   readonly previewMonitorLeaseMs?: number;
   readonly previewMonitorStandbyPollIntervalMs?: number;
@@ -114,6 +126,7 @@ export function buildApp(options: BuildAppOptions) {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+  app.decorateRequest('authenticatedServiceClaims', null);
   void app.register(websocket);
   app.addContentTypeParser(
     'application/octet-stream',
@@ -123,6 +136,14 @@ export function buildApp(options: BuildAppOptions) {
     },
   );
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof SandboxQuotaExceededError) {
+      void reply.status(error.statusCode).send({
+        code: error.code,
+        message: error.message,
+        queuePosition: error.queuePosition,
+      });
+      return;
+    }
     if (error instanceof BranchLockedError) {
       void reply.status(409).send({ code: error.code, message: error.message });
       return;
@@ -170,7 +191,9 @@ export function buildApp(options: BuildAppOptions) {
       !['control-api', 'orchestrator-worker'].includes(verdict.claims.service)
     ) {
       await reply.status(401).send(authenticationError());
+      return;
     }
+    request.authenticatedServiceClaims = verdict.claims;
   });
 
   registerWorkspaceRoutes(app, {
@@ -181,6 +204,7 @@ export function buildApp(options: BuildAppOptions) {
     networkPolicies: options.networkPolicies,
     events,
     previewMonitors: options.previewMonitors,
+    governor: options.governor,
     previewMonitorOwnerId: options.previewMonitorOwnerId ?? randomUUID(),
     ...(options.previewMonitorLeaseMs === undefined
       ? {}

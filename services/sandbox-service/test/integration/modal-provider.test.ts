@@ -10,6 +10,10 @@ import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import {
+  SandboxQuotaExceededError,
+  type RunawayComputeGovernor,
+} from '../../src/lifecycle/governor.js';
 import type { WorkspaceGitService } from '../../src/provider/git-bootstrap.js';
 import {
   createModalSandboxProvider,
@@ -43,23 +47,52 @@ const EMPTY_SECRET_INJECTOR = createScopedSecretInjector({
 const NOOP_NETWORK_POLICIES = { record: () => Promise.resolve() };
 const NOOP_PREVIEW_EVENTS = { emit: () => Promise.resolve() };
 
+function createGovernorFixture(
+  overrides: Partial<RunawayComputeGovernor> = {},
+): RunawayComputeGovernor {
+  return {
+    admit: vi.fn(() =>
+      Promise.resolve({
+        status: 'admitted' as const,
+        deadlineAt: new Date(NOW.getTime() + 4 * 60 * 60_000),
+      }),
+    ),
+    release: vi.fn(() => Promise.resolve()),
+    sweepExpired: vi.fn(() => Promise.resolve()),
+    terminateAll: vi.fn(() => Promise.resolve({ terminated: 0 })),
+    start: vi.fn(),
+    stop: vi.fn(() => Promise.resolve()),
+    ...overrides,
+  };
+}
+
 function buildTestApp(
   options: Omit<
     BuildAppOptions,
-    'secrets' | 'networkPolicies' | 'events' | 'previewMonitors'
+    'secrets' | 'networkPolicies' | 'events' | 'previewMonitors' | 'governor'
   > &
     Partial<
-      Pick<BuildAppOptions, 'secrets' | 'networkPolicies' | 'events' | 'previewMonitors'>
+      Pick<
+        BuildAppOptions,
+        'secrets' | 'networkPolicies' | 'events' | 'previewMonitors' | 'governor'
+      >
     >,
 ) {
+  const {
+    governor = createGovernorFixture(),
+    secrets = EMPTY_SECRET_INJECTOR,
+    networkPolicies = NOOP_NETWORK_POLICIES,
+    events = NOOP_PREVIEW_EVENTS,
+    previewMonitors = options.rows as WorkspaceRowBoundary & PreviewMonitorCoordinator,
+    ...required
+  } = options;
   return buildApp({
-    secrets: EMPTY_SECRET_INJECTOR,
-    networkPolicies: NOOP_NETWORK_POLICIES,
-    events: NOOP_PREVIEW_EVENTS,
-    previewMonitors:
-      options.previewMonitors ??
-      (options.rows as WorkspaceRowBoundary & PreviewMonitorCoordinator),
-    ...options,
+    ...required,
+    governor,
+    secrets,
+    networkPolicies,
+    events,
+    previewMonitors,
   } as BuildAppOptions);
 }
 const IDS = {
@@ -1417,6 +1450,278 @@ describe('create status terminate and idempotency', () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('enforces the runaway compute governor across create, replay, terminate, and app lifetime', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const deadlineAt = new Date(NOW.getTime() + 4 * 60 * 60_000);
+    const governor = createGovernorFixture({
+      admit: vi
+        .fn<RunawayComputeGovernor['admit']>()
+        .mockResolvedValueOnce({ status: 'admitted', deadlineAt })
+        .mockResolvedValueOnce({ status: 'replay', deadlineAt }),
+    });
+    const app = buildTestApp({
+      provider,
+      rows,
+      governor,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const { start, admit, release, stop } = governor;
+    expect(start).toHaveBeenCalledTimes(1);
+
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+    const payload = {
+      workspace: requestedRow(),
+      branchName: 'main',
+      runId: IDS.runId,
+      taskId: IDS.taskId,
+      purpose: 'builder' as const,
+      env: {},
+      networkProfile: 'dependency_install' as const,
+      operationKey: OPERATION_KEY,
+    };
+    expect(
+      (await app.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(201);
+    expect(
+      (await app.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(200);
+    expect(admit).toHaveBeenCalledTimes(2);
+    expect(admit).toHaveBeenNthCalledWith(1, {
+      workspaceId: IDS.workspaceId,
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+      runId: IDS.runId,
+      taskId: IDS.taskId,
+      purpose: 'builder',
+      operationKey: OPERATION_KEY,
+    });
+
+    const terminated = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
+      headers,
+      payload: { operationKey: OPERATION_KEY },
+    });
+    expect(terminated.statusCode).toBe(200);
+    expect(release).toHaveBeenCalledWith({
+      workspaceId: IDS.workspaceId,
+      organizationId: IDS.organizationId,
+      operationKey: OPERATION_KEY,
+    });
+
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a typed 429 without provider allocation when the governor queues create', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+    const rows = new MemoryWorkspaceRows();
+    const governor = createGovernorFixture({
+      admit: vi.fn(() => Promise.reject(new SandboxQuotaExceededError(3))),
+    });
+    const app = buildTestApp({
+      provider,
+      rows,
+      governor,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const request = {
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    } as const;
+    const response = await app.inject(request);
+    const replay = await app.inject(request);
+
+    expect(response.statusCode).toBe(429);
+    expect(replay.statusCode).toBe(429);
+    expect(response.json()).toEqual({
+      code: 'sandbox_quota_exceeded',
+      message: 'The organization sandbox quota is currently full.',
+      queuePosition: 3,
+    });
+    expect(replay.json()).toEqual(response.json());
+    expect(governor.admit).toHaveBeenCalledTimes(2);
+    expect(sdk.creates).toHaveLength(0);
+    await expect(
+      rows.get(IDS.workspaceId, IDS.organizationId, IDS.projectId),
+    ).resolves.toMatchObject({ status: 'terminated' });
+  });
+
+  it('releases a fresh admission when retry finds the prior create terminal', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+    const rows = new MemoryWorkspaceRows();
+    const deadlineAt = new Date(NOW.getTime() + 4 * 60 * 60_000);
+    const admit = vi
+      .fn<RunawayComputeGovernor['admit']>()
+      .mockRejectedValueOnce(new Error('capacity store unavailable'))
+      .mockResolvedValueOnce({ status: 'admitted', deadlineAt });
+    const release = vi.fn<RunawayComputeGovernor['release']>(() => Promise.resolve());
+    const app = buildTestApp({
+      provider,
+      rows,
+      governor: createGovernorFixture({ admit, release }),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const request = {
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder' as const,
+        env: {},
+        networkProfile: 'dependency_install' as const,
+        operationKey: OPERATION_KEY,
+      },
+    } as const;
+
+    expect((await app.inject(request)).statusCode).toBe(500);
+    expect((await app.inject(request)).statusCode).toBe(502);
+    expect(release).toHaveBeenCalledWith({
+      workspaceId: IDS.workspaceId,
+      organizationId: IDS.organizationId,
+      operationKey: OPERATION_KEY,
+    });
+    expect(sdk.creates).toHaveLength(0);
+  });
+
+  it('exposes the audited organization terminate-all boundary through service auth', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+    const rows = new MemoryWorkspaceRows();
+    const terminateAll = vi.fn(() => Promise.resolve({ terminated: 2 }));
+    const scopedServiceTokens = {
+      verifyServiceToken(token: string) {
+        if (token === 'orchestrator-service-token') {
+          return Promise.resolve({
+            ok: true as const,
+            claims: { service: 'orchestrator-worker', audience: 'sandbox-service' },
+          });
+        }
+        return serviceTokens.verifyServiceToken(token);
+      },
+    };
+    const app = buildTestApp({
+      provider,
+      rows,
+      governor: createGovernorFixture({ terminateAll }),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens: scopedServiceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const payload = {
+      actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NX',
+      reason: 'Security incident containment',
+      operationKey: OPERATION_KEY,
+    };
+
+    const unauthenticated = await app.inject({
+      method: 'POST',
+      url: `/internal/orgs/${IDS.organizationId}/terminate-all`,
+      payload,
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    const orchestrator = await app.inject({
+      method: 'POST',
+      url: `/internal/orgs/${IDS.organizationId}/terminate-all`,
+      headers: {
+        'x-zapp-service-token': 'orchestrator-service-token',
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload,
+    });
+    expect(orchestrator.statusCode).toBe(401);
+    expect(terminateAll).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/orgs/${IDS.organizationId}/terminate-all`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ terminated: 2 });
+    expect(terminateAll).toHaveBeenCalledWith({
+      organizationId: IDS.organizationId,
+      ...payload,
+    });
   });
 
   it('uses the locked image, exact tags, profile limits, allowlisted env, boot command, and agent readiness', async () => {

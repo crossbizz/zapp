@@ -20,6 +20,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { SandboxServiceApp } from '../app.js';
+import type { RunawayComputeGovernor } from '../lifecycle/governor.js';
 import {
   NetworkPolicyRecordSchema,
   resolveNetworkPolicy,
@@ -234,6 +235,17 @@ const WorkspaceScopeHeadersSchema = z
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
 const TerminateBodySchema = z.object({ operationKey: OperationKeySchema }).strict();
 const AttachBodySchema = TerminateBodySchema;
+const OrganizationParamsSchema = z.object({ organizationId: idSchema('org') }).strict();
+const TerminateAllBodySchema = z
+  .object({
+    actorUserId: idSchema('user'),
+    reason: z.string().trim().min(10).max(500),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+const TerminateAllResponseSchema = z
+  .object({ terminated: z.number().int().nonnegative() })
+  .strict();
 const WorkspaceResponseSchema = z.object({ workspace: WorkspaceLifecycleRowSchema }).strict();
 const PublicWorkspaceLifecycleRowSchema = WorkspaceLifecycleRowSchema.omit({
   providerWorkspaceId: true,
@@ -452,6 +464,7 @@ export function registerWorkspaceRoutes(
     readonly networkPolicies: NetworkPolicyRecorder;
     readonly events: PreviewLifecycleEventPort;
     readonly previewMonitors: PreviewMonitorCoordinator;
+    readonly governor: RunawayComputeGovernor;
     readonly previewMonitorOwnerId: string;
     readonly previewMonitorLeaseMs?: number;
     readonly previewMonitorStandbyPollIntervalMs?: number;
@@ -467,6 +480,12 @@ export function registerWorkspaceRoutes(
   const acquisitionController = new AbortController();
   let acquisitionLoop: Promise<void> | undefined;
   const lifecycle = { closing: false };
+  app.addHook('onReady', () => {
+    deps.governor.start();
+  });
+  app.addHook('onClose', async () => {
+    await deps.governor.stop();
+  });
   const isClosing = (): boolean => lifecycle.closing;
   const previewMonitorLeaseMs = deps.previewMonitorLeaseMs ?? 5_000;
   const previewMonitorStandbyPollIntervalMs =
@@ -768,27 +787,68 @@ export function registerWorkspaceRoutes(
           environment: deps.provider.attachmentEnvironment,
         },
       });
+      try {
+        await deps.governor.admit({
+          workspaceId: claim.row.id,
+          organizationId: claim.row.organizationId,
+          projectId: claim.row.projectId,
+          runId: body.runId,
+          taskId: body.taskId,
+          purpose: body.purpose,
+          operationKey: body.operationKey,
+        });
+      } catch (error) {
+        if (claim.created) {
+          await deps.rows.transition(claim.row.id, 'terminated', {
+            terminatedAt: deps.now(),
+          });
+        }
+        throw error;
+      }
       if (!claim.created) {
-        if (claim.row.status !== 'ready' || claim.row.providerWorkspaceId === null)
+        if (claim.row.status !== 'ready' || claim.row.providerWorkspaceId === null) {
+          await deps.governor.release({
+            workspaceId: claim.row.id,
+            organizationId: claim.row.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Original workspace creation did not complete.'), {
             statusCode: 502,
           });
+        }
         return await reply.status(200).send({ workspace: claim.row });
       }
 
-      await deps.rows.transition(claim.row.id, 'provisioning');
+      try {
+        await deps.rows.transition(claim.row.id, 'provisioning');
+      } catch (error) {
+        await deps.governor.release({
+          workspaceId: claim.row.id,
+          organizationId: claim.row.organizationId,
+          operationKey: body.operationKey,
+        });
+        throw error;
+      }
       let untrustedHandle: WorkspaceHandle;
       try {
         untrustedHandle = await deps.provider.createWorkspace(input, async (providerWorkspaceId) => {
           await deps.rows.bindProviderWorkspaceId(claim.row.id, providerWorkspaceId, 'provisioning');
         });
       } catch (error) {
-        await deps.rows.transition(
-          claim.row.id,
-          'terminated',
-          { terminatedAt: deps.now() },
-          'provisioning',
-        );
+        try {
+          await deps.rows.transition(
+            claim.row.id,
+            'terminated',
+            { terminatedAt: deps.now() },
+            'provisioning',
+          );
+        } finally {
+          await deps.governor.release({
+            workspaceId: claim.row.id,
+            organizationId: claim.row.organizationId,
+            operationKey: body.operationKey,
+          });
+        }
         throw error;
       }
       const providerWorkspaceId = z
@@ -831,10 +891,18 @@ export function registerWorkspaceRoutes(
             cause: error,
           });
         }
-        await deps.rows.transition(claim.row.id, 'terminated', {
-          providerWorkspaceId,
-          terminatedAt: deps.now(),
-        });
+        try {
+          await deps.rows.transition(claim.row.id, 'terminated', {
+            providerWorkspaceId,
+            terminatedAt: deps.now(),
+          });
+        } finally {
+          await deps.governor.release({
+            workspaceId: claim.row.id,
+            organizationId: claim.row.organizationId,
+            operationKey: body.operationKey,
+          });
+        }
         throw Object.assign(new Error('Workspace creation did not persist safely.'), {
           statusCode: 502,
           cause: error,
@@ -866,6 +934,11 @@ export function registerWorkspaceRoutes(
       let row = record.row;
       if (row.providerWorkspaceId === null) {
         row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+        await deps.governor.release({
+          workspaceId: row.id,
+          organizationId: row.organizationId,
+          operationKey: body.operationKey,
+        });
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
       const providerWorkspaceId = row.providerWorkspaceId;
@@ -890,6 +963,11 @@ export function registerWorkspaceRoutes(
         const providerStatus = await deps.provider.getStatus(providerWorkspaceId);
         if (providerStatus === 'terminated') {
           row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          await deps.governor.release({
+            workspaceId: row.id,
+            organizationId: row.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
         }
         if (providerStatus !== 'ready') {
@@ -900,6 +978,11 @@ export function registerWorkspaceRoutes(
             });
           }
           row = await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          await deps.governor.release({
+            workspaceId: row.id,
+            organizationId: row.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Workspace did not remain ready.'), { statusCode: 502 });
         }
         const progression: Partial<Record<WorkspaceStatus, WorkspaceStatus>> = {
@@ -918,14 +1001,28 @@ export function registerWorkspaceRoutes(
         return { workspace: PublicWorkspaceLifecycleRowSchema.parse(row) };
       } catch (error) {
         if (error instanceof ModalWorkspaceTagMismatchError) {
-          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          const terminated = await deps.rows.transition(row.id, 'terminated', {
+            terminatedAt: deps.now(),
+          });
+          await deps.governor.release({
+            workspaceId: terminated.id,
+            organizationId: terminated.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Workspace was not found.'), {
             statusCode: 404,
             cause: error,
           });
         }
         if (error instanceof ModalWorkspaceNotFoundError) {
-          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          const terminated = await deps.rows.transition(row.id, 'terminated', {
+            terminatedAt: deps.now(),
+          });
+          await deps.governor.release({
+            workspaceId: terminated.id,
+            organizationId: terminated.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Workspace was not found.'), {
             statusCode: 404,
             cause: error,
@@ -939,7 +1036,14 @@ export function registerWorkspaceRoutes(
               cause: error,
             });
           }
-          await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+          const terminated = await deps.rows.transition(row.id, 'terminated', {
+            terminatedAt: deps.now(),
+          });
+          await deps.governor.release({
+            workspaceId: terminated.id,
+            organizationId: terminated.organizationId,
+            operationKey: body.operationKey,
+          });
           throw Object.assign(new Error('Workspace did not become ready.'), {
             statusCode: 502,
             cause: error,
@@ -1004,6 +1108,11 @@ export function registerWorkspaceRoutes(
       if (row.status === 'terminated') {
         await deps.previewMonitors.revoke(row.id);
         stopFailureMonitor(row.id);
+        await deps.governor.release({
+          workspaceId: row.id,
+          organizationId: row.organizationId,
+          operationKey: body.operationKey,
+        });
         return { workspace: row };
       }
       if (row.providerWorkspaceId !== null) {
@@ -1019,7 +1128,37 @@ export function registerWorkspaceRoutes(
       const terminated = await deps.rows.transition(row.id, 'terminated', {
         terminatedAt: deps.now(),
       });
+      await deps.governor.release({
+        workspaceId: terminated.id,
+        organizationId: terminated.organizationId,
+        operationKey: body.operationKey,
+      });
       return { workspace: terminated };
+    },
+  );
+
+  app.post(
+    '/internal/orgs/:organizationId/terminate-all',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: OrganizationParamsSchema,
+        body: TerminateAllBodySchema,
+        response: { 200: TerminateAllResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { organizationId } = OrganizationParamsSchema.parse(request.params);
+      const body = TerminateAllBodySchema.parse(request.body);
+      requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
+      if (request.authenticatedServiceClaims?.service !== 'control-api') {
+        throw Object.assign(new Error('A control-api service token is required.'), {
+          statusCode: 401,
+        });
+      }
+      return TerminateAllResponseSchema.parse(
+        await deps.governor.terminateAll({ organizationId, ...body }),
+      );
     },
   );
 
