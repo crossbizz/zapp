@@ -364,32 +364,32 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 **Files:** Create: `test/integration/modal-e2e.test.ts`, CI nightly workflow
 **Effort:** M
 
-- [ ] Nightly (not per-PR) against `zapp-dev` Modal env: full journey — create(std profile) → clone template → `pnpm install` (cache volume speeds 2nd run — assert ≥ 40% faster) → dev server → preview proxy healthz through connect URL → checkpoint → kill sandbox via Modal API directly (simulate OOM) → restore → dev server again → terminate. Alert on failure (Grafana Alerting → OnCall). Pins SDK; this suite is the Modal-SDK-churn early-warning (master risk table).
-- [ ] Commit: `test(sandbox-service): nightly Modal E2E journey`
+- [x] Nightly (not per-PR) against `zapp-dev` Modal env: full journey — create(std profile) → clone template → `pnpm install` (cache volume speeds 2nd run — assert ≥ 40% faster) → dev server → preview proxy healthz through connect URL → checkpoint → kill sandbox via Modal API directly (simulate OOM) → restore → dev server again → terminate. Alert on failure (Grafana Alerting → OnCall). Pins SDK; this suite is the Modal-SDK-churn early-warning (master risk table).
+- [x] Commit: `test(sandbox-service): nightly Modal E2E journey`
 
 #### WS-14-FIX-1 — explicit cache environment for agent exec
 
-- [ ] **RED/evidence:** retain the one WS-14 provider failure: the mounted project Volume existed, but `pnpm store path` inside an agent exec resolved to `/root/.local/share/pnpm/store/v3` because the agent intentionally inherits only its safe base environment into child commands.
-- [ ] **GREEN:** make the nightly install requests carry the supported `NPM_CONFIG_STORE_DIR=/cache/pnpm` child environment explicitly; prove the provider request preserves it and the real journey resolves the store under `/cache/pnpm` before timing the second install.
-- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-1's single immutable-image Modal journey. On success, close WS-14 and FIX-1 together, run the repository push gate, and watch authoritative CI/Security green.
+- [x] **RED/evidence:** retain the one WS-14 provider failure: the mounted project Volume existed, but `pnpm store path` inside an agent exec resolved to `/root/.local/share/pnpm/store/v3` because the agent intentionally inherits only its safe base environment into child commands.
+- [x] **GREEN:** make the nightly install requests carry the supported `NPM_CONFIG_STORE_DIR=/cache/pnpm` child environment explicitly; prove the provider request preserves it and the real journey resolves the store under `/cache/pnpm` before timing the second install.
+- [x] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-1's single immutable-image Modal journey. On success, close WS-14 and FIX-1 together, run the repository push gate, and watch authoritative CI/Security green.
 
 #### WS-14-FIX-2 — standalone fixture install inside the sparse source checkout
 
-- [ ] **RED/evidence:** retain FIX-1's single provider result: the cache path resolved under `/cache/pnpm`, then the first install exited `254` because pnpm discovered the sparse checkout's repository-level workspace instead of treating the nested fixture as a standalone project.
-- [ ] **GREEN:** invoke both fixture installs with pnpm's supported `--ignore-workspace` option and cover the exact command boundary locally, without changing or rebuilding the immutable Modal image.
-- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-2's single immutable-image Modal journey. On success, close WS-14 plus both fix tasks, push, and watch authoritative CI/Security green.
+- [x] **RED/evidence:** retain FIX-1's single provider result: the cache path resolved under `/cache/pnpm`, then the first install exited `254` because pnpm discovered the sparse checkout's repository-level workspace instead of treating the nested fixture as a standalone project.
+- [x] **GREEN:** invoke both fixture installs with pnpm's supported `--ignore-workspace` option and cover the exact command boundary locally, without changing or rebuilding the immutable Modal image.
+- [x] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-2's single immutable-image Modal journey. On success, close WS-14 plus both fix tasks, push, and watch authoritative CI/Security green.
 
 #### WS-14-FIX-3 — strict restore volume input
 
-- [ ] **RED/evidence:** retain FIX-2's single provider result: cache/install/dev-server/checkpoint/direct-kill passed, then restore rejected the full workspace input as unrecognized keys at `createProjectVolumePlan` before creating a replacement sandbox.
-- [ ] **GREEN:** project only organization/project/branch IDs into the strict volume planner during snapshot restore and prove the SDK receives the same tags, environment, named volume, and snapshot filesystem.
-- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-3's single immutable-image Modal journey. On success, close WS-14 plus all three fix tasks, push, and watch authoritative CI/Security green.
+- [x] **RED/evidence:** retain FIX-2's single provider result: cache/install/dev-server/checkpoint/direct-kill passed, then restore rejected the full workspace input as unrecognized keys at `createProjectVolumePlan` before creating a replacement sandbox.
+- [x] **GREEN:** project only organization/project/branch IDs into the strict volume planner during snapshot restore and prove the SDK receives the same tags, environment, named volume, and snapshot filesystem.
+- [x] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-3's single immutable-image Modal journey. On success, close WS-14 plus all three fix tasks, push, and watch authoritative CI/Security green.
 
 #### WS-14-FIX-4 — deterministic mounted-cache proof
 
-- [ ] **RED/evidence:** retain FIX-3's single provider result: the second install was `39.56%` faster and correctly failed the binding `≥40%` assertion by `6.18 ms`; no result is rounded into success.
-- [ ] **GREEN:** make the second install use pnpm's strict offline mode so success proves every dependency came from the mounted project store, while preserving the exact `≥40%` timing assertion and standalone-workspace boundary.
-- [ ] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-4's single immutable-image Modal journey. On success, close WS-14 plus all four fix tasks, push, and watch authoritative CI/Security green.
+- [x] **RED/evidence:** retain FIX-3's single provider result: the second install was `39.56%` faster and correctly failed the binding `≥40%` assertion by `6.18 ms`; no result is rounded into success.
+- [x] **GREEN:** make the second install use pnpm's strict offline mode so success proves every dependency came from the mounted project store, while preserving the exact `≥40%` timing assertion and standalone-workspace boundary.
+- [x] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-4's single immutable-image Modal journey. On success, close WS-14 plus all four fix tasks, push, and watch authoritative CI/Security green.
 
 ### Task WS-15 [M2]: Runaway-compute governor
 
@@ -466,3 +466,8 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-09 M1-CI-preview-timeout done — clean CI exposed a 25 ms healthy-origin header deadline under full contention; the fixture now preserves silent-origin timeout and rotation with a 500 ms/2 s proof budget, while production's 10-second boundary is unchanged; focused 1/1, preview-proxy 109/109, static gates, and one Critical/Important review passed.
 - 2026-08-09 WS-13 done — supervised preview processes now expose bounded cursor logs, deterministic crash recovery, durable fenced lifecycle monitoring, and cancellation-settled Modal/SSE streams; two-round-capped reviews closed FIX-1..8, the one immutable-image Modal acceptance passed, and `pnpm verify` closed 82/82 concurrent tasks, 16/16 serialized integration tasks, tenant isolation 54/54, and Gate 5 1/1 with external-credential skips visible.
 - 2026-08-09 WS-13-FIX-9 done — authoritative CI exposed a scheduler-dependent four-record replay heuristic; the gate now proves the load-bearing exact replay, one side effect, and 64 KiB retained-response ceiling, with the WS-13 provider acceptance intentionally not repeated.
+- 2026-08-09 WS-14 done — nightly immutable-image Modal journey and fail-closed scheduled workflow now cover create, standalone pnpm cache reuse, preview, checkpoint, direct kill, restore, second preview, termination, and Grafana OnCall failure paging; the final real journey passed 4/4 in 59.50s after the four recorded fix tasks.
+- 2026-08-09 WS-14-FIX-1 done — explicit child-request cache environment fixed the agent's safe-inheritance boundary; its one provider run passed the store-path proof and exposed the sparse-checkout install boundary folded into FIX-2.
+- 2026-08-09 WS-14-FIX-2 done — both fixture installs now ignore the repository workspace and use the nested frozen lock; its one provider run passed cache/install/dev-server/checkpoint/kill and exposed the strict restore input fixed by FIX-3.
+- 2026-08-09 WS-14-FIX-3 done — snapshot restore now projects only strict org/project/branch volume identity; its one provider run honestly retained a 39.56% cache result below the required 40%, resolved structurally by FIX-4.
+- 2026-08-09 WS-14-FIX-4 done — cached installation now runs fully offline from the mounted project store while preserving the exact ≥40% threshold; local gates, one-round review, and the single final Modal journey passed.

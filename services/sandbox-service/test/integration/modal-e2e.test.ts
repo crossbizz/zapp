@@ -56,7 +56,7 @@ async function runOrThrow(
 async function installFixtureDependencies(
   provider: Pick<ReturnType<typeof createModalSandboxProvider>, 'exec'>,
   providerWorkspaceId: string,
-  preferOffline: boolean,
+  offline: boolean,
 ): Promise<WorkspaceAgentExecResult> {
   return runOrThrow(provider, providerWorkspaceId, {
     command: 'pnpm',
@@ -64,7 +64,7 @@ async function installFixtureDependencies(
       'install',
       '--ignore-workspace',
       '--frozen-lockfile',
-      ...(preferOffline ? ['--prefer-offline'] : []),
+      ...(offline ? ['--offline'] : []),
     ],
     cwd: TEMPLATE_PATH,
     env: CACHE_EXEC_ENV,
@@ -163,7 +163,7 @@ describe('WS-14 nightly Modal journey wiring', () => {
     expect(exec).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        args: ['install', '--ignore-workspace', '--frozen-lockfile', '--prefer-offline'],
+        args: ['install', '--ignore-workspace', '--frozen-lockfile', '--offline'],
         env: CACHE_EXEC_ENV,
       }),
     );
