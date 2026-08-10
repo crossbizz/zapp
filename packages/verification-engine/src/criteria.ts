@@ -28,7 +28,7 @@ const CriterionTaskSchema = z
   })
   .strict();
 
-const CriterionTestCaseSchema = z
+export const CriterionTestCaseSchema = z
   .object({
     testCaseId: IdentifierSchema,
     name: z.string().trim().min(1).max(2_048),
@@ -36,6 +36,7 @@ const CriterionTestCaseSchema = z
     evidenceArtifactIds: UniqueIdentifiersSchema,
   })
   .strict();
+export type CriterionTestCase = z.infer<typeof CriterionTestCaseSchema>;
 
 const CriterionWaiverSchema = z
   .object({

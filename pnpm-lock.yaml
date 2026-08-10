@@ -1165,6 +1165,12 @@ importers:
       '@zapp/project-adapters':
         specifier: workspace:*
         version: link:../../packages/project-adapters
+      '@zapp/verification-engine':
+        specifier: workspace:*
+        version: link:../../packages/verification-engine
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.3)(better-sqlite3@12.11.1)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1181,9 +1187,6 @@ importers:
       '@zapp/workspace-runtime':
         specifier: workspace:*
         version: link:../../packages/workspace-runtime
-      drizzle-orm:
-        specifier: ^0.45.2
-        version: 0.45.2(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.3)(better-sqlite3@12.11.1)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
       postgres:
         specifier: ^3.4.9
         version: 3.4.9

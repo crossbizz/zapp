@@ -5,6 +5,8 @@ import type {
   ActivityInterceptorsFactory,
   ActivityInboundCallsInterceptor,
 } from '@temporalio/worker';
+import { CommitShaSchema, idSchema } from '@zapp/contracts';
+import { z } from 'zod';
 
 export interface ActivityIdempotencyClaimInput {
   readonly idempotencyKey: string;
@@ -113,6 +115,17 @@ function hashActivityResult(value: unknown): string {
 }
 
 function idempotencyKeyOf(activityType: string, args: readonly unknown[]): string {
+  if (activityType === 'verifyPhase') {
+    const parsed = z.tuple([idSchema('run'), idSchema('phase'), CommitShaSchema]).safeParse(args);
+    if (parsed.success) {
+      const [runId, phaseId, commitSha] = parsed.data;
+      return `verify-phase:${runId}:${phaseId}:${commitSha}`;
+    }
+    throw ApplicationFailure.nonRetryable(
+      'Mutating activity verifyPhase requires exact run, phase, and commit arguments',
+      'activity_idempotency_key_required',
+    );
+  }
   const first = args[0];
   if (typeof first === 'object' && first !== null && 'idempotencyKey' in first) {
     const key = (first as { readonly idempotencyKey?: unknown }).idempotencyKey;

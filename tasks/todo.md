@@ -161,7 +161,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-7 Playwright runner + evidence artifacts
 - [x] VF-8 Smoke + acceptance test generation
 - [x] VF-9 Criteria traceability
-- [ ] VF-10 Verifier decision engine (rejection authority)
+- [x] VF-10 Verifier decision engine (rejection authority)
 - [ ] VF-11 Browser agent (exploratory)
 - [ ] VF-12 Accessibility gate
 - [ ] VF-13 Classified repair loop (hard budgets)

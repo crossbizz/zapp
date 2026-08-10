@@ -5,6 +5,7 @@ export * from './activities/idempotency.js';
 export * from './activities/merge.js';
 export * from './activities/session.js';
 export * from './activities/workspace.js';
+export * from './activities/verify-phase.js';
 export * from './session/context.js';
 export * from './session/loop.js';
 export * from './session/transcript.js';

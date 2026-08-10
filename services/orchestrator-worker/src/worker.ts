@@ -17,6 +17,7 @@ import {
 import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
+import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
   budgetApprovalResolvedSignal,
   cancelRunSignal,
@@ -33,6 +34,7 @@ export type RunActivities =
   & WorkspaceActivities
   & ApprovalActivities;
 export type ProductionRunActivities = RunActivities & TaskWorkflowActivities;
+export type ProductionVerificationActivities = CapabilityScanActivities & VerifyPhaseActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -124,6 +126,31 @@ export function createProductionRunWorker(
 export function createProductionCapabilityScanWorker(options: {
   readonly connection: NativeConnection;
   readonly activities: CapabilityScanActivities;
+  readonly database: Database;
+  readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
+}): Promise<Worker> {
+  return Worker.create({
+    connection: options.connection,
+    taskQueue: TASK_QUEUES.verification,
+    workflowsPath: workflowPath(),
+    activities: options.activities,
+    interceptors: {
+      activity: [
+        createActivityIdempotencyInterceptor({
+          store: createActivityIdempotencyRepository(options.database),
+        }),
+      ],
+    },
+    ...(options.shutdownGraceTime === undefined
+      ? {}
+      : { shutdownGraceTime: options.shutdownGraceTime }),
+  });
+}
+
+/** Production queue composition once phase verification is enabled beside capability scans. */
+export function createProductionVerificationWorker(options: {
+  readonly connection: NativeConnection;
+  readonly activities: ProductionVerificationActivities;
   readonly database: Database;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
 }): Promise<Worker> {

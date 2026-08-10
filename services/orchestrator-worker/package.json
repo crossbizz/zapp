@@ -18,8 +18,8 @@
     "start:verification": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run --exclude test/integration/ar9-postgres-worker.test.ts",
-    "test:integration": "vitest run test/integration/ar9-postgres-worker.test.ts --no-file-parallelism"
+    "test": "vitest run --exclude test/integration/ar9-postgres-worker.test.ts --exclude test/integration/verifier.test.ts",
+    "test:integration": "vitest run test/integration/ar9-postgres-worker.test.ts test/integration/verifier.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1103.0",
@@ -34,6 +34,8 @@
     "@zapp/db": "workspace:*",
     "@zapp/model-gateway": "workspace:*",
     "@zapp/project-adapters": "workspace:*",
+    "@zapp/verification-engine": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "zod": "^3.23.8",
     "zod-to-json-schema": "3.25.2"
   },
@@ -41,7 +43,6 @@
     "@temporalio/testing": "1.22.0",
     "@types/node": "^22.9.0",
     "@zapp/workspace-runtime": "workspace:*",
-    "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9",
     "vitest": "^3.2.7"
   }
