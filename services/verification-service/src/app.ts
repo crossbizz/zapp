@@ -1,0 +1,51 @@
+import type { ServiceName, ServiceTokenSigner } from '@zapp/config';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type RawReplyDefaultExpression,
+  type RawRequestDefaultExpression,
+  type RawServerDefault,
+} from 'fastify';
+import {
+  serializerCompiler,
+  validatorCompiler,
+  type ZodTypeProvider,
+} from 'fastify-type-provider-zod';
+import { z } from 'zod';
+
+import { registerVerificationRoutes } from './routes.js';
+import type { BrowserRunService } from './runner/playwright.js';
+
+export type VerificationServiceApp = FastifyInstance<
+  RawServerDefault,
+  RawRequestDefaultExpression,
+  RawReplyDefaultExpression,
+  FastifyBaseLogger,
+  ZodTypeProvider
+>;
+
+export interface VerificationServiceDependencies {
+  readonly signer: ServiceTokenSigner;
+  readonly browserRuns: BrowserRunService;
+  readonly callers?: readonly ServiceName[];
+  readonly logger?: false;
+  readonly now?: () => Date;
+}
+
+export function buildApp(options: VerificationServiceDependencies): VerificationServiceApp {
+  const app = Fastify({ logger: options.logger ?? false }).withTypeProvider<ZodTypeProvider>();
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  app.get(
+    '/healthz',
+    { schema: { response: { 200: z.object({ status: z.literal('ok') }).strict() } } },
+    () => ({ status: 'ok' as const }),
+  );
+  registerVerificationRoutes(app, {
+    signer: options.signer,
+    browserRuns: options.browserRuns,
+    callers: options.callers ?? ['orchestrator-worker'],
+    now: options.now ?? (() => new Date()),
+  });
+  return app;
+}

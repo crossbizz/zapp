@@ -102,9 +102,9 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 **Files:** Create: `services/verification-service/src/{app,routes}.ts`, `src/runner/playwright.ts`
 **Effort:** L
 
-- [ ] Binding behavior: verification-service runs suites in `forge-web-test` workspaces: installs nothing at runtime (image-pinned browsers), executes `playwright test --reporter=json` + trace/screenshot/video-on-failure, uploads artifacts to R2 via artifact records (`test_runs` + `test_cases` rows per PRD §23.4, evidence artifact ids linked), exposes `/internal/verification/browser-run` for orchestrator activities; flake policy: single auto-retry for `timeout|navigation` failure classes, retried-pass recorded as `flaky: true` (quarantine-with-visibility, master risk table).
-- [ ] Failing integration test: run a 2-test fixture suite (1 pass, 1 fail) → rows + artifacts + JSON summary with failure screenshot present.
-- [ ] Commit: `feat(verification-service): playwright execution with evidence artifacts`
+- [x] Binding behavior: verification-service runs suites in `forge-web-test` workspaces: installs nothing at runtime (image-pinned browsers), executes `playwright test --reporter=json` + trace/screenshot/video-on-failure, uploads artifacts to R2 via artifact records (`test_runs` + `test_cases` rows per PRD §23.4, evidence artifact ids linked), exposes `/internal/verification/browser-run` for orchestrator activities; flake policy: single auto-retry for `timeout|navigation` failure classes, retried-pass recorded as `flaky: true` (quarantine-with-visibility, master risk table).
+- [x] Failing integration test: run a 2-test fixture suite (1 pass, 1 fail) → rows + artifacts + JSON summary with failure screenshot present.
+- [x] Commit: `feat(verification-service): playwright execution with evidence artifacts`
 
 ### Task VF-8 [M3]: Playwright generation
 
@@ -205,3 +205,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-10 VF-3 done — production-composed tenant-scoped capability scans through Temporal, sandbox-service, and R2 with stable retry identity; real DB/Temporal integration and one immutable-image Modal smoke passed.
 - 2026-08-10 VF-8 done — Added keyed committed smoke/acceptance generation with exact criterion traceability, stable-selector enforcement, validated edit receipts, and clean-index isolation; after the two-round review cap, the cold gate exposed inherited 5s envelopes preempting real-Git diagnostics under contention, so those fixtures adopted the existing bounded 60s precedent; 27/27 package tests passed with no interface deviations.
 - 2026-08-10 VF-6 done — Added strict preview-health and capped adapter-route Playwright smoke gates with per-route screenshot, console, and request evidence; the single capped review found and fixed visited-route cap loss and failure-path screenshot omission; package gates and root lint/typecheck passed with no provider run required.
+- 2026-08-10 VF-7 done — Added keyed exact-commit `forge-web-test` execution, tenant-scoped rows, R2-linked failure evidence, targeted flaky retry visibility, reclaimable leases, preview-proxy routing, and registered-secret redaction; the single capped review found six Important issues and all were fixed; the real two-case Chromium fixture plus package and root gates passed with no provider run prescribed.
