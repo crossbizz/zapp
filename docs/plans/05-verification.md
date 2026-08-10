@@ -139,6 +139,45 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 
 **Scope (ADR-0017):** deterministic Playwright (VF-7/VF-8) is the M3 gate; this exploratory agent is **best-effort** — findings are evidence-schema-gated (already required below) and never a merge blocker, and agent non-determinism is not a P1 review finding. Binding behavior (PRD §24.4): agent session (verifier role, model via gateway) drives Playwright through typed primitives: `snapshotAccessibilityTree`, `listInteractive`, `click(ref)`, `fill(ref, value)`, `expectVisibleText`, `readConsole`, `readFailedRequests`, `screenshot(label)`; explores critical flows from spec journeys; produces structured findings `{ flow, steps[], status, evidence }`; hard rules: assertions must cite DOM/a11y/network/console evidence (finding without evidence ref is dropped by schema); no raw screenshot-only judgments; session budget 15 min/flow.
 
+**Execution expansion (2026-08-10; binding split):** The pre-authored task scope is the approved design. Execute the following slices serially. Tests and the package import/export wiring are the only additions to the task's original Files list.
+
+**Interfaces produced:**
+
+```ts
+export interface BrowserAgentDriver {
+  snapshotAccessibilityTree(): Promise<BrowserPrimitiveObservation>;
+  listInteractive(): Promise<BrowserPrimitiveObservation>;
+  click(ref: string): Promise<BrowserPrimitiveObservation>;
+  fill(ref: string, value: string): Promise<BrowserPrimitiveObservation>;
+  expectVisibleText(text: string): Promise<BrowserPrimitiveObservation>;
+  readConsole(): Promise<BrowserPrimitiveObservation>;
+  readFailedRequests(): Promise<BrowserPrimitiveObservation>;
+  screenshot(label: string): Promise<BrowserPrimitiveObservation>;
+}
+
+export interface BrowserAgentGateway {
+  stream(request: CompleteRequest, signal: AbortSignal): AsyncIterable<GatewayStreamEvent>;
+}
+
+export function runBrowserAgentSession(
+  input: BrowserAgentSessionInput,
+  dependencies: BrowserAgentSessionDependencies,
+): Promise<BrowserAgentSessionResult>;
+```
+
+- [x] **Slice 1 — driver primitives RED:** Create `test/integration/browser-agent-driver.test.ts` against a real Chromium page. Require the accessibility snapshot, stable interactive refs, click/fill/visible-text behavior, captured console errors, failed requests, and PNG bytes. Run `pnpm --filter @zapp/verification-service exec vitest run --dir test/integration --no-file-parallelism browser-agent-driver.test.ts`; expect failure because `src/browser-agent/driver.ts` does not exist.
+- [x] **Slice 1 — driver primitives GREEN:** Create `src/browser-agent/driver.ts` with strict Zod input/result schemas and `PlaywrightBrowserAgentDriver`. Keep locator refs inside the driver rather than writing selectors into the app DOM; cap collected interactive/console/network entries; expose screenshot bytes only as an attachment observation. Export the driver from `src/index.ts`. Rerun the focused integration test, then package lint/typecheck/build.
+- [x] **Slice 1 — commit:** `feat(verification-service): typed exploratory browser driver`
+
+- [ ] **Slice 2 — agent loop RED:** Create `test/browser-agent.test.ts` with a fake official model-gateway stream and fake driver. Require every request to carry `agentRole: "verifier"`, expose only the eight named browser primitives, dispatch strict tool inputs in order, use stable per-turn completion IDs, reject unknown tools, and abort a non-cooperative turn at exactly 15 minutes. Run `pnpm --filter @zapp/verification-service exec vitest run test/browser-agent.test.ts -t "verifier loop|flow budget"`; expect failure because `src/browser-agent/session.ts` does not exist.
+- [ ] **Slice 2 — agent loop GREEN:** Create `src/browser-agent/session.ts` using `CompleteRequestSchema` and `GatewayStreamEventSchema` from `@zapp/model-gateway`; add only the required workspace dependency and lockfile entry. Build a strict multi-turn tool transcript, race gateway/driver work with the per-flow abort signal, redact all string data before it reaches tool results or durable steps, and never store the value passed to `fill`. Rerun the focused tests, then package lint/typecheck/build.
+- [ ] **Slice 2 — commit:** `feat(verification-service): verifier browser agent loop`
+
+- [ ] **Slice 3 — evidence gate RED:** Extend `test/browser-agent.test.ts` with evidence-sink cases. Require session-generated steps to reference emitted artifacts; accept final finding JSON only when every cited artifact belongs to that flow and at least one cited source is `dom | accessibility | network | console`; drop missing, foreign, malformed, and screenshot-only findings; preserve `budget_exhausted | failed` as session outcomes rather than reporting success. Run the focused file; expect the unsupported finding to be returned or parsed instead of dropped.
+- [ ] **Slice 3 — evidence gate GREEN:** Add `BrowserAgentFindingSchema`, `BrowserAgentEvidenceRefSchema`, strict final-response parsing, and `runBrowserAgentSession` over specification journeys with a fresh 15-minute budget per flow. Evidence emission stores redacted JSON or PNG bytes through an injected sink; the model sees only the artifact reference and bounded observation, never raw screenshot bytes. Export the session API from `src/index.ts` and rerun unit plus real-browser integration tests.
+- [ ] **Slice 3 — review and verification:** Run one capped review with exit condition: no Critical or Important correctness/security finding against the binding scope. Fix that one round only. Run `pnpm --filter @zapp/verification-service lint && pnpm --filter @zapp/verification-service typecheck && pnpm --filter @zapp/verification-service build && pnpm --filter @zapp/verification-service test && pnpm --filter @zapp/verification-service test:integration`, then root `pnpm lint && pnpm typecheck`. No real-provider run is prescribed because the gateway is exercised through its strict port and VF-11 is best-effort.
+- [ ] **Slice 3 — record and commit:** Check VF-11 in `tasks/todo.md`, append its execution-log line, and commit `feat(verification-service): evidence-gated exploratory findings`.
+
 ### Task VF-12 [M3]: Accessibility gate
 
 **Files:** Create: `src/gates/accessibility.ts`
