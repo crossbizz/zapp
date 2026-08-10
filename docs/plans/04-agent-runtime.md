@@ -155,6 +155,15 @@ Loop: assemble messages → gateway stream → on tool-call: policy check (AR-5)
 - [x] Failing integration test (Temporal dev server + fakes for sandbox): start run via CP-9 → workflow completes → events include `run.started`, `agent.started`, ≥1 `tool.completed`, `commit.created`, `run.completed` in sequence order; **kill the worker process mid-session and restart** → workflow resumes from last heartbeat/checkpoint, no duplicate commits (idempotency key on commit activity).
 - [x] Commit: `feat(orchestrator): durable minimal chat run (M1 walking skeleton)`
 
+### Task AR-22 [M1]: Conversation event emission (ADR-0027)
+
+**Files:** Modify: `src/workflows/run.ts`, `src/activities/{session,events}.ts`, agent-tools registry user-language summaries; Create: `test/integration/conversation-events.test.ts`
+**Effort:** M
+
+- [ ] Binding behavior: the run workflow consumes CP-20's continuation signal and appends the message to the active session (the 409 `run_not_active` path is CP-20's). AR-6/AR-8 emit `message.user` for the initial prompt and each continuation, and one `message.assistant` per completed assistant turn (inline ≤ 48 KB, overflow → artifact + `contentArtifactId`; session summary retained). Every `tool.started/completed/failed` event carries `userSummary` sourced from the AR-4 registry's user-language templates. `phase.*` events emit at real phase boundaries (the M1 chat run is one phase, and it emits).
+- [ ] Failing integration test (Temporal dev server + fakes): start run with a prompt → events contain `message.user` then `message.assistant` in sequence order; continuation via the CP-20 route → second `message.user` and a subsequent `message.assistant` on the same run; an oversized assistant reply lands as an artifact-referenced message; every tool event carries a non-empty `userSummary`; worker kill/restart mid-turn does not duplicate `message.assistant` (idempotent emission key).
+- [ ] Commit: `feat(orchestrator): conversation message events + userSummary (ADR-0027)`
+
 ### Task AR-9 [M2]: Worker/queues/idempotency hardening
 
 **Files:** Modify: `src/worker.ts`; Create: `src/activities/idempotency.ts`
