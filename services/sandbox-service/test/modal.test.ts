@@ -914,7 +914,7 @@ describe('Modal image provider facade', () => {
     try {
       const fastScript = (script ?? '').replace(
         'sleep 30 & start_deadline_pid=$!',
-        'sleep 0.5 & start_deadline_pid=$!',
+        'sleep 5 & start_deadline_pid=$!',
       );
       const execution = await runDash(fastScript);
       expect(execution.status, `${execution.stdout}\n${execution.stderr}`).toBe(0);
@@ -927,7 +927,7 @@ describe('Modal image provider facade', () => {
         }),
       );
     }
-  });
+  }, 15_000);
 
   test('disables buffering for every emitted background NDJSON consumer', async () => {
     const commands: string[][] = [];

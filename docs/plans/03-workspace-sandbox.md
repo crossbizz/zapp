@@ -391,6 +391,12 @@ Sandbox-service exposes the same strict requests/responses as both `POST /intern
 - [x] **GREEN:** make the second install use pnpm's strict offline mode so success proves every dependency came from the mounted project store, while preserving the exact `≥40%` timing assertion and standalone-workspace boundary.
 - [x] **Verify/review/ship:** run focused and package-local gates, close at zero Critical/Important within two review rounds, then run FIX-4's single immutable-image Modal journey. On success, close WS-14 plus all four fix tasks, push, and watch authoritative CI/Security green.
 
+#### WS-14-FIX-5 — contention-safe explicit-kill gate deadline
+
+- [x] **RED/evidence:** retain the repository push-gate result: under 82-task local contention the real curl/HTTP fixture needed longer than its test-only `500 ms` deadline to observe the already-flushed `started` record and failed at `started_wait`; 117 other sandbox-service tests passed.
+- [x] **GREEN:** give this unchanged real-child fixture a bounded five-second observation deadline while preserving event order, exact kill identity, response completion, and the production 30-second deadline.
+- [x] **Verify/review/ship:** pass the focused and full package/static gates, close at zero Critical/Important within two review rounds, then rerun the repository push gate without another Modal call.
+
 ### Task WS-15 [M2]: Runaway-compute governor
 
 **Files:** Create: `src/lifecycle/governor.ts`
@@ -471,3 +477,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-09 WS-14-FIX-2 done — both fixture installs now ignore the repository workspace and use the nested frozen lock; its one provider run passed cache/install/dev-server/checkpoint/kill and exposed the strict restore input fixed by FIX-3.
 - 2026-08-09 WS-14-FIX-3 done — snapshot restore now projects only strict org/project/branch volume identity; its one provider run honestly retained a 39.56% cache result below the required 40%, resolved structurally by FIX-4.
 - 2026-08-09 WS-14-FIX-4 done — cached installation now runs fully offline from the mounted project store while preserving the exact ≥40% threshold; local gates, one-round review, and the single final Modal journey passed.
+- 2026-08-09 WS-14-FIX-5 done — the contended real-curl explicit-kill fixture now has a bounded five-second observation budget and 15-second test ceiling while production stays at 30 seconds; focused/package/static gates and one-round review passed without another provider call.

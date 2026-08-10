@@ -125,6 +125,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-14-FIX-2 Standalone fixture install inside sparse checkout
 - [x] WS-14-FIX-3 Strict restore volume input
 - [x] WS-14-FIX-4 Deterministic mounted-cache proof
+- [x] WS-14-FIX-5 Contention-safe explicit-kill gate deadline
 - [ ] WS-15 Runaway-compute governor
 - [ ] WEB-7 Preview panel + states + capture drawer
 - [ ] WEB-8 Element selection attachments
