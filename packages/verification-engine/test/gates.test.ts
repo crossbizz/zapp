@@ -1,11 +1,14 @@
 import type { ExecutionContract } from '@zapp/contracts';
 import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  createBrowserSmokeGate,
   createBuildGate,
   createDevServerGate,
   createLintGate,
+  createPreviewHealthGate,
   createRedactingArtifactSink,
   createSecretScanGate,
   createTypecheckGate,
@@ -25,6 +28,10 @@ const CONTRACT = {
   lint: { command: 'pnpm lint' },
   test: { unit: 'pnpm test -- --reporter=json' },
 } satisfies ExecutionContract;
+
+function parseJson(text: string): unknown {
+  return JSON.parse(text) as unknown;
+}
 
 function runtimeWith(
   exec: WorkspaceRuntime['exec'],
@@ -72,6 +79,7 @@ function context(runtime: WorkspaceRuntime) {
     ctx: {
       runtime,
       contract: CONTRACT,
+      routes: [],
       baseCommit: '1'.repeat(40),
       commit: '2'.repeat(40),
       criteria: ['criterion'],
@@ -257,5 +265,230 @@ describe('secret and dev-server gates', () => {
     });
     expect(JSON.stringify(failed.details)).not.toContain('registered-secret');
     expect(failedFixture.stored[0]?.text).not.toContain('registered-secret');
+  });
+});
+
+describe('preview health and browser smoke gates', () => {
+  test('loads the contract health path through the preview proxy and fails on console errors', async () => {
+    const exec = vi.fn<WorkspaceRuntime['exec']>(() => Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        routes: [
+          {
+            path: '/healthz',
+            statusCode: 200,
+            title: 'Health',
+            blankRoot: false,
+            errorBoundary: false,
+            console: [{ type: 'error', text: 'registered-secret exploded' }],
+            pageErrors: [],
+            failedRequests: [],
+            screenshotPath: null,
+          },
+        ],
+      }),
+      stderr: '',
+      durationMs: 25,
+      truncated: false,
+    }));
+    const fixture = context(runtimeWith(exec));
+
+    const result = await createPreviewHealthGate().run({
+      ...fixture.ctx,
+      contract: { ...CONTRACT, health: { path: '/healthz' } },
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      details: {
+        path: '/healthz',
+        statusCode: 200,
+        consoleErrorCount: 1,
+        pageErrorCount: 0,
+      },
+    });
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cmd: 'node',
+        cwd: '.',
+      }),
+    );
+    expect(typeof exec.mock.calls[0]?.[0].env?.ZAPP_BROWSER_PROBE_INPUT).toBe('string');
+    const probeProgram = exec.mock.calls[0]?.[0].args[2];
+    if (probeProgram === undefined) throw new Error('browser_probe_program_missing');
+    const syntaxCheck = spawnSync(process.execPath, ['--input-type=module', '--check'], {
+      input: probeProgram,
+      encoding: 'utf8',
+    });
+    expect(syntaxCheck.status, syntaxCheck.stderr).toBe(0);
+    const probeInput = parseJson(
+      exec.mock.calls[0]?.[0].env?.ZAPP_BROWSER_PROBE_INPUT ?? '{}',
+    );
+    expect(probeInput).toMatchObject({
+      origin: 'http://127.0.0.1:8080',
+      routes: ['/healthz'],
+      captureScreenshots: false,
+      discoverNavLinks: false,
+    });
+    expect(fixture.stored).toHaveLength(1);
+    expect(fixture.stored[0]?.text).toContain('[secret:TEST]');
+    expect(fixture.stored[0]?.text).not.toContain('registered-secret');
+  });
+
+  test('passes preview health only for HTTP 200 with no uncaught browser errors', async () => {
+    const exec = vi.fn<WorkspaceRuntime['exec']>(() => Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        routes: [
+          {
+            path: '/healthz',
+            statusCode: 200,
+            title: 'Health',
+            blankRoot: false,
+            errorBoundary: false,
+            console: [{ type: 'log', text: 'ready' }],
+            pageErrors: [],
+            failedRequests: [],
+            screenshotPath: null,
+          },
+        ],
+      }),
+      stderr: '',
+      durationMs: 20,
+      truncated: false,
+    }));
+    const fixture = context(runtimeWith(exec));
+
+    await expect(
+      createPreviewHealthGate().run({
+        ...fixture.ctx,
+        contract: { ...CONTRACT, health: { path: '/healthz' } },
+      }),
+    ).resolves.toMatchObject({ status: 'passed', details: { statusCode: 200 } });
+  });
+
+  test('fails closed when the execution contract has no health path', async () => {
+    const exec = vi.fn<WorkspaceRuntime['exec']>();
+    const fixture = context(runtimeWith(exec));
+
+    await expect(createPreviewHealthGate().run(fixture.ctx)).resolves.toMatchObject({
+      status: 'failed',
+      details: { error: 'health_path_missing' },
+    });
+    expect(exec).not.toHaveBeenCalled();
+    expect(fixture.stored).toHaveLength(1);
+  });
+
+  test('does not invent a root route and fails closed when adapters discover no pages', async () => {
+    const exec = vi.fn<WorkspaceRuntime['exec']>(() => Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({ routes: [] }),
+      stderr: '',
+      durationMs: 10,
+      truncated: false,
+    }));
+    const fixture = context(runtimeWith(exec));
+    const loginOnly = [
+      { path: '/login', kind: 'page', dynamic: false, sourceFile: 'src/login.tsx' },
+    ] as const;
+
+    await createBrowserSmokeGate().run({ ...fixture.ctx, routes: loginOnly });
+    expect(
+      parseJson(exec.mock.calls[0]?.[0].env?.ZAPP_BROWSER_PROBE_INPUT ?? '{}'),
+    ).toMatchObject({ routes: ['/login'] });
+
+    const noRoutesExec = vi.fn<WorkspaceRuntime['exec']>();
+    const noRoutesFixture = context(runtimeWith(noRoutesExec));
+    await expect(createBrowserSmokeGate().run(noRoutesFixture.ctx)).resolves.toMatchObject({
+      status: 'failed',
+      details: { error: 'browser_routes_missing', routeCount: 0 },
+    });
+    expect(noRoutesExec).not.toHaveBeenCalled();
+  });
+
+  test('prioritizes discovered page routes and stores screenshot, console, and request evidence per route', async () => {
+    const evidenceDirectory = `.zapp/evidence/browser-smoke-${'2'.repeat(12)}`;
+    const exec = vi.fn<WorkspaceRuntime['exec']>(() => Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        routes: [
+          {
+            path: '/',
+            statusCode: 200,
+            title: 'Home',
+            blankRoot: false,
+            errorBoundary: false,
+            console: [{ type: 'log', text: 'ready' }],
+            pageErrors: [],
+            failedRequests: [],
+            screenshotPath: `${evidenceDirectory}/route-01.png`,
+          },
+          {
+            path: '/login',
+            statusCode: 200,
+            title: 'Login',
+            blankRoot: false,
+            errorBoundary: false,
+            console: [],
+            pageErrors: [],
+            failedRequests: [
+              { url: 'https://example.invalid/metrics', method: 'POST', failure: 'blocked' },
+            ],
+            screenshotPath: `${evidenceDirectory}/route-02.png`,
+          },
+          {
+            path: '/docs',
+            statusCode: 200,
+            title: 'Docs',
+            blankRoot: true,
+            errorBoundary: false,
+            console: [],
+            pageErrors: [],
+            failedRequests: [],
+            screenshotPath: `${evidenceDirectory}/route-03.png`,
+          },
+        ],
+      }),
+      stderr: '',
+      durationMs: 80,
+      truncated: false,
+    }));
+    const readFile = vi.fn<WorkspaceRuntime['readFile']>((path) =>
+      Promise.resolve(new TextEncoder().encode(`png:${path}`)),
+    );
+    const deleteFile = vi.fn<WorkspaceRuntime['deleteFile']>(() => Promise.resolve());
+    const fixture = context(runtimeWith(exec, { readFile, deleteFile }));
+    const routes = [
+      { path: '/docs', kind: 'page', dynamic: false, sourceFile: 'src/docs.tsx' },
+      { path: '/api/ping', kind: 'api', dynamic: false, sourceFile: 'src/api.ts' },
+      { path: '/login', kind: 'page', dynamic: false, sourceFile: 'src/login.tsx' },
+      { path: '/users/[id]', kind: 'page', dynamic: true, sourceFile: 'src/user.tsx' },
+      { path: '/', kind: 'page', dynamic: false, sourceFile: 'src/home.tsx' },
+    ] as const;
+
+    const result = await createBrowserSmokeGate().run({ ...fixture.ctx, routes });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      details: {
+        routeCount: 3,
+        passedRouteCount: 2,
+        failedRouteCount: 1,
+      },
+    });
+    const probeInput = parseJson(
+      exec.mock.calls[0]?.[0].env?.ZAPP_BROWSER_PROBE_INPUT ?? '{}',
+    );
+    expect(probeInput).toMatchObject({ routes: ['/', '/login', '/docs'] });
+    expect(readFile).toHaveBeenCalledTimes(3);
+    expect(deleteFile).toHaveBeenCalledTimes(3);
+    expect(fixture.stored.map(({ kind }) => kind)).toEqual([
+      'verification.browser_smoke.route',
+      'verification.browser_smoke.route',
+      'verification.browser_smoke.route',
+      'verification.browser_smoke.summary',
+    ]);
+    expect(fixture.stored[1]?.text).toContain('cG5nOi56YXBwL2V2aWRlbmNl');
+    expect(fixture.stored[1]?.text).toContain('https://example.invalid/metrics');
   });
 });

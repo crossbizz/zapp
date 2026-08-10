@@ -157,7 +157,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
 
-- [ ] VF-6 Preview health + browser smoke gates
+- [x] VF-6 Preview health + browser smoke gates
 - [ ] VF-7 Playwright runner + evidence artifacts
 - [x] VF-8 Smoke + acceptance test generation
 - [ ] VF-9 Criteria traceability

@@ -94,8 +94,8 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 **Files:** Create: `src/gates/{preview-health,browser-smoke}.ts`
 **Effort:** M
 
-- [ ] Binding behavior: preview_health = HTTP 200 on contract health path via preview proxy + zero uncaught console errors during load; browser_smoke = Playwright: visit each discovered route (cap 10, prioritized: /, auth, first nav links), assert no error boundary/blank root, capture screenshot + console + failed requests per route as evidence artifacts.
-- [ ] Commit: `feat(verification-engine): preview health + browser smoke gates`
+- [x] Binding behavior: preview_health = HTTP 200 on contract health path via preview proxy + zero uncaught console errors during load; browser_smoke = Playwright: visit each discovered route (cap 10, prioritized: /, auth, first nav links), assert no error boundary/blank root, capture screenshot + console + failed requests per route as evidence artifacts.
+- [x] Commit: `feat(verification-engine): preview health + browser smoke gates`
 
 ### Task VF-7 [M3]: Playwright runner + artifact pipeline
 
@@ -204,3 +204,4 @@ export function requiredGates(level: SupportLevel, projectPolicy: ProjectPolicy)
 - 2026-08-09 VF-2 done — added ranked P0 framework adapters, exact filesystem route discovery, deployment/output metadata, and Capacitor native-preservation semantics; explicit detect/export joins extended the terse create-only file list.
 - 2026-08-10 VF-3 done — production-composed tenant-scoped capability scans through Temporal, sandbox-service, and R2 with stable retry identity; real DB/Temporal integration and one immutable-image Modal smoke passed.
 - 2026-08-10 VF-8 done — Added keyed committed smoke/acceptance generation with exact criterion traceability, stable-selector enforcement, validated edit receipts, and clean-index isolation; after the two-round review cap, the cold gate exposed inherited 5s envelopes preempting real-Git diagnostics under contention, so those fixtures adopted the existing bounded 60s precedent; 27/27 package tests passed with no interface deviations.
+- 2026-08-10 VF-6 done — Added strict preview-health and capped adapter-route Playwright smoke gates with per-route screenshot, console, and request evidence; the single capped review found and fixed visited-route cap loss and failure-path screenshot omission; package gates and root lint/typecheck passed with no provider run required.

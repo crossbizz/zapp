@@ -1,4 +1,4 @@
-import type { ExecutionContract } from '@zapp/contracts';
+import type { ExecutionContract, Route } from '@zapp/contracts';
 import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 import { z } from 'zod';
 
@@ -46,6 +46,8 @@ export function createRedactingArtifactSink(
 export interface GateContext {
   readonly runtime: WorkspaceRuntime;
   readonly contract: ExecutionContract;
+  /** Adapter-discovered routes; browser gates reject dynamic/API entries before navigation. */
+  readonly routes: readonly Route[];
   readonly baseCommit: string;
   readonly commit: string;
   readonly criteria: readonly string[];
