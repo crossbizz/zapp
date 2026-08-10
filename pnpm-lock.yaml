@@ -146,9 +146,24 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      '@zapp/agent-tools':
+        specifier: workspace:*
+        version: link:../../packages/agent-tools
       '@zapp/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      '@zapp/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@zapp/model-gateway':
+        specifier: workspace:*
+        version: link:../../services/model-gateway
+      '@zapp/orchestrator-worker':
+        specifier: workspace:*
+        version: link:../../services/orchestrator-worker
+      '@zapp/workspace-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workspace-runtime
       ai:
         specifier: ^6.0.68
         version: 6.0.241(zod@4.4.3)

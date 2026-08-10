@@ -82,6 +82,7 @@ export interface AtomicFileOperations {
 
 export interface MemoryWorkspaceRuntimeOptions {
   readonly atomicFileOperations?: AtomicFileOperations;
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 export type GitOperation =
@@ -532,12 +533,14 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   readonly kind = 'local' as const;
   private devServer: ChildProcess | undefined;
   private readonly atomicFileOperations: AtomicFileOperations;
+  private readonly environment: NodeJS.ProcessEnv;
   private atomicCommitTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly root: string,
     options: MemoryWorkspaceRuntimeOptions = {},
   ) {
+    this.environment = options.environment ?? process.env;
     this.atomicFileOperations = options.atomicFileOperations ?? {
       read: async (path) => new Uint8Array(await readFile(path)),
       metadata: async (path) => {
@@ -568,7 +571,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
     return new Promise<ExecResult>((resolveResult) => {
       const child = spawn(input.cmd, input.args, {
         cwd,
-        env: { ...process.env, ...input.env },
+        env: { ...this.environment, ...input.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       });
@@ -605,7 +608,7 @@ export class MemoryWorkspaceRuntime implements WorkspaceRuntime {
   async *execStream(input: ExecInput): AsyncIterable<ExecChunk> {
     const child = spawn(input.command, input.args, {
       cwd: await resolveInRoot(this.root, input.cwd ?? '.'),
-      env: { ...process.env, ...input.env },
+      env: { ...this.environment, ...input.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });

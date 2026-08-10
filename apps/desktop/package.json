@@ -68,7 +68,12 @@
     "benchmark:code-explorer:full": "node benchmarks/code-explorer/suite.mjs --mode full"
   },
   "dependencies": {
+    "@zapp/agent-tools": "workspace:*",
     "@zapp/api-client": "workspace:*",
+    "@zapp/contracts": "workspace:*",
+    "@zapp/model-gateway": "workspace:*",
+    "@zapp/orchestrator-worker": "workspace:*",
+    "@zapp/workspace-runtime": "workspace:*",
     "@ai-sdk/amazon-bedrock": "^4.0.46",
     "@ai-sdk/anthropic": "^3.0.78",
     "@ai-sdk/azure": "^3.0.26",

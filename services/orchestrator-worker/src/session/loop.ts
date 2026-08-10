@@ -1166,6 +1166,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           transcript.provenance = [...provenance];
           appendUnique(transcript.commits, references.commits.map(dependencies.redact));
           appendUnique(transcript.artifacts, references.artifacts.map(dependencies.redact));
+          appendUnique(transcript.changedPaths, executed.changedPaths);
           enqueue(eventFor('tool.output', call, 'output', { output: visible.value }));
           enqueue(eventFor('tool.completed', call, 'completed', { audit: executed.auditPayload }));
           await save();

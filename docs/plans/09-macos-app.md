@@ -91,6 +91,19 @@ Master plan §Global Constraints, plus:
 - [x] Failing test: the harness invokes `zapp-auth:snapshot`, receives the strict signed-out state, mounts a title-bar surface, and disposes with no missing production channel; retain the full-suite diagnostic inventory and re-run all 13 `local_agent_*` specifications.
 - [x] Run the desktop Vitest suite as a bounded diagnostic inventory; run the 13 ADR-0002 `local_agent_*` behavioral specifications separately and preserve/report their intentional RED handoff to MAC-6; verify the strict auth harness and two Monaco Playwright specs green; commit `test(desktop): restore hybrid integration coverage`.
 
+### Task MAC-6A [M2]: Local runtime + resumable-session foundation
+
+**Files:** Create: `apps/desktop/src/zapp/runtime/{local,local-session}{,.spec}.ts`, desktop migrations, `services/orchestrator-worker/src/session/index.ts`; Modify: desktop schema/package, workspace-runtime environment seam, agent-tools mutation manifest, orchestrator session transcript/export, package manifests and lockfile
+**Effort:** L
+
+- [x] Binding behavior: provide a safe local `WorkspaceRuntime` with confined filesystem operations, allowlisted child environment, bundled Git, bounded PTY process-tree termination, and fail-closed guarded writes; package the AR-6 session loop behind an injected gateway and persist transcript state with SQLite compare-and-swap.
+- [x] Commit behavior: successful mutation tools produce a strict durable changed-path manifest; construct the exact agent commit from the recorded base revision under a dedicated deterministic ref without mutating the user's branch or primary index; recover an ambiguous Git success from the durable commit intent.
+- [x] Failing tests: runtime confinement/timeout/environment cases; lost commit response; unrelated pre-staged changes; concurrent branch advance and checkout; primary-index interposition.
+- [x] Verify and review: affected tests/static checks green; two capped reviews plus the re-scoped closure review have zero remaining Critical/Important findings.
+- [x] Commit: `feat(desktop): local runtime and resumable session foundation`
+
+This foundation intentionally does not complete MAC-6. The public user-authenticated model-gateway/accounting boundary, renderer composition, local-mode policy, and explicit application of dedicated agent commits remain in MAC-6.
+
 ### Task MAC-6 [M2]: Local runtime adapter
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/local.ts`, `test/local-runtime.spec.ts`
@@ -175,3 +188,4 @@ Master plan §Global Constraints, plus:
 - 2026-08-10 MAC-5 done — Unified local/cloud dashboard uses strict IPC and generated public APIs; the separate MAC-5.5 task owns the pre-existing hybrid desktop-suite failures discovered during verification.
 - 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
 - 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.
+- 2026-08-10 MAC-6A done — Added the safe local runtime, packaged resumable AR-6 session state, exact changed-path commit refs, and fail-closed guarded writes; MAC-6 remains open for the public user-authenticated model-gateway/accounting and UI/mode join plus explicit commit application.

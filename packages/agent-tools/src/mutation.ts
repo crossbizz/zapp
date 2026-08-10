@@ -262,7 +262,12 @@ export function createMutationTools(
       })
       .strict(),
   ]);
-  const copyInput = z.object({ source: pathSchema, destination: pathSchema }).strict();
+  const copyInput = z
+    .object({
+      source: z.string().min(1),
+      destination: z.string().min(1),
+    })
+    .strict();
   const copyOutput = z
     .object({
       ok: z.literal(true),
@@ -271,7 +276,12 @@ export function createMutationTools(
       bytes: z.number().int().nonnegative(),
     })
     .strict();
-  const renameInput = copyInput;
+  const renameInput = z
+    .object({
+      source: z.string().min(1),
+      destination: z.string().min(1),
+    })
+    .strict();
   const renameOutput = z
     .object({ ok: z.literal(true), source: z.string(), destination: z.string() })
     .strict();
@@ -311,6 +321,7 @@ export function createMutationTools(
       },
       userSummary: (input) => `Wrote ${input.path}`,
       auditPayload: (input, output) => ({ path: input.path, bytes: output.bytes }),
+      changedPaths: (input) => [input.path],
     }),
     mutationTool({
       name: 'apply_patch',
@@ -368,6 +379,8 @@ export function createMutationTools(
         output.ok
           ? { ok: true, filesChanged: output.filesChanged, hunksApplied: output.hunksApplied }
           : { ok: false, errorCode: output.error.code },
+      changedPaths: (input, output) =>
+        output.ok ? parseUnifiedPatch(input.patch).map((file) => file.path) : [],
     }),
     mutationTool({
       name: 'copy_file',
@@ -394,6 +407,7 @@ export function createMutationTools(
         destination: input.destination,
         bytes: output.bytes,
       }),
+      changedPaths: (input) => [input.destination],
     }),
     mutationTool({
       name: 'rename_file',
@@ -414,6 +428,7 @@ export function createMutationTools(
       },
       userSummary: (input) => `Renamed ${input.source} to ${input.destination}`,
       auditPayload: (input) => ({ source: input.source, destination: input.destination }),
+      changedPaths: (input) => [input.source, input.destination],
     }),
     mutationTool({
       name: 'delete_file',
@@ -430,6 +445,7 @@ export function createMutationTools(
       },
       userSummary: (input) => `Deleted ${input.path}`,
       auditPayload: (input) => ({ path: input.path }),
+      changedPaths: (input) => [input.path],
     }),
     mutationTool({
       name: 'install_dependency',

@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   unique,
@@ -489,3 +490,30 @@ export const customThemes = sqliteTable("custom_themes", {
     .notNull()
     .default(sql`(unixepoch())`),
 });
+
+export const zappLocalAgentSessions = sqliteTable(
+  "zapp_local_agent_sessions",
+  {
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    version: integer("version").notNull(),
+    transcriptJson: text("transcript_json").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.runId, table.taskId] })],
+);
+
+export const zappLocalAgentCommitIntents = sqliteTable(
+  "zapp_local_agent_commit_intents",
+  {
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    intentId: text("intent_id").notNull(),
+    baseRef: text("base_ref").notNull(),
+    baseRevision: text("base_revision").notNull(),
+    pathsJson: text("paths_json").notNull(),
+    message: text("message").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.runId, table.taskId] })],
+);

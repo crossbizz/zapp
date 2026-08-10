@@ -117,6 +117,7 @@ const SessionTranscriptBaseSchema = z
     eventOutbox: z.array(
       z.object({ event: SessionEventRecordSchema, delivered: z.boolean() }).strict(),
     ),
+    changedPaths: z.array(z.string().min(1).max(4_096)).max(10_000).default([]),
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),

@@ -73,6 +73,7 @@ export interface ToolExecutionWithAudit {
   readonly output: unknown;
   readonly context: ToolExecutionContext;
   readonly auditPayload: ToolAttemptAuditPayload;
+  readonly changedPaths: readonly string[];
 }
 
 export type ToolAuditRecorder = (payload: ToolAuditPayload) => void;
@@ -103,6 +104,7 @@ export interface ToolSpec<I extends z.ZodTypeAny, O extends z.ZodTypeAny> extend
   I,
   O
 > {
+  changedPaths?(input: z.infer<I>, output: z.infer<O>): readonly string[];
   run(
     input: z.infer<I>,
     context: ToolExecutionContext,
@@ -114,6 +116,7 @@ export interface ToolSpec<I extends z.ZodTypeAny, O extends z.ZodTypeAny> extend
 type UnknownSchema = z.ZodType<unknown, z.ZodTypeDef, unknown>;
 
 export interface AnyToolSpec extends ToolDefinition<UnknownSchema, UnknownSchema> {
+  changedPaths?(input: unknown, output: unknown): readonly string[];
   run(
     input: unknown,
     context: ToolExecutionContext,
@@ -406,6 +409,10 @@ export class ToolRegistry {
           return {
             output: parsedOutput,
             context,
+            changedPaths:
+              failed || spec.changedPaths === undefined
+                ? []
+                : spec.changedPaths(input, parsedOutput),
             auditPayload: attemptAuditPayload(
               context,
               spec.name,
