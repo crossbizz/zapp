@@ -1,10 +1,17 @@
 import { exec as execBundledGit } from "dugite";
+import { lstat } from "node:fs/promises";
 import { spawn as spawnPty } from "node-pty";
+import { relative, sep } from "node:path";
 import {
   MAX_EXEC_OUTPUT_BYTES,
   MemoryWorkspaceRuntime,
   resolveInRoot,
+  type AtomicFileWrite,
   type ExecResult,
+  type FileEntry,
+  type FileStat,
+  type WorkspaceFileSnapshot,
+  type WorkspaceRenameInput,
 } from "@zapp/workspace-runtime";
 
 function elapsed(startedAt: number): number {
@@ -234,5 +241,152 @@ export class LocalWorkspaceRuntime extends MemoryWorkspaceRuntime {
         boundedSettlement = setTimeout(() => finish(124), 400);
       }, input.timeoutMs);
     });
+  }
+}
+
+export class LocalAgentPathDeniedError extends Error {
+  constructor(path: string) {
+    super(
+      `Path is outside the local agent's tracked or owned file set: ${path}`,
+    );
+    this.name = "LocalAgentPathDeniedError";
+  }
+}
+
+/**
+ * Model-facing local runtime. It exposes only Git-tracked files and files
+ * created by this agent instance; ignored/untracked host files and Git
+ * metadata never cross the model boundary.
+ */
+export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
+  private readonly ownedPaths = new Set<string>();
+
+  private async modelPath(path: string): Promise<string> {
+    const resolved = await resolveInRoot(this.root, path);
+    const normalized = relative(await resolveInRoot(this.root, "."), resolved)
+      .split(sep)
+      .join("/");
+    if (normalized.split("/").includes(".git")) {
+      throw new LocalAgentPathDeniedError(path);
+    }
+    return normalized.length === 0 ? "." : normalized;
+  }
+
+  private async trackedPaths(path = "."): Promise<Set<string>> {
+    const args = ["-c", "core.fsmonitor=false", "ls-files", "-z"];
+    if (path !== ".") args.push("--", path);
+    const result = await super.exec({
+      cmd: "git",
+      args,
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error("Could not resolve the local agent file boundary");
+    }
+    return new Set(
+      result.stdout.split("\0").filter((entry) => entry.length > 0),
+    );
+  }
+
+  private async assertReadable(path: string): Promise<string> {
+    const normalized = await this.modelPath(path);
+    const metadata = await lstat(await resolveInRoot(this.root, normalized));
+    if (metadata.isSymbolicLink()) throw new LocalAgentPathDeniedError(path);
+    if (this.ownedPaths.has(normalized)) return normalized;
+    if ((await this.trackedPaths(normalized)).has(normalized))
+      return normalized;
+    throw new LocalAgentPathDeniedError(path);
+  }
+
+  private async assertWritable(path: string): Promise<string> {
+    const normalized = await this.modelPath(path);
+    try {
+      const metadata = await lstat(await resolveInRoot(this.root, normalized));
+      if (metadata.isSymbolicLink()) throw new LocalAgentPathDeniedError(path);
+    } catch (error: unknown) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return normalized;
+      }
+      throw error;
+    }
+    await this.assertReadable(normalized);
+    return normalized;
+  }
+
+  override async readFile(path: string): Promise<Uint8Array> {
+    await this.assertReadable(path);
+    return await super.readFile(path);
+  }
+
+  override async readFileForUpdate(
+    path: string,
+  ): Promise<WorkspaceFileSnapshot> {
+    await this.assertReadable(path);
+    return await super.readFileForUpdate(path);
+  }
+
+  override async writeFile(path: string, data: Uint8Array): Promise<void> {
+    const normalized = await this.assertWritable(path);
+    await super.writeFile(normalized, data);
+    this.ownedPaths.add(normalized);
+  }
+
+  override async writeFilesAtomically(
+    files: readonly AtomicFileWrite[],
+  ): Promise<void> {
+    const normalized = await Promise.all(
+      files.map(async (file) => ({
+        ...file,
+        path: await this.assertWritable(file.path),
+      })),
+    );
+    await super.writeFilesAtomically(normalized);
+    for (const file of normalized) this.ownedPaths.add(file.path);
+  }
+
+  override async listFiles(
+    path: string,
+    opts: { glob?: string; maxDepth?: number } = {},
+  ): Promise<FileEntry[]> {
+    const base = await this.modelPath(path);
+    const [entries, tracked] = await Promise.all([
+      super.listFiles(path, opts),
+      this.trackedPaths(base),
+    ]);
+    const allowed = new Set([...tracked, ...this.ownedPaths]);
+    return entries.filter((entry) => {
+      const candidate = base === "." ? entry.path : `${base}/${entry.path}`;
+      if (candidate.split("/").includes(".git")) return false;
+      if (entry.type !== "directory") return allowed.has(candidate);
+      const prefix = `${candidate}/`;
+      return [...allowed].some((allowedPath) => allowedPath.startsWith(prefix));
+    });
+  }
+
+  override async stat(path: string): Promise<FileStat> {
+    await this.assertReadable(path);
+    return await super.stat(path);
+  }
+
+  override async delete(path: string): Promise<void> {
+    await this.deleteFile(path);
+  }
+
+  override async deleteFile(path: string): Promise<void> {
+    const normalized = await this.assertReadable(path);
+    await super.deleteFile(normalized);
+    this.ownedPaths.delete(normalized);
+  }
+
+  override async renameFile(input: WorkspaceRenameInput): Promise<void> {
+    const source = await this.assertReadable(input.source);
+    const destination = await this.assertWritable(input.destination);
+    await super.renameFile({ source, destination, overwrite: input.overwrite });
+    this.ownedPaths.delete(source);
+    this.ownedPaths.add(destination);
   }
 }

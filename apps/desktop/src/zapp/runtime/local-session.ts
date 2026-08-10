@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolRegistry } from "@zapp/agent-tools";
@@ -16,8 +16,10 @@ import {
   type SessionTranscriptDraft,
   type TranscriptStore,
 } from "@zapp/orchestrator-worker/session";
-import type { WorkspaceRuntime } from "@zapp/workspace-runtime";
+import { resolveInRoot, type WorkspaceRuntime } from "@zapp/workspace-runtime";
 import { z } from "zod";
+
+import type { LocalWorkspaceRuntime } from "./local";
 
 interface StoredTranscriptRow {
   readonly version: number;
@@ -32,6 +34,7 @@ const GitBranchRefSchema = z
   .max(1_024)
   .refine((value) => value.startsWith("refs/heads/"));
 const ZERO_REVISION = "0000000000000000000000000000000000000000";
+const EMPTY_TREE_REVISION = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const CommitIntentSchema = z
   .object({
     runId: z.string().min(1),
@@ -194,7 +197,7 @@ export interface LocalAgentSessionOptions {
   readonly database: Database.Database;
   readonly gateway: SessionGateway;
   readonly tools: Pick<ToolRegistry, "get">;
-  readonly runtime: WorkspaceRuntime;
+  readonly runtime: WorkspaceRuntime & Pick<LocalWorkspaceRuntime, "root">;
   readonly prompts: Readonly<
     Record<"planner" | "builder" | "verifier" | "summarizer", string>
   >;
@@ -246,7 +249,7 @@ async function captureCommitBase(
 ): Promise<{ readonly ref: string; readonly revision: string }> {
   const ref = await runtime.exec({
     cmd: "git",
-    args: ["symbolic-ref", "--quiet", "HEAD"],
+    args: ["-c", "core.fsmonitor=false", "symbolic-ref", "--quiet", "HEAD"],
     timeoutMs: 30_000,
   });
   if (ref.exitCode !== 0) {
@@ -255,7 +258,13 @@ async function captureCommitBase(
   const parsedRef = GitBranchRefSchema.parse(ref.stdout.trim());
   const revision = await runtime.exec({
     cmd: "git",
-    args: ["rev-parse", "--verify", `${parsedRef}^{commit}`],
+    args: [
+      "-c",
+      "core.fsmonitor=false",
+      "rev-parse",
+      "--verify",
+      `${parsedRef}^{commit}`,
+    ],
     timeoutMs: 30_000,
   });
   if (revision.exitCode === 0) {
@@ -266,7 +275,14 @@ async function captureCommitBase(
   }
   const existing = await runtime.exec({
     cmd: "git",
-    args: ["show-ref", "--verify", "--quiet", parsedRef],
+    args: [
+      "-c",
+      "core.fsmonitor=false",
+      "show-ref",
+      "--verify",
+      "--quiet",
+      parsedRef,
+    ],
     timeoutMs: 30_000,
   });
   if (existing.exitCode !== 1) {
@@ -282,6 +298,8 @@ async function findIntentCommit(
   const result = await runtime.exec({
     cmd: "git",
     args: [
+      "-c",
+      "core.fsmonitor=false",
       "log",
       "--all",
       "--format=%H",
@@ -310,79 +328,268 @@ class LocalCommitRefConflictError extends Error {
   }
 }
 
-async function commitExactPaths(
+function isMissingPath(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR")
+  );
+}
+
+async function checkedGit(
   runtime: WorkspaceRuntime,
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<string> {
+  const result = await runtime.exec({
+    cmd: "git",
+    args: ["-c", "core.fsmonitor=false", ...args],
+    env,
+    timeoutMs: 30_000,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error("Could not commit local session changes");
+  }
+  return result.stdout;
+}
+
+async function treeEntry(
+  runtime: WorkspaceRuntime,
+  revision: string,
+  path: string,
+): Promise<{ readonly mode: string; readonly objectId: string } | undefined> {
+  if (revision === ZERO_REVISION) return undefined;
+  const output = await checkedGit(runtime, [
+    "ls-tree",
+    "-z",
+    revision,
+    "--",
+    path,
+  ]);
+  const match = /^(\d+)\s+blob\s+([a-f0-9]{40})\t[^\0]+\0$/u.exec(output);
+  return match?.[1] === undefined || match[2] === undefined
+    ? undefined
+    : { mode: match[1], objectId: match[2] };
+}
+
+async function synchronizePrimaryIndex(
+  runtime: WorkspaceRuntime & Pick<LocalWorkspaceRuntime, "root">,
   intent: CommitIntent,
+  commit: string,
 ): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "zapp-local-hooks-"));
+  const currentRef = await checkedGit(runtime, [
+    "symbolic-ref",
+    "--quiet",
+    "HEAD",
+  ]);
+  const currentRevision = await checkedGit(runtime, [
+    "rev-parse",
+    "--verify",
+    `${intent.baseRef}^{commit}`,
+  ]);
+  if (
+    currentRef.trim() !== intent.baseRef ||
+    currentRevision.trim() !== commit
+  ) {
+    throw new LocalCommitRefConflictError();
+  }
+
+  const gitDirectory = (
+    await checkedGit(runtime, ["rev-parse", "--absolute-git-dir"])
+  ).trim();
+  const primaryIndex = join(gitDirectory, "index");
+  const indexLock = `${primaryIndex}.lock`;
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "zapp-local-index-"));
+  const preparedIndex = join(temporaryDirectory, "index");
+  let ownsLock = false;
   try {
-    const relevantPaths: string[] = [];
+    const lock = await open(indexLock, "wx", 0o600);
+    await lock.close();
+    ownsLock = true;
+    try {
+      await copyFile(primaryIndex, preparedIndex);
+    } catch (error: unknown) {
+      if (!isMissingPath(error)) throw error;
+      await checkedGit(runtime, ["read-tree", "--empty"], {
+        GIT_INDEX_FILE: preparedIndex,
+      });
+    }
+
     for (const path of intent.paths) {
-      let existsInWorkspace = true;
-      try {
-        await runtime.readFile(path);
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          !("code" in error) ||
-          (error.code !== "ENOENT" && error.code !== "ENOTDIR")
-        ) {
-          throw error;
-        }
-        existsInWorkspace = false;
-      }
-      let existsAtBase = false;
-      if (!existsInWorkspace && intent.baseRevision !== ZERO_REVISION) {
-        const tracked = await runtime.exec({
+      const entry = await treeEntry(runtime, commit, path);
+      if (entry === undefined) {
+        const removal = await runtime.exec({
           cmd: "git",
-          args: ["ls-tree", "--name-only", intent.baseRevision, "--", path],
+          args: [
+            "-c",
+            "core.fsmonitor=false",
+            "update-index",
+            "--force-remove",
+            "--",
+            path,
+          ],
+          env: { GIT_INDEX_FILE: preparedIndex },
           timeoutMs: 30_000,
         });
-        if (tracked.exitCode !== 0) {
-          throw new Error("Could not commit local session changes");
+        if (removal.exitCode !== 0) {
+          throw new Error("Could not reconcile the local Git index");
         }
-        existsAtBase = tracked.stdout.split("\n").includes(path);
+      } else {
+        await checkedGit(
+          runtime,
+          [
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            `${entry.mode},${entry.objectId},${path}`,
+          ],
+          { GIT_INDEX_FILE: preparedIndex },
+        );
       }
-      if (existsInWorkspace || existsAtBase) relevantPaths.push(path);
     }
-    if (relevantPaths.length === 0) {
-      throw new Error("Local commit intent has no material paths");
+
+    const lockedRef = await checkedGit(runtime, [
+      "symbolic-ref",
+      "--quiet",
+      "HEAD",
+    ]);
+    const lockedRevision = await checkedGit(runtime, [
+      "rev-parse",
+      "--verify",
+      `${intent.baseRef}^{commit}`,
+    ]);
+    if (
+      lockedRef.trim() !== intent.baseRef ||
+      lockedRevision.trim() !== commit
+    ) {
+      throw new LocalCommitRefConflictError();
     }
-    const intentToAdd = await runtime.exec({
+    await copyFile(preparedIndex, indexLock);
+    await rename(indexLock, primaryIndex);
+    ownsLock = false;
+  } finally {
+    if (ownsLock) await rm(indexLock, { force: true });
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+async function commitExactPaths(
+  runtime: WorkspaceRuntime & Pick<LocalWorkspaceRuntime, "root">,
+  intent: CommitIntent,
+): Promise<string | undefined> {
+  const directory = await mkdtemp(join(tmpdir(), "zapp-local-commit-"));
+  const index = join(directory, "index");
+  try {
+    await checkedGit(
+      runtime,
+      intent.baseRevision === ZERO_REVISION
+        ? ["read-tree", "--empty"]
+        : ["read-tree", intent.baseRevision],
+      { GIT_INDEX_FILE: index },
+    );
+    let materialPath = false;
+    for (const path of intent.paths) {
+      let data: Uint8Array | undefined;
+      try {
+        data = await runtime.readFile(path);
+      } catch (error) {
+        if (!isMissingPath(error)) throw error;
+      }
+      if (data === undefined) {
+        if (
+          (await treeEntry(runtime, intent.baseRevision, path)) !== undefined
+        ) {
+          materialPath = true;
+          const removal = await runtime.exec({
+            cmd: "git",
+            args: [
+              "-c",
+              "core.fsmonitor=false",
+              "update-index",
+              "--force-remove",
+              "--",
+              path,
+            ],
+            env: { GIT_INDEX_FILE: index },
+            timeoutMs: 30_000,
+          });
+          if (removal.exitCode !== 0) {
+            throw new Error("Could not prepare local session changes");
+          }
+        }
+        continue;
+      }
+      materialPath = true;
+      const objectId = (
+        await checkedGit(runtime, [
+          "hash-object",
+          "-w",
+          "--no-filters",
+          "--",
+          path,
+        ])
+      ).trim();
+      const metadata = await lstat(await resolveInRoot(runtime.root, path));
+      const mode = (metadata.mode & 0o111) === 0 ? "100644" : "100755";
+      await checkedGit(
+        runtime,
+        ["update-index", "--add", "--cacheinfo", `${mode},${objectId},${path}`],
+        { GIT_INDEX_FILE: index },
+      );
+    }
+    if (!materialPath) return undefined;
+    const tree = (
+      await checkedGit(runtime, ["write-tree"], { GIT_INDEX_FILE: index })
+    ).trim();
+    const baseTree =
+      intent.baseRevision === ZERO_REVISION
+        ? EMPTY_TREE_REVISION
+        : (
+            await checkedGit(runtime, [
+              "rev-parse",
+              "--verify",
+              `${intent.baseRevision}^{tree}`,
+            ])
+          ).trim();
+    if (tree === baseTree) return undefined;
+    const commitArgs = [
+      "-c",
+      `core.hooksPath=${directory}`,
+      "-c",
+      "commit.gpgSign=false",
+      "commit-tree",
+      tree,
+    ];
+    if (intent.baseRevision !== ZERO_REVISION) {
+      commitArgs.push("-p", intent.baseRevision);
+    }
+    commitArgs.push("-m", intent.message);
+    const commitResult = await runtime.exec({
       cmd: "git",
-      args: ["add", "--intent-to-add", "-A", "--", ...relevantPaths],
+      args: commitArgs,
+      env: {
+        GIT_AUTHOR_NAME: "zapp local agent",
+        GIT_AUTHOR_EMAIL: "local-agent@zapp.build",
+        GIT_COMMITTER_NAME: "zapp local agent",
+        GIT_COMMITTER_EMAIL: "local-agent@zapp.build",
+      },
       timeoutMs: 30_000,
     });
-    if (intentToAdd.exitCode !== 0) {
-      throw new Error("Could not prepare local session changes");
+    if (commitResult.exitCode !== 0) {
+      throw new Error("Could not create the local session commit");
     }
-    const hook = join(directory, "pre-commit");
-    await writeFile(
-      hook,
-      `#!/bin/sh
-current_ref=$(git symbolic-ref --quiet HEAD) || exit 1
-test "$current_ref" = "$ZAPP_EXPECTED_REF" || exit 1
-if test "$ZAPP_EXPECTED_REVISION" = "${ZERO_REVISION}"; then
-  git show-ref --verify --quiet "$current_ref" && exit 1
-else
-  current_revision=$(git rev-parse --verify "$current_ref^{commit}") || exit 1
-  test "$current_revision" = "$ZAPP_EXPECTED_REVISION" || exit 1
-fi
-`,
-      { encoding: "utf8", mode: 0o700 },
-    );
-    await chmod(hook, 0o700);
-    const commit = await runtime.exec({
+    const commit = GitRevisionSchema.parse(commitResult.stdout.trim());
+    const update = await runtime.exec({
       cmd: "git",
       args: [
         "-c",
         `core.hooksPath=${directory}`,
-        "commit",
-        "--only",
-        "-m",
-        intent.message,
-        "--",
-        ...relevantPaths,
+        "-c",
+        "core.fsmonitor=false",
+        "update-ref",
+        intent.baseRef,
+        commit,
+        intent.baseRevision,
       ],
       env: {
         ZAPP_EXPECTED_REF: intent.baseRef,
@@ -390,9 +597,11 @@ fi
       },
       timeoutMs: 30_000,
     });
-    if (commit.exitCode !== 0) {
+    if (update.exitCode !== 0) {
       throw new LocalCommitRefConflictError();
     }
+    await synchronizePrimaryIndex(runtime, intent, commit);
+    return commit;
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -401,32 +610,25 @@ fi
 async function reconcileCommitIntent(input: {
   readonly transcripts: SqliteTranscriptStore;
   readonly intents: SqliteCommitIntentStore;
-  readonly runtime: WorkspaceRuntime;
+  readonly runtime: WorkspaceRuntime & Pick<LocalWorkspaceRuntime, "root">;
   readonly intent: CommitIntent;
-}): Promise<string> {
+}): Promise<string | undefined> {
   let commit = await findIntentCommit(input.runtime, input.intent);
   if (commit === undefined) {
-    const status = await input.runtime.git({
-      operation: "status",
-      args: ["--short", "--", ...input.intent.paths],
-    });
-    if (status.exitCode !== 0 || status.stdout.trim().length === 0) {
-      throw new Error("Local commit intent has neither changes nor a commit");
-    }
     try {
-      await commitExactPaths(input.runtime, input.intent);
+      commit = await commitExactPaths(input.runtime, input.intent);
     } catch (error) {
       if (error instanceof LocalCommitRefConflictError) {
         input.intents.clear(input.intent);
       }
       throw error;
     }
-    commit = await findIntentCommit(input.runtime, input.intent);
-    if (commit === undefined) {
-      throw new Error(
-        "Committed local session revision could not be reconciled",
-      );
-    }
+  } else {
+    await synchronizePrimaryIndex(input.runtime, input.intent, commit);
+  }
+  if (commit === undefined) {
+    input.intents.clear(input.intent);
+    return undefined;
   }
   const current = await input.transcripts.load({
     runId: input.intent.runId,
@@ -462,30 +664,84 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
     redact: options.redact,
     countRequestTokens: options.countRequestTokens ?? conservativeTokenCount,
   });
+
+  const commitTerminalChanges = async (
+    runId: string,
+    taskId: string,
+  ): Promise<void> => {
+    let transcript = await transcripts.load({ runId, taskId });
+    if (transcript === undefined) {
+      throw new Error("Terminal local session transcript is missing");
+    }
+    const pendingIntent = intents.load(runId, taskId);
+    if (pendingIntent !== undefined) {
+      await reconcileCommitIntent({
+        transcripts,
+        intents,
+        runtime: options.runtime,
+        intent: pendingIntent,
+      });
+      transcript = (await transcripts.load({ runId, taskId })) ?? transcript;
+    }
+    const orderedPaths = changedPaths(transcript);
+    if (orderedPaths.length === 0) return;
+    const intent = intents.persist(
+      createCommitIntent(
+        runId,
+        taskId,
+        transcript.version,
+        orderedPaths,
+        await captureCommitBase(options.runtime),
+      ),
+    );
+    await reconcileCommitIntent({
+      transcripts,
+      intents,
+      runtime: options.runtime,
+      intent,
+    });
+  };
+
   return {
     async run(
       input: Parameters<typeof session.run>[0],
       signal?: AbortSignal,
     ): ReturnType<typeof session.run> {
       const taskId = input.taskId ?? input.context.taskId;
-      let existingTranscript = await transcripts.load({ runId: input.runId, taskId });
+      let existingTranscript = await transcripts.load({
+        runId: input.runId,
+        taskId,
+      });
       const previousCommits = new Set(existingTranscript?.commits ?? []);
       const redirect = input.control?.redirect;
       if (
-        existingTranscript?.terminalStatus === "completed" &&
+        existingTranscript?.terminalStatus !== null &&
+        existingTranscript?.terminalStatus !== undefined &&
         redirect !== null &&
         redirect !== undefined &&
         !existingTranscript.appliedRedirectOperationKeys.includes(
           redirect.operationKey,
         )
       ) {
+        await commitTerminalChanges(input.runId, taskId);
+        existingTranscript = await transcripts.load({
+          runId: input.runId,
+          taskId,
+        });
+        if (existingTranscript === undefined) {
+          throw new Error("Terminal local session transcript is missing");
+        }
         const { version, ...draft } = existingTranscript;
+        const budgets = {
+          ...input.budgets,
+          maxTurns: existingTranscript.turns + input.budgets.maxTurns,
+        };
         existingTranscript = await transcripts.save(version, {
           ...draft,
           role: input.role,
           mode: input.mode,
           tools: input.tools,
-          budgets: input.budgets,
+          budgets,
           startedAtMs: Date.now(),
           provenance: [],
           messages: [
@@ -496,83 +752,41 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
                 .join("\n\n"),
             },
           ],
+          tokensUsed: 0,
+          inFlightCompletion: null,
           completedToolCallIds: [],
           completedToolNames: [],
           successfulToolNames: [],
           prototypeMocks: [],
+          pendingToolCalls: [],
+          activeToolCallId: null,
+          executionLease: null,
+          changedPaths: [],
+          summary: "",
+          terminalStatus: null,
+          terminalErrorCode: null,
         });
       }
       const effectiveInput =
-        existingTranscript === undefined && input.control?.redirect !== null
-          ? {
-              ...input,
-              control: {
-                ...(input.control ?? { yieldAfterTool: false }),
-                redirect: null,
-              },
-            }
-          : input;
+        existingTranscript === undefined
+          ? input
+          : { ...input, budgets: existingTranscript.budgets };
       const result = await session.run(effectiveInput, signal);
-      if (result.status !== "completed") return result;
-      let transcript = await transcripts.load({ runId: input.runId, taskId });
-      if (transcript === undefined)
-        throw new Error("Completed local session transcript is missing");
-      let commit: string | undefined;
-      const pendingIntent = intents.load(input.runId, taskId);
-      if (pendingIntent !== undefined) {
-        commit = await reconcileCommitIntent({
-          transcripts,
-          intents,
-          runtime: options.runtime,
-          intent: pendingIntent,
-        });
-        transcript =
-          (await transcripts.load({ runId: input.runId, taskId })) ??
-          transcript;
+      if (
+        result.status === "completed" ||
+        result.status === "failed" ||
+        result.status === "cancelled" ||
+        result.status === "budget_exhausted"
+      ) {
+        await commitTerminalChanges(input.runId, taskId);
       }
-      const orderedPaths = changedPaths(transcript);
-      if (orderedPaths.length === 0) {
-        return {
-          ...result,
-          commits: [...new Set([...result.commits, ...transcript.commits])].filter(
-            (candidate) => !previousCommits.has(candidate),
-          ),
-        };
-      }
-      const status = await options.runtime.git({
-        operation: "status",
-        args: ["--short", "--", ...orderedPaths],
-      });
-      if (status.exitCode !== 0)
-        throw new Error("Could not inspect local session changes");
-      if (status.stdout.trim().length === 0) {
-        return {
-          ...result,
-          commits: [...new Set([...result.commits, ...transcript.commits])].filter(
-            (candidate) => !previousCommits.has(candidate),
-          ),
-        };
-      }
-      const intent = intents.persist(
-        createCommitIntent(
-          input.runId,
-          taskId,
-          transcript.version,
-          orderedPaths,
-          await captureCommitBase(options.runtime),
-        ),
-      );
-      commit = await reconcileCommitIntent({
-        transcripts,
-        intents,
-        runtime: options.runtime,
-        intent,
-      });
+      const transcript = await transcripts.load({ runId: input.runId, taskId });
+      if (transcript === undefined) return result;
       return {
         ...result,
-        commits: [...new Set([...result.commits, commit])].filter(
-          (candidate) => !previousCommits.has(candidate),
-        ),
+        commits: [
+          ...new Set([...result.commits, ...transcript.commits]),
+        ].filter((candidate) => !previousCommits.has(candidate)),
       };
     },
   };

@@ -21,23 +21,24 @@ import { safeSend } from "@/ipc/utils/safe_sender";
 import { hashPrefix } from "@/lib/prefixHash";
 import { getDyadAppPath } from "@/paths/paths";
 
-import { LocalWorkspaceRuntime } from "./local";
+import { LocalAgentWorkspaceRuntime } from "./local";
 import { createLocalAgentSession } from "./local-session";
 
 const LocalProjectSchema = z
   .object({ name: z.string().min(1), path: z.string().min(1) })
   .strict();
+const StoredMessageCommitSchema = z
+  .object({
+    commit_hash: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .nullable(),
+  })
+  .strict();
 
 const READ_TOOLS = [
   "read_file",
   "list_files",
-  "file_stats",
-  "search_code",
-  "grep",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_show",
 ] as const satisfies readonly ToolName[];
 
 const LOCAL_TOOLS = [
@@ -47,12 +48,6 @@ const LOCAL_TOOLS = [
   "copy_file",
   "rename_file",
   "delete_file",
-  "create_branch",
-  "create_checkpoint",
-  "commit_changes",
-  "restore_file",
-  "revert_commit",
-  "merge_branch",
 ] as const satisfies readonly ToolName[];
 
 function computeStreamingPatch(fullResponse: string, lastSentContent: string) {
@@ -89,7 +84,10 @@ export interface DesktopLocalAgentStreamOptions {
   readonly planModeOnly?: boolean;
 }
 
-function continuationOperationKey(chatId: number, userMessageId: number): `op_${string}` {
+function continuationOperationKey(
+  chatId: number,
+  userMessageId: number,
+): `op_${string}` {
   return `op_${createHash("sha256")
     .update(JSON.stringify([chatId, userMessageId]))
     .digest("hex")}`;
@@ -109,7 +107,7 @@ function unavailable(): Promise<never> {
 }
 
 function registry(
-  runtime: LocalWorkspaceRuntime,
+  runtime: LocalAgentWorkspaceRuntime,
   redact: (value: string) => string,
 ): ToolRegistry {
   const dependencies: ToolRegistryDependencies = {
@@ -205,7 +203,9 @@ export function createLocalAgentStreamHandler(input: {
         localProjectName: project.name,
       }),
     );
-    const runtime = new LocalWorkspaceRuntime(getDyadAppPath(project.path));
+    const runtime = new LocalAgentWorkspaceRuntime(
+      getDyadAppPath(project.path),
+    );
     const gateway = gatewayWithRendererUpdates({
       gateway: input.platform.gateway(accounting),
       database: input.database,
@@ -248,16 +248,8 @@ export function createLocalAgentStreamHandler(input: {
           },
           taskId: accounting.taskId,
           tokenBudget: 100_000,
-          tokenCount: Math.max(1, Math.ceil(request.prompt.length / 3)),
-          sections: [
-            {
-              kind: "currentTask",
-              content: request.prompt,
-              tokenCount: Math.max(1, Math.ceil(request.prompt.length / 3)),
-              sourceArtifactIds: [],
-              sourceEventIds: [],
-            },
-          ],
+          tokenCount: 0,
+          sections: [],
         },
         tools: [...(readOnly ? READ_TOOLS : LOCAL_TOOLS)],
         budgets: {
@@ -278,7 +270,14 @@ export function createLocalAgentStreamHandler(input: {
       },
       abortController.signal,
     );
-    const commit = result.commits.at(-1);
+    const storedMessage = StoredMessageCommitSchema.parse(
+      input.database
+        .prepare<[number], unknown>(
+          "SELECT commit_hash FROM messages WHERE id = ?",
+        )
+        .get(options.placeholderMessageId),
+    );
+    const commit = result.commits.at(-1) ?? storedMessage.commit_hash;
     input.database
       .prepare(
         `UPDATE messages
@@ -297,7 +296,7 @@ export function createLocalAgentStreamHandler(input: {
       safeSend(event.sender, "chat:response:end", {
         chatId: request.chatId,
         streamId: request.streamId,
-        updatedFiles: false,
+        updatedFiles: commit !== null && commit !== undefined,
       } satisfies ChatStreamEndPayload);
       return false;
     }
@@ -305,7 +304,7 @@ export function createLocalAgentStreamHandler(input: {
     safeSend(event.sender, "chat:response:end", {
       chatId: request.chatId,
       streamId: request.streamId,
-      updatedFiles: result.commits.length > 0,
+      updatedFiles: commit !== null && commit !== undefined,
     } satisfies ChatStreamEndPayload);
     return true;
   };

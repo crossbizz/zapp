@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolRegistry, type ToolRegistryDependencies } from "@zapp/agent-tools";
@@ -414,7 +414,9 @@ describe("desktop local agent session", () => {
     ).resolves.toMatchObject({ status: "yielded" });
     await expect(
       createLocalAgentSession(options).run(sessionInput()),
-    ).rejects.toThrow("Local agent commit reference conflicts with durable state");
+    ).rejects.toThrow(
+      "Local agent commit reference conflicts with durable state",
+    );
     await expect(
       runtime.exec({
         cmd: "git",
@@ -640,6 +642,287 @@ describe("desktop local agent session", () => {
     expect(changed.stdout).toContain("M\tsrc/update.txt");
     expect(changed.stdout).toContain("D\tsrc/delete.txt");
     expect(changed.stdout).toContain("R100\tsrc/copied.txt\tsrc/renamed.txt");
+    database.$client.close();
+  });
+
+  it("commits without executing repository-controlled Git filters", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-git-filter-"));
+    roots.push(root);
+    await mkdir(join(root, "src"));
+    const runtime = new LocalWorkspaceRuntime(root);
+    await initializeGit(runtime);
+    const marker = join(root, "filter-executed");
+    const hookMarker = join(root, "hook-executed");
+    const filter = join(root, "malicious-clean-filter.sh");
+    await writeFile(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`, {
+      encoding: "utf8",
+      mode: 0o700,
+    });
+    await runtime.writeFile(
+      ".gitattributes",
+      new TextEncoder().encode("src/App.tsx filter=zapp-host-command\n"),
+    );
+    await expect(
+      runtime.exec({
+        cmd: "git",
+        args: ["config", "filter.zapp-host-command.clean", filter],
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    await expect(
+      runtime.git({
+        operation: "add_commit",
+        paths: [".gitattributes"],
+        message: "Add repository attributes",
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    await writeFile(
+      join(root, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\ntouch '${hookMarker}'\nexit 1\n`,
+      { encoding: "utf8", mode: 0o700 },
+    );
+    const gateway = scriptedGateway([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "write-filtered-path",
+          toolName: "write_file",
+          input: { path: "src/App.tsx", content: "export const App = 1;\n" },
+        },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "tool-calls",
+          totalTokens: 10,
+        },
+        { type: "done" },
+      ],
+      [
+        { type: "text-delta", text: "Committed without repository programs." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 10,
+        },
+        { type: "done" },
+      ],
+    ]);
+    const database = createInMemoryTestDb();
+    const options = {
+      database: database.$client,
+      gateway,
+      tools: toolRegistry(runtime),
+      runtime,
+      redact,
+      prompts: {
+        builder: "Build safely.",
+        planner: "Plan safely.",
+        verifier: "Verify safely.",
+        summarizer: "Summarize safely.",
+      },
+    } as const;
+
+    await expect(
+      createLocalAgentSession(options).run(sessionInput()),
+    ).resolves.toMatchObject({
+      status: "yielded",
+    });
+    await expect(
+      createLocalAgentSession(options).run(sessionInput()),
+    ).resolves.toMatchObject({
+      status: "completed",
+      commits: [expect.any(String)],
+    });
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readFile(hookMarker, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    database.$client.close();
+  });
+
+  it("accepts a fresh keyed turn after provider failure and cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-terminal-recovery-"));
+    roots.push(root);
+    await mkdir(join(root, "src"));
+    const runtime = new LocalWorkspaceRuntime(root);
+    await initializeGit(runtime);
+    const gateway = scriptedGateway([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "partial-write",
+          toolName: "write_file",
+          input: {
+            path: "src/Partial.ts",
+            content: "export const partial = true;\n",
+          },
+        },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "tool-calls",
+          totalTokens: 10,
+        },
+        { type: "done" },
+      ],
+      [
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "error",
+          totalTokens: 3,
+        },
+        {
+          type: "error",
+          code: "provider_error",
+          message: "provider interrupted",
+        },
+      ],
+      [
+        { type: "text-delta", text: "Recovered on the next user turn." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+      [
+        { type: "text-delta", text: "Recovered after cancellation." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+      [
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "error",
+          totalTokens: 4,
+        },
+        {
+          type: "error",
+          code: "budget_exceeded",
+          message: "credit ceiling reached",
+        },
+      ],
+      [
+        { type: "text-delta", text: "Recovered after budget exhaustion." },
+        {
+          type: "usage",
+          provider: "anthropic",
+          model: "test",
+          finishReason: "stop",
+          totalTokens: 4,
+        },
+        { type: "done" },
+      ],
+    ]);
+    const database = createInMemoryTestDb();
+    const options = {
+      database: database.$client,
+      gateway,
+      tools: toolRegistry(runtime),
+      runtime,
+      redact,
+      prompts: {
+        builder: "Build safely.",
+        planner: "Plan safely.",
+        verifier: "Verify safely.",
+        summarizer: "Summarize safely.",
+      },
+    } as const;
+    const input = sessionInput(["write_file"], null, "terminal");
+
+    await expect(
+      createLocalAgentSession(options).run(input),
+    ).resolves.toMatchObject({
+      status: "yielded",
+    });
+    await expect(
+      createLocalAgentSession(options).run(input),
+    ).resolves.toMatchObject({
+      status: "failed",
+      commits: [expect.any(String)],
+    });
+    const failedRedirect = {
+      operationKey: `op_${"c".repeat(64)}`,
+      instruction: "Continue after the provider failure.",
+    };
+    await expect(
+      createLocalAgentSession(options).run(
+        sessionInput(["write_file"], failedRedirect, "terminal"),
+      ),
+    ).resolves.toMatchObject({
+      status: "completed",
+      summary: "Recovered on the next user turn.",
+    });
+    await expect(
+      new SqliteTranscriptStore(database.$client).load({
+        runId: "local-run-terminal",
+        taskId: "local-task-terminal",
+      }),
+    ).resolves.toMatchObject({
+      budgets: { maxTurns: 11, maxTokens: 20_000 },
+      turns: 2,
+    });
+
+    const cancelledInput = sessionInput([], null, "cancelled");
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("user cancelled"));
+    await expect(
+      createLocalAgentSession(options).run(cancelledInput, cancelled.signal),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      createLocalAgentSession(options).run(
+        sessionInput(
+          [],
+          {
+            operationKey: `op_${"d".repeat(64)}`,
+            instruction: "Continue after cancellation.",
+          },
+          "cancelled",
+        ),
+      ),
+    ).resolves.toMatchObject({
+      status: "completed",
+      summary: "Recovered after cancellation.",
+    });
+
+    const budgetInput = sessionInput([], null, "budget");
+    await expect(
+      createLocalAgentSession(options).run(budgetInput),
+    ).resolves.toMatchObject({ status: "budget_exhausted" });
+    await expect(
+      createLocalAgentSession(options).run(
+        sessionInput(
+          [],
+          {
+            operationKey: `op_${"e".repeat(64)}`,
+            instruction: "Continue after budget exhaustion.",
+          },
+          "budget",
+        ),
+      ),
+    ).resolves.toMatchObject({
+      status: "completed",
+      summary: "Recovered after budget exhaustion.",
+    });
     database.$client.close();
   });
 

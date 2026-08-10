@@ -113,6 +113,29 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - [ ] Failing tests: WS-1 conformance suite (shared test kit from WS-1 runs against local adapter — path escape, timeout, truncation); local chat edit round-trip commits to local git.
 - [ ] Commit: `feat(desktop): local WorkspaceRuntime + local agent sessions`
 
+### Task MAC-6-FIX-1 [M2]: Structural local-agent containment + terminal recovery
+
+**Files:** Modify: `apps/desktop/src/zapp/runtime/{local.ts,local-session.ts,local-agent-handler.ts}`, their existing specs, `tasks/todo.md`, this plan
+**Effort:** M
+
+- [ ] RED: prove an unknown secret in `.env`, Git metadata, or another untracked/ignored file cannot reach a model request or SQLite transcript; prove no model-facing tool can dispatch repository-controlled Git hooks, filters, merge drivers, or arbitrary host commands.
+- [ ] RED: prove a failed, cancelled, or budget-exhausted durable turn can accept the next keyed user message, reconcile any owned partial mutation, refresh the per-message budget, and produce a fresh completion/commit.
+- [ ] GREEN: expose only tracked or agent-owned files through a `.git`-denying model runtime; remove every model-facing Git mutator; build/apply exact agent commits through configuration-independent Git plumbing with the recorded-base CAS and unrelated index/worktree preservation.
+- [ ] GREEN: durably linearize each new user-message continuation from every terminal state, preserving monotonic completion identity and exact per-turn commit reporting.
+- [ ] Verify: focused containment/recovery tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [ ] Commit: `fix(desktop): contain and recover local agent turns`
+
+### Task MAC-6-FIX-2 [M2]: Durable local turn results + mutation recovery
+
+**Files:** Modify: `apps/desktop/src/zapp/runtime/{local.ts,local-session.ts,local-agent-handler.ts}`, their existing specs, `apps/desktop/src/db/schema.ts`, `apps/desktop/drizzle/*`, `tasks/todo.md`, this plan
+**Effort:** M
+
+- [ ] RED: prove a crash after the transcript commit but before the assistant-message update replays the exact keyed terminal status, summary, and per-operation commit without another gateway call.
+- [ ] RED: prove a cancelled/budget terminal with an unresolved filesystem-tool lease cannot start the next turn or accept a late unmanifested mutation; prove agent-owned untracked paths survive handler/runtime recreation.
+- [ ] GREEN: persist a strict keyed operation receipt from pre-provider base commit count through terminal commit reconciliation; hydrate the model runtime's durable owned-path set; settle or fail closed on unknown mutation outcomes before continuation.
+- [ ] Verify: focused recovery/containment tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [ ] Commit: `fix(desktop): durably reconcile local agent turns`
+
 ### Task MAC-7 [M4]: Docker runtime adapter
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/docker.ts`
@@ -189,3 +212,4 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
 - 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.
 - 2026-08-10 MAC-6A done — Added the safe local runtime, packaged resumable AR-6 session state, exact changed-path commit refs, and fail-closed guarded writes; MAC-6 remains open for the public user-authenticated model-gateway/accounting and UI/mode join plus explicit commit application.
+- 2026-08-10 MAC-6-FIX-1 BLOCKED — Containment, config-independent exact commits, terminal continuation, and truthful partial-commit reporting are focused-green (20/20), but the capped final review found missing keyed-result crash recovery, unresolved mutation-lease fencing, and durable owned-path hydration; provider acceptance was not consumed and MAC-6-FIX-2 owns the bounded closure.
