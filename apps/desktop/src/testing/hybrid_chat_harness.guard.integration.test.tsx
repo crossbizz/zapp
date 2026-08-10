@@ -15,6 +15,30 @@ type TestWindow = Window &
   };
 
 describe("hybrid chat harness guards", () => {
+  it("registers the production platform-auth boundary with a deterministic signed-out session", async () => {
+    const harness = await setupHybridChatHarness({
+      electronMock: h,
+      settings: { isTestMode: true },
+    });
+
+    try {
+      await expect(
+        (window as TestWindow).electron.ipcRenderer.invoke(
+          "zapp-auth:snapshot",
+          {},
+        ),
+      ).resolves.toEqual({ status: "signed-out" });
+
+      harness.mountSurface({ route: "/app-details", withTitleBar: true });
+      expect(await screen.findByTestId("app-details-page")).toBeTruthy();
+      expect(
+        await screen.findByRole("button", { name: "Sign in to Zapp" }),
+      ).toBeTruthy();
+    } finally {
+      await harness.dispose();
+    }
+  }, 60_000);
+
   it("mounts non-chat surfaces without pulling preview UI into the DOM", async () => {
     const surfaceCases = [
       {

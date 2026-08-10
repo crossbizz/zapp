@@ -86,7 +86,6 @@ import {
 } from "@/lib/preview_console_buffer";
 import { queryKeys } from "@/lib/queryKeys";
 import { AnnotatorOnlyForPro } from "./AnnotatorOnlyForPro";
-import { useAttachments } from "@/hooks/useAttachments";
 import { useUserBudgetInfo } from "@/hooks/useUserBudgetInfo";
 // zapp: pro-removed — the Annotator canvas lived in "@/pro/ui/components/Annotator/Annotator";
 // the existing non-Pro fallback (AnnotatorOnlyForPro) is now the only branch.
@@ -295,7 +294,6 @@ export const PreviewIframe = ({ loading }: { loading: boolean }) => {
   const [isEditingAddressBar, setIsEditingAddressBar] = useState(false);
   const isEditingAddressBarRef = useRef(false);
 
-  const { addAttachments } = useAttachments();
   const setPendingChanges = useSetAtom(pendingVisualChangesAtom);
   const pendingAnnotatorScreenshotRequestIdRef = useRef<string | null>(null);
   const skipNextAddressBarBlurRef = useRef(false);

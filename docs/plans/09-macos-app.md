@@ -82,6 +82,15 @@ Master plan §Global Constraints, plus:
 - [x] Failing test: an ambiguous create response followed by the rendered creation-retry control reuses the exact operation ID; list retry cannot clear the pending creation.
 - [x] Commit with MAC-5: `feat(desktop): unified local+cloud project dashboard`
 
+### Task MAC-5.5 [M2]: Restore hybrid integration coverage
+
+**Files:** Modify: `apps/desktop/src/testing/hybrid_chat_harness.tsx`, `apps/desktop/src/testing/hybrid_chat_harness.guard.integration.test.tsx`, `apps/desktop/vite.preload.config.mts`, pre-existing lint cleanup in `apps/desktop/src/components/preview_panel/PreviewIframe.tsx`; Verify: `apps/desktop/e2e-tests/helpers/monaco_editor.ts`, `apps/desktop/e2e-tests/{edit_code,editor_commit_menu}.spec.ts`
+**Effort:** M
+
+- [x] Binding behavior: the hybrid renderer registers the same strict platform-auth IPC boundary as production with a deterministic signed-out session, so newly required composition channels cannot strand legacy integration surfaces; the shared Monaco helper continues to drive the real focused editor surface rather than its aria-hidden IME shim.
+- [x] Failing test: the harness invokes `zapp-auth:snapshot`, receives the strict signed-out state, mounts a title-bar surface, and disposes with no missing production channel; retain the full-suite diagnostic inventory and re-run all 13 `local_agent_*` specifications.
+- [x] Run the desktop Vitest suite as a bounded diagnostic inventory; run the 13 ADR-0002 `local_agent_*` behavioral specifications separately and preserve/report their intentional RED handoff to MAC-6; verify the strict auth harness and two Monaco Playwright specs green; commit `test(desktop): restore hybrid integration coverage`.
+
 ### Task MAC-6 [M2]: Local runtime adapter
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/local.ts`, `test/local-runtime.spec.ts`
@@ -165,3 +174,4 @@ Master plan §Global Constraints, plus:
 - 2026-08-10 MAC-4-FIX-1 done — Pending logout revocations drain before re-auth, cached identity renders without awaiting the network, and serialized generation-fenced transitions prevent stale refresh resurrection or org rollback.
 - 2026-08-10 MAC-5 done — Unified local/cloud dashboard uses strict IPC and generated public APIs; the separate MAC-5.5 task owns the pre-existing hybrid desktop-suite failures discovered during verification.
 - 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
+- 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.

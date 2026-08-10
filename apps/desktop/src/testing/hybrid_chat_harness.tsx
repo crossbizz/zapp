@@ -140,6 +140,8 @@ import { setModelClientFetchForTesting } from "@/ipc/utils/get_model_client";
 // every hybrid test and throw "Canceled" rejections on teardown.
 import { chatSearchSchema } from "@/routes/chatSearchSchema";
 import { appDetailsSearchSchema } from "@/routes/appDetailsSearchSchema";
+import { registerPlatformAuthHandlers } from "@/zapp/auth/handlers";
+import type { PlatformAuthSession } from "@/zapp/auth/session";
 
 import {
   installRendererIpcBridge,
@@ -151,6 +153,22 @@ const SECOND_SETUP_ERROR =
   "(forks pool isolation); split the file";
 
 let activeHybridChatHarness = false;
+
+function createSignedOutPlatformAuthSession(): PlatformAuthSession {
+  const state = { status: "signed-out" } as const;
+  return {
+    signIn: async () => state,
+    restoreCached: async () => state,
+    refresh: async () => state,
+    restore: async () => state,
+    signOut: async () => {},
+    selectOrganization: async () => state,
+    snapshot: () => state,
+    authorizationHeader: () => undefined,
+    subscribe: () => () => {},
+  };
+}
+
 type JotaiStore = ReturnType<typeof createStore>;
 type HybridLocation = {
   href: string;
@@ -627,6 +645,9 @@ export async function setupHybridChatHarness(
     // (react-remove-scroll's tslib) and fails at module load.
     const { registerIpcHandlers } = await import("@/ipc/ipc_host");
     registerIpcHandlers();
+    const unsubscribePlatformAuth = registerPlatformAuthHandlers(
+      createSignedOutPlatformAuthSession(),
+    );
 
     const silenceActWarnings = options.silenceActWarnings ?? true;
     const bridge = installRendererIpcBridge(options.electronMock, {
@@ -1581,6 +1602,7 @@ export async function setupHybridChatHarness(
         }
         activeStore = undefined;
         activeRouter = undefined;
+        unsubscribePlatformAuth();
         bridge.uninstall();
         // Server ids restart at 1 in the next harness's fresh db, so a cached
         // client left here would be silently reused for a different server.
