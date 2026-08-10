@@ -44,6 +44,12 @@ function recipeCommands(recipe: ReturnType<typeof createForgeNodeBaseRecipe>): s
 }
 
 describe('forge-node-base image policy', () => {
+  test('emits every Dockerfile command as a single line', () => {
+    const commands = recipeCommands(createForgeNodeBaseRecipe(SOURCE_REVISION));
+
+    expect(commands.filter((command) => /[\r\n]/u.test(command))).toEqual([]);
+  });
+
   test('validates configuration and consumes every pinned recipe assumption', () => {
     const recipe = createForgeNodeBaseRecipe(SOURCE_REVISION, ALTERNATE_CONFIG);
     const commands = recipeCommands(recipe).join('\n');
