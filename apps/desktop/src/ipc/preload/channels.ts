@@ -59,6 +59,10 @@ import { testsContracts, testsEvents } from "../types/tests";
 import { queueContracts, queueSendContracts } from "../types/queue";
 import { userInputContracts, userInputEvents } from "../types/user_input";
 import { firstPromptSendContracts } from "../types/first_prompt";
+import {
+  platformAuthContracts,
+  platformAuthEvents,
+} from "@/zapp/auth/contracts";
 
 // =============================================================================
 // Invoke Channels (derived from all contracts)
@@ -126,6 +130,7 @@ export const VALID_INVOKE_CHANNELS = [
   ...getInvokeChannels(testsContracts),
   ...getInvokeChannels(queueContracts),
   ...getInvokeChannels(userInputContracts),
+  ...getInvokeChannels(platformAuthContracts),
 
   // Test-only channels
   ...TEST_INVOKE_CHANNELS,
@@ -166,6 +171,7 @@ export const VALID_RECEIVE_CHANNELS = [
   ...getReceiveChannels(appBlueprintEvents),
   ...getReceiveChannels(testsEvents),
   ...getReceiveChannels(userInputEvents),
+  ...getReceiveChannels(platformAuthEvents),
 ] as const;
 
 // =============================================================================

@@ -28,6 +28,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { firstPromptSagaAtom } from "@/first_prompt/projection";
 import { useFirstPromptProviderResume } from "@/first_prompt/FirstPromptProvider";
 import type { UserSettings } from "@/lib/schemas";
+import { PlatformAuthControl } from "@/zapp/auth/control";
 
 export const TitleBar = () => {
   const [selectedAppId] = useAtom(selectedAppIdAtom);
@@ -127,6 +128,7 @@ export const TitleBar = () => {
             <TooltipContent>{displayText}</TooltipContent>
           </Tooltip>
           {isDyadPro && <DyadProButton isDyadProEnabled={isDyadProEnabled} />}
+          <PlatformAuthControl />
         </div>
 
         <div className="flex-1 min-w-0 overflow-hidden self-end">

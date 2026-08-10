@@ -52,9 +52,18 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/desktop/src/zapp/auth/*`
 **Effort:** M
 
-- [ ] Binding behavior: device/PKCE flow (CP-2): app opens browser to hosted auth → `zapp://auth/callback` → exchanges for tokens → refresh token in `safeStorage` (Keychain-backed), access token memory-only; sign-out purges; org selector after auth; offline: cached identity renders, cloud features disabled with clear state.
-- [ ] Failing tests: token persisted encrypted (file content ≠ plaintext token); relaunch restores session without re-auth; revoked refresh → clean re-login prompt.
-- [ ] Commit: `feat(desktop): platform auth with keychain-backed sessions`
+- [x] Binding behavior: device/PKCE flow (CP-2): app opens browser to hosted auth → `zapp://auth/callback` → exchanges for tokens → refresh token in `safeStorage` (Keychain-backed), access token memory-only; sign-out purges; org selector after auth; offline: cached identity renders, cloud features disabled with clear state.
+- [x] Failing tests: token persisted encrypted (file content ≠ plaintext token); relaunch restores session without re-auth; revoked refresh → clean re-login prompt.
+- [x] Commit: `feat(desktop): platform auth with keychain-backed sessions`
+
+### Task MAC-4-FIX-1 [M2]: Close auth revocation and startup bounds
+
+**Files:** Modify: `apps/desktop/src/zapp/auth/*`, `apps/desktop/src/main.ts`, `apps/desktop/src/ipc/preload/channels.ts`
+**Effort:** S
+
+- [x] Binding behavior: a failed durable logout must be drained before a later sign-in can overwrite its encrypted refresh token; cached identity becomes offline-visible within a bounded startup wait, and a later background refresh publishes a strict renderer state update.
+- [x] Failing tests: logout failure + failed startup retry blocks a new device grant without losing the old token; a never-settling refresh returns the cached offline snapshot within the startup bound; background completion updates the renderer through the whitelisted event.
+- [x] Commit with MAC-4: `feat(desktop): platform auth with keychain-backed sessions`
 
 ### Task MAC-5 [M2]: Cloud dashboard + shared client
 
@@ -143,3 +152,5 @@ Master plan §Global Constraints, plus:
 - 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
 - 2026-08-04: MAC-3 done pending fix round (e050b01, review Approved; 7 specs all judged REAL). Suite location e2e-tests/ (plan path would have been collected by NOTHING — playwright testDir). CONTROLLER DECISION: wiring test:preserve into desktop.yml as an e2e-preserve job (an inert net earns no trust). Follow-ups: upstream monaco helper broken (replaceEditorContent targets aria-hidden ime-text-area) — blocks edit_code/editor_commit_menu specs, needs an upstream-facing fix task.
 - 2026-08-04: MAC-3 done (e050b01 + fix 2816766 + budget e3493f5, fully Approved; 7 real specs, wired as CI job e2e-preserve). PLAN 09 M0 SCOPE COMPLETE (MAC-1/2/3). COST WATCH: a main push touching apps/desktop now spends both package-macos (90m budget) and e2e-preserve (45m) on macos-14 (10x-billed) — if it bites, move e2e-preserve to PR-only + nightly on main.
+- 2026-08-10 MAC-4 done — Keychain-backed device auth is user-reachable through strict IPC and the TitleBar; production reachability required package, main-process, preload, and renderer composition edits beyond the original create-only file list.
+- 2026-08-10 MAC-4-FIX-1 done — Pending logout revocations drain before re-auth, cached identity renders without awaiting the network, and serialized generation-fenced transitions prevent stale refresh resurrection or org rollback.

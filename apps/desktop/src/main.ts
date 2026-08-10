@@ -105,6 +105,10 @@ import {
 } from "@/zapp/branding";
 import { handleZappDeepLink } from "@/zapp/deep_link";
 import { startAutoUpdate } from "@/zapp/auto_update";
+import { createElectronPlatformAuthSession } from "@/zapp/auth/electron";
+import { registerPlatformAuthHandlers } from "@/zapp/auth/handlers";
+import { platformAuthEvents } from "@/zapp/auth/contracts";
+import { restorePlatformAuthForStartup } from "@/zapp/auth/startup";
 import {
   applyManagedPnpmToProcessPath,
   getManagedPnpmBinDir,
@@ -393,6 +397,29 @@ export async function onReady() {
     app.quit();
     return;
   }
+
+  const platformAuthSession = createElectronPlatformAuthSession({
+    baseUrl: process.env.ZAPP_CONTROL_API_URL ?? "https://api.zapp.build",
+  });
+  try {
+    const startup = await restorePlatformAuthForStartup(platformAuthSession);
+    void startup.background.catch(() => {
+      // The cached identity remains available offline. Never log credentials or
+      // provider error bodies from the background refresh boundary.
+      logger.warn("Platform authentication refresh did not complete");
+    });
+  } catch {
+    // The local app still boots when Keychain is unavailable or local state is
+    // invalid. Network refresh never blocks this startup path.
+    logger.warn("Cached platform authentication state could not be restored");
+  }
+  registerPlatformAuthHandlers(platformAuthSession, (state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(platformAuthEvents.stateChanged.channel, state);
+      }
+    }
+  });
 
   // Reconcile any Neon test branches / Supabase test users leaked by a previous
   // session that crashed mid test-run. Fire-and-forget: best-effort cleanup
