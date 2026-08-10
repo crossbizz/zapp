@@ -1,8 +1,12 @@
+import { fileURLToPath } from 'node:url';
+
 import { newId } from '@zapp/contracts';
 import { Worker } from '@temporalio/worker';
 import { createDb } from '@zapp/db';
 import type { GateContext, GateId } from '@zapp/verification-engine';
 import { decideVerification } from '@zapp/verification-engine';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import postgres from 'postgres';
 import { describe, expect, test, vi } from 'vitest';
 
 import { executeIdempotentActivity } from '../../src/activities/idempotency.js';
@@ -14,6 +18,46 @@ import {
   type CompletePhaseVerificationInput,
 } from '../../src/activities/verify-phase.js';
 import { createProductionVerificationWorker } from '../../src/worker.js';
+
+const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
+if (DATABASE_URL === '') {
+  throw new Error('VF-10 Postgres integration requires DATABASE_URL');
+}
+const MIGRATIONS_FOLDER = fileURLToPath(
+  new URL('../../../../packages/db/drizzle', import.meta.url),
+);
+const DUPLICATE_DATABASE = '42P04';
+
+async function vf10TestDatabaseUrl(): Promise<string> {
+  const testUrl = new URL(DATABASE_URL);
+  const sourceName = decodeURIComponent(testUrl.pathname.replace(/^\//u, ''));
+  const testName = `${sourceName.replace(/_vf10_test$/u, '')}_vf10_test`;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(testName)) {
+    throw new Error('VF-10 integration database name is invalid');
+  }
+  testUrl.pathname = `/${testName}`;
+  const maintenanceUrl = new URL(testUrl);
+  maintenanceUrl.pathname = '/postgres';
+  const admin = postgres(maintenanceUrl.toString(), { max: 1, onnotice: () => undefined });
+  try {
+    const existing = await admin<{ exists: boolean }[]>`
+      select exists(select 1 from pg_database where datname = ${testName}) as exists
+    `;
+    if (existing[0]?.exists !== true) await admin.unsafe(`create database "${testName}"`);
+  } catch (error: unknown) {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      !('code' in error) ||
+      (error as { readonly code?: unknown }).code !== DUPLICATE_DATABASE
+    ) {
+      throw error;
+    }
+  } finally {
+    await admin.end();
+  }
+  return testUrl.toString();
+}
 
 const ids = {
   runId: 'run_01J00000000000000000000000',
@@ -408,11 +452,7 @@ describe('VF-10 independent verifyPhase activity', () => {
   });
 
   test('atomically replays one result, task transition, and sequenced event', async () => {
-    const databaseUrl = process.env['DATABASE_URL'];
-    if (databaseUrl === undefined || databaseUrl === '') {
-      throw new Error('VF-10 Postgres integration requires DATABASE_URL');
-    }
-    const database = createDb(databaseUrl);
+    const database = createDb(await vf10TestDatabaseUrl());
     const fixture = {
       organizationId: newId('org'),
       userId: newId('user'),
@@ -422,7 +462,10 @@ describe('VF-10 independent verifyPhase activity', () => {
       taskId: newId('task'),
     };
     const fixtureCommit = 'b'.repeat(40);
+    let schemaReady = false;
     try {
+      await migrate(database.db, { migrationsFolder: MIGRATIONS_FOLDER });
+      schemaReady = true;
       await database.sql`
         insert into users (id, email, display_name)
         values (${fixture.userId}, ${`${fixture.userId}@example.test`}, 'Verifier test')
@@ -530,16 +573,18 @@ describe('VF-10 independent verifyPhase activity', () => {
         event_result_id: first.verificationResultId,
       });
     } finally {
-      await database.sql`delete from agent_events where run_id = ${fixture.runId}`;
-      await database.sql`delete from run_event_counters where run_id = ${fixture.runId}`;
-      await database.sql`delete from verification_results where run_id = ${fixture.runId}`;
-      await database.sql`delete from agent_tasks where id = ${fixture.taskId}`;
-      await database.sql`delete from agent_phases where id = ${fixture.phaseId}`;
-      await database.sql`delete from agent_runs where id = ${fixture.runId}`;
-      await database.sql`delete from projects where id = ${fixture.projectId}`;
-      await database.sql`delete from organizations where id = ${fixture.organizationId}`;
-      await database.sql`delete from users where id = ${fixture.userId}`;
+      if (schemaReady) {
+        await database.sql`delete from agent_events where run_id = ${fixture.runId}`;
+        await database.sql`delete from run_event_counters where run_id = ${fixture.runId}`;
+        await database.sql`delete from verification_results where run_id = ${fixture.runId}`;
+        await database.sql`delete from agent_tasks where id = ${fixture.taskId}`;
+        await database.sql`delete from agent_phases where id = ${fixture.phaseId}`;
+        await database.sql`delete from agent_runs where id = ${fixture.runId}`;
+        await database.sql`delete from projects where id = ${fixture.projectId}`;
+        await database.sql`delete from organizations where id = ${fixture.organizationId}`;
+        await database.sql`delete from users where id = ${fixture.userId}`;
+      }
       await database.close();
     }
-  });
+  }, 30_000);
 });
