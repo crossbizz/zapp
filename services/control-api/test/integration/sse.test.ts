@@ -647,7 +647,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
         signal: controller.signal,
       });
       expect(response.status, accept).toBe(200);
+      const cancellation = cancelResponseBody(response);
       controller.abort();
+      await expectSettlesWithin(cancellation);
     }
   });
 
@@ -681,7 +683,9 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
         signal: controller.signal,
       });
       expect(response.status, accept).toBe(200);
+      const cancellation = cancelResponseBody(response);
       controller.abort();
+      await expectSettlesWithin(cancellation);
     }
   });
 
