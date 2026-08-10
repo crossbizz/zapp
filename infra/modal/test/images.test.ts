@@ -73,6 +73,8 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain(`knip --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.knip}'`);
     expect(commands).toContain(`jscpd --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.jscpd}'`);
     expect(commands).toContain(`eslint --version | grep -F 'v${ALTERNATE_CONFIG.node.antiSlop.eslint}'`);
+    expect(commands).toContain('ENV PATH=/tmp/zapp-src/node_modules/.bin:$PATH');
+    expect(commands).not.toContain('ln -s /tmp/zapp-src/node_modules/.bin');
 
     const invalidConfigs = [
       {
