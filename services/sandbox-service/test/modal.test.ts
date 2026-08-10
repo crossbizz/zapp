@@ -777,6 +777,10 @@ describe('Modal image provider facade', () => {
       'git config --system',
       'core\\.[Aa]sk[Pp]ass',
       'gitleaks git',
+      'semgrep --version',
+      'knip --version',
+      'jscpd --version',
+      'eslint --version',
     ]) {
       expect(serializedCommands).toContain(requiredProbe);
     }
@@ -833,6 +837,7 @@ describe('Modal image provider facade', () => {
         encryptedTunnel: true,
         readinessProbe: true,
         gitleaksSecretScan: true,
+        antiSlopToolchain: true,
       },
       credentialAbsence: {
         environment: true,

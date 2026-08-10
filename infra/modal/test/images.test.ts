@@ -19,6 +19,17 @@ const ALTERNATE_CONFIG = {
       version: '8.26.0',
       linuxX64Sha256: '32faa8a77f6ce4b483921072ea89f78a794ad1d96471f2ad6e01ad3b0ebafa00',
     },
+    antiSlop: {
+      semgrep: {
+        version: '1.172.0',
+        linuxX64WheelUrl:
+          'https://files.pythonhosted.org/packages/84/a5/21624510b65271a673961a894af7511b5123d662e84c74c765560ea28b27/semgrep-1.172.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-manylinux_2_34_x86_64.whl',
+        linuxX64Sha256: 'd8b94af4266a575287ad2cd844573743ab4fe58f6bfb6d9229327807937eade3',
+      },
+      knip: '6.14.2',
+      jscpd: '4.2.5',
+      eslint: '9.39.5',
+    },
   },
   webTest: {
     packageName: 'zapp-modal-browser-runtime-test',
@@ -45,6 +56,12 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain(ALTERNATE_CONFIG.node.gitleaks.linuxX64Sha256);
     expect(commands).toContain('sha256sum --check');
     expect(commands).toContain('gitleaks version');
+    expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64WheelUrl);
+    expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64Sha256);
+    expect(commands).toContain(`semgrep --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.semgrep.version}'`);
+    expect(commands).toContain(`knip --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.knip}'`);
+    expect(commands).toContain(`jscpd --version | grep -F '${ALTERNATE_CONFIG.node.antiSlop.jscpd}'`);
+    expect(commands).toContain(`eslint --version | grep -F 'v${ALTERNATE_CONFIG.node.antiSlop.eslint}'`);
 
     const invalidConfigs = [
       {
@@ -63,6 +80,16 @@ describe('forge-node-base image policy', () => {
         node: {
           ...ALTERNATE_CONFIG.node,
           packageManagers: { ...ALTERNATE_CONFIG.node.packageManagers, pnpm: '^9.16.0' },
+        },
+      },
+      {
+        ...ALTERNATE_CONFIG,
+        node: {
+          ...ALTERNATE_CONFIG.node,
+          antiSlop: {
+            ...ALTERNATE_CONFIG.node.antiSlop,
+            knip: '^6.14.2',
+          },
         },
       },
       {
@@ -90,6 +117,7 @@ describe('forge-node-base image policy', () => {
       'unzip',
       'build-essential',
       'python3',
+      'python3-venv',
       'dumb-init',
     ]) {
       expect(commands).toMatch(new RegExp(`(?:^|\\s)${requiredPackage}(?:\\s|$)`, 'u'));

@@ -7,6 +7,10 @@ import {
   GateRequirementClassSchema,
   GateWaiverSchema,
 } from '../policy-matrix.js';
+import {
+  PolicySignalIdSchema,
+  PolicySignalSchema,
+} from '../anti-slop/placeholder.js';
 
 export const VerificationDecisionSchema = z.enum(['approved', 'rejected', 'needs_human']);
 export type VerificationDecision = z.infer<typeof VerificationDecisionSchema>;
@@ -21,10 +25,13 @@ export const VerificationRiskSchema = z
       'critical_criterion_unverified',
       'criterion_unverified',
       'criterion_waived',
+      'policy_signal',
     ]),
     severity: z.enum(['blocking', 'human_review', 'warning']),
     gateId: GateIdSchema.optional(),
     criterionId: CriterionIdSchema.optional(),
+    policySignalId: PolicySignalIdSchema.optional(),
+    policySignal: PolicySignalSchema.optional(),
     summary: z.string().min(1).max(1_024),
   })
   .strict();
@@ -63,6 +70,7 @@ export const VerifierDecisionInputSchema = z
     gateEvaluations: z.array(GateEvaluationSchema).max(100),
     criteria: z.array(CriterionRecordSchema).min(1).max(1_000),
     criticalCriterionIds: z.array(CriterionIdSchema).max(1_000),
+    policySignals: z.array(PolicySignalSchema).max(9).default([]),
   })
   .strict()
   .superRefine((input, context) => {
@@ -184,6 +192,18 @@ export function decideVerification(inputValue: unknown): VerifierDecisionResult 
         }),
       );
     }
+  }
+
+  for (const policySignal of input.policySignals) {
+    risks.push(
+      VerificationRiskSchema.parse({
+        code: 'policy_signal',
+        severity: policySignal.severity,
+        policySignalId: policySignal.id,
+        policySignal,
+        summary: `${policySignal.id} reported ${String(policySignal.locations.length)} location(s).`,
+      }),
+    );
   }
 
   const decision = risks.some(({ severity }) => severity === 'blocking')

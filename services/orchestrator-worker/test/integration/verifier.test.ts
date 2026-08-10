@@ -247,6 +247,16 @@ describe('VF-10 independent verifyPhase activity', () => {
     const gateCalls: GateId[] = [];
     const workspaceOpenCalls: unknown[] = [];
     const contextLoadCalls: unknown[] = [];
+    const antiSlopRun = vi.fn(() =>
+      Promise.resolve([
+        {
+          id: 'states-check' as const,
+          severity: 'warning' as const,
+          locations: [{ path: 'src/routes/checkout.tsx', line: 12 }],
+          autofixable: false,
+        },
+      ]),
+    );
     let workspaceClosed = false;
     let completion: CompletePhaseVerificationInput | undefined;
 
@@ -295,6 +305,7 @@ describe('VF-10 independent verifyPhase activity', () => {
           });
         },
       },
+      antiSlop: { run: antiSlopRun },
       completion: {
         complete(input) {
           completion = input;
@@ -326,7 +337,13 @@ describe('VF-10 independent verifyPhase activity', () => {
     expect(gateCalls).toContain('unit_tests');
     expect(gateCalls).not.toContain('observability_check');
     expect(workspaceClosed).toBe(true);
+    expect(antiSlopRun).toHaveBeenCalledWith(
+      expect.objectContaining({ supportLevel: 'verified' }),
+    );
     expect(result.decision).toBe('rejected');
+    const policyRisk = result.risks.find(({ code }) => code === 'policy_signal');
+    expect(policyRisk).toMatchObject({ code: 'policy_signal', severity: 'warning' });
+    expect(policyRisk?.policySignal?.id).toBe('states-check');
     expect(result.criteriaResults).toEqual([
       expect.objectContaining({ criterionId: 'AC-1', result: 'passed' }),
     ]);
@@ -385,6 +402,7 @@ describe('VF-10 independent verifyPhase activity', () => {
           });
         },
       },
+      antiSlop: { run: () => Promise.resolve([]) },
       completion: {
         complete: () =>
           Promise.resolve({ verificationResultId: 'vr_01J00000000000000000000001' }),

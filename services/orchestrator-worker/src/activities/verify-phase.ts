@@ -17,6 +17,7 @@ import {
 } from '@zapp/db';
 import {
   assembleCriterionRecords,
+  AntiSlopPolicyContextSchema,
   CriterionAssemblyInputSchema,
   CriterionIdSchema,
   CriterionRecordSchema,
@@ -24,9 +25,11 @@ import {
   decideVerification,
   GateResultSchema,
   ProjectPolicySchema,
+  PolicySignalSchema,
   requiredGates,
   VerificationDecisionSchema,
   VerificationRiskSchema,
+  runAntiSlopPolicySuite,
   type GateContext,
   type GateId,
   type GateRequirementClass,
@@ -57,6 +60,7 @@ export const PhaseVerificationContextSchema = z
     projectPolicy: ProjectPolicySchema,
     criticalCriterionIds: z.array(CriterionIdSchema).max(1_000),
     criterionAssembly: IndependentCriterionAssemblySchema,
+    antiSlop: AntiSlopPolicyContextSchema.default({}),
   })
   .strict();
 export type PhaseVerificationContext = z.infer<typeof PhaseVerificationContextSchema>;
@@ -196,6 +200,14 @@ export interface VerifierWorkspacePort {
 
 export interface VerificationGateRunner {
   run(gateId: GateId, context: GateContext): Promise<unknown>;
+}
+
+export interface VerificationPolicyRunner {
+  run(input: {
+    readonly supportLevel: z.infer<typeof SupportLevelSchema>;
+    readonly context: z.infer<typeof AntiSlopPolicyContextSchema>;
+    readonly gateContext: GateContext;
+  }): Promise<unknown>;
 }
 
 export interface PhaseVerificationCompletionPort {
@@ -410,6 +422,7 @@ export function createVerifyPhaseActivities(dependencies: {
   readonly phaseContext: PhaseVerificationContextPort;
   readonly workspaces: VerifierWorkspacePort;
   readonly gates: VerificationGateRunner;
+  readonly antiSlop?: VerificationPolicyRunner;
   readonly completion: PhaseVerificationCompletionPort;
 }): VerifyPhaseActivities {
   return {
@@ -441,6 +454,7 @@ export function createVerifyPhaseActivities(dependencies: {
         waiver?: GateWaiver;
       }> = [];
       const observedTestCases: z.infer<typeof CriterionTestCaseSchema>[] = [];
+      let policySignals: z.infer<typeof PolicySignalSchema>[] = [];
       try {
         if (
           CommitShaSchema.parse(workspace.resolvedCommitSha) !== commitSha ||
@@ -484,6 +498,22 @@ export function createVerifyPhaseActivities(dependencies: {
             observedTestCases.push(...execution.testCases);
           }
         }
+        const policyRunner = dependencies.antiSlop ?? {
+          run: (input: Parameters<VerificationPolicyRunner['run']>[0]) =>
+            runAntiSlopPolicySuite({
+              runtime: input.gateContext.runtime,
+              workspaceRoot: input.gateContext.contract.workspace_root,
+              supportLevel: input.supportLevel,
+              context: input.context,
+            }),
+        };
+        policySignals = z.array(PolicySignalSchema).max(9).parse(
+          await policyRunner.run({
+            supportLevel: phase.supportLevel,
+            context: phase.antiSlop,
+            gateContext: workspace.gateContext,
+          }),
+        );
       } finally {
         await workspace.close();
       }
@@ -496,6 +526,7 @@ export function createVerifyPhaseActivities(dependencies: {
         gateEvaluations,
         criteria: criteriaResults,
         criticalCriterionIds: phase.criticalCriterionIds,
+        policySignals,
       });
       const operationKey = `verify-phase:${runId}:${phaseId}:${commitSha}`;
       const completed = CompletePhaseVerificationResultSchema.parse(

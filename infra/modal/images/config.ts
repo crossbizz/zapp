@@ -11,6 +11,18 @@ const RegistryImageRefSchema = z
     'Expected a registry image pinned by tag and sha256 digest',
   )
   .refine((value) => !value.toLowerCase().includes('latest'), 'latest is not immutable');
+const PythonWheelUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'files.pythonhosted.org' &&
+      url.username === '' &&
+      url.password === ''
+    );
+  }, 'Expected an unauthenticated files.pythonhosted.org HTTPS wheel URL');
 
 export const ImageBuildConfigSchema = z
   .object({
@@ -31,6 +43,20 @@ export const ImageBuildConfigSchema = z
           .object({
             version: ExactVersionSchema,
             linuxX64Sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+          })
+          .strict(),
+        antiSlop: z
+          .object({
+            semgrep: z
+              .object({
+                version: ExactVersionSchema,
+                linuxX64WheelUrl: PythonWheelUrlSchema,
+                linuxX64Sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+              })
+              .strict(),
+            knip: ExactVersionSchema,
+            jscpd: ExactVersionSchema,
+            eslint: ExactVersionSchema,
           })
           .strict(),
       })

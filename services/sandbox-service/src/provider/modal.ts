@@ -747,6 +747,15 @@ async function runSmoke(
       ],
       'gitleaks planted-secret probe',
     );
+    await execOrThrow(
+      sandbox,
+      [
+        'sh',
+        '-lc',
+        'set -eu; semgrep --version; knip --version; jscpd --version; eslint --version',
+      ],
+      'anti-slop toolchain probe',
+    );
 
     await probeTimeoutCleanup(sandbox, input.agentToken, 'buffered-timeout', false);
     await probeTimeoutCleanup(sandbox, input.agentToken, 'pty-timeout', true);
@@ -798,6 +807,7 @@ async function runSmoke(
         encryptedTunnel: true,
         readinessProbe: true,
         gitleaksSecretScan: true,
+        antiSlopToolchain: true,
       },
       credentialAbsence: {
         environment: true,

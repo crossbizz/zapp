@@ -103,6 +103,7 @@ export function createForgeNodeBaseRecipe(
   const sourceDirectory = '/tmp/zapp-src';
   const snapshot = config.node.debianSnapshot;
   const gitleaks = config.node.gitleaks;
+  const antiSlop = config.node.antiSlop;
 
   return ImageRecipeSchema.parse({
     imageName: 'forge-node-base',
@@ -114,7 +115,7 @@ export function createForgeNodeBaseRecipe(
           `RUN sed -i -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources && printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99snapshot`,
           'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*',
           `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
-          'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 dumb-init && rm -rf /var/lib/apt/lists/*',
+          'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 python3-venv dumb-init && rm -rf /var/lib/apt/lists/*',
           `RUN set -eux; archive=gitleaks_${gitleaks.version}_linux_x64.tar.gz; curl --fail --show-error --silent --location --output /tmp/$archive https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks.version}/$archive; printf '${gitleaks.linuxX64Sha256}  /tmp/%s\\n' "$archive" | sha256sum --check; tar -xzf /tmp/$archive -C /usr/local/bin gitleaks; chmod 0755 /usr/local/bin/gitleaks; rm -f /tmp/$archive; gitleaks version | grep -F '${gitleaks.version}'`,
           `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
         ],
@@ -126,7 +127,9 @@ export function createForgeNodeBaseRecipe(
       {
         kind: 'plain',
         commands: [
+          `RUN set -eux; wheel=/tmp/semgrep-${antiSlop.semgrep.version}.whl; curl --fail --show-error --silent --location --output "$wheel" ${antiSlop.semgrep.linuxX64WheelUrl}; printf '${antiSlop.semgrep.linuxX64Sha256}  %s\n' "$wheel" | sha256sum --check; python3 -m venv /opt/zapp/semgrep; /opt/zapp/semgrep/bin/pip install --require-hashes -r ${sourceDirectory}/infra/modal/semgrep-dependencies.txt; /opt/zapp/semgrep/bin/pip install --no-deps "$wheel"; ln -s /opt/zapp/semgrep/bin/semgrep /usr/local/bin/semgrep; semgrep --version | grep -F '${antiSlop.semgrep.version}'`,
           `RUN cd ${sourceDirectory} && pnpm install --frozen-lockfile`,
+          `RUN ln -s ${sourceDirectory}/node_modules/.bin/knip /usr/local/bin/knip && ln -s ${sourceDirectory}/node_modules/.bin/jscpd /usr/local/bin/jscpd && ln -s ${sourceDirectory}/node_modules/.bin/eslint /usr/local/bin/eslint && knip --version | grep -F '${antiSlop.knip}' && jscpd --version | grep -F '${antiSlop.jscpd}' && eslint --version | grep -F 'v${antiSlop.eslint}'`,
           `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,
           `RUN cd ${sourceDirectory} && pnpm --filter @zapp/workspace-agent deploy --prod /opt/zapp/agent && pnpm --filter @zapp/preview-proxy deploy --prod /opt/zapp/proxy`,
           'RUN test -f /opt/zapp/agent/dist/main.js && test -f /opt/zapp/proxy/dist/main.js && mkdir -p /workspace',
