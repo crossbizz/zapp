@@ -163,7 +163,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-9 Criteria traceability
 - [x] VF-10 Verifier decision engine (rejection authority)
 - [x] VF-11 Browser agent (exploratory)
-- [ ] VF-12 Accessibility gate
+- [x] VF-12 Accessibility gate
 - [ ] VF-13 Classified repair loop (hard budgets)
 - [ ] VF-14 Anti-slop detectors
 - [ ] VF-15 Evidence manifest + report renderer

@@ -1,4 +1,5 @@
 export * from './gates/registry.js';
+export * from './gates/accessibility.js';
 export * from './gates/build.js';
 export * from './gates/browser-smoke.js';
 export * from './gates/dev-server.js';

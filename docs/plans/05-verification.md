@@ -185,8 +185,8 @@ export function runBrowserAgentSession(
 **Files:** Create: `src/gates/accessibility.ts`
 **Effort:** S
 
-- [ ] Binding behavior: axe-core scan on critical routes (spec-flagged), threshold: zero `critical` violations for Verified+ (serious+ reported as warnings) — evidence: per-route violation JSON artifact.
-- [ ] Commit: `feat(verification-engine): accessibility scan gate`
+- [x] Binding behavior: axe-core scan on critical routes (spec-flagged), threshold: zero `critical` violations for Verified+ (serious+ reported as warnings) — evidence: per-route violation JSON artifact.
+- [x] Commit: `feat(verification-engine): accessibility scan gate`
 
 ### Task VF-13 [M3]: Repair loop
 
@@ -251,3 +251,4 @@ export function runBrowserAgentSession(
 - 2026-08-10 VF-10 done — Added exact-commit independent gate execution, browser-only criterion evidence, three-way decisions, rejection authority, keyed Temporal retry identity, and atomic tenant-scoped result/task/event persistence; the single capped review found six Important issues and all were fixed; package gates passed with no provider run prescribed.
 - 2026-08-10 VF-10 done — Repaired the cold-CI integration harness after run 31422172254 exposed an unmigrated shared database: the verifier now creates and migrates an isolated `_vf10_test` database, allows cold migrations 30 seconds, and preserves the original migration error instead of masking it during cleanup.
 - 2026-08-10 VF-11 done — Added typed Playwright exploration through the verifier model-gateway role, strict flow-local evidence findings, and hard 15-minute flow budgets; the single capped review found and fixed cross-flow driver-state leakage and unbounded evidence-sink waits, and no real-provider run was prescribed.
+- 2026-08-10 VF-12 done — Added explicit spec-critical route axe-core scans with Verified+ zero-critical enforcement and redacted per-route violation evidence; the single capped review found and fixed cross-origin redirect containment, package gates and root lint/typecheck passed, and no real-provider run was prescribed.
