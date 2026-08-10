@@ -165,7 +165,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-11 Browser agent (exploratory)
 - [x] VF-12 Accessibility gate
 - [x] VF-13 Classified repair loop (hard budgets)
-- [ ] VF-14 Anti-slop detectors
+- [x] VF-14 Anti-slop detectors
 - [ ] VF-15 Evidence manifest + report renderer
 - [ ] VF-16 Dependency + migration gates
 - [ ] AR-16 specification-engine (interview + spec)
