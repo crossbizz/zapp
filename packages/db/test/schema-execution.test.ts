@@ -23,7 +23,7 @@ import {
 
 /** PRD §23.4 pinned column by column; see `schema-projects.test.ts` for the convention. */
 describe('execution and evidence (PRD §23.4)', () => {
-  it('gives workspaces exactly the PRD columns, in order', () => {
+  it('gives workspaces the PRD columns plus durable WS-13 runtime state, in order', () => {
     expect(columnNames(workspaces)).toEqual([
       'id',
       'organization_id',
@@ -33,6 +33,14 @@ describe('execution and evidence (PRD §23.4)', () => {
       'provider_workspace_id',
       'status',
       'resource_profile',
+      'run_id',
+      'task_id',
+      'purpose',
+      'environment',
+      'image_tag',
+      'preview_monitor_enabled',
+      'preview_monitor_owner_id',
+      'preview_monitor_lease_expires_at',
       'snapshot_ref',
       'created_at',
       'last_active_at',
@@ -148,7 +156,11 @@ describe('execution and evidence (PRD §23.4)', () => {
   });
 
   it('indexes the reaper, the timeline and the evidence lookups', () => {
-    expect(indexNames(workspaces)).toEqual(['workspaces_org_status_idx', 'workspaces_project_idx']);
+    expect(indexNames(workspaces)).toEqual([
+      'workspaces_org_status_idx',
+      'workspaces_project_idx',
+      'workspaces_preview_monitor_idx',
+    ]);
     expect(indexNames(artifacts)).toEqual([
       'artifacts_project_created_at_idx',
       'artifacts_run_idx',
@@ -159,7 +171,12 @@ describe('execution and evidence (PRD §23.4)', () => {
   });
 
   it('constrains the workspace lifecycle to PRD §18.9, in the database', () => {
-    expect(checkNames(workspaces)).toEqual(['workspaces_status_check']);
+    expect(checkNames(workspaces)).toEqual([
+      'workspaces_status_check',
+      'workspaces_attachment_complete_check',
+      'workspaces_preview_monitor_lease_check',
+      'workspaces_preview_monitor_disabled_check',
+    ]);
     expect(checkExpression(workspaces, 'workspaces_status_check')).toBe(
       "status in ('requested', 'provisioning', 'started', 'ready', 'active', 'checkpointing', 'idle', 'terminated')",
     );

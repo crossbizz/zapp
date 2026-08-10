@@ -292,8 +292,19 @@ function canonical(value: unknown): string {
 
 /** Method, path and body for the Redis replay record; durable consumers key it first. */
 function fingerprintOf(request: FastifyRequest): string {
+  const requestBody: unknown = request.body;
+  const body =
+    request.routeOptions.config.idempotencyFingerprint ===
+      'event-body-without-occurred-at' && Array.isArray(requestBody)
+      ? requestBody.map((value: unknown) => {
+          if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+          return Object.fromEntries(
+            Object.entries(value).filter(([field]) => field !== 'occurredAt'),
+          );
+        })
+      : requestBody;
   return createHash('sha256')
-    .update(`${request.method}\n${request.url}\n${canonical(request.body)}`)
+    .update(`${request.method}\n${request.url}\n${canonical(body)}`)
     .digest('hex');
 }
 
@@ -385,6 +396,8 @@ declare module 'fastify' {
      * so replay protects nothing and the stored copy is pure exposure.
      */
     idempotency?: 'exempt';
+    /** Route-owned replay identity for append-only events whose first timestamp wins. */
+    idempotencyFingerprint?: 'event-body-without-occurred-at';
   }
 }
 

@@ -102,6 +102,22 @@ const NON_PRD_COLUMNS = new Map([
     'repositories.provisioned_at',
     'null while only the repository *record* exists, set when the internal Git instance confirms; lets plan 06 GIT-2 tell a row it must still provision from one it must not create twice (plan 02 CP-6 review)',
   ],
+  ...[
+    'run_id',
+    'task_id',
+    'purpose',
+    'environment',
+    'image_tag',
+    'preview_monitor_enabled',
+    'preview_monitor_owner_id',
+    'preview_monitor_lease_expires_at',
+  ].map(
+    (column) =>
+      [
+        `workspaces.${column}`,
+        'durable Modal attachment attribution and single-owner preview failure observation required by plan 03 WS-13',
+      ] as const,
+  ),
   [
     'agent_events.project_id',
     'PRD §14.4 replay contract carries projectId; CP-13 persists it for tenant/project validation and complete event replay although conceptual §23.4 omits it',

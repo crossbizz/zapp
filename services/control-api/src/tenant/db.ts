@@ -1,6 +1,7 @@
 import {
   type AppType,
   type AgentEvent,
+  idSchema,
   type ModelIdentifier,
   newId,
   type ResourceProfile,
@@ -56,7 +57,7 @@ import {
   type Workspace,
   type VerificationResult,
 } from '@zapp/db';
-import { and, asc, desc, eq, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
@@ -88,6 +89,16 @@ const PrototypeAssumptionsPayloadSchema = z
       .max(100),
   })
   .strict();
+
+const TerminalPreviewFailurePayloadSchema = z
+  .object({
+    workspaceId: idSchema('ws'),
+    code: z.literal('restart_limit_exceeded'),
+    monitorLeaseToken: z.string().trim().min(1).max(256),
+  })
+  .strict();
+
+class StalePreviewMonitorError extends Error {}
 
 /**
  * The only database handle a route handler is ever given.
@@ -514,6 +525,7 @@ export interface IngestEventBatchInput {
 export type IngestEventBatchResult =
   | { readonly kind: 'stored'; readonly events: readonly AgentEventRow[] }
   | { readonly kind: 'run_not_found' }
+  | { readonly kind: 'stale_preview_monitor' }
   | { readonly kind: 'payload_too_large' };
 
 export interface TenantEventRepository extends EventRepository {
@@ -648,7 +660,8 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       events: {
         ...base.events,
         async ingest(input: IngestEventBatchInput): Promise<IngestEventBatchResult> {
-          return await db.transaction(async (tx) => {
+          try {
+            return await db.transaction(async (tx) => {
             // The route rejects oversized serialized JSON cheaply. This exact
             // PostgreSQL check is still required: jsonb's datum overhead can
             // exceed the CHECK limit even when JSON.stringify is 65,536 bytes.
@@ -704,6 +717,43 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               }
             }
 
+            const persistedPayloads = new Map<NewAgentEvent, Record<string, unknown>>();
+            for (const event of input.events) {
+              if (
+                event.type !== 'preview.failed' ||
+                event.payload['code'] !== 'restart_limit_exceeded'
+              ) {
+                persistedPayloads.set(event, event.payload);
+                continue;
+              }
+
+              const terminal = TerminalPreviewFailurePayloadSchema.safeParse(event.payload);
+              if (!terminal.success) throw new StalePreviewMonitorError();
+              const [workspace] = await tx
+                .update(workspaces)
+                .set({
+                  previewMonitorEnabled: false,
+                  previewMonitorOwnerId: null,
+                  previewMonitorLeaseExpiresAt: null,
+                })
+                .where(
+                  scoped(
+                    workspaces.organizationId,
+                    eq(workspaces.id, terminal.data.workspaceId),
+                    eq(workspaces.projectId, input.projectId),
+                    eq(workspaces.previewMonitorEnabled, true),
+                    eq(workspaces.previewMonitorOwnerId, terminal.data.monitorLeaseToken),
+                    gt(workspaces.previewMonitorLeaseExpiresAt, sql`now()`),
+                  ),
+                )
+                .returning({ id: workspaces.id });
+              if (workspace === undefined) throw new StalePreviewMonitorError();
+              persistedPayloads.set(event, {
+                workspaceId: terminal.data.workspaceId,
+                code: terminal.data.code,
+              });
+            }
+
             const pending: (typeof agentEvents.$inferInsert)[] = [];
             for (const event of input.events) {
               pending.push({
@@ -717,7 +767,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 agentId: event.agentId ?? null,
                 type: event.type,
                 visibility: event.visibility,
-                payloadJson: event.payload,
+                payloadJson: persistedPayloads.get(event) ?? event.payload,
                 occurredAt: new Date(event.occurredAt),
               });
             }
@@ -747,7 +797,13 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await tx.execute(sql`select pg_notify('agent_events', ${input.runId})`);
             await input.audit(tx, inserted);
             return { kind: 'stored', events: inserted };
-          });
+            });
+          } catch (error) {
+            if (error instanceof StalePreviewMonitorError) {
+              return { kind: 'stale_preview_monitor' };
+            }
+            throw error;
+          }
         },
       },
 
@@ -1421,14 +1477,14 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         },
         async create(input) {
           return await db.transaction(async (tx) => {
-            const provisional: Workspace = {
+            const provisional = {
               id: input.id,
               organizationId: orgId,
               projectId: input.projectId,
               branchId: input.branchId,
               provider: 'modal',
               providerWorkspaceId: null,
-              status: 'requested',
+              status: 'requested' as const,
               resourceProfile: input.resourceProfile,
               snapshotRef: null,
               createdAt: input.now,

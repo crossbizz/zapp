@@ -135,11 +135,14 @@ async function portIsReady(port: number): Promise<boolean> {
 
 export async function getHealth(
   devServer?: number | DevServerEvidence | null,
+  devServerFailed = false,
 ): Promise<HealthResponse> {
   if (devServer === undefined || devServer === null) {
     return HealthResponseSchema.parse({
-      ok: true,
-      details: 'workspace-agent ready',
+      ok: !devServerFailed,
+      details: devServerFailed
+        ? 'workspace-agent ready; dev server failed'
+        : 'workspace-agent ready',
       devServer: null,
     });
   }

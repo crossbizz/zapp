@@ -130,6 +130,30 @@ const DevServerResponseSchema = z
     ownership: z.literal('process_group'),
   })
   .strict();
+const DevServerLogsQuerySchema = z
+  .object({
+    after: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().positive().max(1_000).default(100),
+  })
+  .strict();
+const DevServerLogsResponseSchema = z
+  .object({
+    entries: z.array(
+      z
+        .object({
+          cursor: z.number().int().positive(),
+          at: z.string().datetime(),
+          stream: z.enum(['stdout', 'stderr']),
+          message: z.string(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    state: z.enum(['idle', 'starting', 'ready', 'restarting', 'failed']),
+    failureId: z.string().min(1).nullable(),
+  })
+  .strict();
 const IdempotencyKeySchema = z
   .string()
   .min(1)
@@ -791,6 +815,12 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     });
   }
 
+  app.get('/dev-server/logs', (request) => {
+    EmptyBodySchema.parse(request.body);
+    const { after, limit } = DevServerLogsQuerySchema.parse(request.query);
+    return DevServerLogsResponseSchema.parse(devServerSupervisor.logs(after, limit));
+  });
+
   app.post('/git', async (request) => {
     EmptyQuerySchema.parse(request.query);
     const gitRequest = GitRequestSchema.parse(request.body);
@@ -801,7 +831,10 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     EmptyQuerySchema.parse(request.query);
     EmptyBodySchema.parse(request.body);
     const evidence = await devServerSupervisor.evidence();
-    return HealthResponseSchema.parse(await getHealth(evidence ?? parsed.devServerPort));
+    const failed = devServerSupervisor.status() === 'failed';
+    return HealthResponseSchema.parse(
+      await getHealth(evidence ?? (failed ? null : parsed.devServerPort), failed),
+    );
   });
 
   app.get('/metrics', async (request) => {

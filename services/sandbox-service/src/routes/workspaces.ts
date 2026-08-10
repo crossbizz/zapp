@@ -115,12 +115,34 @@ export interface WorkspaceRowBoundary {
     organizationId: string,
     projectId: string,
   ): Promise<WorkspaceAttachmentRecord | undefined>;
+  /** Durable active attachments used to restore lifecycle observation after restart. */
+  listAttachments(): Promise<readonly WorkspaceAttachmentRecord[]>;
   transition(
     workspaceId: string,
     status: WorkspaceStatus,
     patch?: { readonly providerWorkspaceId?: string; readonly terminatedAt?: Date },
     expectedStatus?: WorkspaceStatus,
   ): Promise<WorkspaceLifecycleRow>;
+}
+
+/** Durable single-owner observation for a ready workspace's preview supervisor. */
+export interface PreviewMonitorCoordinator {
+  /** Enables observation and claims it when no unexpired replica owns it. */
+  activateAndClaim(
+    workspaceId: string,
+    ownerId: string,
+    leaseMs: number,
+  ): Promise<string | undefined>;
+  /** Claims an already-enabled monitor during process recovery. */
+  claim(workspaceId: string, ownerId: string, leaseMs: number): Promise<string | undefined>;
+  /** Renewal fails after durable termination/revocation or ownership loss. */
+  renew(workspaceId: string, leaseToken: string, leaseMs: number): Promise<boolean>;
+  /** Disables a terminal monitor only while the same fenced lease still owns it. */
+  complete(workspaceId: string, leaseToken: string): Promise<boolean>;
+  /** Disables observation for every replica. */
+  revoke(workspaceId: string): Promise<void>;
+  /** Relinquishes this replica's lease without disabling future recovery. */
+  release(workspaceId: string, leaseToken: string): Promise<void>;
 }
 
 export interface WorkspaceLifecycleProvider {
@@ -165,6 +187,29 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
   renameFile(providerWorkspaceId: string, input: unknown, idempotencyKey?: string): Promise<void>;
   startDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey?: string): Promise<z.infer<typeof DevServerResponseSchema>>;
   restartDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey?: string): Promise<z.infer<typeof DevServerResponseSchema>>;
+  readDevServerLogs(
+    providerWorkspaceId: string,
+    query: z.infer<typeof DevServerLogsQuerySchema>,
+  ): Promise<z.infer<typeof DevServerLogsResponseSchema>>;
+}
+
+export const PreviewLifecycleEventSchema = z
+  .object({
+    eventKey: z.string().min(1).max(512),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    runId: idSchema('run'),
+    taskId: idSchema('task').optional(),
+    occurredAt: z.string().datetime(),
+    type: z.enum(['preview.starting', 'preview.ready', 'preview.failed']),
+    visibility: z.literal('user'),
+    payload: z.record(z.unknown()),
+  })
+  .strict();
+
+export interface PreviewLifecycleEventPort {
+  /** CP-13 consumes eventKey as the durable idempotency identity. */
+  emit(event: z.infer<typeof PreviewLifecycleEventSchema>): Promise<void>;
 }
 
 const CreateWorkspaceBodySchema = z
@@ -327,6 +372,30 @@ const DevServerResponseSchema = z
     ownership: z.enum(['process', 'process_group']),
   })
   .strict();
+const DevServerLogsQuerySchema = z
+  .object({
+    after: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().positive().max(1_000).default(100),
+  })
+  .strict();
+const DevServerLogsResponseSchema = z
+  .object({
+    entries: z.array(
+      z
+        .object({
+          cursor: z.number().int().positive(),
+          at: z.string().datetime(),
+          stream: z.enum(['stdout', 'stderr']),
+          message: z.string(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    state: z.enum(['idle', 'starting', 'ready', 'restarting', 'failed']),
+    failureId: z.string().min(1).nullable(),
+  })
+  .strict();
 
 function requireIdempotencyKey(header: string | string[] | undefined, operationKey: string): void {
   if (typeof header !== 'string' || !OperationKeySchema.safeParse(header).success) {
@@ -381,9 +450,41 @@ export function registerWorkspaceRoutes(
     readonly workspaceGit: WorkspaceGitService;
     readonly secrets: ScopedSecretInjector;
     readonly networkPolicies: NetworkPolicyRecorder;
+    readonly events: PreviewLifecycleEventPort;
+    readonly previewMonitors: PreviewMonitorCoordinator;
+    readonly previewMonitorOwnerId: string;
+    readonly previewMonitorLeaseMs?: number;
+    readonly previewMonitorStandbyPollIntervalMs?: number;
+    readonly previewFailurePollIntervalMs?: number;
     readonly now: () => Date;
   },
 ): void {
+  const failureMonitors = new Map<
+    string,
+    { readonly controller: AbortController; readonly leaseToken: string }
+  >();
+  const failureMonitorClaims = new Set<string>();
+  const acquisitionController = new AbortController();
+  let acquisitionLoop: Promise<void> | undefined;
+  const lifecycle = { closing: false };
+  const isClosing = (): boolean => lifecycle.closing;
+  const previewMonitorLeaseMs = deps.previewMonitorLeaseMs ?? 5_000;
+  const previewMonitorStandbyPollIntervalMs =
+    deps.previewMonitorStandbyPollIntervalMs ?? Math.max(250, previewMonitorLeaseMs / 2);
+  const waitFor = (milliseconds: number, signal: AbortSignal): Promise<boolean> =>
+    new Promise((resolve) => {
+      const onAbort = (): void => {
+        clearTimeout(timeout);
+        resolve(true);
+      };
+      const timeout = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(false);
+      }, milliseconds);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  const waitForPoll = (signal: AbortSignal): Promise<boolean> =>
+    waitFor(deps.previewFailurePollIntervalMs ?? 1_000, signal);
   const resolveWorkspace = async (
     workspaceId: string,
     request: FastifyRequest,
@@ -406,6 +507,205 @@ export function registerWorkspaceRoutes(
     const row = await resolveWorkspace(workspaceId, request);
     return z.string().min(1).parse(row.providerWorkspaceId);
   };
+  const resolveAttachment = async (
+    workspaceId: string,
+    request: FastifyRequest,
+  ): Promise<WorkspaceAttachmentRecord> => {
+    const scope = readWorkspaceScope(request);
+    const record = await deps.rows.getAttachment(
+      workspaceId,
+      scope.organizationId,
+      scope.projectId,
+    );
+    if (
+      record === undefined ||
+      record.row.providerWorkspaceId === null ||
+      record.row.status === 'terminated'
+    ) {
+      throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+    }
+    return record;
+  };
+  const emitPreview = (
+    record: WorkspaceAttachmentRecord,
+    operationKey: string,
+    action: 'start' | 'restart',
+    type: 'preview.starting' | 'preview.ready' | 'preview.failed',
+    payload: Record<string, unknown> = {},
+  ): Promise<void> =>
+    deps.events.emit(
+      PreviewLifecycleEventSchema.parse({
+        eventKey: `ws13:${operationKey}:${action}:${type}`,
+        organizationId: record.row.organizationId,
+        projectId: record.row.projectId,
+        runId: record.attachment.requiredTags.run_id,
+        taskId: record.attachment.requiredTags.task_id,
+        occurredAt: deps.now().toISOString(),
+        type,
+        visibility: 'user',
+        payload: { workspaceId: record.row.id, action, ...payload },
+      }),
+    );
+  const emitTerminalPreviewFailure = async (
+    record: WorkspaceAttachmentRecord,
+    failureId: string,
+    monitorLeaseToken: string,
+  ): Promise<void> => {
+    await deps.events.emit(
+      PreviewLifecycleEventSchema.parse({
+        eventKey: `ws13:failure:${record.row.id}:${failureId}`,
+        organizationId: record.row.organizationId,
+        projectId: record.row.projectId,
+        runId: record.attachment.requiredTags.run_id,
+        taskId: record.attachment.requiredTags.task_id,
+        occurredAt: deps.now().toISOString(),
+        type: 'preview.failed',
+        visibility: 'user',
+        payload: {
+          workspaceId: record.row.id,
+          code: 'restart_limit_exceeded',
+          monitorLeaseToken,
+        },
+      }),
+    );
+  };
+  const monitorTerminalPreviewFailure = async (
+    record: WorkspaceAttachmentRecord,
+    providerWorkspaceId: string,
+    activate: boolean,
+  ): Promise<void> => {
+    const existing = failureMonitors.get(record.row.id);
+    if (activate && existing !== undefined) {
+      failureMonitors.delete(record.row.id);
+      existing.controller.abort();
+      await deps.previewMonitors.release(record.row.id, existing.leaseToken);
+    } else if (existing !== undefined) {
+      return;
+    }
+    if (isClosing() || failureMonitorClaims.has(record.row.id)) return;
+    failureMonitorClaims.add(record.row.id);
+    let monitor:
+      | { readonly controller: AbortController; readonly leaseToken: string }
+      | undefined;
+    try {
+      const leaseToken = await (activate
+        ? deps.previewMonitors.activateAndClaim(
+            record.row.id,
+            deps.previewMonitorOwnerId,
+            previewMonitorLeaseMs,
+          )
+        : deps.previewMonitors.claim(
+            record.row.id,
+            deps.previewMonitorOwnerId,
+            previewMonitorLeaseMs,
+          ));
+      if (leaseToken === undefined) return;
+      if (isClosing()) {
+        await deps.previewMonitors.release(record.row.id, leaseToken);
+        return;
+      }
+      monitor = { controller: new AbortController(), leaseToken };
+      failureMonitors.set(record.row.id, monitor);
+    } finally {
+      failureMonitorClaims.delete(record.row.id);
+    }
+    const { controller, leaseToken } = monitor;
+    void (async () => {
+      let cursor = 0;
+      while (!controller.signal.aborted) {
+        if (await waitForPoll(controller.signal)) return;
+        try {
+          if (
+            !(await deps.previewMonitors.renew(
+              record.row.id,
+              leaseToken,
+              previewMonitorLeaseMs,
+            ))
+          ) {
+            return;
+          }
+          const page = DevServerLogsResponseSchema.parse(
+            await deps.provider.readDevServerLogs(providerWorkspaceId, {
+              after: cursor,
+              limit: 100,
+            }),
+          );
+          cursor = page.nextCursor;
+          if (
+            !(await deps.previewMonitors.renew(
+              record.row.id,
+              leaseToken,
+              previewMonitorLeaseMs,
+            ))
+          ) {
+            return;
+          }
+          if (page.state === 'failed' && page.failureId !== null) {
+            await emitTerminalPreviewFailure(record, page.failureId, leaseToken);
+            await deps.previewMonitors.complete(record.row.id, leaseToken);
+            return;
+          }
+        } catch {
+          // The agent keeps the terminal failure id. A transient provider or
+          // CP-13 failure is retried with the same stable event key.
+        }
+      }
+    })().finally(() => {
+      if (failureMonitors.get(record.row.id) === monitor) {
+        failureMonitors.delete(record.row.id);
+        void deps.previewMonitors.release(record.row.id, leaseToken);
+      }
+    });
+  };
+  const stopFailureMonitor = (workspaceId: string): void => {
+    failureMonitors.get(workspaceId)?.controller.abort();
+    failureMonitors.delete(workspaceId);
+  };
+  const acquireEnabledFailureMonitors = async (): Promise<void> => {
+    for (const record of await deps.rows.listAttachments()) {
+      if (
+        record.row.providerWorkspaceId !== null &&
+        record.row.status === 'ready' &&
+        !failureMonitors.has(record.row.id)
+      ) {
+        await monitorTerminalPreviewFailure(record, record.row.providerWorkspaceId, false);
+      }
+    }
+  };
+  app.addHook('onReady', async () => {
+    await acquireEnabledFailureMonitors();
+    acquisitionLoop = (async () => {
+      while (!acquisitionController.signal.aborted) {
+        if (
+          await waitFor(
+            previewMonitorStandbyPollIntervalMs,
+            acquisitionController.signal,
+          )
+        ) {
+          return;
+        }
+        try {
+          await acquireEnabledFailureMonitors();
+        } catch {
+          // Durable lease discovery is retried; an individual outage cannot
+          // permanently strand every already-running standby replica.
+        }
+      }
+    })();
+  });
+  app.addHook('onClose', async () => {
+    lifecycle.closing = true;
+    acquisitionController.abort();
+    await acquisitionLoop;
+    const monitors = [...failureMonitors.entries()];
+    for (const { controller } of failureMonitors.values()) controller.abort();
+    failureMonitors.clear();
+    await Promise.all(
+      monitors.map(async ([workspaceId, { leaseToken }]) => {
+        await deps.previewMonitors.release(workspaceId, leaseToken);
+      }),
+    );
+  });
   app.post(
     '/internal/workspaces',
     {
@@ -701,7 +1001,11 @@ export function registerWorkspaceRoutes(
       if (row === undefined) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
-      if (row.status === 'terminated') return { workspace: row };
+      if (row.status === 'terminated') {
+        await deps.previewMonitors.revoke(row.id);
+        stopFailureMonitor(row.id);
+        return { workspace: row };
+      }
       if (row.providerWorkspaceId !== null) {
         await deps.provider.terminateWorkspace(row.providerWorkspaceId);
         if ((await deps.provider.getStatus(row.providerWorkspaceId)) !== 'terminated') {
@@ -710,6 +1014,8 @@ export function registerWorkspaceRoutes(
           });
         }
       }
+      await deps.previewMonitors.revoke(row.id);
+      stopFailureMonitor(row.id);
       const terminated = await deps.rows.transition(row.id, 'terminated', {
         terminatedAt: deps.now(),
       });
@@ -987,16 +1293,61 @@ export function registerWorkspaceRoutes(
       async (request: FastifyRequest) => {
         const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
         const { contract } = DevServerBodySchema.parse(request.body);
-        const providerWorkspaceId = await resolveProviderWorkspaceId(workspaceId, request);
         const key = readIdempotencyKey(request.headers['idempotency-key']);
-        return DevServerResponseSchema.parse(
-          await (action === 'start'
-            ? deps.provider.startDevServer(providerWorkspaceId, contract, key)
-            : deps.provider.restartDevServer(providerWorkspaceId, contract, key)),
-        );
+        const record = await resolveAttachment(workspaceId, request);
+        const providerWorkspaceId = z.string().min(1).parse(record.row.providerWorkspaceId);
+        await emitPreview(record, key, action, 'preview.starting');
+        let response: z.infer<typeof DevServerResponseSchema>;
+        try {
+          response = DevServerResponseSchema.parse(
+            await (action === 'start'
+              ? deps.provider.startDevServer(providerWorkspaceId, contract, key)
+              : deps.provider.restartDevServer(providerWorkspaceId, contract, key)),
+          );
+        } catch (error) {
+          try {
+            await emitPreview(record, key, action, 'preview.failed', {
+              code: 'dev_server_operation_failed',
+            });
+          } catch (eventError) {
+            throw new AggregateError(
+              [error, eventError],
+              'Dev server operation and preview failure event both failed',
+            );
+          }
+          throw error;
+        }
+        await monitorTerminalPreviewFailure(record, providerWorkspaceId, true);
+        // Delivery failure is not a dev-server failure. The caller retries the
+        // same operation key; CP-13 and the agent both replay idempotently.
+        await emitPreview(record, key, action, 'preview.ready', {
+          port: response.port,
+          supervisorId: response.supervisorId,
+        });
+        return response;
       },
     );
   }
+
+  app.get(
+    '/internal/workspaces/:workspaceId/dev-server/logs',
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: DevServerLogsQuerySchema },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const query = DevServerLogsQuerySchema.parse(request.query);
+      const record = await resolveAttachment(workspaceId, request);
+      const response = DevServerLogsResponseSchema.parse(
+        await deps.provider.readDevServerLogs(
+          z.string().min(1).parse(record.row.providerWorkspaceId),
+          query,
+        ),
+      );
+      return response;
+    },
+  );
 }
 
 export type { WorkspacePurpose };

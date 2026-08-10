@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
@@ -21,12 +23,18 @@ import { BranchLockedError } from './provider/volumes.js';
 import {
   registerWorkspaceRoutes,
   type WorkspaceAgentProvider,
+  type PreviewLifecycleEventPort,
   type WorkspaceRowBoundary,
+  type PreviewMonitorCoordinator,
 } from './routes/workspaces.js';
 import type { NetworkPolicyRecorder } from './network/profiles.js';
 import { createFetchPreviewTransport, type PreviewTransport } from './preview/transport.js';
 import type { ScopedSecretInjector } from './secrets/injector.js';
 import { registerPreviewRoutes } from './routes/preview.js';
+import {
+  createControlPlanePreviewEventClient,
+  type ControlPlanePreviewEventClientOptions,
+} from './events/client.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -55,10 +63,15 @@ export type SandboxServiceApp = FastifyInstance;
 interface BuildAppCommonOptions {
   readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
+  readonly previewMonitors: PreviewMonitorCoordinator;
+  readonly previewMonitorOwnerId?: string;
+  readonly previewMonitorLeaseMs?: number;
+  readonly previewMonitorStandbyPollIntervalMs?: number;
   readonly serviceTokens: SandboxServiceTokenVerifier;
   readonly secrets: ScopedSecretInjector;
   readonly networkPolicies: NetworkPolicyRecorder;
   readonly previewTransport?: PreviewTransport;
+  readonly previewFailurePollIntervalMs?: number;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
 }
@@ -67,6 +80,16 @@ export type BuildAppOptions = BuildAppCommonOptions &
   (
     | { readonly workspaceGit: WorkspaceGitService; readonly gitService?: never }
     | { readonly workspaceGit?: never; readonly gitService: GitTokenClientOptions }
+  ) &
+  (
+    | {
+        readonly events: PreviewLifecycleEventPort;
+        readonly controlPlaneEvents?: never;
+      }
+    | {
+        readonly events?: never;
+        readonly controlPlaneEvents: ControlPlanePreviewEventClientOptions;
+      }
   );
 
 function authenticationError() {
@@ -81,6 +104,8 @@ export function buildApp(options: BuildAppOptions) {
       tokens: createGitTokenClient(options.gitService),
       commands: options.provider,
     });
+  const events =
+    options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
   const app = Fastify({
     logger: options.logger ?? false,
     requestIdHeader: false,
@@ -154,6 +179,21 @@ export function buildApp(options: BuildAppOptions) {
     workspaceGit,
     secrets: options.secrets,
     networkPolicies: options.networkPolicies,
+    events,
+    previewMonitors: options.previewMonitors,
+    previewMonitorOwnerId: options.previewMonitorOwnerId ?? randomUUID(),
+    ...(options.previewMonitorLeaseMs === undefined
+      ? {}
+      : { previewMonitorLeaseMs: options.previewMonitorLeaseMs }),
+    ...(options.previewMonitorStandbyPollIntervalMs === undefined
+      ? {}
+      : {
+          previewMonitorStandbyPollIntervalMs:
+            options.previewMonitorStandbyPollIntervalMs,
+        }),
+    ...(options.previewFailurePollIntervalMs === undefined
+      ? {}
+      : { previewFailurePollIntervalMs: options.previewFailurePollIntervalMs }),
     now,
   });
   const previewTransport =

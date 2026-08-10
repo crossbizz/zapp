@@ -110,7 +110,15 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] VF-3 Capability scan pipeline
 - [x] VF-4 Gate registry + §24.2 policy matrix
 - [x] VF-5 Deterministic gates (build/type/lint/unit/secret/dev-server)
-- [ ] WS-13 Dev-server supervisor + logs
+- [x] WS-13 Dev-server supervisor + logs
+- [x] WS-13-FIX-1 Durable preview replay and monitor recovery
+- [x] WS-13-FIX-2 Preview monitor lease handoff and terminal closure
+- [x] WS-13-FIX-3 Transactionally fenced terminal event delivery
+- [x] WS-13-FIX-4 Atomic terminal batch rollback
+- [x] WS-13-FIX-5 Bounded immutable-image acceptance
+- [x] WS-13-FIX-6 Collision-safe immutable-image acceptance
+- [x] WS-13-FIX-7 Abort-settled Modal execution streams
+- [x] WS-13-FIX-8 Cancellation-settled SSE replay gate
 - [ ] WS-14 Nightly Modal E2E suite
 - [ ] WS-15 Runaway-compute governor
 - [ ] WEB-7 Preview panel + states + capture drawer

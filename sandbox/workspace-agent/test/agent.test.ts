@@ -24,7 +24,7 @@ import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { execa } from 'execa';
 import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { CgroupV2Containment } from '../src/containment/cgroup.js';
 import { consumeOutputChunks } from '../src/exec.js';
 import type { Containment, ExecutionContainment } from '../src/containment/types.js';
@@ -904,6 +904,170 @@ describe('workspace-agent RPC daemon', () => {
     expect(second.supervisorId).not.toBe(first.supervisorId);
     await waitForProcessExit(first.pid);
   });
+
+  test('WS-13 streams bounded dev-server logs strictly after a cursor', async () => {
+    const port = await availablePort();
+    const script = [
+      `process.stdout.write(${JSON.stringify('first-out\n')});`,
+      `process.stderr.write(${JSON.stringify('first-error\n')});`,
+      "process.stdout.write(Buffer.alloc(11*1024*1024,120));",
+      `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1');`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const contract = executionContract(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      port,
+    );
+
+    const started = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(),
+      payload: { contract },
+    });
+    expect(started.statusCode).toBe(200);
+
+    const firstPage = await requireApp().inject({
+      method: 'GET',
+      url: '/dev-server/logs?after=0&limit=1000',
+      headers: authorization(),
+    });
+    expect(firstPage.statusCode).toBe(200);
+    const body = firstPage.json<{
+      entries: Array<{
+        cursor: number;
+        at: string;
+        stream: 'stdout' | 'stderr';
+        message: string;
+      }>;
+      nextCursor: number;
+      truncated: boolean;
+      state: string;
+    }>();
+    expect(body.state).toBe('ready');
+    expect(body.truncated).toBe(true);
+    expect(body.entries.length).toBeGreaterThan(0);
+    expect(body.entries.every((entry, index, entries) => index === 0 || entry.cursor > (entries[index - 1]?.cursor ?? -1))).toBe(true);
+    expect(
+      body.entries.reduce((total, entry) => total + Buffer.byteLength(entry.message), 0),
+    ).toBeLessThanOrEqual(10 * 1_024 * 1_024);
+
+    const after = body.entries.at(-2)?.cursor ?? 0;
+    const secondPage = await requireApp().inject({
+      method: 'GET',
+      url: `/dev-server/logs?after=${String(after)}&limit=1000`,
+      headers: authorization(),
+    });
+    expect(secondPage.statusCode).toBe(200);
+    expect(
+      secondPage
+        .json<{ entries: Array<{ cursor: number }> }>()
+        .entries.every((entry) => entry.cursor > after),
+    ).toBe(true);
+  }, 15_000);
+
+  test('WS-13 restarts three crashes in five minutes then opens the circuit', async () => {
+    const port = await availablePort();
+    const countPath = join(workspaceRoot, 'ws13-crash-count');
+    const script = [
+      "const fs=require('node:fs');",
+      `const path=${JSON.stringify(countPath)};`,
+      "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
+      "fs.writeFileSync(path,String(count));",
+      `const server=require('node:http').createServer((_request,response)=>response.end('ready'));`,
+      `server.listen(${String(port)},'127.0.0.1',()=>{console.log('boot-'+String(count));setTimeout(()=>server.close(()=>process.exit(1)),750);});`,
+    ].join('');
+    const contract = executionContract(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      port,
+    );
+
+    const started = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(),
+      payload: { contract },
+    });
+    expect(started.statusCode).toBe(200);
+
+    const deadline = Date.now() + 8_000;
+    let state = '';
+    let failureId: string | null = null;
+    while (Date.now() < deadline) {
+      const logs = await requireApp().inject({
+        method: 'GET',
+        url: '/dev-server/logs?after=0&limit=100',
+        headers: authorization(),
+      });
+      if (logs.statusCode === 200) {
+        const body = logs.json<{ state: string; failureId: string | null }>();
+        state = body.state;
+        failureId = body.failureId;
+        if (state === 'failed') break;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25));
+    }
+
+    expect(state).toBe('failed');
+    expect(failureId).toMatch(/^devfail_/u);
+    const repeatedFailure = await requireApp().inject({
+      method: 'GET',
+      url: '/dev-server/logs?after=0&limit=100',
+      headers: authorization(),
+    });
+    expect(repeatedFailure.json<{ failureId: string | null }>().failureId).toBe(failureId);
+    await expect(readFile(countPath, 'utf8')).resolves.toBe('4');
+    const health = await requireApp().inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: authorization(),
+    });
+    expect(health.json()).toMatchObject({
+      ok: false,
+      details: 'workspace-agent ready; dev server failed',
+      devServer: null,
+    });
+  }, 12_000);
+
+  test('WS-13 observes a child exit on the readiness response boundary', async () => {
+    const port = await availablePort();
+    const countPath = join(workspaceRoot, 'ws13-readiness-exit-count');
+    const script = [
+      "const fs=require('node:fs');",
+      `const path=${JSON.stringify(countPath)};`,
+      "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
+      "fs.writeFileSync(path,String(count));",
+      `const server=require('node:http').createServer((_request,response)=>{response.end('ready');if(count===1){server.close(()=>process.exit(1));}});`,
+      `server.listen(${String(port)},'127.0.0.1');`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const response = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(),
+      payload: {
+        contract: executionContract(
+          `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+          port,
+        ),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(async () => {
+      await expect(readFile(countPath, 'utf8')).resolves.toBe('2');
+    }, { timeout: 5_000, interval: 25 });
+    await vi.waitFor(async () => {
+      const health = await requireApp().inject({
+        method: 'GET',
+        url: '/healthz',
+        headers: authorization(),
+      });
+      expect(health.json()).toMatchObject({
+        ok: true,
+        devServer: { owned: true, httpReady: true },
+      });
+    }, { timeout: 5_000, interval: 25 });
+  }, 12_000);
 
   test('rejects an unrelated ready listener as managed dev-server readiness', async () => {
     const unrelated = createHttpServer((_request, response) => response.end('unrelated'));

@@ -6,7 +6,7 @@ import { ApiError } from '../errors.js';
 
 /** The route-specific audience prevents a token for another internal operation being reused here. */
 export const EVENTS_INGEST_AUDIENCE = 'control-api:events.ingest' as const;
-const EVENTS_INGEST_CALLERS = ['orchestrator-worker'] as const;
+const EVENTS_INGEST_CALLERS = ['orchestrator-worker', 'sandbox-service'] as const;
 const MAX_BATCH_EVENTS = 100;
 const MAX_PAYLOAD_BYTES = 65_536;
 
@@ -28,6 +28,7 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
   app.post(
     '/internal/runs/:runId/events',
     {
+      config: { idempotencyFingerprint: 'event-body-without-occurred-at' },
       // `onRequest` intentionally precedes the idempotency plugin's appended
       // preHandler, so its scope is a verified service identity rather than IP.
       onRequest: app.requireService({
@@ -95,6 +96,13 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         },
       });
       if (result.kind === 'run_not_found') throw runNotFound();
+      if (result.kind === 'stale_preview_monitor') {
+        throw new ApiError(
+          'preview_monitor_stale',
+          409,
+          'That preview monitor generation is no longer active.',
+        );
+      }
       if (result.kind === 'payload_too_large') {
         throw new ApiError(
           'payload_too_large',

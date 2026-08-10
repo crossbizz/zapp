@@ -332,10 +332,21 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       getAttachment() {
         return Promise.resolve(undefined);
       },
+      listAttachments() {
+        return Promise.resolve([]);
+      },
       transition(_workspaceId, status, patch) {
         row = { ...row, status, ...patch };
         return Promise.resolve(row);
       },
+    };
+    const previewMonitors = {
+      activateAndClaim: () => Promise.resolve('git-clone-preview-lease'),
+      claim: () => Promise.resolve(undefined),
+      renew: () => Promise.resolve(true),
+      complete: () => Promise.resolve(true),
+      revoke: () => Promise.resolve(),
+      release: () => Promise.resolve(),
     };
     const unused = () => Promise.reject(new Error('unexpected provider operation'));
     const provider: WorkspaceAgentProvider = {
@@ -376,14 +387,17 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       renameFile: unused,
       startDevServer: unused,
       restartDevServer: unused,
+      readDevServerLogs: unused,
     };
     const app = buildApp({
       provider,
       rows,
+      previewMonitors,
       secrets: createScopedSecretInjector({
         decrypt: () => Promise.reject(new Error('Unexpected secret decrypt')),
       }),
       networkPolicies: { record: () => Promise.resolve() },
+      events: { emit: () => Promise.resolve() },
       gitService: {
         baseUrl: 'http://git-service.test:4500',
         serviceTokens: { secret: 's'.repeat(32) },

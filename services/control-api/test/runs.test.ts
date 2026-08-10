@@ -868,6 +868,14 @@ describe('POST /v1/projects/:projectId/runs', () => {
       providerWorkspaceId: 'foreign-provider-workspace',
       status: 'active',
       resourceProfile: 'standard',
+      runId: null,
+      taskId: null,
+      purpose: null,
+      environment: null,
+      imageTag: null,
+      previewMonitorEnabled: false,
+      previewMonitorOwnerId: null,
+      previewMonitorLeaseExpiresAt: null,
       snapshotRef: null,
       createdAt: wired.built.now(),
       lastActiveAt: wired.built.now(),
@@ -1368,6 +1376,8 @@ describe('workspace passthrough routes', () => {
       const seeded: Workspace = {
         id: newId('ws'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
         provider: 'modal', providerWorkspaceId: `viewer-${action}`, status, resourceProfile: 'standard',
+        runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
+        previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
         snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
       };
       wired.data.workspaces.push(seeded);
@@ -1407,6 +1417,8 @@ describe('workspace passthrough routes', () => {
     const foreignWorkspace: Workspace = {
       id: newId('ws'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
       provider: 'modal', providerWorkspaceId: 'foreign-workspace', status: 'active', resourceProfile: 'standard',
+      runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
+      previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
       snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
     };
     wired.data.projects.push(foreignProject);

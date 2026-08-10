@@ -131,13 +131,7 @@ async function reserveForReplay(db: Database, signal: AbortSignal | undefined) {
   }
 }
 
-interface PostgresJsCancellableQuery extends PromiseLike<unknown> {
-  active: boolean;
-  canceller: ((query: unknown) => Promise<unknown>) | null;
-}
-
 interface ReplayCancellation {
-  readonly launched: boolean;
   readonly settled: Promise<void>;
 }
 
@@ -148,31 +142,14 @@ function settleQuery(query: PromiseLike<unknown>): Promise<void> {
   );
 }
 
-/**
- * Starts postgres.js's pinned runtime cancellation and returns its completion
- * barrier. Query.cancel() does not return this promise in postgres.js 3.4.9.
- * Keep the private-shape access here so a driver change fails closed: without
- * that hook, the reservation remains owned until the query itself settles.
- */
-function cancelReplayQuery(query: PromiseLike<unknown>): ReplayCancellation {
-  const driverQuery = query as Partial<PostgresJsCancellableQuery>;
-  const canceller = driverQuery.canceller;
-  if (driverQuery.active !== true || typeof canceller !== 'function') {
-    return { launched: false, settled: settleQuery(query) };
-  }
-
-  driverQuery.canceller = null;
+/** Cancels through postgres.js's public query API and fences on query settlement. */
+function cancelReplayQuery(query: PromiseLike<unknown> & { cancel(): void }): ReplayCancellation {
   try {
-    return {
-      launched: true,
-      settled: Promise.resolve(canceller(query)).then(
-        () => undefined,
-        () => undefined,
-      ),
-    };
+    query.cancel();
   } catch {
-    return { launched: true, settled: Promise.resolve() };
+    // Settlement below still owns the reserved connection and fails closed.
   }
+  return { settled: settleQuery(query) };
 }
 
 /**
@@ -304,14 +281,6 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
           }
         } finally {
           await cancellation?.settled;
-          if (cancellation?.launched === true) {
-            // Closing the cancellation socket proves dispatch, not signal
-            // delivery. This same-backend ReadyForQuery fence either succeeds
-            // or absorbs the one late 57014 before the pool can reuse it.
-            const fence = reserved.unsafe('select 1');
-            void fence.execute();
-            await settleQuery(fence);
-          }
           reserved.release();
         }
       },

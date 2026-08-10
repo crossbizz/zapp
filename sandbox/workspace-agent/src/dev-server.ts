@@ -6,6 +6,27 @@ import type { ExecutionContract } from '@zapp/contracts';
 import { resolveInRoot } from '@zapp/workspace-runtime';
 
 const START_TIMEOUT_MS = 5_000;
+const LOG_CAPACITY_BYTES = 10 * 1_024 * 1_024;
+const CRASH_WINDOW_MS = 5 * 60_000;
+const MAX_CRASH_RESTARTS = 3;
+
+export type DevServerState = 'idle' | 'starting' | 'ready' | 'restarting' | 'failed';
+
+export interface DevServerLogEntry {
+  readonly cursor: number;
+  readonly at: string;
+  readonly stream: 'stdout' | 'stderr';
+  readonly message: string;
+}
+
+export interface DevServerLogPage {
+  readonly entries: readonly DevServerLogEntry[];
+  readonly nextCursor: number;
+  readonly truncated: boolean;
+  readonly state: DevServerState;
+  /** Stable while a terminal crash circuit remains open; null for non-terminal states. */
+  readonly failureId: string | null;
+}
 
 export interface DevServerEvidence {
   readonly port: number;
@@ -24,6 +45,7 @@ export interface DevServerStartResult {
 
 interface ActiveDevServer {
   readonly child: ChildProcess;
+  readonly contract: ExecutionContract;
   readonly groupId: number;
   readonly port: number;
   readonly healthPath: string;
@@ -154,6 +176,13 @@ async function waitForClose(child: ChildProcess): Promise<void> {
 
 export class DevServerSupervisor {
   private active: ActiveDevServer | undefined;
+  private readonly logEntries: DevServerLogEntry[] = [];
+  private logBytes = 0;
+  private logsDropped = false;
+  private nextLogCursor = 1;
+  private crashRestarts: number[] = [];
+  private state: DevServerState = 'idle';
+  private failureId: string | null = null;
   private transitionTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly workspaceRoot: string) {}
@@ -188,24 +217,104 @@ export class DevServerSupervisor {
     await waitForClose(active.child);
   }
 
-  private async startUnlocked(contract: ExecutionContract): Promise<DevServerStartResult> {
+  private appendLog(stream: DevServerLogEntry['stream'], chunk: Buffer | string): void {
+    let message = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let bytes = Buffer.byteLength(message);
+    if (bytes > LOG_CAPACITY_BYTES) {
+      message = Buffer.from(message).subarray(bytes - LOG_CAPACITY_BYTES).toString('utf8');
+      bytes = Buffer.byteLength(message);
+      this.logsDropped = true;
+    }
+    const entry: DevServerLogEntry = {
+      cursor: this.nextLogCursor,
+      at: new Date().toISOString(),
+      stream,
+      message,
+    };
+    this.nextLogCursor += 1;
+    this.logEntries.push(entry);
+    this.logBytes += bytes;
+    while (this.logBytes > LOG_CAPACITY_BYTES) {
+      const removed = this.logEntries.shift();
+      if (removed === undefined) break;
+      this.logBytes -= Buffer.byteLength(removed.message);
+      this.logsDropped = true;
+    }
+  }
+
+  private attachLogs(child: ChildProcess): void {
+    child.stdout?.on('data', (chunk: Buffer) => {
+      this.appendLog('stdout', chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      this.appendLog('stderr', chunk);
+    });
+  }
+
+  private handleCrash(active: ActiveDevServer): void {
+    if (this.active !== active) return;
+    this.active = undefined;
+    void this.withTransition(async () => {
+      if (this.active !== undefined) return;
+      for (;;) {
+        const now = Date.now();
+        this.crashRestarts = this.crashRestarts.filter(
+          (occurredAt) => now - occurredAt <= CRASH_WINDOW_MS,
+        );
+        if (this.crashRestarts.length >= MAX_CRASH_RESTARTS) {
+          this.state = 'failed';
+          this.failureId ??= `devfail_${active.supervisorId}`;
+          this.appendLog('stderr', 'Dev server restart limit exceeded.\n');
+          return;
+        }
+        this.crashRestarts.push(now);
+        this.state = 'restarting';
+        this.appendLog('stderr', 'Dev server exited; restarting.\n');
+        try {
+          await this.startUnlocked(active.contract, 'restarting');
+          return;
+        } catch {
+          // A replacement that exits before readiness consumes another restart.
+        }
+      }
+    }).catch(() => {
+      this.state = 'failed';
+      this.failureId ??= `devfail_${active.supervisorId}`;
+      this.appendLog('stderr', 'Dev server restart failed.\n');
+    });
+  }
+
+  private async startUnlocked(
+    contract: ExecutionContract,
+    transitionState: 'starting' | 'restarting' = 'starting',
+  ): Promise<DevServerStartResult> {
     if (this.active !== undefined && processGroupExists(this.active.groupId)) {
       throw new Error('Development server is already running');
     }
     this.active = undefined;
+    this.state = transitionState;
     const cwd = await resolveInRoot(this.workspaceRoot, contract.workspace_root);
     const child = spawn(contract.develop.command, {
       cwd,
       shell: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });
     if (child.pid === undefined) throw new Error('Could not start development server');
     const groupId = child.pid;
     let spawnFailure: Error | undefined;
+    let observedClose = false;
+    let activeOnReady: ActiveDevServer | undefined;
     child.once('error', (error) => {
       spawnFailure = error;
     });
+    child.once('close', () => {
+      observedClose = true;
+      if (activeOnReady !== undefined) this.handleCrash(activeOnReady);
+    });
+    const hasClosed = (): boolean =>
+      observedClose || child.exitCode !== null || child.signalCode !== null;
+    this.attachLogs(child);
     const healthPath = contract.health?.path ?? '/';
     const deadline = Date.now() + START_TIMEOUT_MS;
     try {
@@ -217,13 +326,20 @@ export class DevServerSupervisor {
         const owned = await listenerBelongsToProcessGroup(contract.develop.port, groupId);
         if (owned && (await httpProbeSucceeds(contract.develop.port, healthPath))) {
           const supervisorId = randomUUID();
-          this.active = {
+          const active: ActiveDevServer = {
             child,
+            contract,
             groupId,
             port: contract.develop.port,
             healthPath,
             supervisorId,
           };
+          this.active = active;
+          activeOnReady = active;
+          this.state = 'ready';
+          if (hasClosed()) {
+            this.handleCrash(active);
+          }
           return {
             port: contract.develop.port,
             pid: child.pid,
@@ -235,21 +351,51 @@ export class DevServerSupervisor {
       }
       throw new Error('Development server did not become ready');
     } catch (error: unknown) {
-      this.active = { child, groupId, port: contract.develop.port, healthPath, supervisorId: randomUUID() };
+      this.active = {
+        child,
+        contract,
+        groupId,
+        port: contract.develop.port,
+        healthPath,
+        supervisorId: randomUUID(),
+      };
       await this.stopActive();
       throw error;
     }
   }
 
   start(contract: ExecutionContract): Promise<DevServerStartResult> {
-    return this.withTransition(() => this.startUnlocked(contract));
+    return this.withTransition(() => {
+      this.crashRestarts = [];
+      this.failureId = null;
+      return this.startUnlocked(contract);
+    });
   }
 
   restart(contract: ExecutionContract): Promise<DevServerStartResult> {
     return this.withTransition(async () => {
+      this.crashRestarts = [];
+      this.failureId = null;
       await this.stopActive();
       return this.startUnlocked(contract);
     });
+  }
+
+  logs(after: number, limit: number): DevServerLogPage {
+    const entries = this.logEntries.filter((entry) => entry.cursor > after).slice(0, limit);
+    const oldestCursor = this.logEntries[0]?.cursor;
+    return {
+      entries,
+      nextCursor: entries.at(-1)?.cursor ?? after,
+      truncated:
+        this.logsDropped || (oldestCursor !== undefined && after < Math.max(0, oldestCursor - 1)),
+      state: this.state,
+      failureId: this.failureId,
+    };
+  }
+
+  status(): DevServerState {
+    return this.state;
   }
 
   async evidence(): Promise<DevServerEvidence | null> {
@@ -269,6 +415,10 @@ export class DevServerSupervisor {
   }
 
   close(): Promise<void> {
-    return this.withTransition(() => this.stopActive());
+    return this.withTransition(async () => {
+      await this.stopActive();
+      this.state = 'idle';
+      this.failureId = null;
+    });
   }
 }

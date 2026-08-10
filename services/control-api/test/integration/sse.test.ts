@@ -692,16 +692,29 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     await startApp({
       concurrencyLimits: { perUser: 100, perOrganization: 100, perProcess: 100 },
     });
-    for (let attempt = 1; attempt <= 40; attempt += 1) {
-      const controller = new AbortController();
-      const response = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
-        headers: requestHeaders(),
-        signal: controller.signal,
-      });
-      expect(response.status, `rapid reconnect ${String(attempt)}`).toBe(200);
-      controller.abort();
-    }
-  });
+    const firstController = new AbortController();
+    const firstResponse = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+      headers: requestHeaders(),
+      signal: firstController.signal,
+    });
+    expect(firstResponse.status, 'aborted replay').toBe(200);
+    const firstCancellation = cancelResponseBody(firstResponse);
+    firstController.abort();
+
+    const reconnectController = new AbortController();
+    const reconnectResponse = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+      headers: requestHeaders(),
+      signal: reconnectController.signal,
+    });
+    expect(reconnectResponse.status, 'rapid reconnect').toBe(200);
+    const reconnectCancellation = cancelResponseBody(reconnectResponse);
+    reconnectController.abort();
+
+    await expectSettlesWithin(Promise.all([firstCancellation, reconnectCancellation]), 500);
+    await eventually(() => {
+      expect(wakeups.pendingCount).toBe(0);
+    });
+  }, 10_000);
 
   it.each([
     'text/event-stream;q=wat',

@@ -1,11 +1,13 @@
 import {
   AGENT_EVENT_TYPES,
   AgentEventVisibilitySchema,
+  WorkspacePurposeSchema,
   WorkspaceStatusSchema,
 } from '@zapp/contracts';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -30,6 +32,7 @@ import { branches, projectTenantForeignKey, projects } from './projects.js';
  */
 
 const WORKSPACE_STATUSES = WorkspaceStatusSchema.options;
+const WORKSPACE_PURPOSES = WorkspacePurposeSchema.options;
 const EVENT_VISIBILITIES = AgentEventVisibilitySchema.options;
 
 /** PRD §14.4 payload ceiling: 64 KiB. Anything larger belongs in `artifacts` + object storage (master plan §5.2). */
@@ -52,6 +55,18 @@ export const workspaces = pgTable(
     status: text('status', { enum: WORKSPACE_STATUSES }).notNull(),
     /** `small` | `standard` | `large` (PRD §18.10) — also the billing floor (plan 03 WS-8). */
     resourceProfile: text('resource_profile').notNull(),
+    /** Durable provider attachment attribution; populated atomically when sandbox-service claims creation. */
+    runId: text('run_id'),
+    taskId: text('task_id'),
+    purpose: text('purpose', { enum: WORKSPACE_PURPOSES }),
+    environment: text('environment', { enum: ['zapp-dev', 'zapp-staging', 'zapp-prod'] }),
+    imageTag: text('image_tag'),
+    /** A durable intent plus renewable owner lease makes preview failure observation single-owner across replicas. */
+    previewMonitorEnabled: boolean('preview_monitor_enabled').notNull().default(false),
+    previewMonitorOwnerId: text('preview_monitor_owner_id'),
+    previewMonitorLeaseExpiresAt: timestamp('preview_monitor_lease_expires_at', {
+      withTimezone: true,
+    }),
     /** Latest provider snapshot; null when none exists or it has expired (PRD §18.8). */
     snapshotRef: text('snapshot_ref'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -60,10 +75,26 @@ export const workspaces = pgTable(
   },
   (t) => [
     check('workspaces_status_check', oneOf('status', WORKSPACE_STATUSES)),
+    check(
+      'workspaces_attachment_complete_check',
+      sql`num_nonnulls(${t.runId}, ${t.taskId}, ${t.purpose}, ${t.environment}, ${t.imageTag}) in (0, 5)`,
+    ),
+    check(
+      'workspaces_preview_monitor_lease_check',
+      sql`(${t.previewMonitorOwnerId} is null) = (${t.previewMonitorLeaseExpiresAt} is null)`,
+    ),
+    check(
+      'workspaces_preview_monitor_disabled_check',
+      sql`${t.previewMonitorEnabled} or (${t.previewMonitorOwnerId} is null and ${t.previewMonitorLeaseExpiresAt} is null)`,
+    ),
     // The reaper and the reconciler both sweep by (tenant, status); the project
     // index serves "which sandboxes does this project have running".
     index('workspaces_org_status_idx').on(t.organizationId, t.status),
     index('workspaces_project_idx').on(t.projectId),
+    index('workspaces_preview_monitor_idx').on(
+      t.previewMonitorEnabled,
+      t.previewMonitorLeaseExpiresAt,
+    ),
     projectTenantForeignKey('workspaces', t.projectId, t.organizationId),
   ],
 );

@@ -898,7 +898,7 @@ export interface ModalSandboxProviderOptions {
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
-const ModalWorkspaceAttachmentSchema = z
+export const ModalWorkspaceAttachmentSchema = z
   .object({
     resourceProfile: ResourceProfileSchema,
     imageTag: PublishedImageNameSchema,
@@ -1046,6 +1046,30 @@ const DevServerResponseSchema = z
     pid: z.number().int().positive(),
     supervisorId: z.string().min(1),
     ownership: z.enum(['process', 'process_group']),
+  })
+  .strict();
+const DevServerLogsQuerySchema = z
+  .object({
+    after: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(1_000),
+  })
+  .strict();
+const DevServerLogsResponseSchema = z
+  .object({
+    entries: z.array(
+      z
+        .object({
+          cursor: z.number().int().positive(),
+          at: z.string().datetime(),
+          stream: z.enum(['stdout', 'stderr']),
+          message: z.string(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    state: z.enum(['idle', 'starting', 'ready', 'restarting', 'failed']),
+    failureId: z.string().min(1).nullable(),
   })
   .strict();
 const AtomicConflictResponseSchema = z
@@ -1707,6 +1731,13 @@ export class ModalSandboxProvider {
     let abortStream: (() => void) | undefined;
     let active: Extract<WorkspaceAgentStreamRecord, { type: 'started' }> | undefined;
     let exited = false;
+    const abortedRead = Symbol('aborted-agent-stream-read');
+    let resolveAbortedRead: (() => void) | undefined;
+    const abortedReadPromise = new Promise<typeof abortedRead>((resolve) => {
+      resolveAbortedRead = () => {
+        resolve(abortedRead);
+      };
+    });
     try {
       const sandbox = await sdk.getWorkspace(input.providerWorkspaceId);
       if (sandbox === undefined) throw new Error('Workspace sandbox was not found');
@@ -1722,7 +1753,8 @@ export class ModalSandboxProvider {
         body: Buffer.from(JSON.stringify(body)),
       });
       abortStream = () => {
-        void stream?.cancel();
+        resolveAbortedRead?.();
+        void stream?.cancel().catch(() => undefined);
       };
       if (signal?.aborted === true) abortStream();
       else if (signal !== undefined) signal.addEventListener('abort', abortStream, { once: true });
@@ -1742,8 +1774,16 @@ export class ModalSandboxProvider {
           }
         }
       };
-      for await (const chunk of stream.body) {
-        pending += decoder.write(Buffer.from(chunk));
+      const iterator = stream.body[Symbol.asyncIterator]();
+      for (;;) {
+        const nextRead = iterator.next();
+        const next = await Promise.race([nextRead, abortedReadPromise]);
+        if (next === abortedRead) {
+          void nextRead.catch(() => undefined);
+          break;
+        }
+        if (next.done) break;
+        pending += decoder.write(Buffer.from(next.value));
         for (const record of parsePendingRecords()) {
           if (record.type === 'started') active = record;
           if (record.type === 'exit') exited = true;
@@ -1764,11 +1804,17 @@ export class ModalSandboxProvider {
       if (signal !== undefined && abortStream !== undefined) {
         signal.removeEventListener('abort', abortStream);
       }
-      if (active !== undefined && !exited) {
-        await this.killExec(input.providerWorkspaceId, active.pid, active.executionId);
+      try {
+        if (active !== undefined && !exited) {
+          await this.killExec(input.providerWorkspaceId, active.pid, active.executionId);
+        }
+      } finally {
+        try {
+          await stream?.cancel();
+        } finally {
+          sdk.close();
+        }
       }
-      await stream?.cancel();
-      sdk.close();
     }
   }
 
@@ -2005,6 +2051,16 @@ export class ModalSandboxProvider {
     idempotencyKey = randomUUID(),
   ) {
     return this.manageDevServer(providerWorkspaceId, 'restart', contract, idempotencyKey);
+  }
+
+  async readDevServerLogs(providerWorkspaceId: string, untrustedQuery: unknown) {
+    const query = DevServerLogsQuerySchema.parse(untrustedQuery);
+    const response = await this.requestAgent(providerWorkspaceId, {
+      method: 'GET',
+      path: '/dev-server/logs',
+      query: { after: String(query.after), limit: String(query.limit) },
+    });
+    return DevServerLogsResponseSchema.parse(jsonAgentBody(response));
   }
 
   async getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus> {

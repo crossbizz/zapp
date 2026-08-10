@@ -6,6 +6,7 @@ import type {
   WorkspaceHandle,
   WorkspaceStatus,
 } from '@zapp/contracts';
+import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../../src/app.js';
@@ -15,12 +16,14 @@ import {
   type ModalWorkspaceCreateOptions,
   type ModalWorkspaceSandbox,
   type ModalWorkspaceSdkPort,
+  type WorkspaceAgentStreamRecord,
 } from '../../src/provider/modal.js';
 import { BranchLockedError } from '../../src/provider/volumes.js';
 import { createFetchPreviewTransport } from '../../src/preview/transport.js';
 import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 import type {
   WorkspaceLifecycleRow,
+  PreviewMonitorCoordinator,
   WorkspaceRowBoundary,
   WorkspaceRowClaim,
   WorkspaceRowIdempotencyKey,
@@ -38,14 +41,24 @@ const EMPTY_SECRET_INJECTOR = createScopedSecretInjector({
   decrypt: () => Promise.reject(new Error('Unexpected secret decrypt')),
 });
 const NOOP_NETWORK_POLICIES = { record: () => Promise.resolve() };
+const NOOP_PREVIEW_EVENTS = { emit: () => Promise.resolve() };
 
 function buildTestApp(
-  options: Omit<BuildAppOptions, 'secrets' | 'networkPolicies'> &
-    Partial<Pick<BuildAppOptions, 'secrets' | 'networkPolicies'>>,
+  options: Omit<
+    BuildAppOptions,
+    'secrets' | 'networkPolicies' | 'events' | 'previewMonitors'
+  > &
+    Partial<
+      Pick<BuildAppOptions, 'secrets' | 'networkPolicies' | 'events' | 'previewMonitors'>
+    >,
 ) {
   return buildApp({
     secrets: EMPTY_SECRET_INJECTOR,
     networkPolicies: NOOP_NETWORK_POLICIES,
+    events: NOOP_PREVIEW_EVENTS,
+    previewMonitors:
+      options.previewMonitors ??
+      (options.rows as WorkspaceRowBoundary & PreviewMonitorCoordinator),
     ...options,
   } as BuildAppOptions);
 }
@@ -106,6 +119,32 @@ function createInput(): CreateWorkspaceInput {
   };
 }
 
+async function within<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function createDeferredSignal(): { readonly promise: Promise<undefined>; resolve(): void } {
+  let resolvePromise = (): void => undefined;
+  const promise = new Promise<undefined>((resolve) => {
+    resolvePromise = () => {
+      resolve(undefined);
+    };
+  });
+  return { promise, resolve: resolvePromise };
+}
+
 class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   readonly providerWorkspaceId = 'sb-modal-4a';
   readonly readinessTimeouts: number[] = [];
@@ -118,6 +157,8 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   private devServerEvidence:
     { port: number; pid: number; supervisorId: string; owned: true; httpReady: true } | undefined;
   streamCancelCalls = 0;
+  stallStreamAfterStarted = false;
+  private stalledStream = createDeferredSignal();
   tags: Readonly<Record<string, string>> = createInputTags();
   waitUntilReadyError: Error | undefined;
   disappearAfterTags = false;
@@ -213,6 +254,25 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   }> {
     this.agentRequests.push(request);
     const response = this.agentResponder(request);
+    if (this.stallStreamAfterStarted) {
+      const newline = response.body.indexOf(10);
+      const firstRecord = response.body.subarray(0, newline + 1);
+      const stalledStream = this.stalledStream.promise;
+      return Promise.resolve({
+        statusCode: response.statusCode,
+        ...(response.contentType === undefined ? {} : { contentType: response.contentType }),
+        body: {
+          async *[Symbol.asyncIterator]() {
+            yield firstRecord;
+            await stalledStream;
+          },
+        },
+        cancel: () => {
+          this.streamCancelCalls += 1;
+          return Promise.resolve();
+        },
+      });
+    }
     const midpoint = Math.ceil(response.body.byteLength / 2);
     const chunks = [response.body.subarray(0, midpoint), response.body.subarray(midpoint)];
     return Promise.resolve({
@@ -229,6 +289,11 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
         return Promise.resolve();
       },
     });
+  }
+
+  releaseStalledStream(): void {
+    this.stalledStream.resolve();
+    this.stalledStream = createDeferredSignal();
   }
 }
 
@@ -367,6 +432,22 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
       ownership: 'process_group',
     });
   }
+  if (key === 'GET /dev-server/logs') {
+    return jsonResponse({
+      entries: [
+        {
+          cursor: 7,
+          at: NOW.toISOString(),
+          stream: 'stdout',
+          message: 'ready\n',
+        },
+      ],
+      nextCursor: 7,
+      truncated: false,
+      state: 'ready',
+      failureId: null,
+    });
+  }
   throw new Error(`unexpected fake-agent request: ${key}`);
 }
 
@@ -427,7 +508,7 @@ function requestedRow(id = IDS.workspaceId): WorkspaceLifecycleRow {
   };
 }
 
-class MemoryWorkspaceRows implements WorkspaceRowBoundary {
+class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordinator {
   readonly transitions: Array<{ status: WorkspaceStatus; providerWorkspaceId: string | null }> = [];
   replayClaims = 0;
   replayResolutions = 0;
@@ -435,6 +516,9 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
   private readonly idempotency = new Map<string, string>();
   private readonly createWaiters = new Map<string, Array<(row: WorkspaceLifecycleRow) => void>>();
   private readonly attachments = new Map<string, Parameters<WorkspaceRowBoundary['claimCreate']>[2]>();
+  private readonly previewMonitorOwners = new Map<string, string>();
+  private readonly previewMonitorsEnabled = new Set<string>();
+  private previewMonitorLeaseSequence = 0;
   failTransitionStatus: WorkspaceStatus | undefined;
   projectOwned = true;
 
@@ -454,6 +538,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
       createdAt: row.createdAt,
       requiredTags: createInputTags(),
     });
+    if (row.status === 'ready') this.previewMonitorsEnabled.add(row.id);
   }
 
   claimCreate(
@@ -525,6 +610,67 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary {
     return row === undefined || attachment === undefined
       ? undefined
       : { row, attachment };
+  }
+
+  listAttachments() {
+    return Promise.resolve(
+      [...this.rows.values()].flatMap((row) => {
+        const attachment = this.attachments.get(row.id);
+        return row.status === 'ready' &&
+          row.providerWorkspaceId !== null &&
+          attachment !== undefined &&
+          this.previewMonitorsEnabled.has(row.id)
+          ? [{ row, attachment }]
+          : [];
+      }),
+    );
+  }
+
+  activateAndClaim(workspaceId: string, ownerId: string): Promise<string | undefined> {
+    this.previewMonitorsEnabled.add(workspaceId);
+    return this.claim(workspaceId, ownerId);
+  }
+
+  claim(workspaceId: string, ownerId: string): Promise<string | undefined> {
+    if (!this.previewMonitorsEnabled.has(workspaceId)) return Promise.resolve(undefined);
+    if (this.previewMonitorOwners.has(workspaceId)) return Promise.resolve(undefined);
+    this.previewMonitorLeaseSequence += 1;
+    const leaseToken = `${ownerId}:${String(this.previewMonitorLeaseSequence)}`;
+    this.previewMonitorOwners.set(workspaceId, leaseToken);
+    return Promise.resolve(leaseToken);
+  }
+
+  renew(workspaceId: string, leaseToken: string): Promise<boolean> {
+    return Promise.resolve(
+      this.previewMonitorsEnabled.has(workspaceId) &&
+        this.previewMonitorOwners.get(workspaceId) === leaseToken,
+    );
+  }
+
+  complete(workspaceId: string, leaseToken: string): Promise<boolean> {
+    if (this.previewMonitorOwners.get(workspaceId) !== leaseToken) {
+      return Promise.resolve(false);
+    }
+    this.previewMonitorsEnabled.delete(workspaceId);
+    this.previewMonitorOwners.delete(workspaceId);
+    return Promise.resolve(true);
+  }
+
+  revoke(workspaceId: string): Promise<void> {
+    this.previewMonitorsEnabled.delete(workspaceId);
+    this.previewMonitorOwners.delete(workspaceId);
+    return Promise.resolve();
+  }
+
+  release(workspaceId: string, leaseToken: string): Promise<void> {
+    if (this.previewMonitorOwners.get(workspaceId) === leaseToken) {
+      this.previewMonitorOwners.delete(workspaceId);
+    }
+    return Promise.resolve();
+  }
+
+  isPreviewMonitorEnabled(workspaceId: string): boolean {
+    return this.previewMonitorsEnabled.has(workspaceId);
   }
 
   transition(
@@ -2342,6 +2488,654 @@ describe('agent proxy and unguarded conformance', () => {
     expect(sdk.sandbox.agentRequests).toHaveLength(requestCount);
   });
 
+  it('settles an aborted stream even when the Modal body read never settles', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.stallStreamAfterStarted = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+    const abort = new AbortController();
+    const records: WorkspaceAgentStreamRecord[] = [];
+    const consumption = (async () => {
+      for await (const record of provider.execStream(
+        {
+          providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+          command: 'sleep',
+          args: ['30'],
+          timeoutMs: 30_000,
+        },
+        undefined,
+        abort.signal,
+      )) {
+        records.push(record);
+        if (record.type === 'started') abort.abort();
+      }
+    })();
+
+    try {
+      await expect(
+        within(consumption, 100, 'Aborted stream remained blocked on its Modal body read.'),
+      ).resolves.toBeUndefined();
+      expect(records).toHaveLength(1);
+      expect(sdk.sandbox.agentRequests.map(({ path }) => path)).toEqual([
+        '/exec',
+        '/exec/41/kill',
+      ]);
+      expect(sdk.sandbox.streamCancelCalls).toBeGreaterThan(0);
+    } finally {
+      sdk.sandbox.releaseStalledStream();
+      await consumption.catch(() => undefined);
+    }
+  });
+
+  it('WS-13 maps cursor logs and emits idempotent attributed preview lifecycle events', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    }) as unknown as AgentProxyProvider;
+    const rows = new MemoryWorkspaceRows();
+    await rows.claimCreate(
+      requestedRow(),
+      {
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        branchId: IDS.branchId,
+        branchName: 'main',
+      },
+      {
+        resourceProfile: 'small',
+        imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+        createdAt: NOW,
+        requiredTags: createInputTags(),
+      },
+    );
+    await rows.transition(IDS.workspaceId, 'started', {
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+    });
+    await rows.transition(IDS.workspaceId, 'ready');
+
+    await expect(
+      provider.readDevServerLogs(sdk.sandbox.providerWorkspaceId, { after: 6, limit: 10 }),
+    ).resolves.toMatchObject({
+      entries: [{ cursor: 7, stream: 'stdout', message: 'ready\n' }],
+      nextCursor: 7,
+      state: 'ready',
+    });
+    expect(sdk.sandbox.agentRequests.at(-1)).toMatchObject({
+      method: 'GET',
+      path: '/dev-server/logs',
+      query: { after: '6', limit: '10' },
+    });
+
+    const storedEvents: Array<{
+      eventKey: string;
+      type: string;
+      organizationId: string;
+      projectId: string;
+      runId: string;
+      taskId?: string;
+      payload: Record<string, unknown>;
+    }> = [];
+    const eventKeys = new Set<string>();
+    const events = {
+      emit: vi.fn((event: (typeof storedEvents)[number]) => {
+        if (!eventKeys.has(event.eventKey)) {
+          eventKeys.add(event.eventKey);
+          storedEvents.push(event);
+        }
+        return Promise.resolve();
+      }),
+    };
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      events,
+      previewFailurePollIntervalMs: 5,
+      now: () => NOW,
+    } as never);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/dev-server/start`,
+          headers,
+          payload: { contract: EXECUTION_CONTRACT },
+        });
+        expect(response.statusCode).toBe(200);
+      }
+      const logs = await app.inject({
+        method: 'GET',
+        url: `/internal/workspaces/${IDS.workspaceId}/dev-server/logs?after=6&limit=10`,
+        headers: {
+          'x-zapp-service-token': SERVICE_TOKEN,
+          'x-zapp-organization-id': IDS.organizationId,
+          'x-zapp-project-id': IDS.projectId,
+        },
+      });
+      expect(logs.statusCode).toBe(200);
+      expect(logs.json()).toMatchObject({ nextCursor: 7, state: 'ready' });
+      expect(storedEvents.map(({ type }) => type)).toEqual([
+        'preview.starting',
+        'preview.ready',
+      ]);
+      expect(storedEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            organizationId: IDS.organizationId,
+            projectId: IDS.projectId,
+            runId: IDS.runId,
+            taskId: IDS.taskId,
+          }),
+        ]),
+      );
+      expect(JSON.stringify(storedEvents)).not.toContain(sdk.sandbox.providerWorkspaceId);
+
+      const transientReadyFailure = vi.fn((event: (typeof storedEvents)[number]) => {
+        if (event.type === 'preview.ready' && transientReadyFailure.mock.calls.length === 2) {
+          return Promise.reject(new Error('CP-13 unavailable'));
+        }
+        if (!eventKeys.has(event.eventKey)) {
+          eventKeys.add(event.eventKey);
+          storedEvents.push(event);
+        }
+        return Promise.resolve();
+      });
+      events.emit.mockImplementation(transientReadyFailure);
+      const retryKey = `op_${'c'.repeat(64)}`;
+      const readyDeliveryFailed = await app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/dev-server/start`,
+        headers: { ...headers, 'idempotency-key': retryKey },
+        payload: { contract: EXECUTION_CONTRACT },
+      });
+      expect(readyDeliveryFailed.statusCode).toBe(500);
+      expect(storedEvents.filter(({ type }) => type === 'preview.failed')).toHaveLength(0);
+      const readyRetry = await app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/dev-server/start`,
+        headers: { ...headers, 'idempotency-key': retryKey },
+        payload: { contract: EXECUTION_CONTRACT },
+      });
+      expect(readyRetry.statusCode).toBe(200);
+      expect(storedEvents.filter(({ type }) => type === 'preview.ready')).toHaveLength(2);
+
+      sdk.sandbox.agentResponder = (request) =>
+        request.path === '/dev-server/logs'
+          ? jsonResponse({
+              entries: [],
+              nextCursor: 7,
+              truncated: false,
+              state: 'failed',
+              failureId: 'devfail_supervisor-start',
+            })
+          : strictAgentResponse(request);
+      await vi.waitFor(() => {
+        expect(
+          storedEvents.filter(
+            ({ type, payload }) =>
+              type === 'preview.failed' && payload.code === 'restart_limit_exceeded',
+          ),
+        ).toHaveLength(1);
+      });
+      const terminalDeliveriesBeforeRead = events.emit.mock.calls.filter(
+        ([event]) =>
+          event.type === 'preview.failed' &&
+          event.payload.code === 'restart_limit_exceeded',
+      ).length;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const terminalLogs = await app.inject({
+          method: 'GET',
+          url: `/internal/workspaces/${IDS.workspaceId}/dev-server/logs?after=7&limit=10`,
+          headers: {
+            'x-zapp-service-token': SERVICE_TOKEN,
+            'x-zapp-organization-id': IDS.organizationId,
+            'x-zapp-project-id': IDS.projectId,
+          },
+        });
+        expect(terminalLogs.statusCode).toBe(200);
+      }
+      expect(
+        events.emit.mock.calls.filter(
+          ([event]) =>
+            event.type === 'preview.failed' &&
+            event.payload.code === 'restart_limit_exceeded',
+        ),
+      ).toHaveLength(terminalDeliveriesBeforeRead);
+      expect(
+        storedEvents.filter(
+          ({ type, payload }) =>
+            type === 'preview.failed' && payload.code === 'restart_limit_exceeded',
+        ),
+      ).toHaveLength(1);
+
+      sdk.sandbox.agentResponder = (request) =>
+        request.path === '/dev-server/restart'
+          ? jsonResponse({ error: 'restart failed' }, 500)
+          : strictAgentResponse(request);
+      const failed = await app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/dev-server/restart`,
+        headers: { ...headers, 'idempotency-key': `op_${'b'.repeat(64)}` },
+        payload: { contract: EXECUTION_CONTRACT },
+      });
+      expect(failed.statusCode).toBe(500);
+      expect(storedEvents.map(({ type }) => type)).toEqual([
+        'preview.starting',
+        'preview.ready',
+        'preview.starting',
+        'preview.ready',
+        'preview.failed',
+        'preview.starting',
+        'preview.failed',
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('WS-13 restores terminal monitoring after service restart without a logs request', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    let logPolls = 0;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.path === '/dev-server/logs') {
+        logPolls += 1;
+        return jsonResponse({
+          entries: [],
+          nextCursor: 0,
+          truncated: false,
+          state: 'failed',
+          failureId: 'devfail_restored-supervisor',
+        });
+      }
+      return strictAgentResponse(request);
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    }) as unknown as AgentProxyProvider;
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      status: 'ready',
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+    });
+    const stored: string[] = [];
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      events: {
+        emit: (event: { readonly eventKey: string }) => {
+          stored.push(event.eventKey);
+          return Promise.resolve();
+        },
+      },
+      previewFailurePollIntervalMs: 5,
+      now: () => NOW,
+    } as never);
+    try {
+      await app.ready();
+      await vi.waitFor(() => {
+        expect(stored).toEqual([
+          `ws13:failure:${IDS.workspaceId}:devfail_restored-supervisor`,
+        ]);
+      });
+      expect(logPolls).toBeGreaterThan(0);
+      await vi.waitFor(() => {
+        expect(rows.isPreviewMonitorEnabled(IDS.workspaceId)).toBe(false);
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('WS-13 stops restored monitoring after confirmed workspace termination', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    let logPolls = 0;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.path === '/dev-server/logs') {
+        logPolls += 1;
+        return jsonResponse({
+          entries: [],
+          nextCursor: 0,
+          truncated: false,
+          state: 'ready',
+          failureId: null,
+        });
+      }
+      return strictAgentResponse(request);
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    }) as unknown as AgentProxyProvider;
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      status: 'ready',
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+    });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      previewFailurePollIntervalMs: 5,
+      now: () => NOW,
+    } as never);
+    try {
+      await app.ready();
+      await vi.waitFor(() => {
+        expect(logPolls).toBeGreaterThan(0);
+      });
+      const terminated = await app.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
+        headers: {
+          'x-zapp-service-token': SERVICE_TOKEN,
+          'x-zapp-organization-id': IDS.organizationId,
+          'x-zapp-project-id': IDS.projectId,
+          'idempotency-key': OPERATION_KEY,
+        },
+        payload: { operationKey: OPERATION_KEY },
+      });
+      expect(terminated.statusCode).toBe(200);
+      const pollsAtTermination = logPolls;
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      expect(logPolls).toBe(pollsAtTermination);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('WS-13 keeps one durable monitor owner and termination through another replica stops it', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.agentResponder = (request) =>
+      request.path === '/dev-server/logs'
+        ? jsonResponse({
+            entries: [],
+            nextCursor: 0,
+            truncated: false,
+            state: 'ready',
+            failureId: null,
+          })
+        : strictAgentResponse(request);
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      status: 'ready',
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+    });
+    const ownerByWorkspace = new Map<string, string>();
+    const leaseByWorkspace = new Map<string, string>();
+    const enabled = new Set<string>([IDS.workspaceId]);
+    let leaseSequence = 0;
+    const previewMonitors = {
+      activateAndClaim(workspaceId: string, ownerId: string) {
+        enabled.add(workspaceId);
+        return this.claim(workspaceId, ownerId);
+      },
+      claim(workspaceId: string, ownerId: string) {
+        if (!enabled.has(workspaceId) || ownerByWorkspace.has(workspaceId)) {
+          return Promise.resolve(undefined);
+        }
+        leaseSequence += 1;
+        const leaseToken = `${ownerId}:${String(leaseSequence)}`;
+        ownerByWorkspace.set(workspaceId, ownerId);
+        leaseByWorkspace.set(workspaceId, leaseToken);
+        return Promise.resolve(leaseToken);
+      },
+      renew(workspaceId: string, leaseToken: string) {
+        return Promise.resolve(
+          enabled.has(workspaceId) && leaseByWorkspace.get(workspaceId) === leaseToken,
+        );
+      },
+      complete(workspaceId: string, leaseToken: string) {
+        if (leaseByWorkspace.get(workspaceId) !== leaseToken) return Promise.resolve(false);
+        enabled.delete(workspaceId);
+        ownerByWorkspace.delete(workspaceId);
+        leaseByWorkspace.delete(workspaceId);
+        return Promise.resolve(true);
+      },
+      revoke(workspaceId: string) {
+        enabled.delete(workspaceId);
+        ownerByWorkspace.delete(workspaceId);
+        leaseByWorkspace.delete(workspaceId);
+        return Promise.resolve();
+      },
+      release(workspaceId: string, leaseToken: string) {
+        if (leaseByWorkspace.get(workspaceId) === leaseToken) {
+          ownerByWorkspace.delete(workspaceId);
+          leaseByWorkspace.delete(workspaceId);
+        }
+        return Promise.resolve();
+      },
+    };
+    let firstReplicaPolls = 0;
+    let secondReplicaPolls = 0;
+    let thirdReplicaPolls = 0;
+    const terminalEventKeys: string[] = [];
+    let staleReadStarted!: () => void;
+    const staleReadIsActive = new Promise<void>((resolve) => {
+      staleReadStarted = resolve;
+    });
+    let resolveStaleRead!: (
+      value: Awaited<ReturnType<AgentProxyProvider['readDevServerLogs']>>,
+    ) => void;
+    const staleRead = new Promise<
+      Awaited<ReturnType<AgentProxyProvider['readDevServerLogs']>>
+    >((resolve) => {
+      resolveStaleRead = resolve;
+    });
+    const providerFor = (count: () => void, blockFirstRead = false): AgentProxyProvider => {
+      const replica = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => sdk,
+      }) as unknown as AgentProxyProvider;
+      const readLogs = replica.readDevServerLogs.bind(replica);
+      let blocked = false;
+      replica.readDevServerLogs = (...args) => {
+        count();
+        if (blockFirstRead && !blocked) {
+          blocked = true;
+          staleReadStarted();
+          return staleRead;
+        }
+        return readLogs(...args);
+      };
+      return replica;
+    };
+    const common = {
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      previewFailurePollIntervalMs: 5,
+      previewMonitorStandbyPollIntervalMs: 5,
+      previewMonitorLeaseMs: 25,
+      previewMonitors,
+      events: {
+        emit(event: { readonly eventKey: string }) {
+          terminalEventKeys.push(event.eventKey);
+          return Promise.resolve();
+        },
+      },
+      now: () => NOW,
+    } as const;
+    const first = buildTestApp({
+      ...common,
+      provider: providerFor(() => {
+        firstReplicaPolls += 1;
+      }, true),
+      previewMonitorOwnerId: 'sandbox-replica-a',
+    } as never);
+    const second = buildTestApp({
+      ...common,
+      provider: providerFor(() => {
+        secondReplicaPolls += 1;
+      }),
+      previewMonitorOwnerId: 'sandbox-replica-b',
+    } as never);
+    const appsToClose = new Set<ReturnType<typeof buildTestApp>>([first, second]);
+    try {
+      await first.ready();
+      await staleReadIsActive;
+      await second.ready();
+      expect(ownerByWorkspace.get(IDS.workspaceId)).toBe('sandbox-replica-a');
+      await first.close();
+      appsToClose.delete(first);
+      await vi.waitFor(() => {
+        expect(ownerByWorkspace.get(IDS.workspaceId)).toBe('sandbox-replica-b');
+        expect(secondReplicaPolls).toBeGreaterThan(0);
+      });
+      resolveStaleRead({
+        entries: [],
+        nextCursor: 0,
+        truncated: false,
+        state: 'failed',
+        failureId: 'devfail_stale-owner',
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      expect(terminalEventKeys).toEqual([]);
+
+      const third = buildTestApp({
+        ...common,
+        provider: providerFor(() => {
+          thirdReplicaPolls += 1;
+        }),
+        previewMonitorOwnerId: 'sandbox-replica-c',
+      } as never);
+      appsToClose.add(third);
+      await third.ready();
+      expect(thirdReplicaPolls).toBe(0);
+      const terminated = await third.inject({
+        method: 'POST',
+        url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
+        headers: {
+          'x-zapp-service-token': SERVICE_TOKEN,
+          'x-zapp-organization-id': IDS.organizationId,
+          'x-zapp-project-id': IDS.projectId,
+          'idempotency-key': OPERATION_KEY,
+        },
+        payload: { operationKey: OPERATION_KEY },
+      });
+      expect(terminated.statusCode).toBe(200);
+      const pollsAtTermination = firstReplicaPolls + secondReplicaPolls + thirdReplicaPolls;
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      expect(firstReplicaPolls + secondReplicaPolls + thirdReplicaPolls).toBe(
+        pollsAtTermination,
+      );
+      expect(ownerByWorkspace.has(IDS.workspaceId)).toBe(false);
+    } finally {
+      await Promise.all(
+        [...appsToClose].map(async (app) => {
+          await app.close();
+        }),
+      );
+    }
+  });
+
+  it('WS-13 releases a standby claim that completes during app shutdown', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    let logPolls = 0;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    }) as unknown as AgentProxyProvider;
+    provider.readDevServerLogs = () => {
+      logPolls += 1;
+      return Promise.resolve({
+        entries: [],
+        nextCursor: 0,
+        truncated: false,
+        state: 'ready',
+        failureId: null,
+      });
+    };
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      status: 'ready',
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+    });
+    let claimCalls = 0;
+    let lateClaimStarted!: () => void;
+    const claimIsPending = new Promise<void>((resolve) => {
+      lateClaimStarted = resolve;
+    });
+    let resolveLateClaim!: (leaseToken: string) => void;
+    const lateClaim = new Promise<string>((resolve) => {
+      resolveLateClaim = resolve;
+    });
+    const released: string[] = [];
+    const previewMonitors = {
+      activateAndClaim: () => Promise.resolve('unexpected-activation'),
+      claim: () => {
+        claimCalls += 1;
+        if (claimCalls === 1) return Promise.resolve(undefined);
+        lateClaimStarted();
+        return lateClaim;
+      },
+      renew: () => Promise.resolve(false),
+      complete: () => Promise.resolve(false),
+      revoke: () => Promise.resolve(),
+      release: (_workspaceId: string, leaseToken: string) => {
+        released.push(leaseToken);
+        return Promise.resolve();
+      },
+    };
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      previewMonitors,
+      previewMonitorOwnerId: 'closing-replica',
+      previewFailurePollIntervalMs: 5,
+      previewMonitorStandbyPollIntervalMs: 5,
+      now: () => NOW,
+    } as never);
+
+    await app.ready();
+    await claimIsPending;
+    const closing = app.close();
+    resolveLateClaim('lease-completed-during-close');
+    await closing;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(logPolls).toBe(0);
+    expect(released).toEqual(['lease-completed-during-close']);
+  });
+
   it('routes tenant-owned workspace ids internally and rejects unknown ownership and escape fields', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     sdk.present = true;
@@ -2456,6 +3250,147 @@ describe('agent proxy and unguarded conformance', () => {
       await app.close();
     }
   });
+
+  it.skipIf(!hasModalCredentials)(
+    'runs the bounded live WS-13 supervisor acceptance [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as typeof IMAGE_LOCK;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ws13-${Date.now().toString(36)}`,
+      });
+      let handle: WorkspaceHandle | undefined;
+      const abortListener = new AbortController();
+      let unrelatedListener: Promise<void> | undefined;
+      let unrelatedListenerSettled: Promise<void> | undefined;
+
+      try {
+        handle = await provider.createWorkspace({
+          ...createInput(),
+          branchId: newId('br'),
+          imageTag: lock.environments.dev.images['forge-node-base'].publishedName,
+        });
+        const providerWorkspaceId = handle.providerWorkspaceId;
+        const managedPort = 43_175;
+        const managedScript = `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(managedPort)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
+        const managedContract: ExecutionContract = {
+          ...EXECUTION_CONTRACT,
+          install: { command: 'true' },
+          develop: {
+            command: `node -e ${JSON.stringify(managedScript)}`,
+            port: managedPort,
+          },
+        };
+
+        const started = await provider.startDevServer(providerWorkspaceId, managedContract);
+        expect(started).toMatchObject({ port: managedPort, ownership: 'process_group' });
+        const restarted = await provider.restartDevServer(providerWorkspaceId, managedContract);
+        expect(restarted).toMatchObject({ port: managedPort, ownership: 'process_group' });
+        expect(restarted.pid).not.toBe(started.pid);
+        expect(restarted.supervisorId).not.toBe(started.supervisorId);
+
+        const unrelatedPort = 43_176;
+        let resolveListenerReady = (): void => undefined;
+        let rejectListenerReady: (error: unknown) => void = () => undefined;
+        const listenerReady = new Promise<void>((resolveReady, rejectReady) => {
+          resolveListenerReady = resolveReady;
+          rejectListenerReady = rejectReady;
+        });
+        let observedStarted = false;
+        let observedReady = false;
+        let unrelatedPid: number | undefined;
+        unrelatedListener = (async () => {
+          try {
+            for await (const record of provider.execStream(
+              {
+                providerWorkspaceId,
+                command: 'node',
+                args: [
+                  '-e',
+                  `require('node:http').createServer((_request, response) => response.end('unrelated')).listen(${String(unrelatedPort)}, '127.0.0.1', () => console.log('listener-ready')); setInterval(() => {}, 1000);`,
+                ],
+                timeoutMs: 30_000,
+              },
+              undefined,
+              abortListener.signal,
+            )) {
+              if (record.type === 'started') {
+                unrelatedPid = record.pid;
+                observedStarted = true;
+              }
+              if (record.type === 'stdout' && record.data.includes('listener-ready')) {
+                observedReady = true;
+              }
+              if (observedStarted && observedReady) resolveListenerReady();
+            }
+            if (!observedStarted || !observedReady) {
+              rejectListenerReady(new Error('Unrelated listener stream ended before readiness.'));
+            }
+          } catch (error) {
+            rejectListenerReady(error);
+            throw error;
+          }
+        })();
+        unrelatedListenerSettled = unrelatedListener.then(
+          () => undefined,
+          () => undefined,
+        );
+        await within(
+          listenerReady,
+          15_000,
+          'Timed out waiting for the unrelated listener readiness evidence.',
+        );
+        const unrelatedContract: ExecutionContract = {
+          ...EXECUTION_CONTRACT,
+          install: { command: 'true' },
+          develop: {
+            command: `node -e ${JSON.stringify('setInterval(() => {}, 1000);')}`,
+            port: unrelatedPort,
+          },
+        };
+        await expect(
+          provider.startDevServer(providerWorkspaceId, unrelatedContract),
+        ).rejects.toThrow();
+        abortListener.abort();
+        await expect(
+          within(
+            unrelatedListener,
+            10_000,
+            'Timed out waiting for the unrelated listener to stop after abort.',
+          ),
+        ).resolves.toBeUndefined();
+        expect(unrelatedPid).toBeGreaterThan(0);
+        await expect(
+          provider.exec({
+            providerWorkspaceId,
+            command: 'sh',
+            args: ['-lc', `kill -0 ${String(unrelatedPid)} 2>/dev/null`],
+            timeoutMs: 10_000,
+          }),
+        ).resolves.toMatchObject({ exitCode: 1 });
+      } finally {
+        abortListener.abort();
+        try {
+          if (handle !== undefined) await provider.terminateWorkspace(handle.providerWorkspaceId);
+        } finally {
+          if (unrelatedListenerSettled !== undefined) {
+            await within(
+              unrelatedListenerSettled,
+              5_000,
+              'Timed out waiting for the unrelated listener during cleanup.',
+            ).catch(() => undefined);
+          }
+        }
+      }
+    },
+    120_000,
+  );
 
   it.skipIf(!hasModalCredentials)(
     'runs the live Modal unguarded conformance matrix [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
@@ -2875,4 +3810,8 @@ interface AgentProxyProvider {
   renameFile(providerWorkspaceId: string, input: unknown): Promise<void>;
   startDevServer(providerWorkspaceId: string, contract: ExecutionContract): Promise<unknown>;
   restartDevServer(providerWorkspaceId: string, contract: ExecutionContract): Promise<unknown>;
+  readDevServerLogs(
+    providerWorkspaceId: string,
+    query: { readonly after: number; readonly limit: number },
+  ): Promise<unknown>;
 }

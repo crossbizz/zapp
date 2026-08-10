@@ -13,7 +13,9 @@ import {
   organizations,
   projects,
   users,
+  workspaces,
 } from '@zapp/db';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -198,7 +200,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     options: {
       readonly key?: string;
       readonly token?: string;
-      readonly service?: 'orchestrator-worker' | 'git-service';
+      readonly service?: 'orchestrator-worker' | 'sandbox-service' | 'git-service';
       readonly audience?: ServiceAudience;
       readonly headers?: Record<string, string>;
       readonly pathRunId?: string;
@@ -727,7 +729,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     );
   });
 
-  it('allows only an orchestrator token minted for this route and never a browser credential', async () => {
+  it('allows only an approved service token minted for this route and never a browser credential', async () => {
     // Break caught: a broad audience, broad service allowlist, or accepting a
     // session/bearer credential would turn an internal mutation into a browser API.
     const wrongAudience = await tokens.issue('orchestrator-worker');
@@ -748,6 +750,182 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       expect(response.statusCode, `${label}: ${response.body}`).toBe(status);
       expect(await count('agent_events'), label).toBe(0);
     }
+  });
+
+  it('accepts a sandbox-service token for preview lifecycle events', async () => {
+    const response = await post(
+      [event({ type: 'preview.ready', visibility: 'user', payload: { workspaceId: 'ws_visible' } })],
+      { key: 'ws13-preview-ready', service: 'sandbox-service' },
+    );
+    expect(response.statusCode, response.body).toBe(201);
+    expect(EventResponseSchema.parse(response.json()).events).toHaveLength(1);
+    expect(await count('agent_events')).toBe(1);
+  });
+
+  it('replays one sandbox preview event when only retry occurrence time advances', async () => {
+    const token = await tokens.issue('sandbox-service', { aud: EVENTS_INGEST_AUDIENCE });
+    const key = 'ws13-preview-ready-ambiguous-response';
+    const first = await post(
+      [event({ occurredAt: '2026-08-09T12:00:00.000Z', type: 'preview.ready' })],
+      { key, token },
+    );
+    const replay = await post(
+      [event({ occurredAt: '2026-08-09T12:00:01.000Z', type: 'preview.ready' })],
+      { key, token },
+    );
+
+    expect(first.statusCode, first.body).toBe(201);
+    expect(replay.statusCode, replay.body).toBe(201);
+    expect(replay.headers['x-idempotent-replay']).toBe('true');
+    expect(replay.body).toBe(first.body);
+    expect(EventResponseSchema.parse(replay.json()).events[0]?.occurredAt).toBe(
+      '2026-08-09T12:00:00.000Z',
+    );
+    expect(await count('agent_events')).toBe(1);
+  });
+
+  it('fences terminal preview failure ingestion to the live monitor generation', async () => {
+    const workspaceId = newId('ws');
+    await database.db.insert(workspaces).values({
+      id: workspaceId,
+      organizationId,
+      projectId,
+      branchId: null,
+      provider: 'modal',
+      providerWorkspaceId: 'sb-fenced-preview',
+      status: 'ready',
+      resourceProfile: 'standard',
+      runId,
+      taskId,
+      purpose: 'preview',
+      environment: 'zapp-dev',
+      imageTag: 'forge-node-base:test',
+      previewMonitorEnabled: true,
+      previewMonitorOwnerId: 'current-monitor-generation',
+      previewMonitorLeaseExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+    });
+    const terminalEvent = (leaseToken: string) =>
+      event({
+        type: 'preview.failed',
+        visibility: 'user',
+        payload: {
+          workspaceId,
+          code: 'restart_limit_exceeded',
+          monitorLeaseToken: leaseToken,
+        },
+      });
+
+    const stale = await post([terminalEvent('expired-monitor-generation')], {
+      key: 'ws13-stale-terminal-generation',
+      service: 'sandbox-service',
+    });
+    expect(stale.statusCode, stale.body).toBe(409);
+    expect(stale.json<{ error: { code: string } }>().error.code).toBe(
+      'preview_monitor_stale',
+    );
+    expect(await count('agent_events')).toBe(0);
+
+    const current = await post([terminalEvent('current-monitor-generation')], {
+      key: 'ws13-current-terminal-generation',
+      service: 'sandbox-service',
+    });
+    expect(current.statusCode, current.body).toBe(201);
+    const [stored] = EventResponseSchema.parse(current.json()).events;
+    expect(stored?.payload).toEqual({
+      workspaceId,
+      code: 'restart_limit_exceeded',
+    });
+    expect(current.body).not.toContain('current-monitor-generation');
+    const [disabledMonitor] = await database.db
+      .select({
+        enabled: workspaces.previewMonitorEnabled,
+        ownerId: workspaces.previewMonitorOwnerId,
+        leaseExpiresAt: workspaces.previewMonitorLeaseExpiresAt,
+      })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    expect(disabledMonitor).toEqual({
+      enabled: false,
+      ownerId: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it('rolls back an earlier live monitor when a later terminal batch item is stale', async () => {
+    const liveWorkspaceId = newId('ws');
+    const staleWorkspaceId = newId('ws');
+    await database.db.insert(workspaces).values([
+      {
+        id: liveWorkspaceId,
+        organizationId,
+        projectId,
+        branchId: null,
+        provider: 'modal',
+        providerWorkspaceId: 'sb-live-preview-batch',
+        status: 'ready',
+        resourceProfile: 'standard',
+        runId,
+        taskId,
+        purpose: 'preview',
+        environment: 'zapp-dev',
+        imageTag: 'forge-node-base:test',
+        previewMonitorEnabled: true,
+        previewMonitorOwnerId: 'live-batch-generation',
+        previewMonitorLeaseExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+      },
+      {
+        id: staleWorkspaceId,
+        organizationId,
+        projectId,
+        branchId: null,
+        provider: 'modal',
+        providerWorkspaceId: 'sb-stale-preview-batch',
+        status: 'ready',
+        resourceProfile: 'standard',
+        runId,
+        taskId,
+        purpose: 'preview',
+        environment: 'zapp-dev',
+        imageTag: 'forge-node-base:test',
+        previewMonitorEnabled: true,
+        previewMonitorOwnerId: 'different-batch-generation',
+        previewMonitorLeaseExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+      },
+    ]);
+    const terminal = (workspaceId: string, monitorLeaseToken: string) =>
+      event({
+        type: 'preview.failed',
+        visibility: 'user',
+        payload: { workspaceId, code: 'restart_limit_exceeded', monitorLeaseToken },
+      });
+
+    const response = await post(
+      [
+        terminal(liveWorkspaceId, 'live-batch-generation'),
+        terminal(staleWorkspaceId, 'stale-batch-generation'),
+      ],
+      { key: 'ws13-mixed-terminal-generations', service: 'sandbox-service' },
+    );
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe(
+      'preview_monitor_stale',
+    );
+    expect(await count('agent_events')).toBe(0);
+    expect(await count('audit_events')).toBe(0);
+    const [liveMonitor] = await database.db
+      .select({
+        enabled: workspaces.previewMonitorEnabled,
+        ownerId: workspaces.previewMonitorOwnerId,
+        leaseExpiresAt: workspaces.previewMonitorLeaseExpiresAt,
+      })
+      .from(workspaces)
+      .where(eq(workspaces.id, liveWorkspaceId));
+    expect(liveMonitor).toEqual({
+      enabled: true,
+      ownerId: 'live-batch-generation',
+      leaseExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+    });
   });
 
   it('requires a key and replays exactly once for the verified service identity across source IPs', async () => {

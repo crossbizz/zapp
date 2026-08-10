@@ -19,6 +19,7 @@ import {
   StartWorkspaceInputSchema,
   StartWorkspaceResultSchema,
   TerminateWorkspaceInputSchema,
+  WorkspacePortSchema,
   type SandboxServicePort,
   type SandboxWorkspace,
 } from '../sandbox/port.js';
@@ -35,6 +36,23 @@ const CreateBody = z
   .strict();
 const CheckpointBody = z.object({ kind: CheckpointKindSchema }).strict();
 type Workspace = Omit<SandboxWorkspace, 'resourceProfile'> & { readonly resourceProfile: string };
+
+function toSandboxWorkspace(workspace: Workspace): SandboxWorkspace {
+  return WorkspacePortSchema.parse({
+    id: workspace.id,
+    organizationId: workspace.organizationId,
+    projectId: workspace.projectId,
+    branchId: workspace.branchId,
+    provider: workspace.provider,
+    providerWorkspaceId: workspace.providerWorkspaceId,
+    status: workspace.status,
+    resourceProfile: workspace.resourceProfile,
+    snapshotRef: workspace.snapshotRef,
+    createdAt: workspace.createdAt,
+    lastActiveAt: workspace.lastActiveAt,
+    terminatedAt: workspace.terminatedAt,
+  });
+}
 
 export interface WorkspaceRoutesDeps {
   readonly now: () => Date;
@@ -84,7 +102,7 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
           result = CreateWorkspaceResultSchema.parse(
             await deps.sandbox.createWorkspace(
               CreateWorkspaceInputSchema.parse({
-                workspace,
+                workspace: toSandboxWorkspace(workspace),
                 ...(branch === undefined ? {} : { branchName: branch.name }),
                 operationKey,
               }),
@@ -140,7 +158,7 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
     apply: async (workspace, operationKey) =>
       StartWorkspaceResultSchema.parse(
         await deps.sandbox.startWorkspace(
-          StartWorkspaceInputSchema.parse({ workspace, operationKey }),
+          StartWorkspaceInputSchema.parse({ workspace: toSandboxWorkspace(workspace), operationKey }),
         ),
       ),
     patch: (result) => ({ status: StartWorkspaceResultSchema.parse(result).status }),
@@ -154,7 +172,7 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
       CheckpointWorkspaceResultSchema.parse(
         await deps.sandbox.checkpointWorkspace(
           CheckpointWorkspaceInputSchema.parse({
-            workspace,
+            workspace: toSandboxWorkspace(workspace),
             kind: CheckpointBody.parse(body).kind,
             operationKey,
           }),
@@ -169,7 +187,10 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
     body: undefined,
     apply: async (workspace, operationKey) => {
       const terminated = await deps.sandbox.terminateWorkspace(
-        TerminateWorkspaceInputSchema.parse({ workspace, operationKey }),
+        TerminateWorkspaceInputSchema.parse({
+          workspace: toSandboxWorkspace(workspace),
+          operationKey,
+        }),
       );
       z.void().parse(terminated);
       return undefined;

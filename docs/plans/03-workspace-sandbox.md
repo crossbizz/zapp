@@ -292,6 +292,67 @@ GET /healthz
 
 Sandbox-service exposes the same strict requests/responses as both `POST /internal/workspaces/:workspaceId/dev-server/start` and `POST /internal/workspaces/:workspaceId/dev-server/restart`, mapping each one-for-one through the provider/client to `/dev-server/start` and `/dev-server/restart` respectively. It resolves the attributed workspace to its attached provider sandbox without accepting a provider ID or agent origin. Both operations return readiness only when their response `supervisorId` proves that the reported process/group owns the contracted listener and the HTTP probe succeeds; restart additionally stops and waits for the currently managed process group and starts a replacement with a distinct PID. A bare port listener is insufficient for either route. The shared `WorkspaceRuntime` managed-start/restart conformance suite runs against `MemoryWorkspaceRuntime`, the local HTTP workspace-agent adapter, and the env-gated Modal provider, including unrelated-port-contender failures for both operations.
 
+#### WS-13 execution expansion (2026-08-09)
+
+- [x] **RED — bounded supervision and logs:** add workspace-agent tests that start a real HTTP fixture, capture interleaved stdout/stderr with monotonic cursors, read strictly after a supplied cursor, and prove the ring retains at most 10 MiB. Add a crash fixture that becomes ready and exits repeatedly; assert at most three automatic replacements in a rolling five-minute window and a terminal failed state on the fourth crash.
+- [x] **Run the focused RED:** `pnpm --filter @zapp/workspace-agent exec vitest run test/agent.test.ts -t "WS-13"`; the log endpoint and crash-restart assertions must fail because the current supervisor drops stdio and never replaces a crashed ready process.
+- [x] **GREEN — workspace-agent supervisor:** extend `sandbox/workspace-agent/src/dev-server.ts` with a byte-bounded cursor ring, owned process-group restart state, and deterministic crash-window accounting. Extend `sandbox/workspace-agent/src/main.ts` with strict `GET /dev-server/logs?after=<cursor>&limit=<n>` and health failure evidence; keep the existing authenticated start/restart schemas and listener-ownership proof unchanged.
+- [x] **Run workspace-agent GREEN:** rerun the focused WS-13 tests, then the complete workspace-agent suite plus lint, typecheck, and build.
+- [x] **RED — provider, internal API, and CP-13 lifecycle:** add sandbox-service tests proving strict provider/internal log mapping, tenant/project attachment resolution without provider identity input, `preview.starting` before each start/restart, `preview.ready` only after supervisor-owned readiness, and `preview.failed` on start/circuit failure. Replays use stable event keys and never duplicate the lifecycle event.
+- [x] **Run the sandbox RED:** `pnpm --filter @zapp/sandbox-service exec vitest run test/integration/modal-provider.test.ts -t "WS-13"`; fail on the missing logs client/route and preview-event boundary.
+- [x] **GREEN — provider and event join:** extend the existing provider/client and internal workspace routes with the strict cursor-log contract. Join start/restart outcomes to the existing CP-13 event boundary using the attributed attachment tags (`org_id`, `project_id`, `run_id`, `task_id`) and operation key; do not expose or accept a provider ID/origin.
+- [x] **Run sandbox GREEN:** rerun the focused WS-13 tests, the shared managed-start/restart conformance suite for memory and local HTTP, and the complete sandbox-service test/lint/typecheck/build gate.
+- [x] **Review and final acceptance:** run at most two GPT-5.6-SOL High Critical/Important review rounds (exit: zero Critical/Important). After local review closure, run the one env-gated Modal acceptance against the immutable lock for the provider-supported start/restart/readiness surface; keep any locked-image-only skip visible and do not rebuild an image in this task.
+- [x] **Verify, record, and ship:** run `pnpm verify`; check `tasks/todo.md`; append one WS-13 execution-log line; commit `feat(sandbox-service): supervised dev server + log streaming`; push `main`; watch the authoritative GitHub Actions run to green.
+
+#### WS-13-FIX-1 — capped-review durable lifecycle closure
+
+- [x] **RED:** prove CP-13 replays one stable lifecycle key when retry time advances, a fresh sandbox-service instance restores failure observation for an already-running workspace, and confirmed termination stops all monitor polling.
+- [x] **GREEN:** exclude only event `occurredAt` from CP-13's route-specific idempotency fingerprint while preserving the first stored event, restore monitors from durable active attachments on app readiness, and abort monitor ownership after confirmed termination.
+- [x] **Verify/review/ship:** run the focused regressions plus affected package gates; at most two fresh Critical/Important review rounds (exit zero); then complete the single WS-13 Modal acceptance, WS-13/WS-13-FIX-1 bookkeeping, commit, push, and watch CI green.
+
+#### WS-13-FIX-2 — preview monitor lease handoff and terminal closure
+
+- [x] **RED:** prove an already-running standby replica claims an enabled workspace after the current owner closes or its lease expires, and prove successful terminal failure publication durably disables the monitor so no replica can reclaim it.
+- [x] **GREEN:** keep enabled attachments in a bounded standby acquisition loop, renew only the active owner, and revoke the durable monitor after idempotent CP-13 terminal delivery before releasing local ownership.
+- [x] **Verify/review/ship:** rerun the focused replica and real-Postgres regressions plus affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); then complete the one WS-13 Modal acceptance and ship all WS-13 bookkeeping in the prescribed task commit.
+
+#### WS-13-FIX-3 — transactionally fenced terminal event delivery
+
+- [x] **RED:** prove the read-only logs route never emits lifecycle state, and prove a terminal CP-13 request delayed beyond lease takeover/restart cannot persist a stale failure event.
+- [x] **GREEN:** carry the opaque lease token only on the internal terminal event request, validate and row-lock that exact live monitor generation inside the event-ingest transaction, strip the token before persistence/response, and leave terminal delivery solely to the durable monitor.
+- [x] **Verify/review/ship:** run focused sandbox and real-Postgres CP-13 regressions plus affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); then perform the single WS-13 Modal acceptance and ship the WS-13 task family.
+
+#### WS-13-FIX-4 — atomic terminal batch rollback
+
+- [x] **RED:** submit one CP-13 batch whose first terminal monitor generation is live and whose second is stale; prove the 409 response writes no events and leaves the first monitor enabled with its original lease.
+- [x] **GREEN:** abort the event-ingest transaction on any stale terminal generation and translate the private abort outside the transaction, so validation, exact-token disable, event insert, notification, and audit commit or roll back together.
+- [x] **Verify/review/ship:** run the focused mixed-batch and WS-13 regressions plus affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); then perform the single WS-13 Modal acceptance and ship the WS-13 task family.
+
+#### WS-13-FIX-5 — bounded immutable-image acceptance
+
+- [x] **RED/evidence:** retain the failed one-shot acceptance evidence: the historical full WS-4 live matrix reached its 240-second suite budget before isolating WS-13 and emitted no operation-level failure.
+- [x] **GREEN:** add one credential-gated immutable-image acceptance scoped exactly to create, supervisor-owned start, distinct-process restart, unrelated-listener rejection, and termination; do not rerun the unrelated WS-4 filesystem/race matrix or claim the locked image's unpublished logs route.
+- [x] **Verify/review/ship:** run the focused local WS-13 regressions and affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); run this fix task's single exact Modal acceptance, then complete and ship the WS-13 task family.
+
+#### WS-13-FIX-6 — collision-safe immutable-image acceptance
+
+- [x] **RED/evidence:** retain the failed FIX-5 provider acceptance: the exact bounded test failed before allocation with `BranchLockedError` because a timed-out historical test had used the same deterministic organization/project/branch sandbox name. Resolve that exact task-owned name and verify the stale provider sandbox is already absent before continuing.
+- [x] **GREEN:** allocate a fresh schema-valid branch identity for each bounded provider acceptance invocation so a prior failed run cannot collide with a later task's deterministic writer name; preserve the unconditional outer workspace termination and bounded listener cleanup from FIX-5.
+- [x] **Verify/review/ship:** run the focused local WS-13 regressions and affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); run this fix task's single exact Modal acceptance, then complete and ship the WS-13 task family.
+
+#### WS-13-FIX-7 — abort-settled Modal execution streams
+
+- [x] **RED/evidence:** retain the failed FIX-6 provider acceptance: after the unrelated listener was ready, abort did not settle the public execution stream within ten seconds. Add a local stream fake whose pending body read is not released by `cancel()` and prove signal abort currently leaves `execStream()` blocked.
+- [x] **GREEN:** race each pending agent-stream body read against the caller abort signal so cancellation enters the existing `finally`, kills the attributed execution, cancels the bridge stream, and closes the SDK without waiting for a provider read that may never settle.
+- [x] **Verify/review/ship:** run the focused abort regression, local WS-13 regressions, and affected package gates; run at most two GPT-5.6-SOL High Critical/Important review rounds (exit zero); run this fix task's single exact Modal acceptance, then complete and ship the WS-13 task family.
+
+#### WS-13-FIX-8 — cancellation-settled SSE replay gate
+
+- [x] **RED:** reproduce the clean full-gate hang as an aborted PostgreSQL replay whose reserved connection is reused before the replay query settles; retain the exact A→B reconnect regression and its clean-shutdown assertion.
+- [x] **GREEN:** use postgres.js's public `PendingQuery.cancel()` and hold the reserved connection until that same query settles; remove the private driver-shape cancellation and auxiliary fence query.
+- [x] **Verify/review/ship:** pass the focused cancellation unit tests, real PostgreSQL A→B regression, full database package gate, and two-round capped review before the final repository gate and WS-13 shipment.
+
 ### Task WS-14 [M2]: Modal integration test suite (real dev env)
 
 **Files:** Create: `test/integration/modal-e2e.test.ts`, CI nightly workflow
@@ -373,3 +434,4 @@ Binding behavior: global + per-org concurrent-sandbox caps from plan config (OPS
 - 2026-08-09 M1-PLAN-1 done — ADR-0023 records the pinned Modal V2 connect-token blocker and re-binds WS-12 to a zapp-owned, tenant-scoped authenticated ingress over server-only encrypted tunnels; exact keyed share/grant/session, isolated-origin, revocation, API/SDK, and downstream client contracts are now executable, while WS-12 remains unchecked pending its three serial slices.
 - 2026-08-09 WS-12 done — encrypted server-only Modal preview transport, durable hashed shares/grants/sessions, exact-origin isolated bootstrap, Redis revocation fanout, generated SDK, and web E2E passed local package gates plus one locked-image Modal health acceptance; two review rounds exposed and closed streaming, abort, header/redirect confinement, SDK-cookie, and idempotency-scope defects, with no third review per the cap.
 - 2026-08-09 M1-CI-preview-timeout done — clean CI exposed a 25 ms healthy-origin header deadline under full contention; the fixture now preserves silent-origin timeout and rotation with a 500 ms/2 s proof budget, while production's 10-second boundary is unchanged; focused 1/1, preview-proxy 109/109, static gates, and one Critical/Important review passed.
+- 2026-08-09 WS-13 done — supervised preview processes now expose bounded cursor logs, deterministic crash recovery, durable fenced lifecycle monitoring, and cancellation-settled Modal/SSE streams; two-round-capped reviews closed FIX-1..8, the one immutable-image Modal acceptance passed, and `pnpm verify` closed 82/82 concurrent tasks, 16/16 serialized integration tasks, tenant isolation 54/54, and Gate 5 1/1 with external-credential skips visible.
