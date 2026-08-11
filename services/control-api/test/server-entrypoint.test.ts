@@ -264,6 +264,16 @@ const production = vi.hoisted(() => {
       baseUrl: 'https://api.cloud.flexprice.io/v1',
     })),
     requireFlexpriceForEnvironment: vi.fn((_environment: unknown, flexprice: unknown) => flexprice),
+    loadStripeBillingEnv: vi.fn(() => ({
+      platformSecretKey: 'sk_test_platformbilling',
+      webhookSecret: 'whsec_platformbilling',
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    })),
+    requireStripeBillingForEnvironment: vi.fn(
+      (_environment: unknown, billing: unknown) => billing,
+    ),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
     loadModelGatewayUrl: vi.fn(() => 'http://model-gateway.test:4100'),
     loadPreviewEnv: vi.fn(() => preview),
@@ -300,6 +310,8 @@ vi.mock('../src/env.js', () => ({
   loadEnv: production.loadEnv,
   loadFlexpriceEnv: production.loadFlexpriceEnv,
   requireFlexpriceForEnvironment: production.requireFlexpriceForEnvironment,
+  loadStripeBillingEnv: production.loadStripeBillingEnv,
+  requireStripeBillingForEnvironment: production.requireStripeBillingForEnvironment,
   loadGitHubAppEnv: production.loadGitHubAppEnv,
   loadGitHubImportQueueEnv: production.loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv: production.loadGitHubWebhookQueueEnv,

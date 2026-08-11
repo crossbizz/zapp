@@ -1,5 +1,5 @@
 import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
-import type { Database } from '@zapp/db';
+import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
 import type { AuthEnv } from './auth/config.js';
@@ -31,7 +31,7 @@ import {
   createSandboxPreviewProxy,
 } from './routes/preview.js';
 import { createDbPreviewShareStore } from './preview/store.js';
-import type { FlexpriceEnv, PreviewEnv } from './env.js';
+import type { FlexpriceEnv, PreviewEnv, StripeBillingEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
 import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
@@ -71,6 +71,12 @@ import {
   createStripeAccountClient,
 } from './integrations/stripe/connect.js';
 import type { IntegrationPort } from './routes/integrations.js';
+import { createStripeBillingClient, BillingPlanCatalogSchema } from './billing/stripe.js';
+import {
+  createBillingWebhookProcessor,
+  createDbBillingStore,
+  createFlexpriceBillingClient,
+} from './billing/webhooks.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -129,6 +135,8 @@ export interface ServiceRuntime {
   readonly planLimits?: PlanLimitsConfig;
   /** Omitted only when Flexprice credentials are intentionally absent in local development. */
   readonly flexprice?: FlexpriceEnv;
+  /** Separate platform-billing Stripe scope; generated apps only receive restricted keys. */
+  readonly billing?: StripeBillingEnv;
   /** Optional server-owned gate so background reconciliation shares its exact wallet boundary. */
   readonly creditBalance?: CreditBalanceGate;
   /** OPS-7 owns delivery; this is the explicit handoff for provider-outage alerts. */
@@ -247,6 +255,36 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       return Promise.reject(new Error('integration service unavailable'));
     },
   };
+  const billing =
+    runtime.billing === undefined
+      ? undefined
+      : (() => {
+          if (runtime.flexprice === undefined) {
+            throw new Error('platform billing requires Flexprice configuration');
+          }
+          if (runtime.planLimits === undefined) {
+            throw new Error('platform billing requires plan limits');
+          }
+          const store = createDbBillingStore({ database });
+          const flexprice = createFlexpriceBillingClient({
+            ...runtime.flexprice,
+          });
+          return {
+            stripe: createStripeBillingClient({
+              platformSecretKey: runtime.billing.platformSecretKey,
+            }),
+            store,
+            prices: runtime.billing.prices,
+            appBaseUrl: runtime.auth.config.appBaseUrl,
+            webhook: createBillingWebhookProcessor({
+              webhookSecret: runtime.billing.webhookSecret,
+              store,
+              idempotency: createActivityIdempotencyRepository(database),
+              flexprice,
+              plans: BillingPlanCatalogSchema.parse(runtime.planLimits),
+            }),
+          };
+        })();
 
   return buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -354,6 +392,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       }),
       ...(creditBalance === undefined ? {} : { creditBalance }),
     },
+    ...(billing === undefined ? {} : { billing }),
     ...(runtime.github === undefined ||
     githubStateStore === undefined ||
     githubProvider === undefined

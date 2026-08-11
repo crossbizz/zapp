@@ -46,7 +46,7 @@ export const subscriptions = pgTable(
  * dropped at all and only append. The TypeScript union below is the
  * compile-time half of the same rule.
  */
-export const USAGE_CATEGORIES = [
+export const METERED_USAGE_CATEGORIES = [
   'model_input_tokens',
   'model_output_tokens',
   'model_cached_tokens',
@@ -57,7 +57,13 @@ export const USAGE_CATEGORIES = [
   'artifact_storage',
 ] as const;
 
+export const USAGE_CATEGORIES = [
+  ...METERED_USAGE_CATEGORIES,
+  'credit_grant',
+] as const;
+
 export type UsageCategory = (typeof USAGE_CATEGORIES)[number];
+export type MeteredUsageCategory = (typeof METERED_USAGE_CATEGORIES)[number];
 
 /**
  * Append-only (plan 01 §Global Constraints, plan 10 OPS-1): rows are never
@@ -260,7 +266,7 @@ export const usageReconciliationCorrections = pgTable(
     projectId: text('project_id'),
     runId: text('run_id'),
     taskId: text('task_id'),
-    category: text('category', { enum: USAGE_CATEGORIES }).notNull(),
+    category: text('category', { enum: METERED_USAGE_CATEGORIES }).notNull(),
     windowFrom: timestamp('window_from', { withTimezone: true }).notNull(),
     windowTo: timestamp('window_to', { withTimezone: true }).notNull(),
     targetQuantity: numeric('target_quantity').notNull(),
@@ -278,7 +284,7 @@ export const usageReconciliationCorrections = pgTable(
     index('usage_reconciliation_corrections_pending_idx').on(t.status, t.createdAt),
     check(
       'usage_reconciliation_corrections_category_check',
-      oneOf('category', USAGE_CATEGORIES),
+      oneOf('category', METERED_USAGE_CATEGORIES),
     ),
     check(
       'usage_reconciliation_corrections_status_check',

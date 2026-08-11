@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { CreditStateSchema, idSchema, type CreditState, type RunMode } from '@zapp/contracts';
 import {
-  USAGE_CATEGORIES,
+  METERED_USAGE_CATEGORIES,
   accountingLeaderLeases,
   agentRuns,
   creditExhaustionEpisodes,
@@ -769,7 +769,7 @@ export function createDatabaseUsageCorrectionJournal(options: {
       taskId: idSchema('task').nullable(),
       from: z.string().datetime({ offset: true }),
       to: z.string().datetime({ offset: true }),
-      category: z.enum(USAGE_CATEGORIES),
+      category: z.enum(METERED_USAGE_CATEGORIES),
       targetQuantity: UsageQuantitySchema,
       observedQuantity: UsageQuantitySchema,
     })
@@ -1057,9 +1057,9 @@ export function createThreeWayUsageReconciler(options: {
       for (const scope of scopes) {
         const windowedScope = { ...scope, ...window };
         const aggregateValues = z
-          .record(z.enum(USAGE_CATEGORIES), UsageQuantitySchema)
+          .record(z.enum(METERED_USAGE_CATEGORIES), UsageQuantitySchema)
           .parse(await options.flexprice.readAggregates(windowedScope));
-        for (const category of USAGE_CATEGORIES) {
+        for (const category of METERED_USAGE_CATEGORIES) {
           const [rawLedger, rawRedis] = await Promise.all([
             options.ledger.readTotal(windowedScope, category),
             scope.runId === null
@@ -1391,7 +1391,7 @@ const FlexpriceAnalyticsResponseSchema = z
           meter: z
             .object({
               id: z.string().min(1),
-              event_name: z.enum(USAGE_CATEGORIES),
+              event_name: z.enum(METERED_USAGE_CATEGORIES),
               name: z.string().min(1),
               environment_id: z.string().min(1),
               status: z.string().min(1),
@@ -1479,7 +1479,7 @@ export function createFlexpriceUsageAggregateClient(options: {
           (aggregates[category] ?? 0n) + quantityUnits(item.total_usage);
       }
       return Object.fromEntries(
-        USAGE_CATEGORIES.map((category) => [
+        METERED_USAGE_CATEGORIES.map((category) => [
           category,
           formatQuantity(aggregates[category] ?? 0n),
         ]),

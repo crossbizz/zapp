@@ -1,6 +1,13 @@
 import { defineEnv, type ServiceTokenConfig } from '@zapp/config';
 import { z } from 'zod';
 
+import {
+  StripePlatformSecretSchema,
+  StripePriceCatalogSchema,
+  StripeWebhookSecretSchema,
+  type StripePriceCatalog,
+} from './billing/stripe.js';
+
 import { LOG_LEVELS } from './logging.js';
 import { KEY_BYTES, createEnvMasterKey, type MasterKeyPort } from './secrets/crypto.js';
 
@@ -303,6 +310,67 @@ export function requireFlexpriceForEnvironment(
     throw new Error('FLEXPRICE_API_KEY is required in production');
   }
   return flexprice;
+}
+
+const OptionalBillingValueSchema = z.union([z.string().trim().min(1), z.literal('')]).optional();
+const StripeBillingEnvSchema = z.object({
+  PLATFORM_BILLING_STRIPE_SECRET_KEY: OptionalBillingValueSchema,
+  PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: OptionalBillingValueSchema,
+  STRIPE_PLAN_PRICE_IDS_JSON: OptionalBillingValueSchema,
+  FLEXPRICE_STRIPE_WEBHOOK_URL: z
+    .union([
+      z.string().url().refine((value) => /^https:\/\//u.test(value), 'must use HTTPS'),
+      z.literal(''),
+    ])
+    .optional(),
+});
+
+export interface StripeBillingEnv {
+  readonly platformSecretKey: string;
+  readonly webhookSecret: string;
+  readonly prices: StripePriceCatalog;
+  readonly flexpriceStripeWebhookUrl: string;
+}
+
+export function loadStripeBillingEnv(source: unknown = process.env): StripeBillingEnv | undefined {
+  const env = defineEnv(StripeBillingEnvSchema, source);
+  const values = [
+    env.PLATFORM_BILLING_STRIPE_SECRET_KEY,
+    env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET,
+    env.STRIPE_PLAN_PRICE_IDS_JSON,
+    env.FLEXPRICE_STRIPE_WEBHOOK_URL,
+  ];
+  if (values.every((value) => value === undefined || value === '' || value.includes('replace-me'))) {
+    return undefined;
+  }
+  return {
+    platformSecretKey: StripePlatformSecretSchema.parse(
+      env.PLATFORM_BILLING_STRIPE_SECRET_KEY,
+      { path: ['PLATFORM_BILLING_STRIPE_SECRET_KEY'] },
+    ),
+    webhookSecret: StripeWebhookSecretSchema.parse(
+      env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET,
+      { path: ['PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET'] },
+    ),
+    prices: StripePriceCatalogSchema.parse(
+      JSON.parse(env.STRIPE_PLAN_PRICE_IDS_JSON ?? ''),
+      { path: ['STRIPE_PLAN_PRICE_IDS_JSON'] },
+    ),
+    flexpriceStripeWebhookUrl: z.string().url().parse(
+      env.FLEXPRICE_STRIPE_WEBHOOK_URL,
+      { path: ['FLEXPRICE_STRIPE_WEBHOOK_URL'] },
+    ),
+  };
+}
+
+export function requireStripeBillingForEnvironment(
+  environment: Pick<ServiceEnv, 'NODE_ENV'>,
+  billing: StripeBillingEnv | undefined,
+): StripeBillingEnv | undefined {
+  if (environment.NODE_ENV === 'production' && billing === undefined) {
+    throw new Error('PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production');
+  }
+  return billing;
 }
 
 /**

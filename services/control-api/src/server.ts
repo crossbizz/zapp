@@ -20,6 +20,8 @@ import {
   loadRunIntentHmacKey,
   loadPreviewEnv,
   loadServiceTokenConfig,
+  loadStripeBillingEnv,
+  requireStripeBillingForEnvironment,
   loadUsageQueueEnv,
   loadTemporalEnv,
 } from './env.js';
@@ -126,6 +128,7 @@ const pricing = await loadPricingFile(new URL('../../../config/pricing.json', im
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
 const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
+const stripeBillingConfig = requireStripeBillingForEnvironment(env, loadStripeBillingEnv());
 const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
 const github = loadGitHubAppEnv();
@@ -188,6 +191,7 @@ const app = composeApp({
   planLimits,
   orchestrator: runOrchestrator,
   ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
+  ...(stripeBillingConfig === undefined ? {} : { billing: stripeBillingConfig }),
   ...(creditBalance === undefined ? {} : { creditBalance }),
   usageOpsAlerts,
   temporal,

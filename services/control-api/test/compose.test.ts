@@ -74,6 +74,26 @@ function composed(): AppInstance {
     modelGatewayUrl: 'http://127.0.0.1:4100',
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
+    planLimits: {
+      trial: { concurrentAutonomousRuns: 1, concurrentSandboxes: 1, maxResourceProfile: 'small', maxRunBudgetCredits: '10.0000', maxPreviewLifetimeHours: 1, artifactRetentionDays: 7, monthlyCredits: '10.0000', seats: 1 },
+      builder: { concurrentAutonomousRuns: 3, concurrentSandboxes: 3, maxResourceProfile: 'standard', maxRunBudgetCredits: '100.0000', maxPreviewLifetimeHours: 24, artifactRetentionDays: 30, monthlyCredits: '100.0000', seats: 3 },
+      studio: { concurrentAutonomousRuns: 10, concurrentSandboxes: 10, maxResourceProfile: 'large', maxRunBudgetCredits: '1000.0000', maxPreviewLifetimeHours: 168, artifactRetentionDays: 90, monthlyCredits: '1000.0000', seats: 10 },
+    },
+    flexprice: {
+      apiKey: 'not-a-real-flexprice-key',
+      baseUrl: 'https://api.cloud.flexprice.io/v1',
+    },
+    creditBalance: {
+      availableCredits: () => Promise.reject(new Error('credit balance reached')),
+      requireRunAdmission: () => Promise.reject(new Error('credit balance reached')),
+    },
+    billing: {
+      platformSecretKey: 'sk_test_platformbilling',
+      webhookSecret: 'whsec_platformbilling',
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    },
     temporal: { workflow: {} as never },
     artifactStorage: {
       endpoint: 'http://127.0.0.1:9000',
@@ -155,6 +175,11 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['GET', '/v1/integrations/github/repositories'],
   ['GET', '/v1/integrations/github/repositories/:repositoryId/branches'],
   ['POST', '/v1/webhooks/github'],
+  ['GET', '/v1/billing/status'],
+  ['POST', '/v1/billing/checkout'],
+  ['POST', '/v1/billing/portal'],
+  ['PATCH', '/v1/billing/subscription'],
+  ['POST', '/v1/webhooks/stripe'],
 ];
 
 describe('the composition server.ts performs', () => {

@@ -89,6 +89,28 @@ export const OrganizationSettingsSchema = z
   .object({
     builderCanDeploy: z.boolean().default(false),
     defaultModelPolicy: JsonValueSchema.optional(),
+    billing: z
+      .object({
+        dunning: z.discriminatedUnion('state', [
+          z.object({ state: z.literal('current') }).strict(),
+          z
+            .object({
+              state: z.literal('grace'),
+              failedInvoiceId: z.string().min(1),
+              graceEndsAt: z.string().datetime({ offset: true }),
+            })
+            .strict(),
+          z
+            .object({
+              state: z.literal('downgraded'),
+              failedInvoiceId: z.string().min(1),
+              graceEndsAt: z.string().datetime({ offset: true }),
+            })
+            .strict(),
+        ]),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

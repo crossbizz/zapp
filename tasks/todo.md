@@ -230,7 +230,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M5 — SaaS hardening (Weeks 20–26)
 
-- [ ] OPS-4 Stripe platform billing
+- [x] OPS-4 Stripe platform billing
 - [ ] OPS-5 Top-ups + trial
 - [ ] OPS-6 PostHog analytics + feature flags + dashboards
 - [ ] OPS-7 Notification service

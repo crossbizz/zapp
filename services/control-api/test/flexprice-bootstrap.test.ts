@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { USAGE_CATEGORIES } from '@zapp/db';
+import { METERED_USAGE_CATEGORIES } from '@zapp/db';
 
 import {
   createFlexpriceHttpBootstrapPort,
@@ -19,7 +19,7 @@ describe('OPS-1B Flexprice bootstrap', () => {
         return Promise.resolve();
       },
     };
-    expect(BOOTSTRAP_CATEGORIES).toEqual(USAGE_CATEGORIES);
+    expect(BOOTSTRAP_CATEGORIES).toEqual(METERED_USAGE_CATEGORIES);
     const input = {
       categories: BOOTSTRAP_CATEGORIES,
       plans: {

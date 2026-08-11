@@ -34,6 +34,12 @@ import type { UserStore } from './auth/users.js';
 import type { PricingConfig } from './usage/pricing.js';
 import type { CreditBalanceGate, PlanLimitsConfig } from './usage/limits.js';
 import type { ModelCompletionRepository } from './usage/model-completions.js';
+import { registerBillingRoutes, type BillingRoutesDeps } from './billing/portal.js';
+import {
+  createDunningLifecycle,
+  registerStripeBillingWebhookRoute,
+  type BillingWebhookProcessor,
+} from './billing/webhooks.js';
 import {
   loadRateLimitSettings,
   trustProxyOption,
@@ -225,6 +231,11 @@ export interface LocalAgentDeps {
   readonly creditBalance?: CreditBalanceGate;
 }
 
+export interface BillingDeps extends BillingRoutesDeps {
+  readonly webhook: BillingWebhookProcessor;
+  readonly dunningSweepIntervalMs?: number;
+}
+
 /**
  * What the rate-limit and idempotency plugins need (CP-5). Both are always
  * registered — a route that could be added without a limit or without replay
@@ -309,6 +320,7 @@ export interface AppDeps {
   readonly localAgent?: LocalAgentDeps;
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
+  readonly billing?: BillingDeps;
 }
 
 /**
@@ -415,7 +427,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     'application/json',
     { parseAs: 'buffer' },
     (request, body, done) => {
-      if (request.url.split('?')[0] === '/v1/webhooks/github') {
+      if (
+        request.url.split('?')[0] === '/v1/webhooks/github' ||
+        request.url.split('?')[0] === '/v1/webhooks/stripe'
+      ) {
         done(null, body);
         return;
       }
@@ -449,6 +464,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     // decrypt route turns an organization id into one. Without the factory
     // there is nothing to scope either against.
     throw new Error('refusing to start: secrets routes require tenant (AppDeps.tenant)');
+  }
+  if (deps.billing !== undefined && deps.tenant === undefined) {
+    throw new Error('refusing to start: billing routes require tenant (AppDeps.tenant)');
   }
   if (deps.modelCompletions !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: model completion routes require service authentication');
@@ -679,6 +697,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                     stateStore: deps.github.stateStore,
                   })),
           });
+          if (deps.billing !== undefined) {
+            registerBillingRoutes(app, deps.billing);
+          }
 
           if (secrets !== undefined) {
             registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
@@ -727,7 +748,29 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.after((error) => {
     if (error) throw error;
     if (deps.githubWebhook !== undefined) registerGitHubWebhookRoute(app, deps.githubWebhook);
+    if (deps.billing !== undefined) {
+      registerStripeBillingWebhookRoute(app, deps.billing.webhook);
+    }
   });
+
+  if (deps.billing !== undefined) {
+    const dunning = createDunningLifecycle({
+      store: deps.billing.store,
+      now,
+      ...(deps.billing.dunningSweepIntervalMs === undefined
+        ? {}
+        : { intervalMs: deps.billing.dunningSweepIntervalMs }),
+      onError: (error) => {
+        app.log.error({ err: error }, 'billing dunning sweep failed');
+      },
+    });
+    app.addHook('onReady', () => {
+      dunning.start();
+    });
+    app.addHook('onClose', async () => {
+      await dunning.stop();
+    });
+  }
 
   return app;
 }

@@ -125,9 +125,9 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `services/control-api/src/billing/{stripe,webhooks,portal}.ts`, `test/integration/billing.test.ts` (Stripe test mode)
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26.1): products/prices bootstrapped by script from `config/plans.json`; subscribe flow: checkout session (plan + seats) → webhook `customer.subscription.*` sync → `subscriptions` row + org.plan update + Flexprice customer/plan assignment; monthly credit grant on invoice.paid = **Flexprice wallet grant** + mirror `usage_ledger` entry category `credit_grant` (extend enum, idempotent by invoice id); metered/usage charges flow Flexprice → Stripe via Flexprice's Stripe integration (invoice items), reconciled monthly against ledger aggregates; seat changes prorated via Stripe; customer portal link for payment method/invoices; failed payment: dunning state → org banner + 7-day grace → downgrade to trial limits (never data deletion); webhook signature + idempotent event processing (dedupe by event id); **platform Stripe credentials in separate vault scope from generated-app scope (INT-8 separation test extends here)**.
-- [ ] Failing tests: webhook replay idempotent; subscription lifecycle transitions; grace-period state machine.
-- [ ] Commit: `feat(billing): stripe subscriptions, seats, credit grants, dunning`
+- [x] Binding behavior (PRD §26.1): products/prices bootstrapped by script from `config/plans.json`; subscribe flow: checkout session (plan + seats) → webhook `customer.subscription.*` sync → `subscriptions` row + org.plan update + Flexprice customer/plan assignment; monthly credit grant on invoice.paid = **Flexprice wallet grant** + mirror `usage_ledger` entry category `credit_grant` (extend enum, idempotent by invoice id); metered/usage charges flow Flexprice → Stripe via Flexprice's Stripe integration (invoice items), reconciled monthly against ledger aggregates; seat changes prorated via Stripe; customer portal link for payment method/invoices; failed payment: dunning state → org banner + 7-day grace → downgrade to trial limits (never data deletion); webhook signature + idempotent event processing (dedupe by event id); **platform Stripe credentials in separate vault scope from generated-app scope (INT-8 separation test extends here)**.
+- [x] Failing tests: webhook replay idempotent; subscription lifecycle transitions; grace-period state machine.
+- [x] Commit: `feat(billing): stripe subscriptions, seats, credit grants, dunning`
 
 ### Task OPS-5 [M5]: Credit top-ups + trial
 
@@ -260,6 +260,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-4 done — Shipped versioned Stripe subscription, portal, and prorated-seat APIs; signed replay-safe webhooks; code-owned Flexprice plan linking, monthly wallet grants, ledger mirroring/reconciliation, and seven-day dunning without data deletion. Commercial Stripe unit amounts remain validated deploy-time input because `config/plans.json` owns plan identity and entitlements but contains no prices; the real Stripe test-mode gate skipped because platform credentials and deployed price IDs were unavailable, with no implementation blocker or plan deviation.
 - 2026-08-11 OPS-3-FIX-3 done — Closed Build's workspace scheduling credit race and defaulted only legacy reason-less budget-approval activity payloads; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-2 done — Gated Build and Autonomous planner, repair, and reverify boundaries and preserved legacy budget approvals through a canonical backfill and deterministic replay decoder; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-1 done — Closed shared Temporal dispatch, immutable plan caps, atomic dispatch retry, durable leased exhaustion delivery, bounded authoritative credit fallback, the desktop request boundary, and deployable sandbox enforcement; no provider calls, blockers, or deviations.

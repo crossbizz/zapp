@@ -183,6 +183,7 @@ describe('billing tables', () => {
       'storage_gib_hours',
       'deploy_provider',
       'artifact_storage',
+      'credit_grant',
     ]);
   });
 

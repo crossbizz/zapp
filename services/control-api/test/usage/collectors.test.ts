@@ -1,4 +1,4 @@
-import { USAGE_CATEGORIES as LEDGER_CATEGORIES } from '@zapp/db';
+import { METERED_USAGE_CATEGORIES } from '@zapp/db';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -564,8 +564,8 @@ describe('OPS-2 metering collectors', () => {
     const enabledCategories = PRD_METERING_COVERAGE.filter(({ enabled }) => enabled)
       .map(({ category }) => category)
       .sort();
-    expect(enabledCategories).toEqual([...LEDGER_CATEGORIES].sort());
-    expect([...FLEXPRICE_CATEGORIES].sort()).toEqual([...LEDGER_CATEGORIES].sort());
+    expect(enabledCategories).toEqual([...METERED_USAGE_CATEGORIES].sort());
+    expect([...FLEXPRICE_CATEGORIES].sort()).toEqual([...METERED_USAGE_CATEGORIES].sort());
     expect([...MODEL_COMPLETION_USAGE_CATEGORIES].sort()).toEqual(
       ['model_cached_tokens', 'model_input_tokens', 'model_output_tokens'].sort(),
     );
@@ -579,7 +579,7 @@ describe('OPS-2 metering collectors', () => {
         ...STORAGE_USAGE_CATEGORIES,
         ...DEPLOYMENT_USAGE_CATEGORIES,
       ].sort(),
-    ).toEqual([...LEDGER_CATEGORIES].sort());
+    ).toEqual([...METERED_USAGE_CATEGORIES].sort());
   });
 });
 
@@ -693,13 +693,13 @@ describe('OPS-2 three-way reconciliation', () => {
     const corrections: unknown[] = [];
     const healed: unknown[] = [];
     let pending = false;
-    const aggregate = (): Record<(typeof LEDGER_CATEGORIES)[number], string> =>
+    const aggregate = (): Record<(typeof METERED_USAGE_CATEGORIES)[number], string> =>
       Object.fromEntries(
-        LEDGER_CATEGORIES.map((category) => [
+        METERED_USAGE_CATEGORIES.map((category) => [
           category,
           category === 'model_input_tokens' ? observed : '0',
         ]),
-      ) as Record<(typeof LEDGER_CATEGORIES)[number], string>;
+      ) as Record<(typeof METERED_USAGE_CATEGORIES)[number], string>;
     const reconciler = createThreeWayUsageReconciler({
       scopes: { list: () => Promise.resolve([ids]) },
       ledger: {

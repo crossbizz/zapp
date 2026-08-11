@@ -86,6 +86,31 @@ function documentedHarness(): Harness {
       secret: 'openapi-test-secret',
       store: createInMemoryGitHubWebhookStore(),
     },
+    billing: {
+      stripe: {
+        createCheckout: () => Promise.reject(new Error('OpenAPI must not create checkout sessions.')),
+        createPortal: () => Promise.reject(new Error('OpenAPI must not create portal sessions.')),
+        updateSeats: () => Promise.reject(new Error('OpenAPI must not update seats.')),
+        createProduct: () => Promise.reject(new Error('OpenAPI must not create products.')),
+        createMonthlyPrice: () => Promise.reject(new Error('OpenAPI must not create prices.')),
+        verifyWebhookEndpoint: () => Promise.reject(new Error('OpenAPI must not inspect webhooks.')),
+      },
+      store: {
+        status: () => Promise.reject(new Error('OpenAPI must not read billing status.')),
+        syncSubscription: () => Promise.reject(new Error('OpenAPI must not sync subscriptions.')),
+        findOrganizationByCustomer: () => Promise.reject(new Error('OpenAPI must not find customers.')),
+        markPaymentFailed: () => Promise.reject(new Error('OpenAPI must not mark dunning.')),
+        clearDunning: () => Promise.reject(new Error('OpenAPI must not clear dunning.')),
+        mirrorCreditGrant: () => Promise.reject(new Error('OpenAPI must not grant credits.')),
+        ledgerCostUsd: () => Promise.reject(new Error('OpenAPI must not read usage cost.')),
+        downgradeExpiredDunning: () => Promise.resolve(0),
+      },
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      appBaseUrl: 'https://app.zapp.test',
+      webhook: {
+        handle: () => Promise.reject(new Error('OpenAPI must not process Stripe webhooks.')),
+      },
+    },
   });
   apps.push(built.app);
   return built;

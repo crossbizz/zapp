@@ -4,7 +4,12 @@ import { capabilityScanArtifactStorageRef, type CapabilityScanPort } from '@zapp
 import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
-import { buildApp, type AppInstance, type LocalAgentDeps } from '../../src/app.js';
+import {
+  buildApp,
+  type AppInstance,
+  type BillingDeps,
+  type LocalAgentDeps,
+} from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
@@ -274,6 +279,7 @@ export interface HarnessOptions {
   readonly attachmentStorage?: AttachmentStoragePort;
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
+  readonly billing?: BillingDeps;
 }
 
 /**
@@ -364,6 +370,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     ...(options.localAgent === undefined ? {} : { localAgent: options.localAgent }),
     ...(options.github === undefined ? {} : { github: options.github }),
     ...(options.githubWebhook === undefined ? {} : { githubWebhook: options.githubWebhook }),
+    ...(options.billing === undefined ? {} : { billing: options.billing }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

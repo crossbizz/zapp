@@ -29,6 +29,7 @@ export {
   type User,
 } from './schema/identity.js';
 export {
+  METERED_USAGE_CATEGORIES,
   USAGE_CATEGORIES,
   accountingLeaderLeases,
   creditExhaustionEpisodes,
@@ -42,6 +43,7 @@ export {
   usageReconciliationCorrections,
   type AccountingLeaderLease,
   type CreditExhaustionEpisode,
+  type MeteredUsageCategory,
   type ModelCompletionJournal,
   type NewSubscription,
   type NewUsageLedgerEntry,

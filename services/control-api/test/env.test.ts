@@ -9,6 +9,8 @@ import {
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
   requireFlexpriceForEnvironment,
+  loadStripeBillingEnv,
+  requireStripeBillingForEnvironment,
   loadGitHubAppEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
@@ -97,6 +99,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
+    expect(loadStripeBillingEnv(environment)).toBeUndefined();
   });
 
   it('leaves every rotation variable empty, and empty is accepted', () => {
@@ -195,6 +198,44 @@ describe('Flexprice production admission', () => {
     );
     expect(requireFlexpriceForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
     expect(requireFlexpriceForEnvironment({ NODE_ENV: 'development' }, undefined)).toBeUndefined();
+  });
+});
+
+describe('Stripe platform billing configuration', () => {
+  it('loads only the platform credential scope and a complete price catalog', () => {
+    expect(
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: 'sk_test_platformonly',
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: 'whsec_platformonly',
+        STRIPE_PLAN_PRICE_IDS_JSON:
+          '{"builder":"price_builder123","studio":"price_studio123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toEqual({
+      platformSecretKey: 'sk_test_platformonly',
+      webhookSecret: 'whsec_platformonly',
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    });
+    expect(() =>
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: 'rk_test_generatedapp',
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: 'whsec_platformonly',
+        STRIPE_PLAN_PRICE_IDS_JSON:
+          '{"builder":"price_builder123","studio":"price_studio123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toThrow('PLATFORM_BILLING_STRIPE_SECRET_KEY');
+  });
+
+  it('refuses production without platform billing and permits an absent local provider', () => {
+    expect(() =>
+      requireStripeBillingForEnvironment({ NODE_ENV: 'production' }, undefined),
+    ).toThrow('PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production');
+    expect(requireStripeBillingForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
   });
 });
 

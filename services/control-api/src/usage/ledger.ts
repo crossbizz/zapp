@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import { idSchema } from '@zapp/contracts';
-import { USAGE_CATEGORIES, usageLedger, usageOutbox, type Database } from '@zapp/db';
+import {
+  METERED_USAGE_CATEGORIES,
+  USAGE_CATEGORIES,
+  usageLedger,
+  usageOutbox,
+  type Database,
+} from '@zapp/db';
 import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -27,7 +33,7 @@ export const UsageEntrySchema = z
     projectId: idSchema('proj').nullable(),
     runId: idSchema('run').nullable(),
     taskId: idSchema('task').nullable(),
-    category: z.enum(USAGE_CATEGORIES),
+    category: z.enum(METERED_USAGE_CATEGORIES),
     provider: z.string().trim().min(1).max(200).nullable(),
     quantity: DecimalSchema,
     unit: z.string().trim().min(1).max(100),
