@@ -21,6 +21,12 @@ import type { TaskWorkflowActivities } from './activities/merge.js';
 import type { RepairActivities } from './activities/repair.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
+  fixWorkflow,
+  FixWorkflowInputSchema,
+  type FixModeActivities,
+  type FixVerificationActivities,
+} from './workflows/fix.js';
+import {
   autonomousPlanApprovalSignal,
   autonomousSpecificationApprovalSignal,
   autonomousWorkflow,
@@ -49,11 +55,13 @@ export type ProductionRunActivities =
   & RunActivities
   & TaskWorkflowActivities
   & AutonomousActivities
-  & BuildModeActivities;
+  & BuildModeActivities
+  & FixModeActivities;
 export type ProductionVerificationActivities =
   & CapabilityScanActivities
   & VerifyPhaseActivities
-  & RepairActivities;
+  & RepairActivities
+  & FixVerificationActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -210,6 +218,19 @@ function createTemporalOrchestratorForQueue(
 ): TemporalOrchestrator {
   return {
     async startRun(inputValue) {
+      const requestedMode = z
+        .object({ mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']) })
+        .passthrough()
+        .parse(inputValue).mode;
+      if (requestedMode === 'fix' && useDedicatedBuildWorkflow) {
+        const input = FixWorkflowInputSchema.parse(inputValue);
+        await client.workflow.start(fixWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
+        });
+        return;
+      }
       const input = RunWorkflowInputSchema.parse(inputValue);
       if (input.mode === 'autonomous') {
         const autonomousInput = AutonomousWorkflowInputSchema.parse({

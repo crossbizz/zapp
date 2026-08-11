@@ -115,6 +115,10 @@ describe('generated API types', () => {
       | {
           properties?: Record<string, Record<string, unknown>>;
           required?: string[];
+          anyOf?: Array<{
+            properties?: Record<string, Record<string, unknown>>;
+            required?: string[];
+          }>;
         }
       | undefined;
     const responseSchema = operation?.responses?.['201']?.content?.['application/json'] as
@@ -130,20 +134,29 @@ describe('generated API types', () => {
         }
       | undefined;
     const runSchema = responseSchema?.schema?.properties?.run;
+    const requestVariants = requestSchema?.anyOf ?? (requestSchema === undefined ? [] : [requestSchema]);
 
-    expect(requestSchema?.properties?.['appType']).toMatchObject({
-      enum: ['web', 'mobile'],
-      type: 'string',
-    });
-    expect(requestSchema?.properties?.['model']).toMatchObject({
-      maxLength: 160,
-      minLength: 1,
-      pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$',
-      type: 'string',
-    });
-    expect(requestSchema?.required).not.toContain('appType');
-    expect(requestSchema?.required).not.toContain('model');
-    expect(requestSchema?.properties).not.toHaveProperty('requestFingerprint');
+    expect(requestVariants).toHaveLength(2);
+    for (const variant of requestVariants) {
+      expect(variant.properties?.['appType']).toMatchObject({
+        enum: ['web', 'mobile'],
+        type: 'string',
+      });
+      expect(variant.properties?.['model']).toMatchObject({
+        maxLength: 160,
+        minLength: 1,
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$',
+        type: 'string',
+      });
+      expect(variant.required).not.toContain('appType');
+      expect(variant.required).not.toContain('model');
+      expect(variant.properties).not.toHaveProperty('requestFingerprint');
+    }
+    const fixVariant = requestVariants.find((variant) =>
+      variant.required?.includes('fixRequest'),
+    );
+    expect(fixVariant?.properties?.['mode']).toMatchObject({ enum: ['fix'] });
+    expect(fixVariant?.properties?.['fixRequest']).toMatchObject({ type: 'object' });
 
     expect(runSchema?.properties?.['appType']).toMatchObject({
       enum: ['web', 'mobile'],

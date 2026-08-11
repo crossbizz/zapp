@@ -49,6 +49,7 @@ interface StartCall {
   readonly prompt: string;
   readonly budget?: { readonly maxCredits: number } | null;
   readonly operationKey?: string;
+  readonly fixRequest?: unknown;
 }
 
 class FakeOrchestratorPort {
@@ -328,6 +329,53 @@ async function joinBuilder(wired: Wired): Promise<TestSession> {
 }
 
 describe('POST /v1/projects/:projectId/runs', () => {
+  it('validates and dispatches captured Fix evidence through the public API', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const fixRequest = {
+      source: 'error_report',
+      summary: 'Addition returns the wrong result.',
+      relevantCommitSha: 'a'.repeat(40),
+      reproductionRef: 'test/repro.mjs',
+      evidence: [
+        {
+          kind: 'preview_console',
+          artifactId: 'art_01J00000000000000000000000',
+          summary: 'Captured assertion failure.',
+        },
+        {
+          kind: 'grafana_loki',
+          url: 'https://grafana.example.test/explore?query=addition',
+          summary: 'Release error logs.',
+        },
+      ],
+    } as const;
+
+    const missingEvidence = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'fix-missing-evidence-01' },
+      payload: { mode: 'fix', prompt: 'Fix the arithmetic bug.' },
+    });
+    expect(missingEvidence.statusCode, missingEvidence.body).toBe(400);
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'fix-with-evidence-01' },
+      payload: { mode: 'fix', prompt: 'Fix the arithmetic bug.', fixRequest },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(wired.orchestrator.starts).toContainEqual(
+      expect.objectContaining({
+        mode: 'fix',
+        prompt: 'Fix the arithmetic bug.',
+        fixRequest,
+      }),
+    );
+  });
+
   it('defaults omitted intent durably before starting one workflow', async () => {
     const organizations = new ReadCountingOrganizationStore();
     const wired = await wire({ organizations });

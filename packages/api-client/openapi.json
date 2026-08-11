@@ -3738,62 +3738,222 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "ask",
-                      "prototype",
-                      "build",
-                      "fix",
-                      "autonomous"
-                    ]
-                  },
-                  "prompt": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 20000
-                  },
-                  "branchId": {
-                    "type": "string",
-                    "pattern": "^br_[0-9A-HJKMNP-TV-Z]{26}$"
-                  },
-                  "budget": {
+                "anyOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "maxCredits": {
-                        "type": "integer",
-                        "exclusiveMinimum": true,
-                        "minimum": 0,
-                        "maximum": 1000000
+                      "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000
+                      },
+                      "branchId": {
+                        "type": "string",
+                        "pattern": "^br_[0-9A-HJKMNP-TV-Z]{26}$"
+                      },
+                      "budget": {
+                        "type": "object",
+                        "properties": {
+                          "maxCredits": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0,
+                            "maximum": 1000000
+                          }
+                        },
+                        "required": [
+                          "maxCredits"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "appType": {
+                        "type": "string",
+                        "enum": [
+                          "web",
+                          "mobile"
+                        ],
+                        "default": "web"
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "fix"
+                        ]
+                      },
+                      "fixRequest": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "error_report",
+                              "failed_check",
+                              "user_bug"
+                            ]
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 10000
+                          },
+                          "relevantCommitSha": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{40}$"
+                          },
+                          "reproductionRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "evidence": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "preview_console",
+                                        "preview_network",
+                                        "failed_check",
+                                        "user_report"
+                                      ]
+                                    },
+                                    "artifactId": {
+                                      "type": "string",
+                                      "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                                    },
+                                    "summary": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2000
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "artifactId",
+                                    "summary"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "grafana_faro",
+                                        "grafana_loki"
+                                      ]
+                                    },
+                                    "url": {
+                                      "type": "string",
+                                      "format": "uri",
+                                      "pattern": "^https\\:\\/\\/",
+                                      "maxLength": 4096
+                                    },
+                                    "summary": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2000
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "url",
+                                    "summary"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "minItems": 1,
+                            "maxItems": 100
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "summary",
+                          "relevantCommitSha",
+                          "reproductionRef",
+                          "evidence"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
-                      "maxCredits"
+                      "prompt",
+                      "mode",
+                      "fixRequest"
                     ],
                     "additionalProperties": false
                   },
-                  "appType": {
-                    "type": "string",
-                    "enum": [
-                      "web",
-                      "mobile"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000
+                      },
+                      "branchId": {
+                        "type": "string",
+                        "pattern": "^br_[0-9A-HJKMNP-TV-Z]{26}$"
+                      },
+                      "budget": {
+                        "type": "object",
+                        "properties": {
+                          "maxCredits": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0,
+                            "maximum": 1000000
+                          }
+                        },
+                        "required": [
+                          "maxCredits"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "appType": {
+                        "type": "string",
+                        "enum": [
+                          "web",
+                          "mobile"
+                        ],
+                        "default": "web"
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "ask",
+                          "prototype",
+                          "build",
+                          "autonomous"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "prompt",
+                      "mode"
                     ],
-                    "default": "web"
-                  },
-                  "model": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 160,
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "mode",
-                  "prompt"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }

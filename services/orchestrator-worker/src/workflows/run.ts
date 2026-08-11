@@ -45,6 +45,7 @@ export {
   autonomousPlanApprovalSignal,
   autonomousSpecificationApprovalSignal,
 } from './autonomous.js';
+export { fixWorkflow } from './fix.js';
 
 const workflowIdSchema = (
   prefix: 'run' | 'org' | 'proj' | 'br' | 'art' | 'phase' | 'task' | 'vr',

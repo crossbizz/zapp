@@ -518,7 +518,7 @@ test('starts a new run with the project-persisted mode and model when the latest
     },
     {
       key: `zapp:conversation:settings:${projectId}`,
-      value: { mode: 'fix', model: 'anthropic/claude-sonnet-5' },
+      value: { mode: 'ask', model: 'anthropic/claude-sonnet-5' },
     },
   );
   await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
@@ -532,7 +532,7 @@ test('starts a new run with the project-persisted mode and model when the latest
         run: {
           ...activeRun,
           id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FK',
-          mode: 'fix',
+          mode: 'ask',
           model: 'anthropic/claude-sonnet-5',
         },
       }),
@@ -548,7 +548,7 @@ test('starts a new run with the project-persisted mode and model when the latest
     .poll(() => createdRunBody)
     .toMatchObject({
       appType: 'web',
-      mode: 'fix',
+      mode: 'ask',
       model: 'anthropic/claude-sonnet-5',
       prompt: 'Fix the checkout validation race.',
     });
