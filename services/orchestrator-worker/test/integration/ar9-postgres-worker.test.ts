@@ -86,7 +86,7 @@ describe('AR-9 production Postgres worker composition', () => {
       environment = await TestWorkflowEnvironment.createLocal();
       const taskActivityNotExpected = (): Promise<never> =>
         Promise.reject(new Error('AR-9 does not execute AR-12 task activities'));
-      const activities: ProductionRunActivities = {
+      const activities = {
         transitionRunStatus: () => Promise.resolve(),
         storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
         emitEvents: () => Promise.resolve(),
@@ -110,7 +110,7 @@ describe('AR-9 production Postgres worker composition', () => {
         estimateRunCost: taskActivityNotExpected,
         requestBudgetIncrease: taskActivityNotExpected,
         checkpointBudgetStop: taskActivityNotExpected,
-      };
+      } as unknown as ProductionRunActivities;
       const worker = await createProductionRunWorker({
         connection: environment.nativeConnection,
         taskQueue: TASK_QUEUES.agentRuns,

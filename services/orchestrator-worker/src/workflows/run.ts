@@ -23,6 +23,11 @@ import type { SessionActivities } from '../activities/session.js';
 import type { WorkspaceActivities } from '../activities/workspace.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
+export {
+  autonomousWorkflow,
+  autonomousPlanApprovalSignal,
+  autonomousSpecificationApprovalSignal,
+} from './autonomous.js';
 
 const workflowIdSchema = (prefix: 'run' | 'org' | 'proj' | 'br' | 'art'): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));

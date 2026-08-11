@@ -33,6 +33,7 @@
     "@zapp/config": "workspace:*",
     "@zapp/db": "workspace:*",
     "@zapp/model-gateway": "workspace:*",
+    "@zapp/planning-engine": "workspace:*",
     "@zapp/project-adapters": "workspace:*",
     "@zapp/verification-engine": "workspace:*",
     "drizzle-orm": "^0.45.2",

@@ -1199,6 +1199,9 @@ importers:
       '@zapp/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@zapp/planning-engine':
+        specifier: workspace:*
+        version: link:../../packages/planning-engine
       '@zapp/project-adapters':
         specifier: workspace:*
         version: link:../../packages/project-adapters

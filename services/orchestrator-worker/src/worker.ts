@@ -21,6 +21,13 @@ import type { TaskWorkflowActivities } from './activities/merge.js';
 import type { RepairActivities } from './activities/repair.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
+  autonomousPlanApprovalSignal,
+  autonomousSpecificationApprovalSignal,
+  autonomousWorkflow,
+  AutonomousWorkflowInputSchema,
+  type AutonomousActivities,
+} from './workflows/autonomous.js';
+import {
   budgetApprovalResolvedSignal,
   cancelRunSignal,
   messageRunSignal,
@@ -36,7 +43,10 @@ export type RunActivities =
   & SessionActivities
   & WorkspaceActivities
   & ApprovalActivities;
-export type ProductionRunActivities = RunActivities & TaskWorkflowActivities;
+export type ProductionRunActivities =
+  & RunActivities
+  & TaskWorkflowActivities
+  & AutonomousActivities;
 export type ProductionVerificationActivities =
   & CapabilityScanActivities
   & VerifyPhaseActivities
@@ -197,11 +207,29 @@ function createTemporalOrchestratorForQueue(
   return {
     async startRun(inputValue) {
       const input = RunWorkflowInputSchema.parse(inputValue);
-      await client.workflow.start(runWorkflow, {
-        taskQueue,
-        workflowId: input.workflowId,
-        args: [input],
-      });
+      if (input.mode === 'autonomous') {
+        const autonomousInput = AutonomousWorkflowInputSchema.parse({
+          workflowId: input.workflowId,
+          runId: input.runId,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          prompt: input.prompt,
+          model: input.model,
+          budget: input.budget,
+          maxConcurrency: 3,
+        });
+        await client.workflow.start(autonomousWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [autonomousInput],
+        });
+      } else {
+        await client.workflow.start(runWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
+        });
+      }
     },
     async signalRun(inputValue) {
       const input = z
@@ -212,6 +240,7 @@ function createTemporalOrchestratorForQueue(
           operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
           prompt: z.string().trim().min(1).max(20_000).optional(),
           approvalId: z.string().optional(),
+          artifactId: z.string().min(1).max(512).optional(),
           decision: z.enum(['approved', 'rejected']).optional(),
           absoluteCeiling: z.string().optional(),
           message: MessageUserPayloadSchema.optional(),
@@ -219,7 +248,21 @@ function createTemporalOrchestratorForQueue(
         .passthrough()
         .parse(inputValue);
       const handle = client.workflow.getHandle(input.workflowId);
-      if (input.signal === 'budget_approval') {
+      if (input.signal === 'autonomous_specification_approval') {
+        await handle.signal(autonomousSpecificationApprovalSignal, {
+          runId: input.runId,
+          artifactId: z.string().min(1).max(512).parse(input.artifactId),
+          decision: z.enum(['approved', 'rejected']).parse(input.decision),
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'autonomous_plan_approval') {
+        await handle.signal(autonomousPlanApprovalSignal, {
+          runId: input.runId,
+          artifactId: z.string().regex(/^art_[0-9A-HJKMNP-TV-Z]{26}$/u).parse(input.artifactId),
+          decision: z.enum(['approved', 'rejected']).parse(input.decision),
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'budget_approval') {
         await handle.signal(budgetApprovalResolvedSignal, {
           approvalId: input.approvalId,
           decision: input.decision,
