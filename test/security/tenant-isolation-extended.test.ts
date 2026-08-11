@@ -1,11 +1,25 @@
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+function parseVitestSummary(
+  output: string,
+): { passed: number; skipped: number; total: number } | undefined {
+  const summary = stripVTControlCharacters(output).match(
+    /Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?\s*\((\d+)\)/u,
+  );
+  if (summary === null) return undefined;
+  return {
+    passed: Number(summary[1] ?? 0),
+    skipped: Number(summary[2] ?? 0),
+    total: Number(summary[3] ?? 0),
+  };
+}
 
 async function runControlApiGate(file: string, name?: string): Promise<string> {
   const arguments_ = [
@@ -38,16 +52,19 @@ describe('OPS-12 permanent tenant isolation gate', () => {
       },
     );
     const output = `${stdout}${stderr}`;
-    const summary = output.match(/Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?\s*\((\d+)\)/u);
-    expect(summary, output).not.toBeNull();
-    const passed = Number(summary?.[1] ?? 0);
-    const skipped = Number(summary?.[2] ?? 0);
-    const total = Number(summary?.[3] ?? 0);
-    expect(passed).toBeGreaterThanOrEqual(54);
-    expect(skipped).toBe(0);
-    expect(total).toBe(passed);
+    const summary = parseVitestSummary(output);
+    expect(summary, output).toBeDefined();
+    expect(summary?.passed).toBeGreaterThanOrEqual(54);
+    expect(summary?.skipped).toBe(0);
+    expect(summary?.total).toBe(summary?.passed);
     expect(output).not.toContain('integration tests skipped: DATABASE_URL');
   }, 120_000);
+
+  it('parses the colored Vitest summary emitted by GitHub runners', () => {
+    const output =
+      '\u001B[2m Tests \u001B[22m \u001B[1m\u001B[32m54 passed\u001B[39m\u001B[22m\u001B[90m (54)\u001B[39m';
+    expect(parseVitestSummary(output)).toEqual({ passed: 54, skipped: 0, total: 54 });
+  });
 
   it('returns tenant-hidden 404s for foreign releases and their evidence', async () => {
     const output = await runControlApiGate(
