@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import { GitHubImportStatusSchema } from '../src/integrations/github/import.js';
+import { IDEMPOTENT_REPLAY_HEADER } from '../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
@@ -183,8 +184,91 @@ describe('POST /v1/projects/:projectId/import/github', () => {
     expect(first.statusCode, first.body).toBe(202);
     expect(replay.statusCode, replay.body).toBe(202);
     expect(replay.body).toBe(first.body);
+    expect(replay.headers[IDEMPOTENT_REPLAY_HEADER]).toBeUndefined();
     expect(conflict.statusCode, conflict.body).toBe(409);
     expect(conflict.json()).toMatchObject({ error: { code: 'github_import_conflict' } });
+  });
+
+  it('concurrently rearms one mirror delivery for a failed same-key retry', async () => {
+    const { harness, data, owner, organizationId } = await wired();
+    const project = await createProject(harness, owner, organizationId);
+    const accepted = await importRequest(harness, owner, organizationId, project.id);
+    expect(accepted.statusCode, accepted.body).toBe(202);
+    const row = data.githubImports[0];
+    const delivery = data.githubImportOutbox[0];
+    if (row === undefined || delivery === undefined) throw new Error('import acceptance rows missing');
+    Object.assign(row, { status: 'failed', errorCode: 'mirror_failed' });
+    Object.assign(delivery, {
+      status: 'published',
+      attempts: 1,
+      publishedAt: new Date('2026-08-10T12:01:00.000Z'),
+    });
+
+    const [firstRetry, concurrentRetry] = await Promise.all([
+      importRequest(harness, owner, organizationId, project.id),
+      importRequest(harness, owner, organizationId, project.id),
+    ]);
+
+    expect([firstRetry.statusCode, concurrentRetry.statusCode]).toEqual([202, 202]);
+    expect(firstRetry.headers[IDEMPOTENT_REPLAY_HEADER]).toBeUndefined();
+    expect(concurrentRetry.headers[IDEMPOTENT_REPLAY_HEADER]).toBeUndefined();
+    expect(row).toMatchObject({ status: 'queued', errorCode: null });
+    expect(data.githubImportOutbox).toEqual([
+      expect.objectContaining({
+        projectId: project.id,
+        stage: 'queued',
+        status: 'pending',
+        attempts: 0,
+        publishedAt: null,
+      }),
+    ]);
+  });
+
+  it('rearms the scan stage when a failed same-key import already has a mirror result', async () => {
+    const { harness, data, owner, organizationId } = await wired();
+    const project = await createProject(harness, owner, organizationId);
+    const accepted = await importRequest(harness, owner, organizationId, project.id);
+    expect(accepted.statusCode, accepted.body).toBe(202);
+    const row = data.githubImports[0];
+    const queuedDelivery = data.githubImportOutbox[0];
+    if (row === undefined || queuedDelivery === undefined) {
+      throw new Error('import acceptance rows missing');
+    }
+    Object.assign(row, {
+      status: 'failed',
+      externalRepoRef: SOURCE_REPOSITORY,
+      headCommitSha: 'a'.repeat(40),
+      scanId: `github-import:${project.id}`,
+      errorCode: 'scan_unavailable',
+    });
+    Object.assign(queuedDelivery, {
+      status: 'published',
+      attempts: 1,
+      publishedAt: new Date('2026-08-10T12:01:00.000Z'),
+    });
+    data.githubImportOutbox.push({
+      projectId: project.id,
+      stage: 'scan_pending',
+      status: 'published',
+      attempts: 1,
+      nextAttemptAt: new Date('2026-08-10T12:01:00.000Z'),
+      createdAt: new Date('2026-08-10T12:01:00.000Z'),
+      publishedAt: new Date('2026-08-10T12:01:01.000Z'),
+    });
+
+    const retry = await importRequest(harness, owner, organizationId, project.id);
+
+    expect(retry.statusCode, retry.body).toBe(202);
+    expect(row).toMatchObject({ status: 'scan_pending', errorCode: null });
+    expect(data.githubImportOutbox).toEqual([
+      expect.objectContaining({ stage: 'queued', status: 'published' }),
+      expect.objectContaining({
+        stage: 'scan_pending',
+        status: 'pending',
+        attempts: 0,
+        publishedAt: null,
+      }),
+    ]);
   });
 
   it.each([

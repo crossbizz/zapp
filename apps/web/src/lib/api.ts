@@ -118,12 +118,17 @@ export function createControlPlaneClient(organizationId?: string) {
         body,
         ...(signal === undefined ? {} : { signal }),
       }),
-    authorizeGitHubInstall: (idempotencyKey?: string, signal?: AbortSignal) =>
-      client.request('/v1/integrations/github/install/authorize', {
+    authorizeGitHubInstall: (idempotencyKey?: string, signal?: AbortSignal) => {
+      const operationKey = idempotencyKey ?? crypto.randomUUID();
+      return client.request('/v1/integrations/github/install/authorize', {
         method: 'POST',
-        headers: headers(true, true, idempotencyKey),
+        headers: {
+          ...headers(true, false),
+          [idempotencyHeaderName]: operationKey,
+        },
         ...(signal === undefined ? {} : { signal }),
-      }),
+      });
+    },
     completeGitHubInstall: (
       body: CompleteGitHubInstallInput,
       idempotencyKey?: string,

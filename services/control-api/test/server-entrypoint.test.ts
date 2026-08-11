@@ -86,6 +86,7 @@ const production = vi.hoisted(() => {
   const githubImportQueue = {
     send: vi.fn(() => Promise.resolve()),
     receive: vi.fn(() => Promise.resolve([])),
+    changeVisibility: vi.fn(() => Promise.resolve()),
     delete: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
   };

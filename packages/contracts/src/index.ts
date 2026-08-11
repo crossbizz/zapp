@@ -17,12 +17,18 @@ export {
   AttachmentRefSchema,
   MessageAssistantPayloadSchema,
   MessageUserPayloadSchema,
+  PreviewLifecycleEventSchema,
+  PreviewOperationFailurePayloadSchema,
+  PreviewReadyPayloadSchema,
+  PreviewStartingPayloadSchema,
+  PreviewTerminalFailurePayloadSchema,
   type AgentEvent,
   type AgentEventType,
   type AgentEventVisibility,
   type AttachmentRef,
   type MessageAssistantPayload,
   type MessageUserPayload,
+  type PreviewLifecycleEvent,
 } from './events.js';
 export {
   RunModeSchema,

@@ -68,6 +68,9 @@ export function registerGitHubImportRoutes(app: AppInstance, now: () => Date): v
   app.post(
     '/v1/projects/:projectId/import/github',
     {
+      // The persisted import row and transactional outbox own this operation's
+      // durable replay and failed-stage rearm semantics.
+      config: { idempotency: 'exempt' },
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
       schema: {
         params: ProjectParamsSchema,

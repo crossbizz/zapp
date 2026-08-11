@@ -11,6 +11,7 @@ import {
   createInMemoryGitHubAuthorizationStateStore,
   createRedisGitHubAuthorizationStateStore,
   GITHUB_AUTHORIZATION_STATE_TTL_MS,
+  type GitHubAuthorizationStateStore,
 } from '../src/integrations/github/store.js';
 import type {
   GitHubBranch,
@@ -22,6 +23,8 @@ import type {
   GitHubCompleteInstallationInput,
   GitHubInstallation,
 } from '../src/integrations/github/schemas.js';
+import { GitHubBranchSchema } from '../src/integrations/github/schemas.js';
+import { IDEMPOTENT_REPLAY_HEADER } from '../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
@@ -50,6 +53,7 @@ class RecordingGitHubProvider implements GitHubProviderPort {
   readonly branchCalls: Array<{ installationId: string; repositoryId: string; cursor?: string }> = [];
   repositoryError: Error | undefined;
   installationError: Error | undefined;
+  branchHeadCommitSha = 'a'.repeat(40);
 
   completeInstallation(input: GitHubCompleteInstallationInput): Promise<GitHubInstallation> {
     this.installations.push(input);
@@ -68,7 +72,7 @@ class RecordingGitHubProvider implements GitHubProviderPort {
 
   listBranches(input: { installationId: string; repositoryId: string; cursor?: string }) {
     this.branchCalls.push(input);
-    const items: GitHubBranch[] = [{ name: 'main', headCommitSha: 'a'.repeat(40) }];
+    const items: GitHubBranch[] = [{ name: 'main', headCommitSha: this.branchHeadCommitSha }];
     return Promise.resolve({ items, nextCursor: null });
   }
 }
@@ -164,6 +168,130 @@ describe('GitHub authorization state', () => {
 });
 
 describe('GitHub installation and discovery routes', () => {
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['too short', 'short'],
+    ['invalid characters', 'invalid key'],
+    ['too long', 'x'.repeat(256)],
+  ] as const)('rejects a %s authorization idempotency key', async (_label, operationKey) => {
+    const data = new InMemoryTenantData();
+    const harness = buildHarness({
+      tenantDb: data.factory,
+      github: {
+        appSlug: 'zapp-build-test',
+        provider: new RecordingGitHubProvider(),
+        stateStore: createInMemoryGitHubAuthorizationStateStore(),
+      },
+    });
+    harnesses.push(harness);
+    const owner = await signIn(harness, OWNER);
+    const organizationId = await organization(harness, owner, `GitHub key ${_label}`);
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/v1/integrations/github/install/authorize',
+      headers: {
+        ...as(owner, organizationId),
+        ...(operationKey === undefined ? {} : { 'idempotency-key': operationKey }),
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+  });
+
+  it('replays an exact authorization response and issues one state', async () => {
+    const backing = createInMemoryGitHubAuthorizationStateStore();
+    let issueCalls = 0;
+    const stateStore: GitHubAuthorizationStateStore = {
+      issue(binding, ttlMs) {
+        issueCalls += 1;
+        return backing.issue(binding, ttlMs);
+      },
+      consume: (state, binding) => backing.consume(state, binding),
+    };
+    const harness = buildHarness({
+      tenantDb: new InMemoryTenantData().factory,
+      github: { appSlug: 'zapp-build-test', provider: new RecordingGitHubProvider(), stateStore },
+    });
+    harnesses.push(harness);
+    const owner = await signIn(harness, OWNER);
+    const organizationId = await organization(harness, owner, 'GitHub authorize replay');
+    const headers = {
+      ...as(owner, organizationId),
+      'idempotency-key': 'github-authorize-operation-0001',
+    };
+
+    const first = await harness.app.inject({
+      method: 'POST',
+      url: '/v1/integrations/github/install/authorize',
+      headers,
+    });
+    const replay = await harness.app.inject({
+      method: 'POST',
+      url: '/v1/integrations/github/install/authorize',
+      headers,
+    });
+
+    expect(first.statusCode, first.body).toBe(200);
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.body).toBe(first.body);
+    expect(replay.headers[IDEMPOTENT_REPLAY_HEADER]).toBe('true');
+    expect(issueCalls).toBe(1);
+  });
+
+  it('rejects a concurrent authorization with the same key while the first is pending', async () => {
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let issueCalls = 0;
+    const stateStore: GitHubAuthorizationStateStore = {
+      async issue() {
+        issueCalls += 1;
+        entered();
+        await blocked;
+        return 'a'.repeat(43);
+      },
+      consume: () => Promise.resolve(false),
+    };
+    const harness = buildHarness({
+      tenantDb: new InMemoryTenantData().factory,
+      github: { appSlug: 'zapp-build-test', provider: new RecordingGitHubProvider(), stateStore },
+    });
+    harnesses.push(harness);
+    const owner = await signIn(harness, OWNER);
+    const organizationId = await organization(harness, owner, 'GitHub authorize concurrent');
+    const headers = {
+      ...as(owner, organizationId),
+      'idempotency-key': 'github-authorize-operation-0002',
+    };
+
+    const first = harness.app.inject({
+      method: 'POST',
+      url: '/v1/integrations/github/install/authorize',
+      headers,
+    });
+    await started;
+    const concurrent = await harness.app.inject({
+      method: 'POST',
+      url: '/v1/integrations/github/install/authorize',
+      headers,
+    });
+
+    expect(concurrent.statusCode, concurrent.body).toBe(409);
+    expect(concurrent.headers['retry-after']).toBe('1');
+    expect(concurrent.json()).toMatchObject({ error: { code: 'idempotency_in_progress' } });
+    expect(issueCalls).toBe(1);
+    release();
+    const completed = await first;
+    expect(completed.statusCode, completed.body).toBe(200);
+  });
+
   it('allows an Owner to authorize and denies a Builder', async () => {
     const data = new InMemoryTenantData();
     const provider = new RecordingGitHubProvider();
@@ -452,6 +580,35 @@ describe('GitHub installation and discovery routes', () => {
     expect(provider.branchCalls).toEqual([
       { installationId: '41122', repositoryId: '501' },
     ]);
+  });
+
+  it('rejects a branch ref where GitHub must return a resolved commit SHA', async () => {
+    expect(GitHubBranchSchema.safeParse({ name: 'main', headCommitSha: 'main' }).success).toBe(false);
+
+    const data = new InMemoryTenantData();
+    const provider = new RecordingGitHubProvider();
+    provider.branchHeadCommitSha = 'main';
+    const harness = buildHarness({
+      tenantDb: data.factory,
+      github: {
+        appSlug: 'zapp-build-test',
+        provider,
+        stateStore: createInMemoryGitHubAuthorizationStateStore(),
+      },
+    });
+    harnesses.push(harness);
+    const owner = await signIn(harness, OWNER);
+    const organizationId = await organization(harness, owner, 'GitHub SHA Boundary');
+    data.addGitHubConnection(organizationId, '41122');
+
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: '/v1/integrations/github/repositories/501/branches?installationId=41122',
+      headers: as(owner, organizationId),
+    });
+
+    expect(response.statusCode, response.body).toBe(502);
+    expect(response.json()).toMatchObject({ error: { code: 'github_unavailable' } });
   });
 
   it('returns an opaque 404 for a foreign installation before calling GitHub', async () => {

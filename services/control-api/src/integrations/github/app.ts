@@ -50,7 +50,7 @@ const ImportRepositoryApiSchema = z
   .object({ clone_url: z.string().url() })
   .strict();
 const BranchApiSchema = z
-  .object({ name: z.string().min(1), commit: z.object({ sha: z.string().min(1) }).strict() })
+  .object({ name: z.string().min(1), commit: z.object({ sha: GitHubBranchSchema.shape.headCommitSha }).strict() })
   .strict();
 
 const CursorSchema = z.object({ page: z.number().int().positive() }).strict();

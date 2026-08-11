@@ -60,6 +60,10 @@ import {
   type UpdatedProject,
 } from '../../src/tenant/db.js';
 import {
+  ProjectDashboardPreviewEventSchema,
+  ProjectDashboardSummarySourceSchema,
+} from '../../src/tenant/view.js';
+import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
   DEFAULT_ENVIRONMENTS,
@@ -185,18 +189,6 @@ export class InMemoryTenantData {
  */
 function mine<T extends { organizationId: string }>(organizationId: string, rows: T[]): T[] {
   return rows.filter((row) => row.organizationId === organizationId);
-}
-
-function isValidPreviewPayload(payload: unknown): payload is { readonly status: string } {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false;
-  const entries = Object.entries(payload);
-  const entry = entries[0];
-  return (
-    entries.length === 1 &&
-    entry !== undefined &&
-    entry[0] === 'status' &&
-    ['not_started', 'starting', 'ready', 'failed'].includes(entry[1] as string)
-  );
 }
 
 /** The in-memory counterpart to CP-10's tenant-project row lock. */
@@ -430,12 +422,41 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
             (row) => row.projectId === project.id,
           );
           if (existing !== undefined) {
-            return existing.operationKey === input.operationKey &&
+            const sameOperation =
+              existing.operationKey === input.operationKey &&
               existing.installationId === input.installationId &&
               existing.repo === input.repo &&
-              existing.branch === input.branch
-              ? existing
-              : ('operation_conflict' as const);
+              existing.branch === input.branch;
+            if (!sameOperation) return 'operation_conflict' as const;
+            if (existing.status !== 'failed') return existing;
+
+            const hasMirrorResult =
+              existing.externalRepoRef !== null && existing.headCommitSha !== null;
+            const stage = hasMirrorResult ? 'scan_pending' : 'queued';
+            Object.assign(existing, { status: stage, errorCode: null, updatedAt: input.now });
+            const delivery = data.githubImportOutbox.find(
+              (candidate) => candidate.projectId === project.id && candidate.stage === stage,
+            );
+            if (delivery === undefined) {
+              data.githubImportOutbox.push({
+                projectId: project.id,
+                stage,
+                status: 'pending',
+                attempts: 0,
+                nextAttemptAt: input.now,
+                createdAt: input.now,
+                publishedAt: null,
+              });
+            } else {
+              Object.assign(delivery, {
+                status: 'pending',
+                attempts: 0,
+                nextAttemptAt: input.now,
+                createdAt: input.now,
+                publishedAt: null,
+              });
+            }
+            return existing;
           }
           if (
             mine(orgId, data.githubImports).some((row) => row.operationKey === input.operationKey)
@@ -610,9 +631,11 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
               .filter((event) => event.projectId === project.id && event.visibility === 'user')
               .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime());
             const preview = visible.find(
-              (event) =>
-                ['preview.starting', 'preview.ready', 'preview.failed'].includes(event.type) &&
-                isValidPreviewPayload(event.payloadJson),
+              (event) => ProjectDashboardPreviewEventSchema.safeParse({
+                type: event.type,
+                occurredAt: event.occurredAt,
+                payload: event.payloadJson,
+              }).success,
             );
             const productionEnvironment = mine(orgId, data.environments).find(
               (environment) => environment.projectId === project.id && environment.type === 'production',
@@ -633,13 +656,17 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
                 : mine(orgId, data.deployments)
                     .filter((candidate) => candidate.releaseId === release.id)
                     .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())[0];
-            return {
+            return ProjectDashboardSummarySourceSchema.parse({
               projectId: project.id,
               lastActivityAt: visible[0]?.occurredAt ?? null,
               preview:
                 preview === undefined
                   ? null
-                  : { occurredAt: preview.occurredAt, payload: preview.payloadJson },
+                  : {
+                      type: preview.type,
+                      occurredAt: preview.occurredAt,
+                      payload: preview.payloadJson,
+                    },
               release:
                 release === undefined
                   ? null
@@ -651,7 +678,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
                       status: deployment.status,
                       occurredAt: deployment.completedAt ?? deployment.startedAt,
                     },
-            };
+            });
           }),
         );
       },

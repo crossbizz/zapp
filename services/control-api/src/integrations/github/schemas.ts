@@ -74,7 +74,7 @@ export const GitHubRepositorySchema = z
 export const GitHubBranchSchema = z
   .object({
     name: z.string().min(1),
-    headCommitSha: z.string().min(1),
+    headCommitSha: CommitShaSchema,
   })
   .strict();
 

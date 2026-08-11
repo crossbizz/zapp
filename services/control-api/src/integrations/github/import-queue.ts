@@ -1,4 +1,5 @@
 import {
+  ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
@@ -40,6 +41,12 @@ export const GitHubImportQueueMessageSchema = z
   .strict();
 export type GitHubImportQueueMessage = z.infer<typeof GitHubImportQueueMessageSchema>;
 
+const SQS_MAX_VISIBILITY_TIMEOUT_SECONDS = 43_200;
+
+function boundedVisibilityTimeout(rawSeconds: number): number {
+  return Math.max(1, Math.min(SQS_MAX_VISIBILITY_TIMEOUT_SECONDS, Math.floor(rawSeconds)));
+}
+
 const GitHubImportQueueReceivedMessageSchema = z
   .object({ body: z.string().min(1), receiptHandle: z.string().min(1) })
   .strict();
@@ -54,6 +61,11 @@ export interface GitHubImportQueuePort {
       readonly visibilityTimeoutSeconds: number;
     },
   ): Promise<readonly { readonly body: string; readonly receiptHandle: string }[]>;
+  changeVisibility(
+    queueName: 'main' | 'dlq',
+    receiptHandle: string,
+    visibilityTimeoutSeconds: number,
+  ): Promise<void>;
   delete(queueName: 'main' | 'dlq', receiptHandle: string): Promise<void>;
   close?(): void;
 }
@@ -110,6 +122,15 @@ export function createSqsGitHubImportQueue(config: GitHubImportQueueEnv): GitHub
     async delete(queueName, receiptHandle) {
       await client.send(
         new DeleteMessageCommand({ QueueUrl: await urls[queueName], ReceiptHandle: receiptHandle }),
+      );
+    },
+    async changeVisibility(queueName, receiptHandle, visibilityTimeoutSeconds) {
+      await client.send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: await urls[queueName],
+          ReceiptHandle: receiptHandle,
+          VisibilityTimeout: boundedVisibilityTimeout(visibilityTimeoutSeconds),
+        }),
       );
     },
     close() {
@@ -378,21 +399,62 @@ export function createGitHubImportConsumerLifecycle(input: {
   let timer: TimerHandle | undefined;
   let active: Promise<void> | undefined;
   let closed = false;
+  const leaseVisibilityTimeoutSeconds = boundedVisibilityTimeout(
+    input.visibilityTimeoutSeconds,
+  );
+  const heartbeatIntervalMs = Math.max(
+    1,
+    Math.floor((leaseVisibilityTimeoutSeconds * 1_000) / 3),
+  );
+
+  async function processWithVisibilityLease(
+    queueName: 'main' | 'dlq',
+    message: { readonly body: string; readonly receiptHandle: string },
+  ): Promise<void> {
+    let leaseTimer: TimerHandle | undefined;
+    let heartbeat: Promise<void> | undefined;
+    const leaseState = { failed: false };
+    const stopHeartbeat = (): void => {
+      if (leaseTimer !== undefined) timers.clearInterval(leaseTimer);
+      leaseTimer = undefined;
+    };
+    const extendVisibility = (): void => {
+      if (leaseState.failed || heartbeat !== undefined) return;
+      heartbeat = input.queue
+        .changeVisibility(queueName, message.receiptHandle, leaseVisibilityTimeoutSeconds)
+        .catch((error: unknown) => {
+          leaseState.failed = true;
+          stopHeartbeat();
+          input.onError?.(error instanceof Error ? error : new Error(String(error)));
+        })
+        .finally(() => {
+          heartbeat = undefined;
+        });
+    };
+    leaseTimer = timers.setInterval(extendVisibility, heartbeatIntervalMs);
+    try {
+      if (queueName === 'main') await input.worker.process(message.body);
+      else await input.worker.settleDeadLetter(message.body);
+      stopHeartbeat();
+      await heartbeat;
+      if (!leaseState.failed) await input.queue.delete(queueName, message.receiptHandle);
+    } catch (error) {
+      input.onError?.(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      stopHeartbeat();
+      await heartbeat;
+    }
+  }
+
   async function receive(queueName: 'main' | 'dlq'): Promise<void> {
     const messages = await input.queue.receive(queueName, {
       maxMessages: input.batchSize,
       waitTimeSeconds: input.waitTimeSeconds,
-      visibilityTimeoutSeconds: input.visibilityTimeoutSeconds,
+      visibilityTimeoutSeconds: leaseVisibilityTimeoutSeconds,
     });
-    for (const message of messages) {
-      try {
-        if (queueName === 'main') await input.worker.process(message.body);
-        else await input.worker.settleDeadLetter(message.body);
-        await input.queue.delete(queueName, message.receiptHandle);
-      } catch (error) {
-        input.onError?.(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
+    await Promise.all(
+      messages.map((message) => processWithVisibilityLease(queueName, message)),
+    );
   }
   async function pollBatch(): Promise<void> {
     await receive('main');

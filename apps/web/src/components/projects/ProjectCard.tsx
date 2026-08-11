@@ -54,8 +54,6 @@ export function ProjectCard({
   summary,
   summaryFailed,
 }: ProjectCardProps): ReactElement {
-  const previewStatus = summary?.preview?.status ?? 'not_started';
-
   return (
     <Card as="article" className={styles.projectCard}>
       <h2>{project.name}</h2>
@@ -85,11 +83,11 @@ export function ProjectCard({
             )}
           </p>
           <div className={styles.environmentStatuses}>
-            <p data-state={previewStatus}>
+            <p data-state={summary.preview.status}>
               <span aria-hidden="true" data-status-icon="true">
                 ◇
               </span>{' '}
-              <span>{`Preview: ${previewLabels[previewStatus]}`}</span>
+              <span>{`Preview: ${previewLabels[summary.preview.status]}`}</span>
             </p>
             <p data-state={summary.production.status}>
               <span aria-hidden="true" data-status-icon="true">

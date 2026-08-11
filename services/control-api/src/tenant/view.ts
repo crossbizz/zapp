@@ -1,7 +1,12 @@
 import {
   AgentEventVisibilitySchema,
   AppTypeSchema,
+  idSchema,
   ModelIdentifierSchema,
+  PreviewOperationFailurePayloadSchema,
+  PreviewReadyPayloadSchema,
+  PreviewStartingPayloadSchema,
+  PreviewTerminalFailurePayloadSchema,
   ResourceProfileSchema,
   RunModeSchema,
   SupportLevelSchema,
@@ -52,19 +57,36 @@ export const ProjectSchema = z.object({
 });
 
 /** ADR-0028's public, durable dashboard card contract. */
-const PreviewPayloadSchema = z.object({
-  status: z.enum(['not_started', 'starting', 'ready', 'failed']),
-}).strict();
+export const ProjectDashboardPreviewEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('preview.starting'),
+    occurredAt: z.date(),
+    payload: PreviewStartingPayloadSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('preview.ready'),
+    occurredAt: z.date(),
+    payload: PreviewReadyPayloadSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('preview.failed'),
+    occurredAt: z.date(),
+    payload: z.union([
+      PreviewOperationFailurePayloadSchema,
+      PreviewTerminalFailurePayloadSchema,
+    ]),
+  }).strict(),
+]);
 
 export const ProjectDashboardPreviewSchema = z.object({
-  status: PreviewPayloadSchema.shape.status,
-  occurredAt: z.string().datetime(),
+  status: z.enum(['not_started', 'starting', 'ready', 'failed']),
+  occurredAt: z.string().datetime().nullable(),
 }).strict();
 
 export const ProjectDashboardProductionSchema = z.object({
   status: z.enum(['not_deployed', 'deploying', 'healthy', 'failed']),
   occurredAt: z.string().datetime().nullable(),
-  releaseId: z.string().nullable(),
+  releaseId: idSchema('rel').nullable(),
 }).strict();
 
 export const ReadinessFindingSchema = z.object({
@@ -76,15 +98,15 @@ export const ReadinessFindingSchema = z.object({
 }).strict();
 
 export const ProjectDashboardDeployReadinessSchema = z.object({
-  releaseId: z.string(),
+  releaseId: idSchema('rel'),
   state: z.enum(['ready', 'warnings', 'blocked']),
   findings: z.array(ReadinessFindingSchema),
 }).strict();
 
 export const ProjectDashboardSummarySchema = z.object({
-  projectId: z.string(),
+  projectId: idSchema('proj'),
   lastActivityAt: z.string().datetime().nullable(),
-  preview: ProjectDashboardPreviewSchema.nullable(),
+  preview: ProjectDashboardPreviewSchema,
   production: ProjectDashboardProductionSchema,
   deployReadiness: ProjectDashboardDeployReadinessSchema.nullable(),
 }).strict();
@@ -98,23 +120,38 @@ export type ProjectDashboardSummariesResponse = z.infer<
   typeof ProjectDashboardSummariesResponseSchema
 >;
 
-export interface ProjectDashboardSummarySource {
-  readonly projectId: string;
-  readonly lastActivityAt: Date | null;
-  readonly preview: { readonly occurredAt: Date; readonly payload: unknown } | null;
-  readonly release: { readonly id: string; readonly status: string; readonly createdAt: Date } | null;
-  readonly deployment: { readonly status: string; readonly occurredAt: Date } | null;
-}
+export const ProjectDashboardSummarySourceSchema = z.object({
+  projectId: idSchema('proj'),
+  lastActivityAt: z.date().nullable(),
+  preview: ProjectDashboardPreviewEventSchema.nullable(),
+  release: z.object({
+    id: idSchema('rel'),
+    status: z.string(),
+    createdAt: z.date(),
+  }).strict().nullable(),
+  deployment: z.object({
+    status: z.string(),
+    occurredAt: z.date(),
+  }).strict().nullable(),
+}).strict();
+
+export type ProjectDashboardSummarySource = z.infer<typeof ProjectDashboardSummarySourceSchema>;
 
 export function toProjectDashboardSummary(
   source: ProjectDashboardSummarySource,
   deployReadiness: z.infer<typeof ProjectDashboardDeployReadinessSchema> | null,
 ): ProjectDashboardSummary {
-  const parsedPreview = source.preview === null ? undefined : PreviewPayloadSchema.safeParse(source.preview.payload);
-  const preview =
-    parsedPreview?.success === true && source.preview !== null
-      ? { status: parsedPreview.data.status, occurredAt: source.preview.occurredAt.toISOString() }
-      : null;
+  const preview = source.preview === null
+    ? { status: 'not_started' as const, occurredAt: null }
+    : {
+        status:
+          source.preview.type === 'preview.starting'
+            ? 'starting' as const
+            : source.preview.type === 'preview.ready'
+              ? 'ready' as const
+              : 'failed' as const,
+        occurredAt: source.preview.occurredAt.toISOString(),
+      };
   const release = source.release;
   const deployment = source.deployment;
   const productionStatus =

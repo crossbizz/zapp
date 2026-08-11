@@ -1,6 +1,7 @@
 import type { AppInstance } from '../../app.js';
 import { ApiError } from '../../errors.js';
 import { actorOf } from '../../plugins/auth.js';
+import { IdempotencyHeadersSchema } from '../../plugins/idempotency.js';
 import { authorize, tenantOf } from '../../plugins/tenant.js';
 import type { IntegrationPort } from '../../routes/integrations.js';
 import type { TenantDbFactory } from '../../tenant/db.js';
@@ -58,11 +59,15 @@ export function registerGitHubInstallRoutes(
     '/v1/integrations/github/install/authorize',
     {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-      schema: { response: { 200: GitHubAuthorizeResponseSchema } },
+      schema: {
+        headers: IdempotencyHeadersSchema,
+        response: { 200: GitHubAuthorizeResponseSchema },
+      },
     },
     async (request, reply) => {
       const tenant = tenantOf(request);
       authorize(tenant, 'manage_organization');
+      IdempotencyHeadersSchema.parse(request.headers);
       const state = await dependencies.stateStore.issue(
         { organizationId: tenant.organizationId, actorId: actorOf(request) },
         GITHUB_AUTHORIZATION_STATE_TTL_MS,

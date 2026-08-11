@@ -100,8 +100,8 @@ function summary(
       readonly state: 'blocked' | 'ready' | 'warnings';
     };
     readonly lastActivityAt: string | null;
-    readonly preview: null | {
-      readonly occurredAt: string;
+    readonly preview: {
+      readonly occurredAt: string | null;
       readonly status: 'failed' | 'not_started' | 'ready' | 'starting';
     };
     readonly production: {
@@ -593,7 +593,7 @@ test('renders batch-backed activity and accessible environment states with Deplo
               state: 'blocked',
             },
             lastActivityAt: '2026-08-10T19:24:00.000Z',
-            preview: { occurredAt: '2026-08-10T19:24:00.000Z', status: 'not_started' },
+            preview: { occurredAt: null, status: 'not_started' },
             production: {
               occurredAt: '2026-08-10T19:24:00.000Z',
               releaseId: 'release-blocked',
@@ -680,7 +680,7 @@ test('preserves base cards when summaries fail and retries only the failed summa
           summary('alpha-retry', {
             deployReadiness: null,
             lastActivityAt: null,
-            preview: null,
+            preview: { occurredAt: null, status: 'not_started' },
             production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
           }),
         ],
@@ -739,7 +739,7 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
             summary('beta-summary', {
               deployReadiness: null,
               lastActivityAt: null,
-              preview: null,
+              preview: { occurredAt: null, status: 'not_started' },
               production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
             }),
           ],
@@ -799,6 +799,7 @@ test('paginates GitHub repositories and branches by keyboard, then resumes durab
   const callbackState = 'github-state-must-not-render';
   const repositoryQueries: string[] = [];
   const branchQueries: string[] = [];
+  const authorizeRequests: ObservedMutation[] = [];
   const projectRequests: ObservedMutation[] = [];
   const importRequests: ObservedMutation[] = [];
   const progressStates = ['queued', 'mirroring', 'scan_pending', 'scan_accepted'] as const;
@@ -806,6 +807,7 @@ test('paginates GitHub repositories and branches by keyboard, then resumes durab
   await emptyProjects(page);
 
   await page.route(`${apiBaseUrl}/v1/integrations/github/install/authorize`, async (route) => {
+    authorizeRequests.push(mutation(route));
     await apiResponse(route, {
       url: `${appBaseUrl}/projects?import=github&installation_id=41122&state=${callbackState}&code=${callbackCode}`,
     });
@@ -967,6 +969,8 @@ test('paginates GitHub repositories and branches by keyboard, then resumes durab
 
   expect(repositoryQueries).toEqual(['first', 'opaque-repository-page-2']);
   expect(branchQueries).toEqual(['first', 'opaque-branch-page-2']);
+  expect(authorizeRequests).toHaveLength(1);
+  expect(authorizeRequests[0]?.headers['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/u);
   expect(projectRequests).toHaveLength(1);
   expect(projectRequests[0]?.body).toEqual({ name: 'ada/portal', sourceType: 'github_import' });
   expect(projectRequests[0]?.headers['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/u);
@@ -987,7 +991,7 @@ test('retries a failed durable import with the exact project-create and import o
 }) => {
   const projectRequests: ObservedMutation[] = [];
   const importRequests: ObservedMutation[] = [];
-  let progressRequest = 0;
+  let retryProgressRequest = 0;
   await emptyProjects(page);
   await page.route(`${apiBaseUrl}/v1/integrations/github/install`, async (route) => {
     await apiResponse(
@@ -1040,19 +1044,21 @@ test('retries a failed durable import with the exact project-create and import o
   await page.route(`${apiBaseUrl}/v1/projects/proj-import/import/github`, async (route) => {
     if (route.request().method() === 'POST') {
       importRequests.push(mutation(route));
+      if (importRequests.length > 1) retryProgressRequest = 0;
       await apiResponse(route, { import: { projectId: 'proj-import', status: 'queued' } }, 202);
       return;
     }
-    progressRequest += 1;
-    const accepted = progressRequest > 1;
+    const requeued = importRequests.length > 1;
+    if (requeued) retryProgressRequest += 1;
+    const accepted = requeued && retryProgressRequest > 1;
     await apiResponse(route, {
       branch: 'main',
-      errorCode: accepted ? null : 'mirror_failed',
+      errorCode: requeued ? null : 'mirror_failed',
       externalRepoRef: accepted ? 'ada/portal' : null,
       headCommitSha: accepted ? 'a'.repeat(40) : null,
       projectId: 'proj-import',
       scanId: accepted ? 'scan-import' : null,
-      status: accepted ? 'scan_accepted' : 'failed',
+      status: accepted ? 'scan_accepted' : requeued ? 'queued' : 'failed',
       updatedAt: '2026-08-10T20:00:00.000Z',
     });
   });

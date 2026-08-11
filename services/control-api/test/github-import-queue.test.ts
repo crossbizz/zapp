@@ -1,14 +1,16 @@
+import { ChangeMessageVisibilityCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { newId } from '@zapp/contracts';
 import {
   CapabilityScanUnavailableError,
   type CapabilityScanPort,
 } from '@zapp/project-adapters';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { GitServiceImportConflictError, type GitServicePort } from '../src/git/port.js';
 import {
   createGitHubImportConsumerLifecycle,
   createGitHubImportWorker,
+  createSqsGitHubImportQueue,
   GitHubImportQueueMessageSchema,
   type GitHubImportQueuePort,
 } from '../src/integrations/github/import-queue.js';
@@ -196,6 +198,100 @@ const scanMessage = GitHubImportQueueMessageSchema.parse({
   stage: 'scan_pending',
 });
 
+class ManualTimers {
+  private nextHandle = 1;
+  readonly active = new Map<number, { readonly callback: () => void; readonly delayMs: number }>();
+  readonly cleared: number[] = [];
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const handle = this.nextHandle;
+    this.nextHandle += 1;
+    this.active.set(handle, { callback, delayMs });
+    return handle;
+  }
+
+  clearInterval(rawHandle: number | object): void {
+    const handle = Number(rawHandle);
+    this.cleared.push(handle);
+    this.active.delete(handle);
+  }
+
+  handleBelow(delayMs: number): number | undefined {
+    return [...this.active].find(([, entry]) => entry.delayMs < delayMs)?.[0];
+  }
+
+  handleAt(delayMs: number): number | undefined {
+    return [...this.active].find(([, entry]) => entry.delayMs === delayMs)?.[0];
+  }
+
+  async fire(handle: number): Promise<void> {
+    this.active.get(handle)?.callback();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
+class VisibilityQueue implements GitHubImportQueuePort {
+  nowMs = 0;
+  visibleAtMs = 0;
+  mainReceives = 0;
+  inDeadLetterQueue = false;
+  failHeartbeat = false;
+  readonly extensions: number[] = [];
+  readonly deleted: Array<{ readonly queue: 'main' | 'dlq'; readonly receipt: string }> = [];
+
+  send(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  receive(
+    queueName: 'main' | 'dlq',
+    input: {
+      readonly maxMessages: number;
+      readonly waitTimeSeconds: number;
+      readonly visibilityTimeoutSeconds: number;
+    },
+  ): Promise<readonly { readonly body: string; readonly receiptHandle: string }[]> {
+    if (queueName === 'dlq') {
+      return Promise.resolve(
+        this.inDeadLetterQueue
+          ? [{ body: JSON.stringify(scanMessage), receiptHandle: 'dlq-receipt' }]
+          : [],
+      );
+    }
+    if (this.inDeadLetterQueue || this.nowMs < this.visibleAtMs) return Promise.resolve([]);
+    if (this.mainReceives > 0) {
+      this.inDeadLetterQueue = true;
+      return Promise.resolve([]);
+    }
+    this.mainReceives += 1;
+    this.visibleAtMs = this.nowMs + input.visibilityTimeoutSeconds * 1_000;
+    return Promise.resolve([{ body: JSON.stringify(scanMessage), receiptHandle: 'main-receipt' }]);
+  }
+
+  changeVisibility(
+    queueName: 'main' | 'dlq',
+    receiptHandle: string,
+    visibilityTimeoutSeconds: number,
+  ): Promise<void> {
+    if (this.failHeartbeat) return Promise.reject(new Error('visibility extension failed'));
+    expect(queueName).toBe('main');
+    expect(receiptHandle).toBe('main-receipt');
+    this.extensions.push(visibilityTimeoutSeconds);
+    this.visibleAtMs = this.nowMs + visibilityTimeoutSeconds * 1_000;
+    return Promise.resolve();
+  }
+
+  delete(queueName: 'main' | 'dlq', receiptHandle: string): Promise<void> {
+    this.deleted.push({ queue: queueName, receipt: receiptHandle });
+    return Promise.resolve();
+  }
+
+  advance(milliseconds: number): void {
+    this.nowMs += milliseconds;
+  }
+}
+
 describe('durable GitHub import worker', () => {
   it('rejects unknown fields at acceptance, mirror, and scan persistence boundaries', () => {
     expect(
@@ -349,9 +445,134 @@ describe('durable GitHub import worker', () => {
 });
 
 describe('GitHub import queue lifecycle', () => {
-  it('deletes accepted main and settled DLQ messages and drains in-flight work on shutdown', async () => {
-    const scheduled: (() => void)[] = [];
+  it('extends an active delivery beyond one visibility window so it cannot compete or reach the DLQ', async () => {
+    const queue = new VisibilityQueue();
+    const timers = new ManualTimers();
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lifecycle = createGitHubImportConsumerLifecycle({
+      queue,
+      worker: { process: () => blocked, settleDeadLetter: () => Promise.resolve() },
+      batchSize: 1,
+      waitTimeSeconds: 0,
+      visibilityTimeoutSeconds: 3,
+      intervalMs: 60_000,
+      timers,
+    });
+
+    const starting = lifecycle.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    const leaseHandle = timers.handleBelow(3_000);
+    expect(leaseHandle).toBeDefined();
+    if (leaseHandle === undefined) throw new Error('visibility heartbeat was not scheduled');
+
+    for (let heartbeat = 0; heartbeat < 4; heartbeat += 1) {
+      queue.advance(2_500);
+      await timers.fire(leaseHandle);
+    }
+    expect(queue.nowMs).toBeGreaterThan(3_000);
+    expect(queue.extensions).toEqual([3, 3, 3, 3]);
+    await expect(
+      queue.receive('main', {
+        maxMessages: 1,
+        waitTimeSeconds: 0,
+        visibilityTimeoutSeconds: 3,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      queue.receive('dlq', {
+        maxMessages: 1,
+        waitTimeSeconds: 0,
+        visibilityTimeoutSeconds: 3,
+      }),
+    ).resolves.toEqual([]);
+
+    release();
+    await starting;
+    expect(queue.deleted).toContainEqual({ queue: 'main', receipt: 'main-receipt' });
+    expect(timers.cleared).toContain(leaseHandle);
+    await lifecycle.close();
+  });
+
+  it('keeps a heartbeat failure recoverable and cleans the lease after worker failure', async () => {
+    const queue = new VisibilityQueue();
+    queue.failHeartbeat = true;
+    const timers = new ManualTimers();
+    const errors: string[] = [];
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lifecycle = createGitHubImportConsumerLifecycle({
+      queue,
+      worker: { process: () => blocked, settleDeadLetter: () => Promise.resolve() },
+      batchSize: 1,
+      waitTimeSeconds: 0,
+      visibilityTimeoutSeconds: 3,
+      intervalMs: 60_000,
+      onError: (error) => errors.push(error.message),
+      timers,
+    });
+
+    const starting = lifecycle.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    const leaseHandle = timers.handleBelow(3_000);
+    expect(leaseHandle).toBeDefined();
+    if (leaseHandle === undefined) throw new Error('visibility heartbeat was not scheduled');
+    await timers.fire(leaseHandle);
+    await Promise.resolve();
+    release();
+    await starting;
+
+    expect(errors).toEqual(['visibility extension failed']);
+    expect(queue.deleted).toEqual([]);
+    expect(timers.cleared).toContain(leaseHandle);
+    queue.advance(3_001);
+    await queue.receive('main', {
+      maxMessages: 1,
+      waitTimeSeconds: 0,
+      visibilityTimeoutSeconds: 3,
+    });
+    await expect(
+      queue.receive('dlq', {
+        maxMessages: 1,
+        waitTimeSeconds: 0,
+        visibilityTimeoutSeconds: 3,
+      }),
+    ).resolves.toEqual([
+      { body: JSON.stringify(scanMessage), receiptHandle: 'dlq-receipt' },
+    ]);
+    await lifecycle.close();
+
+    const failedQueue = new VisibilityQueue();
+    const failedTimers = new ManualTimers();
+    const failedLifecycle = createGitHubImportConsumerLifecycle({
+      queue: failedQueue,
+      worker: {
+        process: () => Promise.reject(new Error('scan failed')),
+        settleDeadLetter: () => Promise.resolve(),
+      },
+      batchSize: 1,
+      waitTimeSeconds: 0,
+      visibilityTimeoutSeconds: 3,
+      intervalMs: 60_000,
+      timers: failedTimers,
+    });
+    await failedLifecycle.start();
+    expect(failedQueue.deleted).toEqual([]);
+    expect(failedTimers.handleBelow(3_000)).toBeUndefined();
+    expect(failedTimers.cleared).toHaveLength(1);
+    await failedLifecycle.close();
+  });
+
+  it('deletes accepted main and settled DLQ messages and drains a leased message on shutdown', async () => {
     const deleted: Array<{ queue: 'main' | 'dlq'; receipt: string }> = [];
+    const extensions: string[] = [];
+    const timers = new ManualTimers();
     let mainMessages: readonly { body: string; receiptHandle: string }[] = [];
     let dlqMessages: readonly { body: string; receiptHandle: string }[] = [];
     let release: () => void = () => undefined;
@@ -363,6 +584,10 @@ describe('GitHub import queue lifecycle', () => {
       send: () => Promise.resolve(),
       receive(queueName) {
         return Promise.resolve(queueName === 'main' ? mainMessages : dlqMessages);
+      },
+      changeVisibility(queueName, receiptHandle) {
+        extensions.push(`${queueName}:${receiptHandle}`);
+        return Promise.resolve();
       },
       delete(queueName, receiptHandle) {
         deleted.push({ queue: queueName, receipt: receiptHandle });
@@ -382,15 +607,7 @@ describe('GitHub import queue lifecycle', () => {
       waitTimeSeconds: 0,
       visibilityTimeoutSeconds: 30,
       intervalMs: 1_000,
-      timers: {
-        setInterval(callback) {
-          scheduled.push(callback);
-          return 17;
-        },
-        clearInterval(handle) {
-          expect(handle).toBe(17);
-        },
-      },
+      timers,
     });
 
     mainMessages = [{ body: JSON.stringify(queuedMessage), receiptHandle: 'main-1' }];
@@ -403,7 +620,10 @@ describe('GitHub import queue lifecycle', () => {
 
     mainMessages = [{ body: JSON.stringify(queuedMessage), receiptHandle: 'main-2' }];
     dlqMessages = [];
-    scheduled[0]?.();
+    const pollHandle = timers.handleAt(1_000);
+    expect(pollHandle).toBeDefined();
+    if (pollHandle === undefined) throw new Error('poll was not scheduled');
+    await timers.fire(pollHandle);
     await Promise.resolve();
     let closed = false;
     const closing = lifecycle.close().then(() => {
@@ -411,8 +631,45 @@ describe('GitHub import queue lifecycle', () => {
     });
     await Promise.resolve();
     expect(closed).toBe(false);
+    const leaseHandle = timers.handleAt(10_000);
+    expect(leaseHandle).toBeDefined();
+    if (leaseHandle === undefined) throw new Error('shutdown lease was not scheduled');
+    await timers.fire(leaseHandle);
+    expect(extensions).toContain('main:main-2');
     release();
     await closing;
     expect(deleted).toContainEqual({ queue: 'main', receipt: 'main-2' });
+    expect(timers.active.size).toBe(0);
+  });
+});
+
+describe('SQS GitHub import queue', () => {
+  it('uses ChangeMessageVisibility and clamps each lease to the SQS bound', async () => {
+    const send = vi
+      .spyOn(SQSClient.prototype, 'send')
+      .mockResolvedValue({ QueueUrl: 'https://sqs.test/queue' } as never);
+    try {
+      const queue = createSqsGitHubImportQueue({
+        region: 'us-west-2',
+        endpoint: 'https://sqs.test',
+        accessKeyId: 'test-access-key',
+        secretAccessKey: 'test-secret-key',
+        queueName: 'github-imports',
+        deadLetterQueueName: 'github-imports-dlq',
+      });
+
+      await queue.changeVisibility('main', 'receipt-1', 99_999);
+
+      const command = send.mock.calls.at(-1)?.[0];
+      expect(command).toBeInstanceOf(ChangeMessageVisibilityCommand);
+      expect((command as ChangeMessageVisibilityCommand).input).toEqual({
+        QueueUrl: 'https://sqs.test/queue',
+        ReceiptHandle: 'receipt-1',
+        VisibilityTimeout: 43_200,
+      });
+      queue.close?.();
+    } finally {
+      send.mockRestore();
+    }
   });
 });

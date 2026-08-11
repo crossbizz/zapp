@@ -807,7 +807,9 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "idempotency-key": string;
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -5026,10 +5028,10 @@ export interface paths {
                                 lastActivityAt: string | null;
                                 preview: {
                                     /** Format: date-time */
-                                    occurredAt: string;
+                                    occurredAt: string | null;
                                     /** @enum {string} */
                                     status: "not_started" | "starting" | "ready" | "failed";
-                                } | null;
+                                };
                                 production: {
                                     /** Format: date-time */
                                     occurredAt: string | null;

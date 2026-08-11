@@ -52,6 +52,70 @@ export const AgentEventVisibilitySchema = z.enum(['user', 'internal', 'support']
 
 export type AgentEventVisibility = z.infer<typeof AgentEventVisibilitySchema>;
 
+export const PreviewStartingPayloadSchema = z
+  .object({
+    workspaceId: idSchema('ws'),
+    action: z.enum(['start', 'restart']),
+  })
+  .strict();
+
+export const PreviewReadyPayloadSchema = PreviewStartingPayloadSchema.extend({
+  port: z.number().int().min(1).max(65_535),
+  supervisorId: z.string().min(1),
+}).strict();
+
+export const PreviewOperationFailurePayloadSchema = PreviewStartingPayloadSchema.extend({
+  code: z.literal('dev_server_operation_failed'),
+}).strict();
+
+export const PreviewTerminalFailurePayloadSchema = z
+  .object({
+    workspaceId: idSchema('ws'),
+    code: z.literal('restart_limit_exceeded'),
+    monitorLeaseToken: z.string().trim().min(1).max(256),
+  })
+  .strict();
+
+const PreviewLifecycleEnvelopeShape = {
+  eventKey: z.string().min(1).max(512),
+  organizationId: idSchema('org'),
+  projectId: idSchema('proj'),
+  runId: idSchema('run'),
+  taskId: idSchema('task').optional(),
+  occurredAt: z.string().datetime(),
+  visibility: z.literal('user'),
+} as const;
+
+/** Exact producer envelope emitted by the sandbox preview lifecycle. */
+export const PreviewLifecycleEventSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      ...PreviewLifecycleEnvelopeShape,
+      type: z.literal('preview.starting'),
+      payload: PreviewStartingPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...PreviewLifecycleEnvelopeShape,
+      type: z.literal('preview.ready'),
+      payload: PreviewReadyPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...PreviewLifecycleEnvelopeShape,
+      type: z.literal('preview.failed'),
+      payload: z.union([
+        PreviewOperationFailurePayloadSchema,
+        PreviewTerminalFailurePayloadSchema,
+      ]),
+    })
+    .strict(),
+]);
+
+export type PreviewLifecycleEvent = z.infer<typeof PreviewLifecycleEventSchema>;
+
 const OpaqueMessageIdSchema = z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/u);
 const OpaqueTurnIdSchema = z.string().regex(/^turn_[0-9A-HJKMNP-TV-Z]{26}$/u);
 

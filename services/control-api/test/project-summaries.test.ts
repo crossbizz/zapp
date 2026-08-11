@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { newId, type AgentEvent } from '@zapp/contracts';
+import { newId, PreviewLifecycleEventSchema, type AgentEvent } from '@zapp/contracts';
 import type { AgentEventRow, Deployment, Release } from '@zapp/db';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { ReleasePort } from '../src/routes/releases.js';
+import { ProjectDashboardSummarySchema } from '../src/tenant/view.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
@@ -70,6 +71,27 @@ function addEvent(
     taskId: null,
     agentId: null,
   });
+}
+
+function addProducerPreviewEvent(
+  wired: Wired,
+  projectId: string,
+  type: 'preview.starting' | 'preview.ready' | 'preview.failed',
+  payload: unknown,
+  occurredAt: string,
+): void {
+  const event = PreviewLifecycleEventSchema.parse({
+    eventKey: `summary-contract:${String(wired.data.events.length + 1)}`,
+    organizationId: wired.organizationId,
+    projectId,
+    runId: newId('run'),
+    taskId: newId('task'),
+    occurredAt,
+    type,
+    visibility: 'user',
+    payload,
+  });
+  addEvent(wired, projectId, event.type, event.payload, event.occurredAt);
 }
 
 function addProduction(
@@ -146,14 +168,14 @@ describe('GET /v1/projects/summaries', () => {
         {
           projectId: first.id,
           lastActivityAt: null,
-          preview: null,
+          preview: { status: 'not_started', occurredAt: null },
           production: { status: 'not_deployed', occurredAt: null, releaseId: null },
           deployReadiness: null,
         },
         {
           projectId: second.id,
           lastActivityAt: null,
-          preview: null,
+          preview: { status: 'not_started', occurredAt: null },
           production: { status: 'not_deployed', occurredAt: null, releaseId: null },
           deployReadiness: null,
         },
@@ -166,7 +188,18 @@ describe('GET /v1/projects/summaries', () => {
     const wired = await wire(port);
     const { id: projectId } = await createProject(wired, 'Durable Summary Project');
     const release = addProduction(wired, projectId, 'healthy', '2026-08-10T18:03:00.000Z');
-    addEvent(wired, projectId, 'preview.ready', { status: 'ready' }, '2026-08-10T18:02:00.000Z');
+    addProducerPreviewEvent(
+      wired,
+      projectId,
+      'preview.ready',
+      {
+        workspaceId: newId('ws'),
+        action: 'start',
+        port: 3_000,
+        supervisorId: 'preview-supervisor-1',
+      },
+      '2026-08-10T18:02:00.000Z',
+    );
     addEvent(wired, projectId, 'run.completed', {}, '2026-08-10T18:03:00.000Z');
 
     const response = await wired.built.app.inject({
@@ -220,12 +253,95 @@ describe('GET /v1/projects/summaries', () => {
     expect(response.json()).toMatchObject({ error: { code: 'project_not_found' } });
   });
 
+  it('derives preview state from exact sandbox lifecycle event types and real payloads', async () => {
+    const wired = await wire();
+    const starting = await createProject(wired, 'Starting Preview Project');
+    const ready = await createProject(wired, 'Ready Preview Project');
+    const failed = await createProject(wired, 'Failed Preview Project');
+    const terminalFailure = await createProject(wired, 'Terminal Preview Project');
+
+    addProducerPreviewEvent(
+      wired,
+      starting.id,
+      'preview.starting',
+      { workspaceId: newId('ws'), action: 'restart' },
+      '2026-08-10T18:01:00.000Z',
+    );
+    addProducerPreviewEvent(
+      wired,
+      ready.id,
+      'preview.ready',
+      {
+        workspaceId: newId('ws'),
+        action: 'start',
+        port: 4_173,
+        supervisorId: 'preview-supervisor-ready',
+      },
+      '2026-08-10T18:02:00.000Z',
+    );
+    addProducerPreviewEvent(
+      wired,
+      failed.id,
+      'preview.failed',
+      {
+        workspaceId: newId('ws'),
+        action: 'restart',
+        code: 'dev_server_operation_failed',
+      },
+      '2026-08-10T18:03:00.000Z',
+    );
+    addProducerPreviewEvent(
+      wired,
+      terminalFailure.id,
+      'preview.failed',
+      {
+        workspaceId: newId('ws'),
+        code: 'restart_limit_exceeded',
+        monitorLeaseToken: 'preview-monitor-lease-1',
+      },
+      '2026-08-10T18:04:00.000Z',
+    );
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/summaries?projectId=${starting.id}&projectId=${ready.id}&projectId=${failed.id}&projectId=${terminalFailure.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      summaries: [
+        { projectId: starting.id, preview: { status: 'starting', occurredAt: '2026-08-10T18:01:00.000Z' } },
+        { projectId: ready.id, preview: { status: 'ready', occurredAt: '2026-08-10T18:02:00.000Z' } },
+        { projectId: failed.id, preview: { status: 'failed', occurredAt: '2026-08-10T18:03:00.000Z' } },
+        { projectId: terminalFailure.id, preview: { status: 'failed', occurredAt: '2026-08-10T18:04:00.000Z' } },
+      ],
+    });
+  });
+
   it('uses the latest valid preview, ignores non-user activity, and leaves empty activity null', async () => {
     const wired = await wire();
     const empty = await createProject(wired, 'Empty Summary Project');
     const populated = await createProject(wired, 'Preview Summary Project');
-    addEvent(wired, populated.id, 'preview.ready', { status: 'ready' }, '2026-08-10T18:02:00.000Z');
-    addEvent(wired, populated.id, 'preview.failed', { status: 'not-a-preview-state' }, '2026-08-10T18:04:00.000Z');
+    addEvent(
+      wired,
+      populated.id,
+      'preview.ready',
+      {
+        workspaceId: newId('ws'),
+        action: 'start',
+        port: 3_001,
+        supervisorId: 'preview-supervisor-valid',
+      },
+      '2026-08-10T18:02:00.000Z',
+    );
+    addEvent(
+      wired,
+      populated.id,
+      'preview.failed',
+      { workspaceId: newId('ws'), code: 'dev_server_operation_failed' },
+      '2026-08-10T18:04:00.000Z',
+    );
     addEvent(wired, populated.id, 'run.completed', {}, '2026-08-10T18:05:00.000Z', 'internal');
 
     const response = await wired.built.app.inject({
@@ -237,7 +353,11 @@ describe('GET /v1/projects/summaries', () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({
       summaries: [
-        { projectId: empty.id, lastActivityAt: null, preview: null },
+        {
+          projectId: empty.id,
+          lastActivityAt: null,
+          preview: { status: 'not_started', occurredAt: null },
+        },
         {
           projectId: populated.id,
           lastActivityAt: '2026-08-10T18:04:00.000Z',
@@ -245,6 +365,27 @@ describe('GET /v1/projects/summaries', () => {
         },
       ],
     });
+  });
+
+  it('rejects unrestricted project and release identifiers in dashboard summary contracts', () => {
+    const valid = {
+      projectId: newId('proj'),
+      lastActivityAt: null,
+      preview: { status: 'not_started' as const, occurredAt: null },
+      production: { status: 'healthy' as const, occurredAt: null, releaseId: newId('rel') },
+      deployReadiness: null,
+    };
+
+    expect(ProjectDashboardSummarySchema.safeParse(valid).success).toBe(true);
+    expect(
+      ProjectDashboardSummarySchema.safeParse({ ...valid, projectId: 'project-unrestricted' }).success,
+    ).toBe(false);
+    expect(
+      ProjectDashboardSummarySchema.safeParse({
+        ...valid,
+        production: { ...valid.production, releaseId: 'release-unrestricted' },
+      }).success,
+    ).toBe(false);
   });
 
   it('returns null when readiness is unavailable and preserves blocked reports verbatim', async () => {

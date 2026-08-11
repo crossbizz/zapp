@@ -2158,7 +2158,8 @@
                         "type": "object",
                         "properties": {
                           "projectId": {
-                            "type": "string"
+                            "type": "string",
+                            "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
                           },
                           "lastActivityAt": {
                             "type": "string",
@@ -2179,15 +2180,15 @@
                               },
                               "occurredAt": {
                                 "type": "string",
-                                "format": "date-time"
+                                "format": "date-time",
+                                "nullable": true
                               }
                             },
                             "required": [
                               "status",
                               "occurredAt"
                             ],
-                            "additionalProperties": false,
-                            "nullable": true
+                            "additionalProperties": false
                           },
                           "production": {
                             "type": "object",
@@ -2208,6 +2209,7 @@
                               },
                               "releaseId": {
                                 "type": "string",
+                                "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$",
                                 "nullable": true
                               }
                             },
@@ -2222,7 +2224,8 @@
                             "type": "object",
                             "properties": {
                               "releaseId": {
-                                "type": "string"
+                                "type": "string",
+                                "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
                               },
                               "state": {
                                 "type": "string",
@@ -14401,6 +14404,17 @@
     },
     "/v1/integrations/github/install/authorize": {
       "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true
+          }
+        ],
         "security": [
           {
             "bearerAuth": []
@@ -14755,7 +14769,7 @@
                           },
                           "headCommitSha": {
                             "type": "string",
-                            "minLength": 1
+                            "pattern": "^[0-9a-f]{40}$"
                           }
                         },
                         "required": [

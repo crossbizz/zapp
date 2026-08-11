@@ -305,6 +305,85 @@ describe('generated API types', () => {
     });
   });
 
+  it('requires a validated GitHub authorize idempotency header in OpenAPI and generated types', async () => {
+    type AuthorizePost = NonNullable<
+      GeneratedPaths['/v1/integrations/github/install/authorize']['post']
+    >;
+    type AuthorizeHeaders = NonNullable<AuthorizePost['parameters']['header']>;
+    const generatedHeaders: AuthorizeHeaders = {
+      'idempotency-key': 'github-authorize-operation-0001',
+    };
+    expect(generatedHeaders['idempotency-key']).toBe('github-authorize-operation-0001');
+
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const operation = paths['/v1/integrations/github/install/authorize']?.['post'];
+    expect(
+      operation?.parameters?.find(
+        (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',
+      ),
+    ).toMatchObject({
+      required: true,
+      schema: { pattern: '^[A-Za-z0-9._:-]{8,255}$', type: 'string' },
+    });
+  });
+
+  it('publishes semantic dashboard identifiers, explicit preview state, and resolved branch SHAs', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const summarySchema = paths['/v1/projects/summaries']?.['get']?.responses?.['200']?.content?.[
+      'application/json'
+    ] as
+      | {
+          schema?: {
+            properties?: {
+              summaries?: {
+                items?: { properties?: Record<string, Record<string, unknown>> };
+              };
+            };
+          };
+        }
+      | undefined;
+    const summary = summarySchema?.schema?.properties?.summaries?.items?.properties;
+    expect(summary?.['projectId']).toMatchObject({
+      pattern: '^proj_[0-9A-HJKMNP-TV-Z]{26}$',
+      type: 'string',
+    });
+    expect(summary?.['preview']).toMatchObject({ required: ['status', 'occurredAt'] });
+    expect(summary?.['preview']).not.toHaveProperty('nullable');
+    const production = summary?.['production'] as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    expect(
+      production?.properties?.['releaseId'],
+    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+    const deployReadiness = summary?.['deployReadiness'] as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    expect(
+      deployReadiness?.properties?.['releaseId'],
+    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+
+    const branchSchema = paths[
+      '/v1/integrations/github/repositories/{repositoryId}/branches'
+    ]?.['get']?.responses?.['200']?.content?.['application/json'] as
+      | {
+          schema?: {
+            properties?: {
+              items?: {
+                items?: { properties?: Record<string, Record<string, unknown>> };
+              };
+            };
+          };
+        }
+      | undefined;
+    expect(branchSchema?.schema?.properties?.items?.items?.properties?.['headCommitSha']).toMatchObject(
+      { pattern: '^[0-9a-f]{40}$', type: 'string' },
+    );
+  });
+
   it('documents every formerly schema-less redirect with its live status and location header', async () => {
     // Break caught: the fallback invents a JSON 200/null response for login and
     // callback even though both live handlers return an empty 302 with Location.

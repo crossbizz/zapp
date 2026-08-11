@@ -92,6 +92,7 @@ import {
   IntegrationConnectionSchema,
   type IntegrationConnectionView,
   type ProjectDashboardSummarySource,
+  ProjectDashboardSummarySourceSchema,
 } from './view.js';
 
 const PrototypeAssumptionsPayloadSchema = z
@@ -891,12 +892,50 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               .where(scoped(githubImports.organizationId, eq(githubImports.projectId, project.id)))
               .limit(1);
             if (existing !== undefined) {
-              return existing.operationKey === input.operationKey &&
+              const sameOperation =
+                existing.operationKey === input.operationKey &&
                 existing.installationId === input.installationId &&
                 existing.repo === input.repo &&
-                existing.branch === input.branch
-                ? existing
-                : ('operation_conflict' as const);
+                existing.branch === input.branch;
+              if (!sameOperation) return 'operation_conflict' as const;
+              if (existing.status !== 'failed') return existing;
+
+              const hasMirrorResult =
+                existing.externalRepoRef !== null && existing.headCommitSha !== null;
+              const stage = hasMirrorResult ? 'scan_pending' : 'queued';
+              const [rearmed] = await tx
+                .update(githubImports)
+                .set({ status: stage, errorCode: null, updatedAt: input.now })
+                .where(
+                  and(
+                    eq(githubImports.projectId, project.id),
+                    eq(githubImports.organizationId, orgId),
+                  ),
+                )
+                .returning();
+              if (rearmed === undefined) throw new Error('GitHub import rearm returned no row');
+              await tx
+                .insert(githubImportOutbox)
+                .values({
+                  projectId: project.id,
+                  stage,
+                  status: 'pending',
+                  attempts: 0,
+                  nextAttemptAt: input.now,
+                  createdAt: input.now,
+                  publishedAt: null,
+                })
+                .onConflictDoUpdate({
+                  target: [githubImportOutbox.projectId, githubImportOutbox.stage],
+                  set: {
+                    status: 'pending',
+                    attempts: 0,
+                    nextAttemptAt: input.now,
+                    createdAt: input.now,
+                    publishedAt: null,
+                  },
+                });
+              return rearmed;
             }
 
             const [inserted] = await tx
@@ -942,6 +981,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             readonly found: boolean;
             readonly lastActivityAt: Date | null;
             readonly previewOccurredAt: Date | null;
+            readonly previewType: 'preview.starting' | 'preview.ready' | 'preview.failed' | null;
             readonly previewPayload: unknown;
             readonly releaseId: string | null;
             readonly releaseStatus: string | null;
@@ -957,6 +997,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               projects.id is not null as "found",
               activity.occurred_at as "lastActivityAt",
               preview.occurred_at as "previewOccurredAt",
+              preview.type as "previewType",
               preview.payload_json as "previewPayload",
               release.id as "releaseId",
               release.status as "releaseStatus",
@@ -977,15 +1018,47 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               limit 1
             ) activity on true
             left join lateral (
-              select occurred_at, payload_json
+              select type, occurred_at, payload_json
               from agent_events
               where organization_id = ${orgId}
                 and project_id = projects.id
                 and visibility = 'user'
                 and type in ('preview.starting', 'preview.ready', 'preview.failed')
                 and jsonb_typeof(payload_json) = 'object'
-                and payload_json - 'status' = '{}'::jsonb
-                and payload_json ->> 'status' in ('not_started', 'starting', 'ready', 'failed')
+                and payload_json ->> 'workspaceId' ~ '^ws_[0-9A-HJKMNP-TV-Z]{26}$'
+                and (
+                  (
+                    type = 'preview.starting'
+                    and payload_json - 'workspaceId' - 'action' = '{}'::jsonb
+                    and payload_json ->> 'action' in ('start', 'restart')
+                  )
+                  or (
+                    type = 'preview.ready'
+                    and payload_json - 'workspaceId' - 'action' - 'port' - 'supervisorId' = '{}'::jsonb
+                    and payload_json ->> 'action' in ('start', 'restart')
+                    and jsonb_typeof(payload_json -> 'port') = 'number'
+                    and (payload_json ->> 'port')::numeric between 1 and 65535
+                    and (payload_json ->> 'port')::numeric = trunc((payload_json ->> 'port')::numeric)
+                    and jsonb_typeof(payload_json -> 'supervisorId') = 'string'
+                    and length(payload_json ->> 'supervisorId') >= 1
+                  )
+                  or (
+                    type = 'preview.failed'
+                    and (
+                      (
+                        payload_json - 'workspaceId' - 'action' - 'code' = '{}'::jsonb
+                        and payload_json ->> 'action' in ('start', 'restart')
+                        and payload_json ->> 'code' = 'dev_server_operation_failed'
+                      )
+                      or (
+                        payload_json - 'workspaceId' - 'code' - 'monitorLeaseToken' = '{}'::jsonb
+                        and payload_json ->> 'code' = 'restart_limit_exceeded'
+                        and jsonb_typeof(payload_json -> 'monitorLeaseToken') = 'string'
+                        and length(btrim(payload_json ->> 'monitorLeaseToken')) between 1 and 256
+                      )
+                    )
+                  )
+                )
               order by occurred_at desc
               limit 1
             ) preview on true
@@ -1012,13 +1085,17 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             order by requested.ordinal
           `);
           if (rows.some((row) => !row.found)) return undefined;
-          return rows.map((row) => ({
+          return rows.map((row) => ProjectDashboardSummarySourceSchema.parse({
             projectId: row.projectId,
             lastActivityAt: row.lastActivityAt,
             preview:
-              row.previewOccurredAt === null
+              row.previewOccurredAt === null || row.previewType === null
                 ? null
-                : { occurredAt: row.previewOccurredAt, payload: row.previewPayload },
+                : {
+                    type: row.previewType,
+                    occurredAt: row.previewOccurredAt,
+                    payload: row.previewPayload,
+                  },
             release:
               row.releaseId === null || row.releaseStatus === null || row.releaseCreatedAt === null
                 ? null

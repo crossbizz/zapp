@@ -13,7 +13,12 @@ const EVENT = {
   occurredAt: '2026-08-09T12:00:00.000Z',
   type: 'preview.ready' as const,
   visibility: 'user' as const,
-  payload: { workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NF', action: 'start' },
+  payload: {
+    workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
+    action: 'start' as const,
+    port: 4_173,
+    supervisorId: 'preview-supervisor-event-test',
+  },
 };
 
 describe('WS-13 control-plane preview event client', () => {
