@@ -398,7 +398,7 @@ function shouldRunGate(
   hasCriticalCriteria: boolean,
 ): boolean {
   if (gateId === 'browser_acceptance' && !hasCriticalCriteria) return false;
-  if (requirementClass === 'no' || requirementClass === 'advisory' || requirementClass === 'recommended') {
+  if (requirementClass === 'no' || requirementClass === 'recommended') {
     return false;
   }
   if (requirementClass === 'optional') {

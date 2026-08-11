@@ -246,6 +246,7 @@ export const ImageSmokeEvidenceSchema = z
         readinessProbe: z.literal(true),
         gitleaksSecretScan: z.literal(true),
         antiSlopToolchain: z.literal(true),
+        dependencyScan: z.literal(true),
       })
       .strict(),
     credentialAbsence: z

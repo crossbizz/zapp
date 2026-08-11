@@ -66,6 +66,7 @@ const SUCCESSFUL_SMOKE_EVIDENCE = {
     readinessProbe: true,
     gitleaksSecretScan: true,
     antiSlopToolchain: true,
+    dependencyScan: true,
   },
   credentialAbsence: {
     environment: true,

@@ -103,6 +103,7 @@ export function createForgeNodeBaseRecipe(
   const sourceDirectory = '/tmp/zapp-src';
   const snapshot = config.node.debianSnapshot;
   const gitleaks = config.node.gitleaks;
+  const osvScanner = config.node.osvScanner;
   const antiSlop = config.node.antiSlop;
   const semgrepWheelPath = new URL(antiSlop.semgrep.linuxX64WheelUrl).pathname;
   const semgrepWheelFileName = semgrepWheelPath.slice(semgrepWheelPath.lastIndexOf('/') + 1);
@@ -125,6 +126,8 @@ export function createForgeNodeBaseRecipe(
           `RUN sed -i -e "s|http://snapshot.debian.org/archive/debian-security/${snapshot}|https://snapshot.debian.org/archive/debian-security/${snapshot}|g" -e "s|http://snapshot.debian.org/archive/debian/${snapshot}|https://snapshot.debian.org/archive/debian/${snapshot}|g" /etc/apt/sources.list.d/debian.sources`,
           'RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ripgrep curl jq unzip build-essential python3 python3-venv dumb-init && rm -rf /var/lib/apt/lists/*',
           `RUN set -eux; archive=gitleaks_${gitleaks.version}_linux_x64.tar.gz; curl --fail --show-error --silent --location --output /tmp/$archive https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks.version}/$archive; printf '${gitleaks.linuxX64Sha256}  /tmp/%s\\n' "$archive" | sha256sum --check; tar -xzf /tmp/$archive -C /usr/local/bin gitleaks; chmod 0755 /usr/local/bin/gitleaks; rm -f /tmp/$archive; gitleaks version | grep -F '${gitleaks.version}'`,
+          `RUN set -eux; binary=/tmp/osv-scanner_linux_amd64; curl --fail --show-error --silent --location --output "$binary" https://github.com/google/osv-scanner/releases/download/v${osvScanner.version}/osv-scanner_linux_amd64; printf '${osvScanner.linuxX64Sha256}  %s\\n' "$binary" | sha256sum --check; install -m 0755 "$binary" /usr/local/bin/osv-scanner; rm -f "$binary"; osv-scanner --version | grep -F '${osvScanner.version}'`,
+          `RUN set -eux; database=/tmp/osv-npm-all.zip; curl --fail --show-error --silent --location --output "$database" '${osvScanner.npmDatabaseUrl}'; printf '${osvScanner.npmDatabaseSha256}  %s\\n' "$database" | sha256sum --check; install -d /opt/zapp/osv-db/osv-scanner/npm; install -m 0644 "$database" /opt/zapp/osv-db/osv-scanner/npm/all.zip; rm -f "$database"; test -s /opt/zapp/osv-db/osv-scanner/npm/all.zip`,
           `RUN corepack enable && corepack prepare pnpm@${config.node.packageManagers.pnpm} --activate && corepack prepare yarn@${config.node.packageManagers.yarn} --activate`,
         ],
       },
@@ -142,6 +145,7 @@ export function createForgeNodeBaseRecipe(
           `RUN cd ${sourceDirectory} && pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/preview-proxy --concurrency=1`,
           `RUN cd ${sourceDirectory} && pnpm --filter @zapp/workspace-agent deploy --prod /opt/zapp/agent && pnpm --filter @zapp/preview-proxy deploy --prod /opt/zapp/proxy`,
           'RUN test -f /opt/zapp/agent/dist/main.js && test -f /opt/zapp/proxy/dist/main.js && mkdir -p /workspace',
+          'ENV OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/opt/zapp/osv-db',
           `ENV PATH=${sourceDirectory}/node_modules/.bin:$PATH NODE_ENV=production ZAPP_WORKSPACE_ROOT=/workspace PORT=8080`,
           'WORKDIR /workspace',
         ],

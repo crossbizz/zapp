@@ -781,6 +781,9 @@ describe('Modal image provider facade', () => {
       'knip --version',
       'jscpd --version',
       'eslint --version',
+      'osv-scanner scan source',
+      '--offline',
+      'package-lock.json',
     ]) {
       expect(serializedCommands).toContain(requiredProbe);
     }
@@ -838,6 +841,7 @@ describe('Modal image provider facade', () => {
         readinessProbe: true,
         gitleaksSecretScan: true,
         antiSlopToolchain: true,
+        dependencyScan: true,
       },
       credentialAbsence: {
         environment: true,

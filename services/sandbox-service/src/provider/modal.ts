@@ -756,6 +756,23 @@ async function runSmoke(
       ],
       'anti-slop toolchain probe',
     );
+    await execOrThrow(
+      sandbox,
+      [
+        'sh',
+        '-lc',
+        [
+          'set -eu',
+          'probe=$(mktemp -d)',
+          'trap \'rm -rf "$probe"\' EXIT INT TERM',
+          'cd "$probe"',
+          'printf \'%s\\n\' \'{"name":"zapp-osv-smoke","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"zapp-osv-smoke","version":"1.0.0"}}}\' > package-lock.json',
+          'osv-scanner scan source --offline --format=json --config=/dev/null --lockfile=package-lock.json > report.json',
+          'jq -e \'.results | type == "array"\' report.json >/dev/null',
+        ].join('; '),
+      ],
+      'OSV lockfile scan probe',
+    );
 
     await probeTimeoutCleanup(sandbox, input.agentToken, 'buffered-timeout', false);
     await probeTimeoutCleanup(sandbox, input.agentToken, 'pty-timeout', true);
@@ -808,6 +825,7 @@ async function runSmoke(
         readinessProbe: true,
         gitleaksSecretScan: true,
         antiSlopToolchain: true,
+        dependencyScan: true,
       },
       credentialAbsence: {
         environment: true,

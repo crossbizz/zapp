@@ -19,6 +19,13 @@ const ALTERNATE_CONFIG = {
       version: '8.26.0',
       linuxX64Sha256: '32faa8a77f6ce4b483921072ea89f78a794ad1d96471f2ad6e01ad3b0ebafa00',
     },
+    osvScanner: {
+      version: '2.4.0',
+      linuxX64Sha256: '15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0',
+      npmDatabaseUrl:
+        'https://storage.googleapis.com/download/storage/v1/b/osv-vulnerabilities/o/npm%2Fall.zip?generation=1786398550259951&alt=media',
+      npmDatabaseSha256: 'b'.repeat(64),
+    },
     antiSlop: {
       semgrep: {
         version: '1.172.0',
@@ -66,6 +73,16 @@ describe('forge-node-base image policy', () => {
     expect(commands).toContain(ALTERNATE_CONFIG.node.gitleaks.linuxX64Sha256);
     expect(commands).toContain('sha256sum --check');
     expect(commands).toContain('gitleaks version');
+    expect(commands).toContain(
+      `osv-scanner/releases/download/v${ALTERNATE_CONFIG.node.osvScanner.version}/osv-scanner_linux_amd64`,
+    );
+    expect(commands).toContain(ALTERNATE_CONFIG.node.osvScanner.linuxX64Sha256);
+    expect(commands).toContain(ALTERNATE_CONFIG.node.osvScanner.npmDatabaseUrl);
+    expect(commands).toContain(ALTERNATE_CONFIG.node.osvScanner.npmDatabaseSha256);
+    expect(commands).toContain(
+      'ENV OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/opt/zapp/osv-db',
+    );
+    expect(commands).toContain('osv-scanner --version');
     expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64WheelUrl);
     expect(commands).toContain(ALTERNATE_CONFIG.node.antiSlop.semgrep.linuxX64Sha256);
     expect(commands).toContain(`wheel=/tmp/${semgrepWheelFileName}`);
@@ -99,6 +116,13 @@ describe('forge-node-base image policy', () => {
         node: {
           ...ALTERNATE_CONFIG.node,
           packageManagers: { ...ALTERNATE_CONFIG.node.packageManagers, pnpm: '^9.16.0' },
+        },
+      },
+      {
+        ...ALTERNATE_CONFIG,
+        node: {
+          ...ALTERNATE_CONFIG.node,
+          osvScanner: { ...ALTERNATE_CONFIG.node.osvScanner, version: 'latest' },
         },
       },
       {

@@ -23,6 +23,12 @@ const PythonWheelUrlSchema = z
       url.password === ''
     );
   }, 'Expected an unauthenticated files.pythonhosted.org HTTPS wheel URL');
+const OsvNpmDatabaseUrlSchema = z
+  .string()
+  .regex(
+    /^https:\/\/storage\.googleapis\.com\/download\/storage\/v1\/b\/osv-vulnerabilities\/o\/npm%2Fall\.zip\?generation=\d+&alt=media$/u,
+    'Expected an immutable npm OSV database generation URL',
+  );
 
 export const ImageBuildConfigSchema = z
   .object({
@@ -43,6 +49,14 @@ export const ImageBuildConfigSchema = z
           .object({
             version: ExactVersionSchema,
             linuxX64Sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+          })
+          .strict(),
+        osvScanner: z
+          .object({
+            version: ExactVersionSchema,
+            linuxX64Sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+            npmDatabaseUrl: OsvNpmDatabaseUrlSchema,
+            npmDatabaseSha256: z.string().regex(/^[a-f0-9]{64}$/u),
           })
           .strict(),
         antiSlop: z

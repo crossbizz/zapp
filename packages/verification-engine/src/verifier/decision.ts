@@ -116,6 +116,17 @@ const STRICT_APPLICABILITY_CLASSES = new Set<z.infer<typeof GateRequirementClass
   'required_for_supported_release_state',
 ]);
 
+const NON_BLOCKING_FAILURE_CLASSES = new Set<z.infer<typeof GateRequirementClassSchema>>([
+  'best_effort',
+  'advisory',
+]);
+
+function gateFailureSeverity(
+  requirementClass: z.infer<typeof GateRequirementClassSchema>,
+): 'blocking' | 'warning' {
+  return NON_BLOCKING_FAILURE_CLASSES.has(requirementClass) ? 'warning' : 'blocking';
+}
+
 export function decideVerification(inputValue: unknown): VerifierDecisionResult {
   const input = VerifierDecisionInputSchema.parse(inputValue);
   const criticalCriteria = new Set(input.criticalCriterionIds);
@@ -126,7 +137,7 @@ export function decideVerification(inputValue: unknown): VerifierDecisionResult 
       evaluation.result.status === 'passed' &&
       evaluation.result.evidenceArtifactIds.length === 0
     ) {
-      const severity = evaluation.class === 'best_effort' ? 'warning' : 'blocking';
+      const severity = gateFailureSeverity(evaluation.class);
       risks.push(
         VerificationRiskSchema.parse({
           code: 'gate_evidence_missing',
@@ -136,7 +147,7 @@ export function decideVerification(inputValue: unknown): VerifierDecisionResult 
         }),
       );
     } else if (evaluation.result.status === 'failed') {
-      const severity = evaluation.class === 'best_effort' ? 'warning' : 'blocking';
+      const severity = gateFailureSeverity(evaluation.class);
       risks.push(
         VerificationRiskSchema.parse({
           code: 'gate_failed',

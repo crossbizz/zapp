@@ -417,6 +417,60 @@ describe('VF-10 independent verifyPhase activity', () => {
     ]);
   });
 
+  test('runs Compatible advisory dependency scans and records their warning result', async () => {
+    const gateCalls: GateId[] = [];
+    const complete = vi.fn(() =>
+      Promise.resolve({ verificationResultId: 'vr_01J00000000000000000000003' }),
+    );
+    const activity = createVerifyPhaseActivities({
+      phaseContext: {
+        load: () => Promise.resolve({ ...phaseContext, supportLevel: 'compatible' as const }),
+      },
+      workspaces: {
+        open: () =>
+          Promise.resolve({
+            resolvedCommitSha: commitSha,
+            gateContext: { commit: commitSha } as GateContext,
+            close: () => Promise.resolve(),
+          }),
+      },
+      gates: {
+        run(gateId) {
+          gateCalls.push(gateId);
+          return Promise.resolve({
+            result:
+              gateId === 'dependency_scan'
+                ? {
+                    status: 'failed',
+                    evidenceArtifactIds: ['art_dependency_scan'],
+                    details: { criticalCount: 1 },
+                  }
+                : {
+                    status: 'passed',
+                    evidenceArtifactIds: [`art_${gateId}`],
+                    details: {},
+                  },
+            testCases: [],
+          });
+        },
+      },
+      antiSlop: { run: () => Promise.resolve([]) },
+      completion: { complete },
+    });
+
+    const result = await activity.verifyPhase(ids.runId, ids.phaseId, commitSha);
+
+    expect(gateCalls).toContain('dependency_scan');
+    expect(result.risks).toContainEqual(
+      expect.objectContaining({
+        code: 'gate_failed',
+        severity: 'warning',
+        gateId: 'dependency_scan',
+      }),
+    );
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
   test('derives an exact retry key for the three-argument verifier activity', async () => {
     const claim = vi.fn(() => Promise.resolve({ status: 'acquired' as const }));
     const complete = vi.fn(() => Promise.resolve(true));
