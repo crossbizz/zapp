@@ -7,6 +7,42 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 
+interface VitestJsonSummary {
+  readonly numFailedTests: number;
+  readonly numPassedTests: number;
+  readonly numPendingTests: number;
+  readonly numTotalTests: number;
+  readonly success: boolean;
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function parseVitestJsonSummary(stdout: string): VitestJsonSummary {
+  const value = JSON.parse(stdout) as unknown;
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Vitest JSON summary must be an object.');
+  }
+  const summary = value as Record<string, unknown>;
+  if (
+    !isNonnegativeInteger(summary.numFailedTests) ||
+    !isNonnegativeInteger(summary.numPassedTests) ||
+    !isNonnegativeInteger(summary.numPendingTests) ||
+    !isNonnegativeInteger(summary.numTotalTests) ||
+    typeof summary.success !== 'boolean'
+  ) {
+    throw new Error('Vitest JSON summary is missing required counters.');
+  }
+  return {
+    numFailedTests: summary.numFailedTests,
+    numPassedTests: summary.numPassedTests,
+    numPendingTests: summary.numPendingTests,
+    numTotalTests: summary.numTotalTests,
+    success: summary.success,
+  };
+}
+
 async function runControlApiGate(file: string, name?: string): Promise<string> {
   const arguments_ = [
     '--filter',
@@ -30,23 +66,31 @@ describe('OPS-12 permanent tenant isolation gate', () => {
   it('runs the two-tenant project, run, event, secret, and audit matrix against PostgreSQL', async () => {
     const { stdout, stderr } = await execFileAsync(
       'pnpm',
-      ['--filter', '@zapp/control-api', 'run', 'test:isolation'],
+      [
+        '--filter',
+        '@zapp/control-api',
+        'exec',
+        'vitest',
+        'run',
+        '--dir',
+        'test/integration',
+        '--no-file-parallelism',
+        'tenant-isolation',
+        '--reporter=json',
+      ],
       {
         cwd: repositoryRoot,
         env: process.env,
         maxBuffer: 8 * 1_024 * 1_024,
       },
     );
-    const output = `${stdout}${stderr}`;
-    const summary = output.match(/Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?\s*\((\d+)\)/u);
-    expect(summary, output).not.toBeNull();
-    const passed = Number(summary?.[1] ?? 0);
-    const skipped = Number(summary?.[2] ?? 0);
-    const total = Number(summary?.[3] ?? 0);
-    expect(passed).toBeGreaterThanOrEqual(54);
-    expect(skipped).toBe(0);
-    expect(total).toBe(passed);
-    expect(output).not.toContain('integration tests skipped: DATABASE_URL');
+    const summary = parseVitestJsonSummary(stdout);
+    expect(summary.success).toBe(true);
+    expect(summary.numPassedTests).toBeGreaterThanOrEqual(54);
+    expect(summary.numFailedTests).toBe(0);
+    expect(summary.numPendingTests).toBe(0);
+    expect(summary.numTotalTests).toBe(summary.numPassedTests);
+    expect(`${stdout}${stderr}`).not.toContain('integration tests skipped: DATABASE_URL');
   }, 120_000);
 
   it('returns tenant-hidden 404s for foreign releases and their evidence', async () => {

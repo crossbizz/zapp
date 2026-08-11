@@ -210,6 +210,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-12 CI repair follow-up done — Replaced ANSI-sensitive human-reporter matching with Vitest's JSON result contract for the 54-case tenant gate after exact-head Security proved the matrix passed but the wrapper could not parse its colored summary.
 - 2026-08-11 OPS-1B-FIX-1 done — Replaced correction row locking with a transaction-scoped advisory lock keyed by the immutable target, preserving SELECT+INSERT-only application grants and concurrent over-correction serialization; no blockers or deviations.
 - 2026-08-11 OPS-1B done — Append-only keyed ledger, exact SQS-to-Flexprice event shape, summaries, pricing, and bootstrap acceptance verified with LocalStack; `dev-up` still reports its unrelated missing `zapp-notifications` queue.
 - 2026-08-11 OPS-12 CI repair done — The first clean Security run exposed a stale-`dist` dependency on `@zapp/workspace-runtime`; the permanent job now builds the four exercised workspace roots and their Turbo dependencies before typecheck/runtime, with a workflow regression assertion, forced 17/17 dependency build, 54/54 isolated tenant gate, and 12/12 permanent suite green.
