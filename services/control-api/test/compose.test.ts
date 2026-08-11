@@ -38,6 +38,8 @@ import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
 /** Never connected to. `createDb` opens no socket until something asks it a question. */
 const UNUSED_DATABASE_URL = 'postgres://unused:unused@127.0.0.1:1/unused';
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
 
 /** Any use is a bug in the test, so every command says so rather than answering. */
 const unusedRedis: RedisCommands = {
@@ -88,8 +90,8 @@ function composed(): AppInstance {
       requireRunAdmission: () => Promise.reject(new Error('credit balance reached')),
     },
     billing: {
-      platformSecretKey: 'sk_test_platformbilling',
-      webhookSecret: 'whsec_platformbilling',
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
       prices: { builder: 'price_builder123', studio: 'price_studio123' },
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',

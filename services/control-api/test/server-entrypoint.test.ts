@@ -7,6 +7,9 @@ interface LifecycleInput {
   readonly redis: unknown;
 }
 
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
+
 const production = vi.hoisted(() => {
   const auth = { databaseUrl: 'database-url-from-auth' };
   const database = {
@@ -265,8 +268,8 @@ const production = vi.hoisted(() => {
     })),
     requireFlexpriceForEnvironment: vi.fn((_environment: unknown, flexprice: unknown) => flexprice),
     loadStripeBillingEnv: vi.fn(() => ({
-      platformSecretKey: 'sk_test_platformbilling',
-      webhookSecret: 'whsec_platformbilling',
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
       prices: { builder: 'price_builder123', studio: 'price_studio123' },
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',

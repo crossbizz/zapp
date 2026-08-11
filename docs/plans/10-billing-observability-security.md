@@ -129,6 +129,16 @@ Master plan §Global Constraints, plus:
 - [x] Failing tests: webhook replay idempotent; subscription lifecycle transitions; grace-period state machine.
 - [x] Commit: `feat(billing): stripe subscriptions, seats, credit grants, dunning`
 
+#### Task OPS-4-FIX-1 [M5]: Stripe fixture secret-scan repair
+
+**Files:** Modify `services/control-api/test/{compose,server-entrypoint,env}.test.ts`, `services/control-api/test/integration/billing.test.ts`, this plan, and `tasks/todo.md`.
+**Depends on:** OPS-4. **Review cap:** one focused round; exit = the pinned Gitleaks scan reports no provider-shaped credential literal in the OPS-4 test fixtures and all touched control-api tests stay green.
+
+- [x] RED: reproduce GitHub Security's `stripe-access-token` findings with Gitleaks 8.24.3 against the committed OPS-4 fixtures.
+- [x] GREEN: preserve the Stripe boundary tests while constructing synthetic provider-shaped values only at runtime; do not weaken `.gitleaks.toml` or allowlist Stripe credentials in tests.
+- [x] Verify the pinned Gitleaks scan, focused control-api tests, control-api lint/typecheck/build, diff hygiene, normal pre-push gate, and exact-SHA GitHub Security/CI.
+- [x] Commit: `test(billing): make Stripe fixtures scan-safe`
+
 ### Task OPS-5 [M5]: Credit top-ups + trial
 
 **Files:** Create: `src/billing/topup.ts`
@@ -260,6 +270,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-4-FIX-1 done — GitHub Security caught seven synthetic provider-shaped Stripe literals in OPS-4 tests; kept the scanner and allowlist strict, constructed the same boundary-test values only at runtime, and verified Gitleaks 8.24.3 plus focused control-api static/unit/integration gates with no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-4 done — Shipped versioned Stripe subscription, portal, and prorated-seat APIs; signed replay-safe webhooks; code-owned Flexprice plan linking, monthly wallet grants, ledger mirroring/reconciliation, and seven-day dunning without data deletion. Commercial Stripe unit amounts remain validated deploy-time input because `config/plans.json` owns plan identity and entitlements but contains no prices; the real Stripe test-mode gate skipped because platform credentials and deployed price IDs were unavailable, with no implementation blocker or plan deviation.
 - 2026-08-11 OPS-3-FIX-3 done — Closed Build's workspace scheduling credit race and defaulted only legacy reason-less budget-approval activity payloads; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-2 done — Gated Build and Autonomous planner, repair, and reverify boundaries and preserved legacy budget approvals through a canonical backfill and deterministic replay decoder; no provider calls, blockers, or deviations.

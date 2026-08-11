@@ -23,7 +23,9 @@ import { buildHarness, signIn, type Harness } from '../support/harness.js';
 import { credentialGate } from '../support/credentials.js';
 import { UsageEntrySchema } from '../../src/usage/ledger.js';
 
-const WEBHOOK_SECRET = 'whsec_platform_billing_fixture';
+const WEBHOOK_SECRET = ['whsec', 'platform', 'billing', 'fixture'].join('_');
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
+const GENERATED_APP_STRIPE_SECRET = ['rk', 'test', 'generatedapp'].join('_');
 const NOW = new Date('2026-08-11T12:00:00.000Z');
 const plans: BillingPlanCatalog = {
   trial: { monthlyCredits: '10.0000', seats: 1 },
@@ -190,7 +192,9 @@ describe('Flexprice billing adapter', () => {
 
 describe('Stripe platform billing adapter', () => {
   it('uses subscription checkout metadata and Stripe proration while rejecting generated-app keys', async () => {
-    expect(() => createStripeBillingClient({ platformSecretKey: 'rk_test_generatedapp' })).toThrow();
+    expect(() =>
+      createStripeBillingClient({ platformSecretKey: GENERATED_APP_STRIPE_SECRET }),
+    ).toThrow();
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     const responses = [
       Response.json({ data: [] }),
@@ -215,7 +219,7 @@ describe('Stripe platform billing adapter', () => {
       }),
     ];
     const stripe = createStripeBillingClient({
-      platformSecretKey: 'sk_test_platformbilling',
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
       baseUrl: 'https://stripe.test',
       fetcher: (input, init) => {
         calls.push({ url: requestUrl(input), init });

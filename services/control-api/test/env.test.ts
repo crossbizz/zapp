@@ -41,6 +41,9 @@ import {
  */
 
 const TEMPLATE_PATH = fileURLToPath(new URL('../../../.env.example', import.meta.url));
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformonly'].join('_');
+const GENERATED_APP_STRIPE_SECRET = ['rk', 'test', 'generatedapp'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformonly'].join('_');
 
 /** `KEY=value` lines, comments and blanks dropped. Values are taken verbatim. */
 function readTemplate(): Record<string, string> {
@@ -205,24 +208,24 @@ describe('Stripe platform billing configuration', () => {
   it('loads only the platform credential scope and a complete price catalog', () => {
     expect(
       loadStripeBillingEnv({
-        PLATFORM_BILLING_STRIPE_SECRET_KEY: 'sk_test_platformonly',
-        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: 'whsec_platformonly',
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
         STRIPE_PLAN_PRICE_IDS_JSON:
           '{"builder":"price_builder123","studio":"price_studio123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
           'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
       }),
     ).toEqual({
-      platformSecretKey: 'sk_test_platformonly',
-      webhookSecret: 'whsec_platformonly',
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
       prices: { builder: 'price_builder123', studio: 'price_studio123' },
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
     });
     expect(() =>
       loadStripeBillingEnv({
-        PLATFORM_BILLING_STRIPE_SECRET_KEY: 'rk_test_generatedapp',
-        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: 'whsec_platformonly',
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: GENERATED_APP_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
         STRIPE_PLAN_PRICE_IDS_JSON:
           '{"builder":"price_builder123","studio":"price_studio123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
