@@ -205,7 +205,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-6 Staged deploy workflow (safe go-live)
 - [x] DEP-7 Production health + prod-safe smoke
 - [x] DEP-8 Success contract + release annotations
-- [ ] DEP-9 Rollback with DB-compatibility gating
+- [x] DEP-9 Rollback with DB-compatibility gating
 - [ ] DEP-10 Custom domains + SSL
 - [ ] DEP-11 Synthetic checks
 - [ ] DEP-12 E2E release lifecycle + fork-to-repair
