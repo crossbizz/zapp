@@ -208,6 +208,21 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 - [x] Failing tests first: duplicate idempotent message POST → single `message.user` event and sequence; message to a completed run → 409 `run_not_active`; cross-tenant runId → 404; attachment round-trip incl. 413 over size cap and content-type allowlist; SSE replay returns `message.*` in sequence order; OpenAPI snapshot diff is additive only (breaking-change detector green).
 - [x] Commit: `feat(control-api): public conversation continuation + attachments (ADR-0027)`
 
+### Task CP-21 [M2]: Public builder preview bridge (ADR-0028)
+
+**Files:** Create: `packages/contracts/src/builder-preview.ts`, `services/control-api/src/routes/builder-preview.ts`, `services/control-api/src/sandbox/client.ts`, `services/control-api/test/builder-preview.test.ts`; Modify: contracts exports, control-api sandbox port/app/compose/env wiring, OpenAPI, `packages/api-client` generated surface + preview SSE helper/tests
+**Interfaces produced (binding for WEB-7 and WEB-11):** the four public operations and `subscribePreviewEvents` defined by ADR-0028.
+**Effort:** L. **[expand-at-execution]**
+
+#### CP-21 execution expansion (2026-08-10)
+
+- [ ] **RED — tenant-scoped logs and server-authoritative restart:** add route tests proving log cursor forwarding, cross-tenant 404, restart contract lookup/validation, stable idempotent forwarding, and typed missing-contract refusal. Run the focused suite and confirm failure because the public routes and sandbox port methods do not exist.
+- [ ] **GREEN — logs/restart boundary:** add shared Zod contracts, extend `SandboxServicePort`, implement the service-authenticated HTTP client, register the two public routes, and wire the shipping client in composition. Rerun the focused suite to green.
+- [ ] **RED — capture SSE and screenshot:** add tests proving an authenticated user receives the exact no-body capture records, downstream abort cancels the upstream request, cross-tenant reads never open the proxy, screenshot status/body are preserved including 501, and no provider/service credential reaches the response. Run and confirm the missing routes fail.
+- [ ] **GREEN — capture proxy:** register the cancellable SSE and screenshot routes on the existing `PreviewProxyPort`; preserve upstream content type/status and strip hop-by-hop/provider headers. Rerun the focused suite to green.
+- [ ] **RED/GREEN — generated SDK:** extend the API-client contract tests for all four OpenAPI operations and a real-stream `subscribePreviewEvents` helper that closes and reports malformed records. Regenerate, implement the helper, and run the client suite.
+- [ ] **Verify/review/ship:** run control-api and api-client tests plus lint/typecheck/build; run at most two Critical/Important review rounds (exit: zero Critical/Important); check CP-21 in `tasks/todo.md`, append one execution-log line, commit `feat(control-api): public builder preview bridge (ADR-0028)`, push `main`, and confirm GitHub CI/Security green. No provider run is required.
+
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
 **Files:** Create: `src/jobs/retention.ts`, `src/jobs/deletion.ts`, `test/integration/deletion.test.ts`

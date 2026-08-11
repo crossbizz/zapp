@@ -113,6 +113,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 ### Task WEB-7 [M2]: Preview panel
 
 **Files:** Create: `src/components/preview/{PreviewFrame,PreviewToolbar,ConsoleDrawer}.tsx`
+**Depends on:** CP-21 / ADR-0028 public logs, restart, capture SSE, and screenshot SDK operations.
 **Effort:** L
 
 - [ ] Binding behavior: iframe on the same-origin zapp authenticated preview URL (WS-12/ADR-0023; no Modal URL or provider token reaches the client); toolbar matches the benchmark pattern: centered device-size toggles (desktop/tablet/mobile widths), top-right open-in-new-tab + refresh, URL path bar (route-change events update it), share (WS-12 share records UI), env badge "Preview"; states (PRD §26A.1): starting (skeleton + boot log tail), sleeping (wake CTA → workspace start), stale (banner "Preview is behind latest changes — Restart"), disconnected (retry), failed (ErrorState with actions incl. "Fix automatically" → Fix run with boot log attached); console/network drawer fed by proxy capture events (`/__zapp/events` relayed via preview status events): error rows carry "Attach to chat" button.
