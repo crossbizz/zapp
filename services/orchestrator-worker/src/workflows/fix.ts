@@ -420,7 +420,7 @@ const FIX_CONTROL_RETRY_POLICY: RetryPolicy = {
 
 const fixActivities = proxyActivities<FixModeActivities>({
   startToCloseTimeout: '30 minutes',
-  heartbeatTimeout: '30 seconds',
+  heartbeatTimeout: '1500 milliseconds',
   cancellationType: 'WAIT_CANCELLATION_COMPLETED',
   retry: FIX_ACTIVITY_RETRY_POLICY,
 });

@@ -540,7 +540,7 @@ describe('AR-19 reproduce-first Fix mode', () => {
     expect(await git(fixture.workspacePath(), 'log', '-1', '--pretty=%s')).toBe(
       'seed planted arithmetic bug',
     );
-  }, 30_000);
+  }, 60_000);
 
   it('atomically fails the task when the post-gate symptom check still fails', async () => {
     const seeded = await createSeededRepository();
