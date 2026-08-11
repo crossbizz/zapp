@@ -1,0 +1,215 @@
+import { Octokit } from '@octokit/rest';
+import { importPKCS8, SignJWT } from 'jose';
+import { z } from 'zod';
+
+import { GitHubProviderError, type GitHubProviderPort } from './ports.js';
+import {
+  GitHubBranchSchema,
+  GitHubBranchPageSchema,
+  GitHubCompleteInstallationInputSchema,
+  GitHubInstallationSchema,
+  GitHubProviderConfigSchema,
+  GitHubRepositorySchema,
+  GitHubRepositoryPageSchema,
+  type GitHubProviderConfig,
+} from './schemas.js';
+
+const InstallationTokenSchema = z.object({ token: z.string().min(1) }).strict();
+const UserTokenExchangeResponseSchema = z
+  .object({
+    access_token: z.string().min(1),
+    token_type: z.literal('bearer'),
+    scope: z.literal(''),
+    expires_in: z.number().int().positive().optional(),
+    refresh_token: z.string().min(1).optional(),
+    refresh_token_expires_in: z.number().int().positive().optional(),
+  })
+  .strict();
+const UserInstallationsResponseSchema = z
+  .object({
+    totalCount: z.number().int().nonnegative(),
+    installations: z.array(z.object({ id: z.number().int().positive() }).strict()),
+  })
+  .strict();
+const RepositoryApiSchema = z
+  .object({
+    id: z.number().int().positive(),
+    full_name: z.string().min(1),
+    private: z.boolean(),
+    default_branch: z.string().min(1),
+  })
+  .strict();
+const BranchApiSchema = z
+  .object({ name: z.string().min(1), commit: z.object({ sha: z.string().min(1) }).strict() })
+  .strict();
+
+const CursorSchema = z.object({ page: z.number().int().positive() }).strict();
+
+function pageOf(cursor: string | undefined): number {
+  if (cursor === undefined) return 1;
+  try {
+    return CursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))).page;
+  } catch {
+    throw new GitHubProviderError('not_found');
+  }
+}
+
+function cursorFor(page: number): string {
+  return Buffer.from(JSON.stringify({ page }), 'utf8').toString('base64url');
+}
+
+function hasNext(link: string | undefined): boolean {
+  return link?.split(',').some((part) => /rel="next"/u.test(part)) === true;
+}
+
+function providerFailure(error: unknown): GitHubProviderError {
+  if (error instanceof GitHubProviderError) return error;
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return new GitHubProviderError(status === 404 ? 'not_found' : 'unavailable');
+}
+
+function oauthEndpoint(baseUrl: string | undefined): string {
+  if (baseUrl === undefined) return 'https://github.com/login/oauth/access_token';
+  const url = new URL(baseUrl);
+  if (url.hostname === 'api.github.com') url.hostname = 'github.com';
+  url.pathname = '/login/oauth/access_token';
+  url.search = '';
+  url.hash = '';
+  return url.href;
+}
+
+export function createGitHubProvider(rawConfig: GitHubProviderConfig): GitHubProviderPort {
+  const config = GitHubProviderConfigSchema.parse(rawConfig);
+  const base = config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl.replace(/\/+$/u, '') };
+
+  async function appJwt(): Promise<string> {
+    const now = Math.floor(Date.now() / 1_000);
+    const key = await importPKCS8(config.privateKey, 'RS256');
+    return await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256' })
+      .setIssuedAt(now - 60)
+      .setExpirationTime(now + 9 * 60)
+      .setIssuer(config.appId)
+      .sign(key);
+  }
+
+  async function appClient(): Promise<Octokit> {
+    return new Octokit({ ...base, auth: await appJwt() });
+  }
+
+  async function installationClient(installationId: string): Promise<Octokit> {
+    const app = await appClient();
+    const response = await app.rest.apps.createInstallationAccessToken({
+      installation_id: Number(installationId),
+    });
+    const parsed = InstallationTokenSchema.parse({ token: response.data.token });
+    return new Octokit({ ...base, auth: parsed.token });
+  }
+
+  async function exchangeUserToken(code: string): Promise<string> {
+    const response = await fetch(oauthEndpoint(config.baseUrl), {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        code,
+      }),
+    });
+    if (!response.ok) throw new GitHubProviderError('unavailable');
+    const parsed = UserTokenExchangeResponseSchema.parse(await response.json());
+    return parsed.access_token;
+  }
+
+  return {
+    async completeInstallation(rawInput) {
+      try {
+        const input = GitHubCompleteInstallationInputSchema.parse(rawInput);
+        const userToken = await exchangeUserToken(input.code);
+        const client = new Octokit({ ...base, auth: userToken });
+        let page = 1;
+        for (;;) {
+          const response = await client.rest.apps.listInstallationsForAuthenticatedUser({
+            per_page: 100,
+            page,
+          });
+          const installations = UserInstallationsResponseSchema.parse({
+            totalCount: response.data.total_count,
+            installations: response.data.installations.map((installation) => ({
+              id: installation.id,
+            })),
+          });
+          const match = installations.installations.find(
+            (installation) => String(installation.id) === input.installationId,
+          );
+          if (match !== undefined) {
+            return GitHubInstallationSchema.parse({ installationId: String(match.id) });
+          }
+          if (!hasNext(response.headers.link)) throw new GitHubProviderError('not_found');
+          page += 1;
+        }
+      } catch (error) {
+        throw providerFailure(error);
+      }
+    },
+    async listRepositories(input) {
+      try {
+        const page = pageOf(input.cursor);
+        const client = await installationClient(input.installationId);
+        const response = await client.rest.apps.listReposAccessibleToInstallation({
+          page,
+          per_page: 100,
+        });
+        const items = response.data.repositories.map((repository) => {
+          const parsed = RepositoryApiSchema.parse({
+            id: repository.id,
+            full_name: repository.full_name,
+            private: repository.private,
+            default_branch: repository.default_branch,
+          });
+          return GitHubRepositorySchema.parse({
+            id: String(parsed.id),
+            fullName: parsed.full_name,
+            private: parsed.private,
+            defaultBranch: parsed.default_branch,
+          });
+        });
+        return GitHubRepositoryPageSchema.parse({
+          items,
+          nextCursor: hasNext(response.headers.link) ? cursorFor(page + 1) : null,
+        });
+      } catch (error) {
+        throw providerFailure(error);
+      }
+    },
+    async listBranches(input) {
+      try {
+        const page = pageOf(input.cursor);
+        const client = await installationClient(input.installationId);
+        const response = await client.request('GET /repositories/{repository_id}/branches', {
+          repository_id: Number(input.repositoryId),
+          page,
+          per_page: 100,
+        });
+        const rows = z.array(z.unknown()).parse(response.data);
+        const items = rows.map((row) => {
+          const value = row as { name?: unknown; commit?: { sha?: unknown } };
+          const parsed = BranchApiSchema.parse({
+            name: value.name,
+            commit: { sha: value.commit?.sha },
+          });
+          return GitHubBranchSchema.parse({ name: parsed.name, headCommitSha: parsed.commit.sha });
+        });
+        return GitHubBranchPageSchema.parse({
+          items,
+          nextCursor: hasNext(response.headers.link) ? cursorFor(page + 1) : null,
+        });
+      } catch (error) {
+        throw providerFailure(error);
+      }
+    },
+  };
+}

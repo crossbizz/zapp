@@ -184,6 +184,70 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/integrations/github/install/authorize": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/integrations/github/repositories": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/integrations/github/repositories/{repositoryId}/branches": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/integrations/neon/connect": {
     "post": {
       "security": [
@@ -1339,6 +1403,20 @@ export const PUBLIC_API_OPERATIONS = {
       ],
       "successResponses": {
         "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/webhooks/github": {
+    "post": {
+      "security": [],
+      "successResponses": {
+        "202": {
           "body": "required",
           "mediaTypes": [
             "application/json"

@@ -32,6 +32,8 @@ import type { ModelCompletionRepository } from '../../src/usage/model-completion
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
+import type { GitHubInstallDependencies } from '../../src/integrations/github/install.js';
+import type { GitHubWebhookDependencies } from '../../src/integrations/github/webhooks.js';
 import { FakeAuthPort } from './fake-auth-port.js';
 import { InMemoryOrganizationStore } from './org-store.js';
 import { TestServiceTokens } from './service-tokens.js';
@@ -258,6 +260,8 @@ export interface HarnessOptions {
   readonly modelCompletions?: ModelCompletionRepository;
   readonly localAgent?: LocalAgentDeps;
   readonly attachmentStorage?: AttachmentStoragePort;
+  readonly github?: GitHubInstallDependencies;
+  readonly githubWebhook?: GitHubWebhookDependencies;
 }
 
 /**
@@ -329,6 +333,8 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       ? {}
       : { modelCompletions: options.modelCompletions }),
     ...(options.localAgent === undefined ? {} : { localAgent: options.localAgent }),
+    ...(options.github === undefined ? {} : { github: options.github }),
+    ...(options.githubWebhook === undefined ? {} : { githubWebhook: options.githubWebhook }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

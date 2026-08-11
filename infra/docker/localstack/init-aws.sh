@@ -9,7 +9,7 @@
 # RedrivePolicy of maxReceiveCount=5, and verifies the dev SES sender.
 set -euo pipefail
 
-QUEUES="zapp-usage-events zapp-github-webhooks zapp-notifications"
+QUEUES="zapp-usage-events zapp-github-webhooks zapp-github-imports zapp-notifications"
 MAX_RECEIVE_COUNT="${ZAPP_SQS_MAX_RECEIVE_COUNT:-5}"
 SES_SENDER="${ZAPP_SES_SENDER:-dev@zapp.local}"
 

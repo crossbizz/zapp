@@ -11,6 +11,7 @@ import type {
   Branch,
   Deployment,
   Environment,
+  IntegrationConnection,
   Project,
   ProjectContract,
   PreviewShareRow,
@@ -28,6 +29,7 @@ import type {
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
 import type { StorePage } from '../../src/pagination.js';
 import type { SecretEnvelope } from '../../src/secrets/crypto.js';
+import { IntegrationConnectionSchema } from '../../src/tenant/view.js';
 import {
   vaultRef,
   type CreatedProject,
@@ -86,6 +88,9 @@ export class InMemoryTenantData {
   readonly environments: Environment[] = [];
   readonly releases: Release[] = [];
   readonly deployments: Deployment[] = [];
+  readonly integrationConnections: IntegrationConnection[] = [];
+  /** Makes concurrent GitHub callbacks expose a check/insert race in this double. */
+  yieldGitHubConnects = false;
   readonly contracts: ProjectContract[] = [];
   readonly specifications: Specification[] = [];
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
@@ -93,6 +98,7 @@ export class InMemoryTenantData {
   readonly specificationLocks = new Map<string, Promise<void>>();
   readonly runCreateLocks = new Map<string, Promise<void>>();
   readonly capabilityScanLocks = new Map<string, Promise<void>>();
+  readonly githubConnectLocks = new Map<string, Promise<void>>();
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
@@ -127,6 +133,20 @@ export class InMemoryTenantData {
   /** Every handle reads and writes the same rows — see the class comment. */
   readonly factory: TenantDbFactory = (organizationId: string): TenantDatabase =>
     handleFor(this, organizationId);
+
+  addGitHubConnection(organizationId: string, installationId: string): IntegrationConnection {
+    const row: IntegrationConnection = {
+      id: newId('intc'),
+      organizationId,
+      projectId: null,
+      provider: 'github',
+      status: 'connected',
+      credentialRef: null,
+      configurationJson: { installationId },
+    };
+    this.integrationConnections.push(row);
+    return row;
+  }
 
   /** Seeds a contract for a project, as plan 05's scan pipeline eventually will. */
   addContract(project: Project, contract: Partial<ProjectContract> = {}): ProjectContract {
@@ -230,10 +250,96 @@ async function withCapabilityScanLock<T>(
   }
 }
 
+async function withGitHubConnectLock<T>(
+  data: InMemoryTenantData,
+  key: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = data.githubConnectLocks.get(key) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.githubConnectLocks.set(key, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.githubConnectLocks.get(key) === current) data.githubConnectLocks.delete(key);
+  }
+}
+
 /** One organization's view of `data`. A free function, so nothing aliases `this`. */
 function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
   return {
     organizationId: orgId,
+
+    integrations: {
+      getGitHubInstallation(installationId) {
+        const row = mine(orgId, data.integrationConnections).find(
+          (connection) =>
+            connection.provider === 'github' &&
+            connection.projectId === null &&
+            typeof connection.configurationJson === 'object' &&
+            connection.configurationJson !== null &&
+            (connection.configurationJson as Record<string, unknown>)['installationId'] ===
+              installationId,
+        );
+        return Promise.resolve(
+          row === undefined
+            ? undefined
+            : IntegrationConnectionSchema.parse({
+                id: row.id,
+                organizationId: row.organizationId,
+                projectId: row.projectId,
+                provider: row.provider,
+                status: row.status,
+                credentialRef: row.credentialRef,
+                configuration: row.configurationJson,
+              }),
+        );
+      },
+      async connectGitHub(input) {
+        return await withGitHubConnectLock(data, `${orgId}:${input.installationId}`, async () => {
+          const existing = mine(orgId, data.integrationConnections).find(
+            (connection) =>
+              connection.provider === 'github' &&
+              connection.projectId === null &&
+              typeof connection.configurationJson === 'object' &&
+              connection.configurationJson !== null &&
+              (connection.configurationJson as Record<string, unknown>)['installationId'] ===
+                input.installationId,
+          );
+          const row =
+            existing ??
+            ({
+              id: newId('intc'),
+              organizationId: orgId,
+              projectId: null,
+              provider: 'github',
+              status: 'connected',
+              credentialRef: null,
+              configurationJson: { installationId: input.installationId },
+            } satisfies IntegrationConnection);
+          if (data.yieldGitHubConnects) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+          const result = IntegrationConnectionSchema.parse({
+            id: row.id,
+            organizationId: row.organizationId,
+            projectId: row.projectId,
+            provider: row.provider,
+            status: row.status,
+            credentialRef: row.credentialRef,
+            configuration: row.configurationJson,
+          });
+          await input.audit(NO_TRANSACTION, result);
+          if (existing === undefined) data.integrationConnections.push(row);
+          return result;
+        });
+      },
+    },
 
     previewShares: {
       getById(shareId) {

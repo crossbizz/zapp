@@ -186,7 +186,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "awslocal sqs get-queue-url --queue-name zapp-usage-events >/dev/null 2>&1",
+          "awslocal sqs get-queue-url --queue-name zapp-usage-events >/dev/null 2>&1 && awslocal sqs get-queue-url --queue-name zapp-github-webhooks >/dev/null 2>&1 && awslocal sqs get-queue-url --queue-name zapp-github-imports >/dev/null 2>&1",
         ]
       interval: 10s
       timeout: 15s

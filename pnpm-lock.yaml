@@ -986,6 +986,9 @@ importers:
       '@fastify/websocket':
         specifier: 11.3.0
         version: 11.3.0
+      '@octokit/rest':
+        specifier: 20.1.2
+        version: 20.1.2
       '@temporalio/client':
         specifier: 1.22.0
         version: 1.22.0

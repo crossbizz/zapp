@@ -138,12 +138,15 @@ export {
 // PRD §23.6 — security and integrations.
 export {
   auditEvents,
+  githubWebhookDeliveries,
   integrationConnections,
   secretCiphertexts,
   secretMetadata,
   type AuditEvent,
+  type GitHubWebhookDelivery,
   type IntegrationConnection,
   type NewAuditEvent,
+  type NewGitHubWebhookDelivery,
   type NewIntegrationConnection,
   type NewSecretCiphertext,
   type NewSecretMetadata,

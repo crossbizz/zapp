@@ -32,12 +32,15 @@ import {
 import { createDbPreviewShareStore } from './preview/store.js';
 import type { PreviewEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
+import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
+import { createGitHubProvider } from './integrations/github/app.js';
+import { createRedisGitHubAuthorizationStateStore, createDbGitHubWebhookStore } from './integrations/github/store.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -95,6 +98,7 @@ export interface ServiceRuntime {
   /** Temporal client used for the tenant-bound VF-3 verification workflow. */
   readonly temporal: CapabilityScanWorkflowClient;
   readonly artifactStorage: ArtifactStorageEnv;
+  readonly github?: GitHubAppEnv;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
@@ -190,6 +194,27 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
     },
+    ...(runtime.github === undefined
+      ? {}
+      : {
+          github: {
+            appSlug: runtime.github.appSlug,
+            stateStore: createRedisGitHubAuthorizationStateStore(redis),
+            provider: createGitHubProvider({
+              appId: runtime.github.appId,
+              clientId: runtime.github.clientId,
+              clientSecret: runtime.github.clientSecret,
+              privateKey: runtime.github.privateKey,
+              ...(runtime.github.apiBaseUrl === undefined
+                ? {}
+                : { baseUrl: runtime.github.apiBaseUrl }),
+            }),
+          },
+          githubWebhook: {
+            secret: runtime.github.webhookSecret,
+            store: createDbGitHubWebhookStore(database),
+          },
+        }),
     ...(runtime.preview === undefined
       ? {}
       : {

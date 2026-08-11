@@ -73,6 +73,10 @@ const NON_PRD_TABLES = new Map([
     'activity_idempotency',
     'the durable Temporal activity claim, lease, result hash, and replay record required by plan 04 AR-9; it is worker-delivery mechanism rather than a PRD domain row',
   ],
+  [
+    'github_webhook_deliveries',
+    'the durable signature-free delivery receipt and SQS outbox required by plan 06 INT-1 and ADR-0028',
+  ],
 ]);
 
 /**

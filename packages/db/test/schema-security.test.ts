@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   auditEvents,
+  githubWebhookDeliveries,
   integrationConnections,
   secretCiphertexts,
   secretMetadata,
@@ -9,6 +10,7 @@ import {
 import {
   columnNames,
   foreignKeys,
+  indexColumns,
   indexNames,
   primaryKeyColumns,
   requiredColumns,
@@ -60,6 +62,26 @@ describe('security and integrations (PRD §23.6)', () => {
       'metadata_json',
       'occurred_at',
     ]);
+  });
+
+  it('stores durable GitHub deliveries without signatures or secrets', () => {
+    expect(columnNames(githubWebhookDeliveries)).toEqual([
+      'delivery_id',
+      'event_name',
+      'payload_json',
+      'status',
+      'attempts',
+      'next_attempt_at',
+      'received_at',
+      'published_at',
+    ]);
+    expect(primaryKeyColumns(githubWebhookDeliveries)).toEqual([]);
+    expect(indexNames(githubWebhookDeliveries)).toEqual([
+      'github_webhook_deliveries_pending_idx',
+    ]);
+    expect(columnNames(githubWebhookDeliveries)).not.toEqual(
+      expect.arrayContaining(['signature', 'secret']),
+    );
   });
 
   it('stores references to secrets, never secrets', () => {
@@ -128,7 +150,12 @@ describe('security and integrations (PRD §23.6)', () => {
       'secret_metadata_env_name_idx',
       'secret_metadata_project_name_idx',
     ]);
-    expect(indexNames(integrationConnections)).toEqual(['integration_connections_org_project_idx']);
+    expect(indexNames(integrationConnections)).toEqual([
+      'integration_connections_org_project_idx',
+      'integration_connections_github_installation_idx',
+    ]);
+    expect(indexColumns(integrationConnections)['integration_connections_github_installation_idx'])
+      .toEqual(['organization_id', 'provider', '<expression>']);
   });
 
   it('keeps the audit actor polymorphic and the log time-ordered', () => {

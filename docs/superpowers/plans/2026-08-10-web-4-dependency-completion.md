@@ -209,6 +209,7 @@ git commit -m "feat(control-api): public project dashboard summaries"
 - Modify: `services/control-api/src/redis/client.ts` only if its existing `eval` surface needs no new command
 - Modify: `services/control-api/test/support/{harness,tenant-db}.ts`
 - Modify: `services/control-api/test/{compose,env,server-bootstrap,openapi}.test.ts`
+- Modify: `services/control-api/test/openapi-contract.test.ts` for generated path-count and determinism coverage
 - Modify: `services/control-api/package.json`
 - Modify: `packages/db/src/schema/security.ts`
 - Modify: `packages/db/test/schema-security.test.ts`
@@ -247,7 +248,7 @@ Expected RED: missing GitHub install modules/routes.
 
 Use 32 random bytes encoded base64url. Persist `{ organizationId, actorId }` under a SHA-256-derived Redis key for 600,000 ms. Consume with one Lua `GET` + `DEL` script through the existing `RedisCommands.eval` method. Do not add a read-then-delete implementation.
 
-JWT input is `{ appId, privateKey }`; parse the provider response with strict Zod schemas. Store only `installationId` in `integration_connections.configuration_json`, keep `credentialRef` null for the platform-owned App, and audit `integration.connected` without callback code/state.
+JWT input is `{ appId, privateKey }`; per ADR-0029, exchange the callback code with `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET`, use the ephemeral user token to list the user's accessible installations, and accept only a requested installation present in that strict parsed response. Store only `installationId` in `integration_connections.configuration_json`, keep `credentialRef` null for the platform-owned App, and audit `integration.connected` without callback code/state/token material.
 
 - [ ] **Step 3: Write repository/branch discovery RED tests**
 
@@ -274,7 +275,7 @@ Create queue and publisher lifecycles patterned after `usage/outbox.ts`, but kee
 
 - [ ] **Step 6: Wire environment, LocalStack, Terraform, and lifecycle**
 
-Add name-only `.env.example` entries for `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and optional `GITHUB_API_BASE_URL`. Add `zapp-github-imports` and its DLQ alongside the existing webhook queue, update `EXPECTED_QUEUES`, expected count, and LocalStack health proof. Terraform must declare the exact INT-1 permissions/events and output no private key.
+Add name-only `.env.example` entries for `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, and optional `GITHUB_API_BASE_URL`. Add `zapp-github-imports` and its DLQ alongside the existing webhook queue, update `EXPECTED_QUEUES`, expected count, and LocalStack health proof. Terraform must declare the exact INT-1 permissions/events and output no private key.
 
 Add lifecycle ordering tests proving publisher shutdown drains before database/queue closure.
 
@@ -513,3 +514,4 @@ Expected: clean worktree; four prescribed implementation commits after ADR-0028;
 ## Execution log
 
 - 2026-08-10 Task 1 done — accepted ADR-0028; bound CP-21, INT-1, INT-2, and WEB-4 in the authoritative tracker; required route/queue reference and one-entry-per-tracker-task checks passed with `git diff --check` clean; no deviations.
+- 2026-08-10 Task 3 review round 1 revision — accepted ADR-0029 for GitHub setup ownership proof and added `services/control-api/test/openapi-contract.test.ts` to INT-1's explicit file scope and generated determinism gate; the authoritative tracker remains the single existing INT-1 entry.

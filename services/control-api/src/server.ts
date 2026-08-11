@@ -10,6 +10,8 @@ import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  loadGitHubAppEnv,
+  loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadModelGatewayUrl,
   loadRedisUrl,
@@ -39,6 +41,12 @@ import {
   createAccountingReconcilerLifecycle,
   createRedisCreditMirror,
 } from './usage/reconciliation.js';
+import {
+  createGitHubWebhookPublisher,
+  createGitHubWebhookPublisherLifecycle,
+  createSqsGitHubWebhookQueue,
+} from './integrations/github/queue.js';
+import { createDbGitHubWebhookStore } from './integrations/github/store.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -76,6 +84,8 @@ const usageQueueConfig = loadUsageQueueEnv();
 const flexpriceConfig = loadFlexpriceEnv();
 const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
+const github = loadGitHubAppEnv();
+const githubQueueConfig = loadGitHubWebhookQueueEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -110,6 +120,7 @@ const app = composeApp({
   pricing,
   temporal,
   artifactStorage,
+  github,
 });
 
 app.addHook('onClose', async () => {
@@ -210,6 +221,28 @@ const usageOutboxLifecycle = {
     usageQueue.close?.();
   },
 };
+const githubQueue = createSqsGitHubWebhookQueue(githubQueueConfig);
+const githubPublisherLifecycle = createGitHubWebhookPublisherLifecycle({
+  publisher: createGitHubWebhookPublisher({
+    store: createDbGitHubWebhookStore(database.db),
+    queue: githubQueue,
+    onError: (error) => {
+      app.log.error({ err: error }, 'GitHub webhook outbox publish failed');
+    },
+  }),
+  batchSize: 100,
+  intervalMs: 1_000,
+  onError: (error) => {
+    app.log.error({ err: error }, 'GitHub webhook outbox poll failed');
+  },
+});
+const githubWebhookLifecycle = {
+  start: () => githubPublisherLifecycle.start(),
+  async close() {
+    await githubPublisherLifecycle.close();
+    githubQueue.close?.();
+  },
+};
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
@@ -236,7 +269,12 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
-  await bootstrapControlApiServer({ app, eventPublisherLifecycle, usageOutboxLifecycle });
+  await bootstrapControlApiServer({
+    app,
+    eventPublisherLifecycle,
+    usageOutboxLifecycle,
+    githubWebhookLifecycle,
+  });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
   process.exit(1);

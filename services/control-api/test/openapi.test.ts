@@ -7,6 +7,8 @@ import {
   createInMemoryPreviewShareStore,
 } from '../src/routes/preview.js';
 import { buildHarness } from './support/harness.js';
+import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
+import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 
 const apps: AppInstance[] = [];
 
@@ -36,6 +38,19 @@ function documentedApp(): AppInstance {
         get: () => Promise.reject(new Error('OpenAPI must not read local sessions.')),
       },
       gateway: { async *stream() {} },
+    },
+    github: {
+      appSlug: 'zapp-build-test',
+      stateStore: createInMemoryGitHubAuthorizationStateStore(),
+      provider: {
+        completeInstallation: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listRepositories: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listBranches: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+      },
+    },
+    githubWebhook: {
+      secret: 'openapi-test-secret',
+      store: createInMemoryGitHubWebhookStore(),
     },
   });
   apps.push(built.app);
@@ -107,8 +122,13 @@ describe('GET /v1/openapi.json', () => {
       '/v1/runs/{runId}/messages',
       '/v1/projects/{projectId}/attachments',
       '/v1/attachments/{attachmentId}',
+      '/v1/integrations/github/install/authorize',
+      '/v1/integrations/github/install',
+      '/v1/integrations/github/repositories',
+      '/v1/integrations/github/repositories/{repositoryId}/branches',
+      '/v1/webhooks/github',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(63);
+    expect(Object.keys(document.paths)).toHaveLength(67);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

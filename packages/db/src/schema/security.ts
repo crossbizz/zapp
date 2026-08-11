@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 import { organizationId } from './columns.js';
 import { users } from './identity.js';
@@ -145,7 +145,33 @@ export const integrationConnections = pgTable(
   },
   (t) => [
     index('integration_connections_org_project_idx').on(t.organizationId, t.projectId),
+    uniqueIndex('integration_connections_github_installation_idx')
+      .on(
+        t.organizationId,
+        t.provider,
+        sql`(${t.configurationJson} ->> 'installationId')`,
+      )
+      .where(sql`${t.provider} = 'github' and ${t.projectId} is null`),
     projectTenantForeignKey('integration_connections', t.projectId, t.organizationId),
+  ],
+);
+
+/** Durable, signature-free receipt ledger for supported GitHub deliveries (INT-1). */
+export const githubWebhookDeliveries = pgTable(
+  'github_webhook_deliveries',
+  {
+    deliveryId: text('delivery_id').primaryKey(),
+    eventName: text('event_name').notNull(),
+    payloadJson: jsonb('payload_json').notNull(),
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('github_webhook_deliveries_status_check', sql`${t.status} in ('pending', 'published')`),
+    index('github_webhook_deliveries_pending_idx').on(t.status, t.nextAttemptAt),
   ],
 );
 
@@ -189,5 +215,7 @@ export type SecretCiphertext = typeof secretCiphertexts.$inferSelect;
 export type NewSecretCiphertext = typeof secretCiphertexts.$inferInsert;
 export type IntegrationConnection = typeof integrationConnections.$inferSelect;
 export type NewIntegrationConnection = typeof integrationConnections.$inferInsert;
+export type GitHubWebhookDelivery = typeof githubWebhookDeliveries.$inferSelect;
+export type NewGitHubWebhookDelivery = typeof githubWebhookDeliveries.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;

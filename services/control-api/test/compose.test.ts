@@ -82,6 +82,14 @@ function composed(): AppInstance {
       accessKeyId: 'test-access-key',
       secretAccessKey: 'test-secret-key',
     },
+    github: {
+      appId: '12345',
+      appSlug: 'zapp-build-test',
+      clientId: 'Iv1.test-client',
+      clientSecret: 'test-client-secret',
+      privateKey: 'test-private-key',
+      webhookSecret: 'test-webhook-secret',
+    },
   });
   apps.push(app);
   return app;
@@ -138,6 +146,11 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['POST', '/v1/projects/:projectId/secrets/:secretId/rotate'],
   ['DELETE', '/v1/projects/:projectId/secrets/:secretId'],
   ['POST', '/internal/secrets/decrypt'],
+  ['POST', '/v1/integrations/github/install/authorize'],
+  ['POST', '/v1/integrations/github/install'],
+  ['GET', '/v1/integrations/github/repositories'],
+  ['GET', '/v1/integrations/github/repositories/:repositoryId/branches'],
+  ['POST', '/v1/webhooks/github'],
 ];
 
 describe('the composition server.ts performs', () => {

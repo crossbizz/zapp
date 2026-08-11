@@ -23,6 +23,16 @@ describe('control-api production bootstrap', () => {
           return Promise.resolve();
         },
       },
+      githubWebhookLifecycle: {
+        start() {
+          order.push('github:start');
+          return Promise.resolve();
+        },
+        close() {
+          order.push('github:close');
+          return Promise.resolve();
+        },
+      },
       eventPublisherLifecycle: {
         start() {
           order.push('events:start-and-listen');
@@ -35,11 +45,13 @@ describe('control-api production bootstrap', () => {
       },
     });
 
-    expect(order).toEqual(['usage:start', 'events:start-and-listen']);
+    expect(order).toEqual(['github:start', 'usage:start', 'events:start-and-listen']);
     await onClose?.();
     expect(order).toEqual([
+      'github:start',
       'usage:start',
       'events:start-and-listen',
+      'github:close',
       'usage:close',
       'events:close-shared-handles',
     ]);

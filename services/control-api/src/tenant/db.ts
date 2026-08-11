@@ -21,6 +21,7 @@ import {
   decisions,
   environments,
   forOrg,
+  integrationConnections,
   MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
   projects,
@@ -45,6 +46,7 @@ import {
   type Database,
   type Environment,
   type EventRepository,
+  type IntegrationConnection,
   type Project,
   type ProjectContract,
   type ProjectRepository,
@@ -78,7 +80,11 @@ import {
   NO_SYNC,
   type SourceType,
 } from './vocabulary.js';
-import type { ProjectDashboardSummarySource } from './view.js';
+import {
+  IntegrationConnectionSchema,
+  type IntegrationConnectionView,
+  type ProjectDashboardSummarySource,
+} from './view.js';
 
 const PrototypeAssumptionsPayloadSchema = z
   .object({
@@ -652,6 +658,28 @@ export interface TenantAuditEventRepository {
   list(request: AuditEventListRequest): Promise<StorePage<AuditEvent>>;
 }
 
+export interface ConnectGitHubInstallationInput {
+  readonly installationId: string;
+  readonly audit: AuditHook<IntegrationConnectionView>;
+}
+
+export interface TenantIntegrationRepository {
+  getGitHubInstallation(installationId: string): Promise<IntegrationConnectionView | undefined>;
+  connectGitHub(input: ConnectGitHubInstallationInput): Promise<IntegrationConnectionView>;
+}
+
+function integrationView(row: IntegrationConnection): IntegrationConnectionView {
+  return IntegrationConnectionSchema.parse({
+    id: row.id,
+    organizationId: row.organizationId,
+    projectId: row.projectId,
+    provider: row.provider,
+    status: row.status,
+    credentialRef: row.credentialRef,
+    configuration: row.configurationJson,
+  });
+}
+
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
 export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
@@ -669,6 +697,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly missionControl: TenantMissionControlRepository;
   readonly approvals: TenantApprovalRepository;
   readonly auditEvents: TenantAuditEventRepository;
+  readonly integrations: TenantIntegrationRepository;
 }
 
 /**
@@ -728,6 +757,60 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
     return {
       ...base,
+
+      integrations: {
+        async getGitHubInstallation(installationId) {
+          const [row] = await db
+            .select()
+            .from(integrationConnections)
+            .where(
+              scoped(
+                integrationConnections.organizationId,
+                eq(integrationConnections.provider, 'github'),
+                isNull(integrationConnections.projectId),
+                sql`${integrationConnections.configurationJson} ->> 'installationId' = ${installationId}`,
+              ),
+            )
+            .limit(1);
+          return row === undefined ? undefined : integrationView(row);
+        },
+        async connectGitHub(input) {
+          return await db.transaction(async (tx) => {
+            const [inserted] = await tx
+              .insert(integrationConnections)
+              .values({
+                id: newId('intc'),
+                organizationId: orgId,
+                projectId: null,
+                provider: 'github',
+                status: 'connected',
+                credentialRef: null,
+                configurationJson: { installationId: input.installationId },
+              })
+              .onConflictDoNothing()
+              .returning();
+            const [existing] = inserted === undefined
+              ? await tx
+                  .select()
+                  .from(integrationConnections)
+                  .where(
+                    scoped(
+                      integrationConnections.organizationId,
+                      eq(integrationConnections.provider, 'github'),
+                      isNull(integrationConnections.projectId),
+                      sql`${integrationConnections.configurationJson} ->> 'installationId' = ${input.installationId}`,
+                    ),
+                  )
+                  .limit(1)
+              : [];
+            const row = inserted ?? existing;
+            if (row === undefined) throw new Error('GitHub integration insert returned no row');
+            const result = integrationView(row);
+            await input.audit(tx, result);
+            return result;
+          });
+        },
+      },
 
       projectSummaries: {
         async forProjects(projectIds) {

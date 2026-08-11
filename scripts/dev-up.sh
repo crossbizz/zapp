@@ -38,6 +38,7 @@ FORGEJO_ADMIN_EMAIL="${FORGEJO_ADMIN_EMAIL:-admin@zapp.local}"
 
 EXPECTED_QUEUES="zapp-usage-events zapp-usage-events-dlq
 zapp-github-webhooks zapp-github-webhooks-dlq
+zapp-github-imports zapp-github-imports-dlq
 zapp-notifications zapp-notifications-dlq"
 
 WAIT_TIMEOUT="${ZAPP_WAIT_TIMEOUT:-300}"
@@ -188,7 +189,7 @@ for queue in $EXPECTED_QUEUES; do
   printf '%s\n' "$found_queues" | grep -qx "$queue" ||
     die "LocalStack queue '$queue' is missing — see infra/docker/localstack/init-aws.sh"
 done
-log "6 queues present (3 queues + 3 DLQs)"
+log "8 queues present (4 queues + 4 DLQs)"
 
 # ------------------------------------------------------------ db migrations --
 if [ -d "$REPO_ROOT/packages/db" ]; then

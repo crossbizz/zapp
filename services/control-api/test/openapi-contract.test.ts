@@ -12,6 +12,8 @@ import {
   createInMemoryPreviewShareStore,
 } from '../src/routes/preview.js';
 import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
+import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
+import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 
 const GENERATED_TYPES = resolve(
   import.meta.dirname,
@@ -63,6 +65,19 @@ function documentedHarness(): Harness {
         get: () => Promise.reject(new Error('OpenAPI must not read local sessions.')),
       },
       gateway: { async *stream() {} },
+    },
+    github: {
+      appSlug: 'zapp-build-test',
+      stateStore: createInMemoryGitHubAuthorizationStateStore(),
+      provider: {
+        completeInstallation: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listRepositories: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listBranches: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+      },
+    },
+    githubWebhook: {
+      secret: 'openapi-test-secret',
+      store: createInMemoryGitHubWebhookStore(),
     },
   });
   apps.push(built.app);
