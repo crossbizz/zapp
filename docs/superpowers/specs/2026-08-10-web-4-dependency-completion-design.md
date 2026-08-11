@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-10
 
-**Status:** Approved in conversation; pending ADR-0028 and implementation plan
+**Status:** Self-audited, revised, and approved for implementation
 
 **Owners:** control plane, integrations, generated SDK, web
 
@@ -43,8 +43,9 @@ WEB-4 consumer task:
    and deploy readiness without changing the existing project-list response.
 2. **INT-1 GitHub installation and discovery:** replace the generic connection placeholder with
    the GitHub App handshake, repository/branch discovery, and verified webhook enqueue path.
-3. **INT-2 GitHub import:** implement the prescribed keyed import operation, internal mirror,
-   capability-scan handoff, and its public response.
+3. **INT-2 GitHub import:** implement the prescribed keyed import operation as a durable,
+   SQS-owned state machine, including the internal mirror, capability-scan handoff, and public
+   progress response.
 4. **WEB-4 Slices B/C:** consume only the generated operations and finish the dashboard cards
    and import dialog.
 
@@ -155,36 +156,60 @@ POST /v1/projects/:projectId/import/github
 { installationId, repo, branch }
 ```
 
-The mutation requires `Idempotency-Key`. Before invoking the provider, it verifies the selected
-project and installation in the same tenant. The implementation obtains a short-lived
-installation token server-side, imports the selected branch lineage, mirrors it into the
-project's internal Forgejo repository without force-overwriting an existing import, stores the
-external repository reference with `manual_push`, and starts the existing VF-3 capability scan.
-
-The response is returned only after the internal mirror is durable and the scan handoff is
-accepted:
+The mutation requires `Idempotency-Key`. Before accepting the operation, it verifies the selected
+project and installation in the same tenant. In one transaction it creates the project's single
+GitHub import row with status `queued`, records the operation key, and writes an outbox message for
+the DLQ-backed `zapp-github-imports` SQS queue. It returns 202 only after that durable acceptance:
 
 ```ts
+const GitHubImportStatusSchema = z.object({
+  projectId: idSchema('proj'),
+  status: z.enum(['queued', 'mirroring', 'scan_pending', 'scan_accepted', 'failed']),
+  externalRepoRef: z.string().min(1).nullable(),
+  branch: z.string().min(1),
+  headCommitSha: CommitShaSchema.nullable(),
+  scanId: z.string().min(1).nullable(),
+  errorCode: z.enum([
+    'github_unavailable',
+    'repository_not_found',
+    'branch_not_found',
+    'mirror_failed',
+    'scan_unavailable',
+  ]).nullable(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
 const GitHubImportResponseSchema = z.object({
   import: z.object({
     projectId: idSchema('proj'),
-    repositoryId: idSchema('repo'),
-    externalRepoRef: z.string().min(1),
-    branch: z.string().min(1),
-    headCommitSha: CommitShaSchema,
-    status: z.literal('imported'),
-  }).strict(),
-  scan: z.object({
-    id: z.string().min(1),
-    status: z.literal('accepted'),
+    status: z.literal('queued'),
   }).strict(),
 }).strict();
 ```
 
-The web operation truthfully progresses through `submitting`, `importing`, `scan_accepted`, and
-`failed` based on SDK request state and the returned contract. It does not claim provider-side
-sub-stages the API cannot observe. Retrying an ambiguous response uses the same operation key;
-re-importing an already imported repository with a different operation key returns 409.
+`GET /v1/projects/:projectId/import/github` returns `GitHubImportStatusSchema` for generated-SDK
+polling. A request for a project with no import, including another tenant's project, returns 404.
+
+The SQS consumer reads the persisted status before acting and performs one resumable stage per
+delivery:
+
+1. `queued` obtains a short-lived installation token server-side and calls an idempotent git-service
+   mirror operation. That operation imports the selected branch lineage into the existing internal
+   Forgejo repository without force-overwriting, then returns the durable internal head SHA.
+2. The consumer transactionally stores the external repository reference, `manual_push` policy,
+   head SHA, and `scan_pending` state, and writes the next outbox message.
+3. `scan_pending` starts the existing keyed VF-3 capability scan. An accepted handoff becomes
+   `scan_accepted`; a retryable failure is returned to SQS, and an exhausted delivery becomes a
+   stable public `failed` status through the DLQ settlement path.
+
+Every stage is idempotent, and SQS redelivery resumes from persisted state after a process crash.
+The API process does not own the lifetime of the clone, mirror, or scan handoff. Retrying an
+ambiguous POST response uses the same operation key and returns the same row; re-importing the
+project with a different operation key returns 409.
+
+The web operation truthfully progresses through `submitting`, `queued`, `mirroring`,
+`scan_pending`, `scan_accepted`, and `failed` based on SDK request and polling state. It does not
+claim provider-side sub-stages the API cannot observe.
 
 ## Web experience
 
@@ -207,8 +232,9 @@ request generation.
 3. loads branches for the selected repository;
 4. creates the destination project with `sourceType: 'github_import'` only after the user confirms
    the repository and branch;
-5. calls the keyed import route; and
-6. routes to the imported project after the mirror is durable and the scan is accepted.
+5. calls the keyed import route and polls its generated status operation; and
+6. routes to the imported project at `scan_accepted`, after the mirror is durable and the scan
+   handoff is accepted.
 
 An ambiguous create or import failure retains the exact project/import operation keys for the
 visible Retry. Changing organization, repository, or branch intentionally starts a new operation
@@ -223,8 +249,9 @@ identity. Error copy remains based on public error codes and never exposes provi
 - Installation callback state is single-use and tenant/user-bound. A replay or mismatch fails
   closed.
 - Repository/branch results are parsed with Zod before crossing the integration boundary.
-- Import never force-pushes, never overwrites a different external reference, and never leaves the
-  project advertising success before the internal mirror commit is durable.
+- Import never force-pushes, never overwrites a different external reference, never depends on one
+  API process staying alive, and never leaves the project advertising success before the internal
+  mirror commit is durable.
 - Cross-tenant summary, installation, repository, branch, and import requests all return 404.
 
 ## Verification strategy
@@ -236,9 +263,9 @@ TDD proceeds in dependency order:
 2. INT-1 tests prove authorization state binding, callback replay rejection, installation storage,
    repository/branch pagination, invalid webhook signature rejection, delivery dedupe, and exact
    SQS enqueue behavior.
-3. INT-2 tests prove internal head equality, external reference persistence, accepted scan handoff,
-   operation-key replay, 409 for a distinct re-import, rollback on mirror failure, and tenant
-   isolation.
+3. INT-2 tests prove durable acceptance, crash/redelivery resumption at each state, internal head
+   equality, external reference persistence, accepted scan handoff, operation-key replay, 409 for
+   a distinct re-import, DLQ failure settlement, and tenant isolation.
 4. Generated SDK checks prove every new route and schema is represented without handwritten
    browser request types.
 5. WEB-4 E2E proves summary rendering, icon-plus-text status, readiness-gated Deploy, summary retry,
@@ -255,8 +282,18 @@ re-scoped and escalated rather than sent through a third review.
 ## Out of scope
 
 - GitHub bidirectional sync, pull-request creation, conflict handling, and export remain INT-3/INT-4.
-- Rich asynchronous import-stage telemetry is not added; the current plan requires truthful import
-  progress, not a new durable import workflow.
+- Provider-internal clone percentages and scan completion telemetry are not exposed. The public
+  stages stop at durable mirror plus accepted capability-scan handoff.
 - DEP-1/DEP-2 are not reimplemented. The summary exposes readiness only when the existing release
   boundary can supply an authoritative report and otherwise returns null.
 - No changes are made to Forgejo's source-of-truth role.
+
+## Self-audit disposition
+
+The audit checked this design against the master Global Constraints, ADR-0018, ADR-0021, the
+binding INT-1/INT-2 and WEB-4 acceptance criteria, and the current control-plane/API-client
+boundaries. It rejected the initially proposed synchronous import because clone, mirror, and scan
+handoff would have depended on one API process remaining alive, violating Global Constraint 12.
+The persisted SQS state machine above closes that gap. No remaining design item requires browser
+inference, an unkeyed mutation, a cross-tenant exception, a provider identity as a product primary
+key, or a secret-bearing client contract. The revised design is approved for implementation.
