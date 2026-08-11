@@ -198,7 +198,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-8 Generated-app Stripe adapter
 - [ ] INT-9 Stripe E2E integration tests
 - [x] DEP-1 Release records + ReleasePort
-- [ ] DEP-2 Three-state readiness check
+- [x] DEP-2 Three-state readiness check
 - [ ] DEP-3 Deployment type classification
 - [ ] DEP-4 Fly.io container adapter
 - [ ] DEP-5 Vercel adapter
