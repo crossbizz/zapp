@@ -1,0 +1,12 @@
+alter table
+{{schema_ident}}.{{table_ident}}
+enable row level security; drop policy if exists
+{{policy_ident}}
+on
+{{schema_ident}}.{{table_ident}}; create policy
+{{policy_ident}}
+on
+{{schema_ident}}.{{table_ident}}
+for all to authenticated using ((select auth.uid()) =
+{{owner_column_ident}}) with check ((select auth.uid()) =
+{{owner_column_ident}});

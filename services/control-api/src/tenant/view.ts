@@ -305,13 +305,19 @@ export const IntegrationConnectionSchema = z
     provider: z.enum(['github', 'supabase', 'neon', 'stripe']),
     status: z.string().min(1),
     credentialRef: z.string().nullable(),
-    configuration: z
-      .union([
-        z.object({ installationId: z.string().min(1) }).strict(),
-        z.object({ projectRef: z.string().min(1) }).strict(),
-        z.object({ projectId: z.string().min(1) }).strict(),
-        z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict(),
-      ]),
+    configuration: z.union([
+      z.object({ installationId: z.string().min(1) }).strict(),
+      z.object({ projectRef: z.string().min(1) }).strict(),
+      z
+        .object({
+          projectId: z.string().min(1),
+          databaseName: z.string().min(1),
+          previewBranchId: z.string().min(1).optional(),
+          productionBranchId: z.string().min(1).optional(),
+        })
+        .strict(),
+      z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict(),
+    ]),
   })
   .strict();
 

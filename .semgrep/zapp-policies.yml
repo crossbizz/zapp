@@ -1,0 +1,102 @@
+rules:
+  - id: zapp.no-empty-catch
+    message: Empty catch blocks hide failures. Handle, rethrow, or explicitly record the error.
+    languages: [javascript, typescript]
+    severity: ERROR
+    pattern-regex: 'catch\s*(?:\([^)]*\))?\s*\{\s*\}'
+    paths:
+      exclude:
+        - '**/dist/**'
+        - '**/node_modules/**'
+        - '**/test/**'
+        - '**/*.test.*'
+        - '**/*.spec.*'
+        - '**/fixtures/**'
+
+  - id: zapp.child-process-runtime-boundary
+    message: node:child_process is restricted to packages that own process execution.
+    languages: [javascript, typescript]
+    severity: ERROR
+    pattern-either:
+      - pattern: import $DEFAULT from 'node:child_process'
+      - pattern: import { ... } from 'node:child_process'
+      - pattern: import * as $PROCESS from 'node:child_process'
+      - pattern: import('node:child_process')
+      - pattern: require('node:child_process')
+      - pattern: import $DEFAULT from 'child_process'
+      - pattern: import { ... } from 'child_process'
+      - pattern: import * as $PROCESS from 'child_process'
+      - pattern: import('child_process')
+      - pattern: require('child_process')
+    paths:
+      exclude:
+        - '**/dist/**'
+        - '**/node_modules/**'
+        - '**/test/**'
+        - '**/*.test.*'
+        - '**/*.spec.*'
+        - '**/fixtures/**'
+        - '**/e2e/**'
+        - '**/e2e-tests/**'
+        - '/scripts/**'
+        - '/apps/desktop/**'
+        - '/infra/modal/**'
+        - '/packages/workspace-runtime/**'
+        - '/sandbox/workspace-agent/**'
+        - '/services/git-service/**'
+
+  - id: zapp.modal-sdk-boundary
+    message: Modal SDK calls belong only in services/sandbox-service.
+    languages: [javascript, typescript]
+    severity: ERROR
+    pattern-either:
+      - pattern: import $DEFAULT from 'modal'
+      - pattern: import { ... } from 'modal'
+      - pattern: import * as $MODAL from 'modal'
+      - pattern: import('modal')
+      - pattern: require('modal')
+    paths:
+      exclude:
+        - '**/dist/**'
+        - '**/node_modules/**'
+        - '**/test/**'
+        - '**/*.test.*'
+        - '**/*.spec.*'
+        - '**/fixtures/**'
+        - '/services/sandbox-service/**'
+
+  - id: zapp.model-sdk-boundary
+    message: Model-provider SDK calls belong only in services/model-gateway.
+    languages: [javascript, typescript]
+    severity: ERROR
+    pattern-regex: '(?:from\s+|(?:require|import)\(\s*)["''](?:@anthropic-ai/sdk|openai|@google/generative-ai|@google/genai)(?:/[^"'']*)?["'']'
+    paths:
+      exclude:
+        - '**/dist/**'
+        - '**/node_modules/**'
+        - '**/test/**'
+        - '**/*.test.*'
+        - '**/*.spec.*'
+        - '**/fixtures/**'
+        - '/services/model-gateway/**'
+
+  - id: zapp.no-client-secret-env
+    message: Client code must not reference server secret environment variables.
+    languages: [javascript, typescript]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: process.env.$SECRET
+          - pattern: process.env[$SECRET]
+      - metavariable-regex:
+          metavariable: $SECRET
+          regex: ^(?:['"])?(?!NEXT_PUBLIC_)[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PRIVATE_KEY|API_KEY)(?:['"])?$
+    paths:
+      include:
+        - '/apps/web/src/**'
+        - '/apps/desktop/src/components/**'
+        - '/packages/ui/src/**'
+      exclude:
+        - '**/*.test.*'
+        - '**/*.spec.*'
+        - '**/fixtures/**'

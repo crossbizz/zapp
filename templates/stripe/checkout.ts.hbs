@@ -1,0 +1,181 @@
+import Stripe from 'stripe';
+{{#if isExpress}}
+import type { Request, Response, Router } from 'express';
+{{/if}}
+
+type BillingInterval = 'month' | 'year';
+
+interface CheckoutInput {
+  readonly email: string;
+  readonly tier: string;
+  readonly interval: BillingInterval;
+  readonly successUrl: string;
+  readonly cancelUrl: string;
+  readonly trialPeriodDays?: number;
+}
+
+function environment(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
+  return value;
+}
+
+function stripeClient(): Stripe {
+  return new Stripe(environment('GENERATED_APP_STRIPE_RESTRICTED_KEY'));
+}
+
+export async function ensureStripeCustomer(stripe: Stripe, email: string): Promise<string> {
+  const existing = await stripe.customers.list({ email, limit: 1 });
+  const customer = existing.data[0] ?? (await stripe.customers.create({ email }));
+  return customer.id;
+}
+
+export async function bootstrapStripeTestProducts(
+  stripe: Stripe,
+  input: {
+    readonly tier: string;
+    readonly productName: string;
+    readonly currency: string;
+    readonly monthlyAmount: number;
+    readonly annualAmount: number;
+  },
+): Promise<{ readonly month: string; readonly year: string }> {
+  if (!environment('GENERATED_APP_STRIPE_RESTRICTED_KEY').startsWith('rk_test_')) {
+    throw new Error('test-mode bootstrap refused for a live account');
+  }
+  const products = await stripe.products.search({
+    query: `metadata['zapp_tier']:'${input.tier}'`,
+  });
+  const product =
+    products.data[0] ??
+    (await stripe.products.create({
+      name: input.productName,
+      metadata: { zapp_tier: input.tier, zapp_test_bootstrap: 'true' },
+    }));
+  const prices = await stripe.prices.list({ product: product.id, active: true, limit: 100 });
+  async function price(interval: BillingInterval, unitAmount: number): Promise<string> {
+    const existing = prices.data.find(
+      (candidate) => candidate.recurring?.interval === interval && candidate.unit_amount === unitAmount,
+    );
+    return (
+      existing ??
+      (await stripe.prices.create({
+        product: product.id,
+        currency: input.currency,
+        unit_amount: unitAmount,
+        recurring: { interval },
+        metadata: { zapp_tier: input.tier },
+      }))
+    ).id;
+  }
+  return {
+    month: await price('month', input.monthlyAmount),
+    year: await price('year', input.annualAmount),
+  };
+}
+
+export async function createStripeCheckoutSession(
+  stripe: Stripe,
+  input: CheckoutInput,
+): Promise<{ readonly id: string; readonly url: string | null }> {
+  const customer = await ensureStripeCustomer(stripe, input.email);
+  const price = environment(`STRIPE_PRICE_${input.tier.toUpperCase()}_${input.interval.toUpperCase()}`);
+  return await stripe.checkout.sessions.create({
+    mode: 'subscription',
+    customer,
+    line_items: [{ price, quantity: 1 }],
+    success_url: input.successUrl,
+    cancel_url: input.cancelUrl,
+    subscription_data: {
+      metadata: { tier: input.tier },
+      ...(input.trialPeriodDays === undefined
+        ? {}
+        : { trial_period_days: input.trialPeriodDays }),
+    },
+  });
+}
+
+interface CheckoutRequest {
+  readonly tier: string;
+  readonly interval: BillingInterval;
+  readonly successPath: string;
+  readonly cancelPath: string;
+}
+
+function checkoutRequest(value: unknown): CheckoutRequest {
+  if (typeof value !== 'object' || value === null) throw new Error('invalid checkout request');
+  const input = value as Partial<CheckoutRequest>;
+  if (
+    typeof input.tier !== 'string' ||
+    (input.interval !== 'month' && input.interval !== 'year') ||
+    typeof input.successPath !== 'string' ||
+    typeof input.cancelPath !== 'string'
+  ) throw new Error('invalid checkout request');
+  return input as CheckoutRequest;
+}
+
+function sameOriginUrl(applicationUrl: string, path: string): string {
+  const base = new URL(applicationUrl);
+  const resolved = new URL(path, base);
+  if (resolved.origin !== base.origin) throw new Error('checkout URL must use the application origin');
+  return resolved.toString();
+}
+
+{{#if isNext}}
+export function createStripeCheckoutRouteHandler(input: {
+  readonly resolveAuthenticatedEmail: (request: Request) => Promise<string | undefined>;
+  readonly allowedTiers: readonly string[];
+  readonly applicationUrl: string;
+  readonly trialPeriodDays?: number;
+}): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const email = await input.resolveAuthenticatedEmail(request);
+    if (email === undefined) return Response.json({ error: 'unauthorized' }, { status: 401 });
+    const body = checkoutRequest(await request.json());
+    if (!input.allowedTiers.includes(body.tier)) {
+      return Response.json({ error: 'unknown_tier' }, { status: 400 });
+    }
+    const session = await createStripeCheckoutSession(stripeClient(), {
+      email,
+      tier: body.tier,
+      interval: body.interval,
+      successUrl: sameOriginUrl(input.applicationUrl, body.successPath),
+      cancelUrl: sameOriginUrl(input.applicationUrl, body.cancelPath),
+      ...(input.trialPeriodDays === undefined ? {} : { trialPeriodDays: input.trialPeriodDays }),
+    });
+    return Response.json({ id: session.id, url: session.url });
+  };
+}
+{{else}}
+export function registerStripeCheckoutRoute(
+  router: Router,
+  input: {
+    readonly resolveAuthenticatedEmail: (request: Request) => Promise<string | undefined>;
+    readonly allowedTiers: readonly string[];
+    readonly applicationUrl: string;
+    readonly trialPeriodDays?: number;
+  },
+): void {
+  router.post('/stripe/checkout', async (request: Request, response: Response) => {
+    const email = await input.resolveAuthenticatedEmail(request);
+    if (email === undefined) {
+      response.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const body = checkoutRequest(request.body);
+    if (!input.allowedTiers.includes(body.tier)) {
+      response.status(400).json({ error: 'unknown_tier' });
+      return;
+    }
+    const session = await createStripeCheckoutSession(stripeClient(), {
+      email,
+      tier: body.tier,
+      interval: body.interval,
+      successUrl: sameOriginUrl(input.applicationUrl, body.successPath),
+      cancelUrl: sameOriginUrl(input.applicationUrl, body.cancelPath),
+      ...(input.trialPeriodDays === undefined ? {} : { trialPeriodDays: input.trialPeriodDays }),
+    });
+    response.status(201).json({ id: session.id, url: session.url });
+  });
+}
+{{/if}}

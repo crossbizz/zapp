@@ -69,6 +69,29 @@ jobs:
       - name: Run permanent security suite
         run: pnpm exec vitest run test/security --no-file-parallelism
 
+  policy-scans:
+    name: injection evals and Semgrep policy gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install pinned Semgrep
+        run: python -m pip install --disable-pip-version-check semgrep==1.172.0
+
+      - name: Semgrep policy pack
+        run: >-
+          semgrep scan --config .semgrep/zapp-policies.yml --error --metrics=off
+          --disable-version-check .
+
   gitleaks:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
@@ -272,18 +295,12 @@ jobs:
 
   dependencies:
     name: dependency scan (osv-scanner)
-    # Weekly + PR only: this is advisory/slow-moving and does not need to
-    # re-run on every push to main (private repo = metered minutes).
-    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # Advisory in M0: findings are reported but do not fail the build.
-      # OPS-13 (M5) removes continue-on-error to make this blocking.
-      #
       # google/osv-scanner-action publishes no floating major tag, so this is
       # pinned to an exact release rather than @v2. The reusable workflow is
       # deliberately not used: it uploads SARIF to code scanning (unavailable on
@@ -293,27 +310,70 @@ jobs:
       # scan-args is newline-separated; each line becomes one argv entry.
       - name: OSV scan (pnpm-lock.yaml)
         id: osv
+        # osv-scanner exits non-zero for findings at every severity. Capture its
+        # JSON so the next step can enforce the binding critical-only threshold.
         continue-on-error: true
         uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
             scan
             source
+            --format=json
+            --output-file=osv-results.json
             --lockfile=./pnpm-lock.yaml
 
-      - name: Publish advisory note
+      - name: Enforce critical vulnerability threshold
         if: always()
-        env:
-          OSV_OUTCOME: ${{ steps.osv.outcome }}
         run: |
-          {
-            echo "### Dependency scan (osv-scanner) - advisory only"
-            echo ""
-            echo "Scanned \`pnpm-lock.yaml\` against the OSV database."
-            echo ""
-            echo "- Scan step outcome: \`${OSV_OUTCOME}\` (\`failure\` means vulnerabilities were reported)"
-            echo "- Findings do **not** fail CI in M0 (\`continue-on-error: true\`)"
-            echo "- This check becomes blocking in OPS-13 (M5)"
-            echo ""
-            echo "Open the **OSV scan (pnpm-lock.yaml)** step log for the full vulnerability table."
-          } >> "$GITHUB_STEP_SUMMARY"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const reportPath = 'osv-results.json';
+          if (!fs.existsSync(reportPath)) {
+            throw new Error('osv-scanner did not produce osv-results.json');
+          }
+          const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+          const acceptedCritical = new Map([
+            ['GHSA-m7jm-9gc2-mpf2', 'fast-xml-parser via AWS SDK; production reachability remediation owned by OPS-13 M5'],
+            ['GHSA-37j7-fg3j-429f', 'happy-dom test-only dependency; upgrade owned by OPS-13 M5'],
+            ['GHSA-23hp-3jrh-7fpw', 'tar in vendored desktop build toolchain; upgrade owned by OPS-13 M5'],
+          ]);
+          const critical = [];
+          for (const result of report.results ?? []) {
+            for (const entry of result.packages ?? []) {
+              for (const group of entry.groups ?? []) {
+                const severity = Number(group.max_severity);
+                if (Number.isFinite(severity) && severity >= 9) {
+                  critical.push({
+                    ids: group.ids ?? [],
+                    package: `${entry.package?.name ?? 'unknown'}@${entry.package?.version ?? 'unknown'}`,
+                    severity,
+                  });
+                }
+              }
+            }
+          }
+          const unexpected = critical.filter(({ ids }) =>
+            ids.every((id) => !acceptedCritical.has(id)),
+          );
+          const stale = [...acceptedCritical.keys()].filter((id) =>
+            critical.every(({ ids }) => !ids.includes(id)),
+          );
+          const lines = [
+            '### Dependency scan (osv-scanner)',
+            '',
+            `- Critical groups (severity >= 9): ${critical.length}`,
+            `- Accepted M3 baseline: ${critical.length - unexpected.length}`,
+            `- Unexpected critical groups: ${unexpected.length}`,
+            `- Stale baseline entries: ${stale.length}`,
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
+          if (stale.length > 0) {
+            throw new Error(`remove stale OSV critical baseline entries: ${stale.join(', ')}`);
+          }
+          if (unexpected.length > 0) {
+            throw new Error(
+              `critical OSV findings: ${unexpected.map(({ ids, package, severity }) => `${package} ${ids.join('/')} (${severity})`).join(', ')}`,
+            );
+          }
+          console.log(`OSV critical gate passed: ${critical.length} accepted, 0 unexpected`);
+          NODE

@@ -193,16 +193,17 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
 - [ ] WEB-13 Releases + evidence viewer
 - [x] OPS-12 Security suites (start; complete M5)
-- [ ] OPS-13 Injection evals + Semgrep gates (start; complete M5)
+- [x] OPS-13 Injection evals + Semgrep gates (start; complete M5)
 
 ## M4 — Integrations & deployment (Weeks 16–22)
 
-- [ ] INT-3 Sync engine (stale-base, conflicts)
-- [ ] INT-4 GitHub export
-- [ ] INT-5 Supabase connect/provision/schema/types
-- [ ] INT-6 Supabase migrations + RLS gen/tests
-- [ ] INT-7 Neon branch workflows
-- [ ] INT-8 Generated-app Stripe adapter
+- [x] INT-3 Sync engine (stale-base, conflicts)
+- [x] INT-4 GitHub export
+- [x] INT-5 Supabase connect/provision/schema/types
+- [x] INT-5-FIX-1 Make GitHub import retry integration clock deterministic
+- [x] INT-6 Supabase migrations + RLS gen/tests
+- [x] INT-7 Neon branch workflows
+- [x] INT-8 Generated-app Stripe adapter
 - [ ] INT-9 Stripe E2E integration tests
 - [ ] DEP-1 Release records + ReleasePort
 - [ ] DEP-2 Three-state readiness check

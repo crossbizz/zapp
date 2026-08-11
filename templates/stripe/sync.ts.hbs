@@ -1,0 +1,160 @@
+import postgres from 'postgres';
+import { z } from 'zod';
+
+export const StripeSubscriptionStatusSchema = z.enum([
+  'trialing',
+  'active',
+  'past_due',
+  'canceled',
+  'unpaid',
+  'incomplete',
+  'incomplete_expired',
+  'paused',
+]);
+export type StripeSubscriptionStatus = z.infer<typeof StripeSubscriptionStatusSchema>;
+
+export const StripeWebhookEventSchema = z
+  .object({
+    id: z.string().min(1),
+    created: z.number().int().nonnegative(),
+    type: z.string().min(1),
+    data: z.object({ object: z.unknown() }).passthrough(),
+  })
+  .passthrough();
+export type StripeWebhookEvent = z.infer<typeof StripeWebhookEventSchema>;
+
+const StripeSubscriptionObjectSchema = z
+  .object({
+    id: z.string().min(1),
+    customer: z.string().min(1),
+    status: StripeSubscriptionStatusSchema,
+    trial_end: z.number().int().nonnegative().nullable(),
+    metadata: z.record(z.string()).default({}),
+    items: z.object({
+      data: z
+        .array(z.object({ current_period_end: z.number().int().positive() }).passthrough())
+        .min(1),
+    }),
+  })
+  .passthrough();
+
+export interface StripeSubscriptionState {
+  readonly stripeSubscriptionId: string;
+  readonly stripeCustomerId: string;
+  readonly tier: string;
+  readonly status: StripeSubscriptionStatus;
+  readonly currentPeriodEnd: Date;
+  readonly trialEnd: Date | null;
+}
+
+export interface StripeSubscriptionStore {
+  /** Receipt and state update must commit in the same transaction. */
+  applyEvent(
+    eventId: string,
+    eventCreated: number,
+    input: StripeSubscriptionState | undefined,
+  ): Promise<'applied' | 'duplicate' | 'stale'>;
+  findSubscriptionByCustomer(stripeCustomerId: string): Promise<StripeSubscriptionState | undefined>;
+}
+
+export function createPostgresStripeSubscriptionStore(databaseUrl: string): StripeSubscriptionStore {
+  const sql = postgres(databaseUrl, { max: 5 });
+  return {
+    async applyEvent(eventId, eventCreated, input) {
+      return await sql.begin(async (transaction) => {
+        const receipt = await transaction`
+          insert into stripe_webhook_events (event_id, event_created)
+          values (${eventId}, ${eventCreated})
+          on conflict (event_id) do nothing returning event_id
+        `;
+        if (receipt.length === 0) return 'duplicate' as const;
+        if (input === undefined) return 'applied' as const;
+        const changed = await transaction`
+          insert into stripe_subscription_state (
+            stripe_subscription_id, stripe_customer_id, tier, status,
+            current_period_end, trial_end, last_event_created, last_event_id, updated_at
+          ) values (
+            ${input.stripeSubscriptionId}, ${input.stripeCustomerId}, ${input.tier}, ${input.status},
+            ${input.currentPeriodEnd}, ${input.trialEnd}, ${eventCreated}, ${eventId}, now()
+          )
+          on conflict (stripe_subscription_id) do update set
+            stripe_customer_id = excluded.stripe_customer_id,
+            tier = excluded.tier,
+            status = excluded.status,
+            current_period_end = excluded.current_period_end,
+            trial_end = excluded.trial_end,
+            last_event_created = excluded.last_event_created,
+            last_event_id = excluded.last_event_id,
+            updated_at = now()
+          where stripe_subscription_state.last_event_created < excluded.last_event_created
+             or (
+               stripe_subscription_state.last_event_created = excluded.last_event_created
+               and case excluded.status
+                 when 'canceled' then 4 when 'unpaid' then 4 when 'incomplete_expired' then 4
+                 when 'paused' then 3 when 'past_due' then 2 when 'incomplete' then 2
+                 else 1
+               end > case stripe_subscription_state.status
+                 when 'canceled' then 4 when 'unpaid' then 4 when 'incomplete_expired' then 4
+                 when 'paused' then 3 when 'past_due' then 2 when 'incomplete' then 2
+                 else 1
+               end
+             )
+          returning stripe_subscription_id
+        `;
+        return changed.length === 1 ? ('applied' as const) : ('stale' as const);
+      });
+    },
+    async findSubscriptionByCustomer(stripeCustomerId) {
+      const [row] = await sql<Array<{
+        stripe_subscription_id: string;
+        stripe_customer_id: string;
+        tier: string;
+        status: StripeSubscriptionStatus;
+        current_period_end: Date;
+        trial_end: Date | null;
+      }>>`
+        select stripe_subscription_id, stripe_customer_id, tier, status,
+               current_period_end, trial_end
+          from stripe_subscription_state
+         where stripe_customer_id = ${stripeCustomerId}
+         order by current_period_end desc limit 1
+      `;
+      return row === undefined
+        ? undefined
+        : {
+            stripeSubscriptionId: row.stripe_subscription_id,
+            stripeCustomerId: row.stripe_customer_id,
+            tier: row.tier,
+            status: row.status,
+            currentPeriodEnd: row.current_period_end,
+            trialEnd: row.trial_end,
+          };
+    },
+  };
+}
+
+export async function syncStripeSubscriptionEvent(
+  dependencies: { readonly store: StripeSubscriptionStore },
+  rawEvent: unknown,
+): Promise<'applied' | 'duplicate' | 'ignored' | 'stale'> {
+  const event = StripeWebhookEventSchema.parse(rawEvent);
+  const relevant = event.type.startsWith('customer.subscription.');
+  let state: StripeSubscriptionState | undefined;
+  if (relevant) {
+    const subscription = StripeSubscriptionObjectSchema.parse(event.data.object);
+    state = {
+      stripeSubscriptionId: subscription.id,
+      stripeCustomerId: subscription.customer,
+      tier: subscription.metadata['tier'] ?? 'default',
+      status: subscription.status,
+      currentPeriodEnd: new Date(
+        Math.max(...subscription.items.data.map((item) => item.current_period_end)) * 1_000,
+      ),
+      trialEnd:
+        subscription.trial_end === null ? null : new Date(subscription.trial_end * 1_000),
+    };
+  }
+  const result = await dependencies.store.applyEvent(event.id, event.created, state);
+  if (result !== 'applied') return result;
+  return relevant ? 'applied' : 'ignored';
+}

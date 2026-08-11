@@ -28,7 +28,7 @@ const INSTALLATION_ID = '41122';
 const REPOSITORY = 'zapp/example';
 const BRANCH = 'feature/import';
 const OPERATION_KEY = 'github-import-durable-retry-0001';
-const NOW = new Date('2026-08-11T12:00:00.000Z');
+const NOW = '2026-08-11T12:01:00.000Z';
 
 interface Member {
   readonly userId: string;
@@ -88,7 +88,7 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
     auth = new FakeAuthPort();
     app = buildApp({
       logger: false,
-      now: () => NOW,
+      now: () => new Date(NOW),
       auth: { port: auth, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations, audit: createDbAuditSink(database.db) },
       tenant: {
@@ -105,7 +105,7 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
         name: 'GitHub import retry',
         slug: 'github-import-retry',
         creatorUserId: owner.userId,
-        now: NOW,
+        now: new Date('2026-08-11T12:00:00.000Z'),
         link: () => Promise.resolve({ externalOrgId: 'external-github-import-retry' }),
         audit: () => Promise.resolve(),
       })
@@ -139,8 +139,13 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
     const sent: string[] = [];
     const publisher = createGitHubImportPublisher({
       database: database.db,
-      queue: { send: (body) => { sent.push(body); return Promise.resolve(); } },
-      now: () => new Date('2026-08-11T12:01:00.000Z'),
+      queue: {
+        send: (body) => {
+          sent.push(body);
+          return Promise.resolve();
+        },
+      },
+      now: () => new Date(NOW),
     });
     expect(await publisher.publishOnce(10)).toBe(1);
     expect(GitHubImportQueueMessageSchema.parse(JSON.parse(sent[0] ?? ''))).toEqual({
@@ -168,7 +173,14 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
       undefined,
     ]);
     const [mirrorState] = await database.sql<
-      { status: string; error_code: string | null; stage: string; delivery_status: string; attempts: number; published_at: Date | null }[]
+      {
+        status: string;
+        error_code: string | null;
+        stage: string;
+        delivery_status: string;
+        attempts: number;
+        published_at: Date | null;
+      }[]
     >`
       select imports.status, imports.error_code, outbox.stage,
              outbox.status as delivery_status, outbox.attempts, outbox.published_at
@@ -186,9 +198,9 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
     });
     expect(await publisher.publishOnce(10)).toBe(1);
     expect(await publisher.publishOnce(10)).toBe(0);
-    expect(sent.slice(1).map((body) => GitHubImportQueueMessageSchema.parse(JSON.parse(body)))).toEqual([
-      { projectId, stage: 'queued' },
-    ]);
+    expect(
+      sent.slice(1).map((body) => GitHubImportQueueMessageSchema.parse(JSON.parse(body))),
+    ).toEqual([{ projectId, stage: 'queued' }]);
     const queuedPoll = await app.inject({
       method: 'GET',
       url: `/v1/projects/${projectId}/import/github`,

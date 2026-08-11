@@ -175,53 +175,62 @@ be built:
 **Files:** Create: `src/integrations/github/sync.ts`, `test/integration/sync.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §19.3): modes per repository `sync_policy`: `direct_push` (zapp pushes task/integration commits to GitHub branch) or `pull_request` (zapp pushes `zapp/run-{id}` branch + opens PR via App); inbound: `github.push` webhook → compare head vs `branches.head_commit_sha` → external movement: fetch to internal mirror, mark affected in-flight task bases stale (`task.blocked` event, base invalidation per PRD §19.3), surface sync state in project (`ahead/behind/diverged`); diverged → user chooses merge workflow (conflict task created; **never** auto-overwrite either side); every sync records commit SHAs both sides.
-- [ ] Failing tests: external push during active run blocks affected task with event; direct_push propagates integration branch; diverged state produces conflict task and no force push anywhere (asserted via reflog fixture).
-- [ ] Commit: `feat(integrations): bidirectional github sync with stale-base invalidation`
+- [x] Binding behavior (PRD §19.3): modes per repository `sync_policy`: `direct_push` (zapp pushes task/integration commits to GitHub branch) or `pull_request` (zapp pushes `zapp/run-{id}` branch + opens PR via App); inbound: `github.push` webhook → compare head vs `branches.head_commit_sha` → external movement: fetch to internal mirror, mark affected in-flight task bases stale (`task.blocked` event, base invalidation per PRD §19.3), surface sync state in project (`ahead/behind/diverged`); diverged → user chooses merge workflow (conflict task created; **never** auto-overwrite either side); every sync records commit SHAs both sides.
+- [x] Failing tests: external push during active run blocks affected task with event; direct_push propagates integration branch; diverged state produces conflict task and no force push anywhere (asserted via reflog fixture).
+- [x] Commit: `feat(integrations): bidirectional github sync with stale-base invalidation`
 
 ### Task INT-4 [M4]: GitHub export
 
 **Files:** Create: `src/integrations/github/export.ts`
 **Effort:** S
 
-- [ ] Binding behavior: export a zapp-created project → create GitHub repo under chosen installation → push full history → set `external_repo_ref` + sync policy; idempotent (existing export → 409 with link).
-- [ ] Commit: `feat(integrations): export project to github`
+- [x] Binding behavior: export a zapp-created project → create GitHub repo under chosen installation → push full history → set `external_repo_ref` + sync policy; idempotent (existing export → 409 with link).
+- [x] Commit: `feat(integrations): export project to github`
 
 ### Task INT-5 [M4]: Supabase adapter — connect/provision/schema/types
 
 **Files:** Create: `src/integrations/supabase/{connect,provision,schema}.ts`, `packages/agent-tools/src/integrations/supabase.ts`, `test/supabase.test.ts` (env-gated live test)
 **Effort:** L
 
-- [ ] Binding behavior (PRD §25.1/§25.2): `POST /v1/integrations/supabase/connect` (OAuth or management PAT → vault); provision dev project via Management API where plan permits (else connect-existing); read schema metadata (postgres-meta endpoints); generate TS types (`supabase gen types` in workspace); env wiring: SUPABASE_URL/ANON_KEY into project secrets (dev + prod scopes separate); agent tools: `read_database_schema` binding, `execute_migration` routes through migration pipeline (INT-6) — never raw SQL to prod.
-- [ ] Failing tests: connect stores credential ref only (no plaintext in `integration_connections.configuration_json` — asserted); schema read returns tables for fixture project; typegen artifact produced.
-- [ ] Commit: `feat(integrations): supabase connect/provision/schema/types`
+- [x] Binding behavior (PRD §25.1/§25.2): `POST /v1/integrations/supabase/connect` (OAuth or management PAT → vault); provision dev project via Management API where plan permits (else connect-existing); read schema metadata (postgres-meta endpoints); generate TS types (`supabase gen types` in workspace); env wiring: SUPABASE_URL/ANON_KEY into project secrets (dev + prod scopes separate); agent tools: `read_database_schema` binding, `execute_migration` routes through migration pipeline (INT-6) — never raw SQL to prod.
+- [x] Failing tests: connect stores credential ref only (no plaintext in `integration_connections.configuration_json` — asserted); schema read returns tables for fixture project; typegen artifact produced.
+- [x] Commit: `feat(integrations): supabase connect/provision/schema/types`
+
+### Task INT-5-FIX-1 [M4]: Deterministic GitHub import retry clock
+
+**Files:** Modify: `test/integration/github-import-retry.test.ts`
+**Effort:** XS
+
+- [x] Binding behavior: the durable GitHub import retry integration test uses one injected clock for route-side outbox enqueue and publisher eligibility, so wall-clock passage cannot make a freshly enqueued row appear to be scheduled in the future.
+- [x] Failing test: the focused PostgreSQL retry test reproduces the authoritative CI failure after wall time passes its previous fixed publisher instant, then passes with the shared injected clock.
+- [x] Commit: `test(integrations): make github import retry clock deterministic`
 
 ### Task INT-6 [M4]: Supabase migrations + RLS
 
 **Files:** Create: `src/integrations/supabase/migrations.ts`, `templates/supabase/rls/*.sql.hbs`
 **Effort:** L
 
-- [ ] Binding behavior: migration pipeline: generated migration files in repo (`supabase/migrations/*`), applied to dev via CLI in workspace; validation against shadow database before any prod approval (VF-16 gate); destructive detection → approval (AR-5); RLS: policy generation templates for owner-scoped tables (auth.uid() pattern) + **generated RLS tests** (SQL asserting cross-user denial) required for Managed level (PRD §25.2); migration history recorded in release evidence (PRD §25.1).
-- [ ] Failing tests: destructive migration flagged; RLS template renders valid SQL for a fixture schema; RLS test catches a policy-less table.
-- [ ] Commit: `feat(integrations): supabase migration pipeline + RLS generation/tests`
+- [x] Binding behavior: migration pipeline: generated migration files in repo (`supabase/migrations/*`), applied to dev via CLI in workspace; validation against shadow database before any prod approval (VF-16 gate); destructive detection → approval (AR-5); RLS: policy generation templates for owner-scoped tables (auth.uid() pattern) + **generated RLS tests** (SQL asserting cross-user denial) required for Managed level (PRD §25.2); migration history recorded in release evidence (PRD §25.1).
+- [x] Failing tests: destructive migration flagged; RLS template renders valid SQL for a fixture schema; RLS test catches a policy-less table.
+- [x] Commit: `feat(integrations): supabase migration pipeline + RLS generation/tests`
 
 ### Task INT-7 [M4]: Neon adapter
 
 **Files:** Create: `src/integrations/neon/{connect,branches,migrations}.ts`, `test/neon.test.ts` (env-gated)
 **Effort:** L
 
-- [ ] Binding behavior (PRD §25.3): connect via API key → vault; project/branch management (create `verify/run-{id}` temp branches for migration validation, TTL-deleted after gate); schema inspection via SQL over branch connection; migration validation = apply to temp branch + smoke queries + reversibility classification; connection-role separation: app role vs migration role connection strings stored as separate secrets; branch-based dev workflow (preview env → dedicated branch).
-- [ ] Failing tests: temp branch lifecycle (created→validated→deleted); role separation (app role lacks DDL — asserted via failed ALTER).
-- [ ] Commit: `feat(integrations): neon branch-based database workflows`
+- [x] Binding behavior (PRD §25.3): connect via API key → vault; project/branch management (create `verify/run-{id}` temp branches for migration validation, TTL-deleted after gate); schema inspection via SQL over branch connection; migration validation = apply to temp branch + smoke queries + reversibility classification; connection-role separation: app role vs migration role connection strings stored as separate secrets; branch-based dev workflow (preview env → dedicated branch).
+- [x] Failing tests: temp branch lifecycle (created→validated→deleted); role separation (app role lacks DDL — asserted via failed ALTER).
+- [x] Commit: `feat(integrations): neon branch-based database workflows`
 
 ### Task INT-8 [M4]: Generated-app Stripe adapter
 
 **Files:** Create: `templates/stripe/{checkout,portal,webhook,sync,access}.ts.hbs`, `src/integrations/stripe/connect.ts`, `packages/agent-tools/src/integrations/stripe.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26.2): connect generated-app Stripe account (restricted key → vault, scope `generated_app`, **separate from platform billing connection** — vault scope + audit stream test); adapter templates the agent installs into user apps: customer creation, products/prices setup script, monthly+annual subscriptions, Checkout session route, customer portal route, webhook route with signature validation + idempotent event handling, subscription-state sync table + access-control middleware (`requireSubscription(tier)`), trial support, test-mode bootstrap (products seeded in test mode); templates are framework-adapted (next route handlers / express routers) via project-adapters hints.
-- [ ] Failing tests: webhook template rejects bad signature fixture; sync handler idempotent on duplicate event id; credential separation test (generated-app key never readable via platform-billing paths).
-- [ ] Commit: `feat(integrations): generated-app stripe adapter templates`
+- [x] Binding behavior (PRD §26.2): connect generated-app Stripe account (restricted key → vault, scope `generated_app`, **separate from platform billing connection** — vault scope + audit stream test); adapter templates the agent installs into user apps: customer creation, products/prices setup script, monthly+annual subscriptions, Checkout session route, customer portal route, webhook route with signature validation + idempotent event handling, subscription-state sync table + access-control middleware (`requireSubscription(tier)`), trial support, test-mode bootstrap (products seeded in test mode); templates are framework-adapted (next route handlers / express routers) via project-adapters hints.
+- [x] Failing tests: webhook template rejects bad signature fixture; sync handler idempotent on duplicate event id; credential separation test (generated-app key never readable via platform-billing paths).
+- [x] Commit: `feat(integrations): generated-app stripe adapter templates`
 
 ### Task INT-9 [M4]: Stripe adapter integration tests
 
@@ -260,3 +269,10 @@ be built:
 - 2026-08-10 INT-1 done — GitHub App installation, tenant-scoped repository/branch discovery, and signature-verified durable webhook delivery shipped; focused control-api 41/41, route regression 18/18, DB schema 39/39, lint/typecheck, SDK determinism, and local dev-stack queue/migration gates passed; live GitHub skipped because `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_LIVE_CALLBACK_CODE`, and `GITHUB_LIVE_INSTALLATION_ID` are unset; Terraform validation skipped because `terraform` is not installed.
 - 2026-08-10 INT-1 review round 1 security revision — accepted ADR-0029 and replaced App-wide installation lookup with callback-code exchange plus ephemeral user-scoped installation proof; added a concurrent-association unique index/idempotent insert, restored ordinary malformed-JSON 400 handling, inferred boundary schemas, name-only GitHub environment entries, and the `openapi-contract.test.ts` file-scope paper trail; final passes/skips are recorded in the Task 3 report.
 - 2026-08-10 INT-2 done — durable keyed import/outbox stages, credential-contained Forgejo mirror, and keyed VF-3 handoff shipped; review round 1 added the required validated public idempotency header, shared strict repository/store schemas, and all-target-ref refusal while preserving equal-head replay; retained `setDefaultBranch` as the narrowest git-service-local import capability without changing `packages/contracts` per the approved interface assumption; DB 152/152, control-api 542/542, git-service 367/367, focused gates, generator/SDK determinism, lint/typecheck, and Forgejo integration passed; live GitHub import skipped because its seven named credentials are unset.
+- 2026-08-11 INT-3 done — bidirectional direct-push/PR sync, durable idempotent head/state recording, branch-scoped stale-base events, and conflict tasks shipped with a structurally force-free Git port and real local-reflog proof; the single capped review timed out, so bounded local review fixed cross-branch invalidation and unconfigured `manual_push` retry poisoning before exit; focused 5/5, control-api build/lint/typecheck, root lint/typecheck, and Semgrep passed; live GitHub smoke skipped because the named GitHub App credentials are unset.
+- 2026-08-11 INT-4 done — zapp-created projects now export through a deterministic provider operation, structurally force-free full-history push, exact default-head verification, and tenant/installation-scoped atomic peer-ref + sync-policy persistence with linked 409 replay; temporary memory and PostgreSQL TDD contracts passed alongside control-api build/lint/typecheck, Prettier, and Semgrep; no binding-file deviation or blocker, and live GitHub export was skipped because the named GitHub App credentials are unset.
+- 2026-08-11 INT-5 done — Supabase connect/provision/schema/typegen and agent-tool bindings now vault the management token, isolate preview/production project secrets, and keep migrations behind INT-6; one capped review corrected the current Management API provisioning payload, PostgreSQL/local suites passed, no blockers or plan deviations, and the live Supabase test skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
+- 2026-08-11 INT-5-FIX-1 done — The exact authoritative CI failure reproduced after wall time crossed the retry test's fixed publisher instant; injecting one clock into the app and publisher made the PostgreSQL retry proof deterministic, focused and package checks passed, and one capped review found no Critical/Major issue.
+- 2026-08-11 INT-6 done — Supabase migrations now stage keyed monotonic repo files, apply only to linked non-production projects, feed pending history through the VF-16 shadow receipt recorded in release evidence, and generate owner-scoped RLS plus pgTAP denial tests; one capped review fixed fixture-vacuity and migration-ordering risks, local PostgreSQL proved cross-user denial, no blockers or plan deviations occurred, and live Supabase verification skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
+- 2026-08-11 INT-7 done — Neon API connect now vaults explicit-database app/migration URLs for default and dedicated preview branches, VF-16 validates on TTL verification branches with response-loss reconciliation and cleanup, schema SQL and real DDL denial passed, and one capped review fixed concurrent password persistence, post-create compensation, explicit database targeting, and cursor pagination; no blockers or plan deviations, while live Neon skipped because `NEON_API_KEY` and `NEON_PROJECT_ID` are unset.
+- 2026-08-11 INT-8 done — Generated-app Stripe credentials now use an audited vault scope isolated from platform billing, and the installer emits typechecked Next or Express Checkout, portal, signed webhook, atomic stale-safe sync, access-control, and migration artifacts; one capped review fixed authenticated portal ownership, current Stripe item periods, stale-event fencing, migration installation, and explicit Express/Fastify handling, while the first pre-push run exposed and bounded the compiler-heavy test's default timeout; no blockers or plan deviations, and live Stripe skipped because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
