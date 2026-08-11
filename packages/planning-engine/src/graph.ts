@@ -17,6 +17,15 @@ export {
   TaskStateSchema,
 } from './schema.js';
 export type { Plan, PlanPhase, PlanTask, TaskGraphState } from './schema.js';
+export {
+  applyPlanDiff,
+  derivePlanDiffImpact,
+  dependentTaskClosure,
+  isMaterialPlanDiff,
+  PlanDiffImpactSchema,
+  PlanDiffSchema,
+} from './diff.js';
+export type { PlanDiff, PlanDiffImpact } from './diff.js';
 
 const ACTIVE_WRITER_STATES = new Set([
   'ready',

@@ -1,6 +1,7 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
 import { TOOL_GROUPS } from '@zapp/contracts';
+import { applyPlanDiff, type PlanDiff } from '@zapp/planning-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
@@ -8,6 +9,7 @@ import {
   BUILD_MODE_APPROVAL_CONFIG,
   BuildModePlanSchema,
   buildWorkflow,
+  redirectRunSignal,
   runWorkflow,
   shouldAutoApproveBuildPlan,
   type RunWorkflowInput,
@@ -364,13 +366,33 @@ describe('AR-18 Build mode', () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar18-build-auto-${Date.now().toString(36)}`;
     const workflowInput = buildInput('4');
-    const plan = lightweightPlan({ suffix: '4', riskLevel: 'low' });
+    const plan = BuildModePlanSchema.parse(lightweightPlan({ suffix: '4', riskLevel: 'low' }));
     const planArtifactId = id('art', '4');
     const integrationCommit = 'f'.repeat(40);
     const timeline: string[] = [];
     const taskPrompts: string[] = [];
     const taskTransitions: Array<{ status: string; taskIds: string[] }> = [];
     let legacyCommits = 0;
+    let redirectApplied = false;
+    let resolveHeadCalls = 0;
+    let resolveHeadStarted: (() => void) | undefined;
+    const headStarted = new Promise<void>((resolve) => {
+      resolveHeadStarted = resolve;
+    });
+    let releaseHead: (() => void) | undefined;
+    const headReleased = new Promise<void>((resolve) => {
+      releaseHead = resolve;
+    });
+    const redirectedPlanArtifactId = id('art', '6');
+    const redirectedTask = plan.tasks[1];
+    if (redirectedTask === undefined) throw new Error('redirect fixture task missing');
+    const redirectDiff: PlanDiff = {
+      addedTasks: [],
+      removedTaskIds: [],
+      modifiedTasks: [{ ...redirectedTask, title: 'Build task 2 with final copy' }],
+      supersededTaskIds: [],
+      impact: { scope: false, costDelta: false, archChange: false, dataChange: false },
+    };
 
     const mainWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -405,7 +427,35 @@ describe('AR-18 Build mode', () => {
           timeline.push(`approved:${approvalOperationKey}`);
           return Promise.resolve({ planArtifactId, status: 'approved' as const });
         },
-        resolveIntegrationHead: () => Promise.resolve({ commitSha: integrationCommit }),
+        async resolveIntegrationHead() {
+          resolveHeadCalls += 1;
+          if (resolveHeadCalls === 1) {
+            resolveHeadStarted?.();
+            await headReleased;
+          }
+          return { commitSha: integrationCommit };
+        },
+        pauseRedirectTasks: ({ affectedTaskIds }: { affectedTaskIds: string[] }) =>
+          Promise.resolve({ pausedTaskIds: affectedTaskIds }),
+        resumeRedirectTasks: ({ taskIds }: { taskIds: string[] }) =>
+          Promise.resolve({ resumedTaskIds: taskIds }),
+        produceRedirectPlanDiff: () =>
+          Promise.resolve({ planDiffArtifactId: id('art', '5'), planDiff: redirectDiff }),
+        applyRedirectPlanDiff: ({ currentPlan }: { currentPlan: typeof plan }) => {
+          redirectApplied = true;
+          return Promise.resolve({
+            planArtifactId: redirectedPlanArtifactId,
+            plan: applyPlanDiff(currentPlan, redirectDiff),
+            supersededTasks: [],
+          });
+        },
+        revalidateRedirectedTasks: ({ taskIds }: { taskIds: string[] }) =>
+          Promise.resolve({
+            verificationResultId: id('vr', '6'),
+            decision: 'approved' as const,
+            taskIds,
+          }),
+        checkpointRedirect: () => Promise.resolve({ checkpointRef: 'build-redirect-checkpoint' }),
         transitionPhaseTasks: ({ status, taskIds }: { status: string; taskIds: string[] }) => {
           taskTransitions.push({ status, taskIds });
           return Promise.resolve();
@@ -469,13 +519,22 @@ describe('AR-18 Build mode', () => {
 
     try {
       await mainWorker.runUntil(async () => {
-        await expect(
-          environment?.client.workflow.execute(buildWorkflow, {
+        const handle = await environment?.client.workflow.start(buildWorkflow, {
             taskQueue,
             workflowId: workflowInput.workflowId,
             args: [workflowInput],
-          }),
-        ).resolves.toEqual({ status: 'completed', commitSha: integrationCommit });
+          });
+        await headStarted;
+        await handle?.signal(redirectRunSignal, {
+          runId: workflowInput.runId,
+          instruction: 'Change the final copy before verification.',
+          operationKey: `op_${'6'.repeat(64)}`,
+        });
+        releaseHead?.();
+        await expect(handle?.result()).resolves.toEqual({
+          status: 'completed',
+          commitSha: integrationCommit,
+        });
       });
     } finally {
       verificationWorker.shutdown();
@@ -483,6 +542,8 @@ describe('AR-18 Build mode', () => {
     }
 
     expect(legacyCommits).toBe(0);
+    expect(redirectApplied).toBe(true);
+    expect(resolveHeadCalls).toBe(2);
     expect(taskPrompts).toHaveLength(2);
     expect(taskPrompts[0]).toContain('Acceptance criteria: AC-1');
     expect(taskPrompts[1]).toContain('Acceptance criteria: AC-2');
