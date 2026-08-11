@@ -184,8 +184,8 @@ be built:
 **Files:** Create: `src/integrations/github/export.ts`
 **Effort:** S
 
-- [ ] Binding behavior: export a zapp-created project → create GitHub repo under chosen installation → push full history → set `external_repo_ref` + sync policy; idempotent (existing export → 409 with link).
-- [ ] Commit: `feat(integrations): export project to github`
+- [x] Binding behavior: export a zapp-created project → create GitHub repo under chosen installation → push full history → set `external_repo_ref` + sync policy; idempotent (existing export → 409 with link).
+- [x] Commit: `feat(integrations): export project to github`
 
 ### Task INT-5 [M4]: Supabase adapter — connect/provision/schema/types
 
@@ -261,3 +261,4 @@ be built:
 - 2026-08-10 INT-1 review round 1 security revision — accepted ADR-0029 and replaced App-wide installation lookup with callback-code exchange plus ephemeral user-scoped installation proof; added a concurrent-association unique index/idempotent insert, restored ordinary malformed-JSON 400 handling, inferred boundary schemas, name-only GitHub environment entries, and the `openapi-contract.test.ts` file-scope paper trail; final passes/skips are recorded in the Task 3 report.
 - 2026-08-10 INT-2 done — durable keyed import/outbox stages, credential-contained Forgejo mirror, and keyed VF-3 handoff shipped; review round 1 added the required validated public idempotency header, shared strict repository/store schemas, and all-target-ref refusal while preserving equal-head replay; retained `setDefaultBranch` as the narrowest git-service-local import capability without changing `packages/contracts` per the approved interface assumption; DB 152/152, control-api 542/542, git-service 367/367, focused gates, generator/SDK determinism, lint/typecheck, and Forgejo integration passed; live GitHub import skipped because its seven named credentials are unset.
 - 2026-08-11 INT-3 done — bidirectional direct-push/PR sync, durable idempotent head/state recording, branch-scoped stale-base events, and conflict tasks shipped with a structurally force-free Git port and real local-reflog proof; the single capped review timed out, so bounded local review fixed cross-branch invalidation and unconfigured `manual_push` retry poisoning before exit; focused 5/5, control-api build/lint/typecheck, root lint/typecheck, and Semgrep passed; live GitHub smoke skipped because the named GitHub App credentials are unset.
+- 2026-08-11 INT-4 done — zapp-created projects now export through a deterministic provider operation, structurally force-free full-history push, exact default-head verification, and tenant/installation-scoped atomic peer-ref + sync-policy persistence with linked 409 replay; temporary memory and PostgreSQL TDD contracts passed alongside control-api build/lint/typecheck, Prettier, and Semgrep; no binding-file deviation or blocker, and live GitHub export was skipped because the named GitHub App credentials are unset.
