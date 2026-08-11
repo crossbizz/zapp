@@ -12,7 +12,7 @@
   "builder": {
     "concurrentAutonomousRuns": 3,
     "concurrentSandboxes": 3,
-    "maxResourceProfile": "medium",
+    "maxResourceProfile": "standard",
     "maxRunBudgetCredits": "100.0000",
     "maxPreviewLifetimeHours": 24,
     "artifactRetentionDays": 30,

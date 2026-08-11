@@ -32,6 +32,7 @@ import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
 import type { PricingConfig } from './usage/pricing.js';
+import type { CreditBalanceGate, PlanLimitsConfig } from './usage/limits.js';
 import type { ModelCompletionRepository } from './usage/model-completions.js';
 import {
   loadRateLimitSettings,
@@ -211,6 +212,9 @@ export interface TenantDeps {
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
   readonly pricing?: PricingConfig;
+  /** OPS-3's deployable plan policy; run admission remains entirely local. */
+  readonly planLimits?: PlanLimitsConfig;
+  readonly creditBalance?: CreditBalanceGate;
   /** FND-7's tenant-prefixed R2/MinIO object store for public image attachments. */
   readonly attachmentStorage?: AttachmentStoragePort;
 }
@@ -597,6 +601,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               return membership?.status === 'active';
             },
             ...(tenant.pricing === undefined ? {} : { pricing: tenant.pricing }),
+            ...(tenant.planLimits === undefined ? {} : { planLimits: tenant.planLimits }),
+            ...(tenant.creditBalance === undefined ? {} : { creditBalance: tenant.creditBalance }),
             ...(deps.modelCompletions === undefined
               ? {}
               : { modelCompletions: deps.modelCompletions }),
@@ -609,6 +615,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
+            organizations: orgs.organizations,
+            ...(tenant.planLimits === undefined ? {} : { planLimits: tenant.planLimits }),
           });
           registerBuilderPreviewRoutes(app, {
             sandbox: tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),

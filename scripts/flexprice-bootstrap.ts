@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { PlanLimitsConfigSchema, type PlanLimit } from '@zapp/contracts';
 
 export const USAGE_CATEGORIES = [
   'model_input_tokens',
@@ -14,11 +15,8 @@ export const USAGE_CATEGORIES = [
 
 export type FlexpriceUsageCategory = (typeof USAGE_CATEGORIES)[number];
 
-export interface FlexpricePlanInput {
-  readonly monthlyCredits: string;
-  readonly seats: number;
-  readonly [key: string]: unknown;
-}
+/** Bootstrap tests may reconcile a subset, while the executable CLI parses the full shared policy. */
+export type FlexpricePlanInput = Pick<PlanLimit, 'monthlyCredits' | 'seats'>;
 
 export interface FlexpriceBootstrapInput {
   readonly categories: readonly FlexpriceUsageCategory[];
@@ -267,7 +265,7 @@ export async function runFlexpriceBootstrapCli(
   const apiKey = requiredValue(env.FLEXPRICE_API_KEY, 'FLEXPRICE_API_KEY');
   const baseUrl = requiredValue(env.FLEXPRICE_BASE_URL, 'FLEXPRICE_BASE_URL');
   const plansPath = new URL('../config/plans.json', import.meta.url);
-  const plans = JSON.parse(await readFile(plansPath, 'utf8')) as Record<string, FlexpricePlanInput>;
+  const plans = PlanLimitsConfigSchema.parse(JSON.parse(await readFile(plansPath, 'utf8')) as unknown);
   const portOptions: HttpBootstrapOptions = {
     apiKey,
     baseUrl,

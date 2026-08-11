@@ -8,6 +8,7 @@ import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  requireFlexpriceForEnvironment,
   loadGitHubAppEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
@@ -184,6 +185,16 @@ describe('the shipped .env.example', () => {
     ]) {
       expect(template, name).toHaveProperty(name, '');
     }
+  });
+});
+
+describe('Flexprice production admission', () => {
+  it('permits an absent gate only in test or development and refuses production startup', () => {
+    expect(() => requireFlexpriceForEnvironment({ NODE_ENV: 'production' }, undefined)).toThrow(
+      'FLEXPRICE_API_KEY is required in production',
+    );
+    expect(requireFlexpriceForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
+    expect(requireFlexpriceForEnvironment({ NODE_ENV: 'development' }, undefined)).toBeUndefined();
   });
 });
 

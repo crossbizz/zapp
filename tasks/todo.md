@@ -157,7 +157,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-1B-FIX-1 Application-role correction serialization
 - [x] OPS-2 Metering coverage + three-way reconciliation
 - [x] OPS-2-FIX-1 Durable metering and reconciliation closure
-- [ ] OPS-3 Plan quotas + budget enforcement
+- [x] OPS-3 Plan quotas + budget enforcement
 - [x] MAC-4 Platform auth + Keychain
 - [x] MAC-4-FIX-1 Close auth revocation and startup bounds
 - [x] MAC-5 Unified local+cloud dashboard

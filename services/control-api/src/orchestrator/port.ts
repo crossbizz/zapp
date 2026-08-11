@@ -23,6 +23,8 @@ const StartRunIdentityShape = {
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })
       .strict()
       .nullable(),
+    /** Immutable plan ceiling carried to the durable AR-14 approval loop. */
+    planMaxCredits: z.number().int().positive().max(1_000_000).optional(),
     operationKey: OperationKeySchema,
 } as const;
 export const StartRunInputSchema = z.discriminatedUnion('mode', [
@@ -42,6 +44,12 @@ const SignalIdentityShape = {
   operationKey: OperationKeySchema,
 } as const;
 export const SignalRunInputSchema = z.union([
+  z
+    .object({
+      ...SignalIdentityShape,
+      signal: z.literal('credit_balance_exhausted'),
+    })
+    .strict(),
   z
     .object({
       ...SignalIdentityShape,

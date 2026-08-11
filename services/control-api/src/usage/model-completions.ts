@@ -31,6 +31,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { loadPricingConfig, priceTokenUsage, worstCaseReservation } from './pricing.js';
 import type { CreditMirror } from './reconciliation.js';
+import type { BudgetThresholdAlertPort } from './limits.js';
 
 export const MODEL_COMPLETION_USAGE_CATEGORIES = [
   'model_input_tokens',
@@ -82,6 +83,8 @@ export interface ModelCompletionRepositoryOptions {
   readonly now?: () => Date;
   readonly mirror?: CreditMirror;
   readonly onMirrorError?: (error: Error) => void;
+  /** Non-blocking OPS-3 notifications derived from this existing credit account. */
+  readonly budgetAlerts?: BudgetThresholdAlertPort;
 }
 
 export interface ModelCompletionRepository {
@@ -199,7 +202,10 @@ export function createModelCompletionRepository(
           };
         }),
       );
-      if ('credits' in result) await mirrorSafely(input.runId, result.credits);
+      if ('credits' in result) {
+        await mirrorSafely(input.runId, result.credits);
+        await notifyBudgetSafely(input.organizationId, input.runId, result.credits);
+      }
       return result;
     },
 
@@ -345,6 +351,7 @@ export function createModelCompletionRepository(
         };
       });
       await mirrorSafely(input.runId, result.credits);
+      await notifyBudgetSafely(input.organizationId, input.runId, result.credits);
       return result;
     },
 
@@ -446,6 +453,7 @@ export function createModelCompletionRepository(
         return creditState(updated, input.absoluteCeiling);
       });
       await mirrorSafely(input.runId, result);
+      await notifyBudgetSafely(input.organizationId, input.runId, result);
       return result;
     },
   };
@@ -456,6 +464,18 @@ export function createModelCompletionRepository(
       await options.mirror.write(runId, credits);
     } catch (error) {
       options.onMirrorError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  async function notifyBudgetSafely(
+    organizationId: string,
+    runId: string,
+    credits: CreditState,
+  ): Promise<void> {
+    try {
+      await options.budgetAlerts?.notify({ organizationId, runId, credits });
+    } catch {
+      // A notification failure cannot make completed metered usage indeterminate.
     }
   }
 }

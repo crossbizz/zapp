@@ -10,6 +10,7 @@ import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  requireFlexpriceForEnvironment,
   loadGitHubAppEnv,
   loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv,
@@ -30,6 +31,12 @@ import { createRedisConnection } from './redis/client.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
 import {
+  createCachedCreditBalanceGate,
+  createFlexpriceWalletClient,
+  loadPlanLimitsFile,
+  type UsageOpsAlertPort,
+} from './usage/limits.js';
+import {
   createFlexpriceIngestClient,
   createDatabaseUsageOutboxDeliveryPort,
   createRedisUsageLedgerCounter,
@@ -48,6 +55,8 @@ import {
   createCoordinatedUsageReconciliationJob,
   createFlexpriceUsageAggregateClient,
   createRedisCreditMirror,
+  createCreditBalanceExhaustionProducer,
+  createDatabaseActiveRunOrganizationSource,
   createRedisUsageRunCounter,
   createThreeWayUsageReconciler,
   createUsageReconciliationLifecycle,
@@ -69,6 +78,7 @@ import {
 import { createDbGitHubImportWorkerStore } from './integrations/github/import-store.js';
 import { createTenantDbFactory } from './tenant/db.js';
 import { createTemporalCapabilityScanPort } from './orchestrator/capability-scan.js';
+import { createTemporalRunOrchestrator } from './orchestrator/temporal.js';
 import { createSandboxStorageMeasurementClient } from './sandbox/client.js';
 import { createUsageLedgerRepository } from './usage/ledger.js';
 import {
@@ -111,8 +121,9 @@ const modelGatewayUrl = loadModelGatewayUrl();
 // belongs next to the binding, where a test can assert it.
 const gitServiceUrl = loadGitServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
+const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
-const flexpriceConfig = loadFlexpriceEnv();
+const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
 const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
 const github = loadGitHubAppEnv();
@@ -134,6 +145,24 @@ const temporal = new Client({
   connection: temporalConnection,
   namespace: temporalEnv.namespace,
 });
+const usageOpsAlerts: UsageOpsAlertPort = {
+  emit(alert) {
+    process.emitWarning(`usage ops alert: ${alert.type} for organization ${alert.organizationId}`);
+    return Promise.resolve();
+  },
+};
+const tenantDb = createTenantDbFactory(database.db);
+const creditBalance =
+  flexpriceConfig === undefined
+    ? undefined
+    : createCachedCreditBalanceGate({
+        wallets: createFlexpriceWalletClient(flexpriceConfig),
+        redis,
+        activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+        graceFloorCredits: pricing.walletBalanceGraceFloor ?? '0.0000',
+        alerts: usageOpsAlerts,
+      });
+const runOrchestrator = createTemporalRunOrchestrator({ client: temporal });
 
 const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
@@ -150,6 +179,11 @@ const app = composeApp({
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
   rateLimits,
   pricing,
+  planLimits,
+  orchestrator: runOrchestrator,
+  ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
+  ...(creditBalance === undefined ? {} : { creditBalance }),
+  usageOpsAlerts,
   temporal,
   artifactStorage,
   github,
@@ -265,6 +299,32 @@ const accountingReconcilerLifecycle = createAccountingReconcilerLifecycle({
     app.log.error({ err: error }, 'run credit reconciliation failed');
   },
 });
+const creditExhaustionProducer =
+  creditBalance === undefined
+    ? undefined
+    : createCreditBalanceExhaustionProducer({
+        organizations: createDatabaseActiveRunOrganizationSource(database.db),
+        activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+        creditBalance,
+        orchestrator: runOrchestrator,
+      });
+let creditExhaustionInterval: ReturnType<typeof setInterval> | undefined;
+const creditExhaustionLifecycle = {
+  async start() {
+    if (creditExhaustionProducer === undefined) return;
+    await creditExhaustionProducer.runOnce();
+    creditExhaustionInterval = setInterval(() => {
+      void creditExhaustionProducer.runOnce().catch((error: unknown) => {
+        app.log.error({ err: error }, 'credit exhaustion signal poll failed');
+      });
+    }, 30_000);
+  },
+  close() {
+    if (creditExhaustionInterval !== undefined) clearInterval(creditExhaustionInterval);
+    creditExhaustionInterval = undefined;
+    return Promise.resolve();
+  },
+};
 const usageReconciliationLifecycle =
   flexpriceConfig === undefined
     ? undefined
@@ -307,6 +367,7 @@ const usageReconciliationLifecycle =
 const usageOutboxLifecycle = {
   async start() {
     await accountingReconcilerLifecycle.start();
+    await creditExhaustionLifecycle.start();
     await dailyStorageLifecycle.start();
     await usagePublisherLifecycle.start();
     await usageConsumerLifecycle?.start();
@@ -318,6 +379,7 @@ const usageOutboxLifecycle = {
     await usageConsumerLifecycle?.close();
     await usagePublisherLifecycle.close();
     await accountingReconcilerLifecycle.close();
+    await creditExhaustionLifecycle.close();
     usageQueue.close?.();
   },
 };

@@ -1,5 +1,12 @@
 export { idSchema, newId, type IdPrefix } from './ids.js';
 export {
+  IntegralCreditDecimalSchema,
+  PlanLimitSchema,
+  PlanLimitsConfigSchema,
+  type PlanLimit,
+  type PlanLimitsConfig,
+} from './plan-limits.js';
+export {
   AppPathSchema,
   CommitShaSchema,
   EnvVarsSchema,

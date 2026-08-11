@@ -20,6 +20,7 @@ import {
   createTemporalCapabilityScanPort,
   type CapabilityScanWorkflowClient,
 } from './orchestrator/capability-scan.js';
+import type { OrchestratorPort } from './orchestrator/port.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
@@ -30,11 +31,19 @@ import {
   createSandboxPreviewProxy,
 } from './routes/preview.js';
 import { createDbPreviewShareStore } from './preview/store.js';
-import type { PreviewEnv } from './env.js';
+import type { FlexpriceEnv, PreviewEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
 import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
+import {
+  createBudgetThresholdAlerts,
+  createCachedCreditBalanceGate,
+  createFlexpriceWalletClient,
+  type PlanLimitsConfig,
+  type CreditBalanceGate,
+  type UsageOpsAlertPort,
+} from './usage/limits.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createUsageLedgerRepository } from './usage/ledger.js';
 import { createDeploymentUsageCollector } from './usage/collectors/git.js';
@@ -115,8 +124,17 @@ export interface ServiceRuntime {
   readonly rateLimits: RateLimitSettings;
   readonly preview?: PreviewEnv;
   readonly pricing: PricingConfig;
+  /** OPS-3's configuration-owned plan policy. */
+  readonly planLimits?: PlanLimitsConfig;
+  /** Omitted only when Flexprice credentials are intentionally absent in local development. */
+  readonly flexprice?: FlexpriceEnv;
+  /** Optional server-owned gate so background reconciliation shares its exact wallet boundary. */
+  readonly creditBalance?: CreditBalanceGate;
+  /** OPS-7 owns delivery; this is the explicit handoff for provider-outage alerts. */
+  readonly usageOpsAlerts?: UsageOpsAlertPort;
   /** Temporal client used for the tenant-bound VF-3 verification workflow. */
   readonly temporal: CapabilityScanWorkflowClient;
+  readonly orchestrator?: OrchestratorPort;
   readonly artifactStorage: ArtifactStorageEnv;
   readonly github?: GitHubAppEnv;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
@@ -146,6 +164,33 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
   const denylist = createRedisTokenDenylist(redis);
   const usageLedger = createUsageLedgerRepository({ database });
   const tenantDb = createTenantDbFactory(database);
+  const organizations = createDbOrganizationStore(database);
+  const usageOpsAlerts: UsageOpsAlertPort =
+    runtime.usageOpsAlerts ??
+    {
+      emit: (alert) => {
+        process.emitWarning(
+          `usage ops alert: ${alert.type} for organization ${alert.organizationId}`,
+        );
+        return Promise.resolve();
+      },
+    };
+  const budgetAlerts = createBudgetThresholdAlerts({ redis, alerts: usageOpsAlerts });
+  const creditBalance =
+    runtime.creditBalance ??
+    (runtime.flexprice === undefined
+      ? undefined
+      : createCachedCreditBalanceGate({
+          wallets: createFlexpriceWalletClient(runtime.flexprice),
+          redis,
+          activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+          graceFloorCredits:
+            runtime.pricing.walletBalanceGraceFloor ??
+            (() => {
+              throw new Error('pricing walletBalanceGraceFloor is required with Flexprice enabled');
+            })(),
+          alerts: usageOpsAlerts,
+        }));
   const githubStateStore =
     runtime.github === undefined ? undefined : createRedisGitHubAuthorizationStateStore(redis);
   const githubProvider =
@@ -208,7 +253,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       deviceStore: createRedisDeviceStore(redis),
     },
     orgs: {
-      organizations: createDbOrganizationStore(database),
+      organizations,
       invites: createRedisInviteStore(redis),
       // The real `audit_events` writer: every mutating route's row lands in the
       // same transaction as the mutation (CP-5).
@@ -222,6 +267,8 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       integrationPort,
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,
+      ...(runtime.planLimits === undefined ? {} : { planLimits: runtime.planLimits }),
+      ...(creditBalance === undefined ? {} : { creditBalance }),
       deploymentUsage: createDeploymentUsageCollector({
         ledger: usageLedger,
         pricing: runtime.pricing,
@@ -245,6 +292,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
+      ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
       ...(previewRuntime === undefined
         ? {}
@@ -286,6 +334,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     modelCompletions: createModelCompletionRepository({
       database,
       mirror: createRedisCreditMirror(redis),
+      budgetAlerts,
     }),
     usageLedger,
     localAgent: {

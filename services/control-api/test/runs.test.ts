@@ -5,6 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { newId } from '@zapp/contracts';
 import type { AgentRun, Approval, Branch, Project, Workspace } from '@zapp/db';
 import type { ModelCompletionRepository } from '../src/usage/model-completions.js';
+import {
+  CreditBalanceExhaustedError,
+  loadPlanLimitsConfig,
+  type CreditBalanceGate,
+  type PlanLimitsConfig,
+} from '../src/usage/limits.js';
 import type { AuthIdentity } from '../src/auth/port.js';
 import { OrchestratorError } from '../src/orchestrator/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
@@ -34,6 +40,12 @@ const OWNER: AuthIdentity = {
 };
 
 const harnesses: Harness[] = [];
+
+const TEST_PLAN_LIMITS = loadPlanLimitsConfig({
+  trial: { concurrentAutonomousRuns: 1, concurrentSandboxes: 1, maxResourceProfile: 'small', maxRunBudgetCredits: '10.0000', maxPreviewLifetimeHours: 1, artifactRetentionDays: 7, monthlyCredits: '10.0000', seats: 1 },
+  builder: { concurrentAutonomousRuns: 3, concurrentSandboxes: 3, maxResourceProfile: 'standard', maxRunBudgetCredits: '100.0000', maxPreviewLifetimeHours: 24, artifactRetentionDays: 30, monthlyCredits: '100.0000', seats: 3 },
+  studio: { concurrentAutonomousRuns: 10, concurrentSandboxes: 10, maxResourceProfile: 'large', maxRunBudgetCredits: '1000.0000', maxPreviewLifetimeHours: 168, artifactRetentionDays: 90, monthlyCredits: '1000.0000', seats: 10 },
+});
 
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map((built) => built.app.close()));
@@ -234,6 +246,8 @@ async function wire(
     sandbox?: FakeSandboxServicePort;
     organizations?: InMemoryOrganizationStore;
     pricing?: typeof TEST_PRICING | null;
+    planLimits?: PlanLimitsConfig;
+    creditBalance?: CreditBalanceGate;
     modelCompletions?: FakeModelCompletionRepository;
   } = {},
 ): Promise<Wired> {
@@ -248,6 +262,8 @@ async function wire(
     orchestrator,
     modelCompletions,
     ...(options.pricing === undefined ? {} : { pricing: options.pricing }),
+    ...(options.planLimits === undefined ? {} : { planLimits: options.planLimits }),
+    ...(options.creditBalance === undefined ? {} : { creditBalance: options.creditBalance }),
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
   });
   harnesses.push(built);
@@ -272,6 +288,88 @@ async function wire(
     as: (session) => ({ ...session.headers, [ORGANIZATION_HEADER]: organizationId }),
   };
 }
+
+it('rejects a new autonomous run when the plan concurrency limit is full', async () => {
+  const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+  const project = await createProject(wired);
+  const first = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-autonomous-first' },
+    payload: { mode: 'autonomous', prompt: 'Start the first autonomous run' },
+  });
+  expect(first.statusCode, first.body).toBe(201);
+
+  const second = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-autonomous-second' },
+    payload: { mode: 'autonomous', prompt: 'Reject this concurrent autonomous run' },
+  });
+
+  expect(second.statusCode, second.body).toBe(429);
+  expect(second.json<{ error: { code: string } }>().error.code).toBe('plan_limit_concurrent_runs');
+  expect(wired.orchestrator.starts).toHaveLength(1);
+});
+
+it('atomically admits one distinct autonomous intent at the trial limit while replay succeeds', async () => {
+  const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+  const project = await createProject(wired);
+  const request = (key: string) =>
+    wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': key },
+      payload: { mode: 'autonomous', prompt: 'Atomically admit this autonomous run' },
+    });
+
+  const [first, second] = await Promise.all([request('autonomous-race-a'), request('autonomous-race-b')]);
+  expect([first.statusCode, second.statusCode].sort()).toEqual([201, 429]);
+  const admitted = first.statusCode === 201 ? first : second;
+  const replay = await request(first.statusCode === 201 ? 'autonomous-race-a' : 'autonomous-race-b');
+  expect(replay.statusCode, replay.body).toBe(201);
+  expect(replay.json<{ run: { id: string } }>().run.id).toBe(admitted.json<{ run: { id: string } }>().run.id);
+  expect(wired.orchestrator.starts).toHaveLength(1);
+});
+
+it('blocks a new run when its available organization credits are exhausted', async () => {
+  const wired = await wire({
+    creditBalance: {
+      availableCredits: () => Promise.reject(new Error('not reached during run admission')),
+      requireRunAdmission: () => Promise.reject(new CreditBalanceExhaustedError()),
+    },
+  });
+  const project = await createProject(wired);
+
+  const response = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'exhausted-wallet-run' },
+    payload: { mode: 'build', prompt: 'Do not start without credits' },
+  });
+
+  expect(response.statusCode, response.body).toBe(402);
+  expect(response.json<{ error: { code: string } }>().error.code).toBe('credit_balance_exhausted');
+  expect(wired.data.runs).toEqual([]);
+  expect(wired.orchestrator.starts).toEqual([]);
+});
+
+it('clamps a workspace resource profile to the organization plan before sandbox dispatch', async () => {
+  const sandbox = new FakeSandboxServicePort();
+  const wired = await wire({ planLimits: TEST_PLAN_LIMITS, sandbox });
+  const project = await createProject(wired);
+
+  const response = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/workspaces`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-workspace-profile' },
+    payload: { resourceProfile: 'large' },
+  });
+
+  expect(response.statusCode, response.body).toBe(201);
+  expect(response.json<{ workspace: { resourceProfile: string } }>().workspace.resourceProfile).toBe('small');
+  expect(sandbox.createInputs[0]).toMatchObject({ workspace: { resourceProfile: 'small' } });
+});
 
 async function createProject(wired: Wired): Promise<{ id: string }> {
   const response = await wired.built.app.inject({
@@ -1588,6 +1686,33 @@ describe('workspace passthrough routes', () => {
       });
     },
   );
+
+  it('does not approve a budget increase above the immutable trial plan maximum', async () => {
+    const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-plan-cap-run' },
+      payload: { mode: 'build', prompt: 'Reach plan maximum' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const approvalId = newId('appr');
+    wired.data.approvals.push({
+      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
+      type: 'budget_increase', status: 'pending',
+      requestJson: { currentCeiling: '10.0000', absoluteCeiling: '20.0000', workspaceId: 'workspace-cap' },
+      responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+    });
+    const response = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-plan-cap-approval' },
+      payload: { decision: 'approved' },
+    });
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe('plan_budget_exceeded');
+    expect(wired.data.approvals.find((approval) => approval.id === approvalId)?.status).toBe('pending');
+    expect(wired.modelCompletions.increases).toEqual([]);
+  });
 
   it('does not resolve or audit a non-budget approval through the budget endpoint', async () => {
     const wired = await wire();

@@ -294,6 +294,17 @@ export function loadFlexpriceEnv(source: unknown = process.env): FlexpriceEnv | 
   };
 }
 
+/** Production must never silently start without the wallet admission gate. */
+export function requireFlexpriceForEnvironment(
+  environment: Pick<ServiceEnv, 'NODE_ENV'>,
+  flexprice: FlexpriceEnv | undefined,
+): FlexpriceEnv | undefined {
+  if (environment.NODE_ENV === 'production' && flexprice === undefined) {
+    throw new Error('FLEXPRICE_API_KEY is required in production');
+  }
+  return flexprice;
+}
+
 /**
  * Cross-instance key for the HMAC stored with durable run intent. There is no
  * default: retries must derive the same digest on every replica, while a

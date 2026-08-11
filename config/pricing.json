@@ -1,6 +1,7 @@
 {
   "version": "m1-2026-08-09",
   "defaultRunCreditCeiling": "1000.0000",
+  "walletBalanceGraceFloor": "10.0000",
   "creditsPerUsd": "100.0000",
   "usageRates": {
     "sandbox_cpu_seconds": { "unit": "cpu_seconds", "usdPerUnit": "0.000010" },

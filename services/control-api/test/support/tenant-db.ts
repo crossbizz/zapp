@@ -59,6 +59,7 @@ import {
   type UpdateProjectInput,
   type UpdatedProject,
 } from '../../src/tenant/db.js';
+import { PlanLimitConcurrentRunsError } from '../../src/usage/limits.js';
 import {
   ProjectDashboardPreviewEventSchema,
   ProjectDashboardSummarySourceSchema,
@@ -1048,11 +1049,30 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       byProject(projectId): Promise<AgentRun[]> {
         return Promise.resolve(mine(orgId, data.runs).filter((row) => row.projectId === projectId));
       },
+      countActiveAutonomousRuns(): Promise<number> {
+        return Promise.resolve(
+          mine(orgId, data.runs).filter(
+            (row) =>
+              row.mode === 'autonomous' &&
+              ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+          ).length,
+        );
+      },
+      listActiveRunIds(): Promise<readonly string[]> {
+        return Promise.resolve(
+          mine(orgId, data.runs)
+            .filter((row) => ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status))
+            .map((row) => row.id),
+        );
+      },
       getById(runId): Promise<AgentRun | undefined> {
         return Promise.resolve(mine(orgId, data.runs).find((row) => row.id === runId));
       },
       async create(input) {
-        return await withRunCreateLock(data, `${orgId}:${input.id}`, async () => {
+        return await withRunCreateLock(
+          data,
+          `${orgId}:${input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined ? 'autonomous-admission' : input.id}`,
+          async () => {
           const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
           if (existing !== undefined) {
             return {
@@ -1063,6 +1083,16 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
               run: existing,
             } as const;
           }
+          if (
+            input.mode === 'autonomous' &&
+            input.concurrentAutonomousLimit !== undefined &&
+            mine(orgId, data.runs).filter(
+              (row) =>
+                row.mode === 'autonomous' &&
+                ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+            ).length >= input.concurrentAutonomousLimit
+          )
+            throw new PlanLimitConcurrentRunsError();
           const run: AgentRun = {
             id: input.id,
             organizationId: orgId,
@@ -1085,7 +1115,8 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           data.runs.push(run);
           data.runAccounting.set(run.id, input.accounting);
           return { outcome: 'created', run } as const;
-        });
+          },
+        );
       },
       async claimOperation(input) {
         const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
@@ -1138,6 +1169,11 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     },
 
     approvals: {
+      get(runId, approvalId) {
+        return Promise.resolve(
+          mine(orgId, data.approvals).find((approval) => approval.runId === runId && approval.id === approvalId),
+        );
+      },
       async resolve(input) {
         const existing = mine(orgId, data.approvals).find(
           (row) =>

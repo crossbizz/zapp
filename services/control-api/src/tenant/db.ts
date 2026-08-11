@@ -66,7 +66,7 @@ import {
   CapabilityScanArtifactMetadataSchema,
   type CapabilityScanResult,
 } from '@zapp/project-adapters';
-import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
@@ -80,6 +80,7 @@ import type { AuditHook } from '../plugins/audit.js';
 import { IdempotencyKeySchema } from '../plugins/idempotency.js';
 import type { SecretEnvelope } from '../secrets/crypto.js';
 import type { PricingConfig } from '../usage/pricing.js';
+import { PlanLimitConcurrentRunsError } from '../usage/limits.js';
 import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
@@ -391,6 +392,8 @@ export interface NewRunInput {
   readonly projectId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
+  /** Local plan admission is serialized with this tenant's run creation. */
+  readonly concurrentAutonomousLimit?: number;
   readonly appType: AppType;
   readonly model: ModelIdentifier | null;
   readonly budget: unknown;
@@ -438,6 +441,10 @@ export interface CompleteRunOperationInput {
 
 export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
   byProject(projectId: string): Promise<AgentRun[]>;
+  /** Plan-limit admission reads only active autonomous runs for this tenant. */
+  countActiveAutonomousRuns(): Promise<number>;
+  /** Redis credit mirrors are summed only for active runs in this tenant. */
+  listActiveRunIds(): Promise<readonly string[]>;
   create(input: NewRunInput): Promise<RunCreateResult>;
   claimOperation(input: ClaimRunOperationInput): Promise<OperationClaim<AgentRun> | undefined>;
   completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined>;
@@ -651,6 +658,7 @@ export type ResolveRunApprovalResult =
   | { readonly outcome: 'conflict'; readonly approval: Approval };
 
 export interface TenantApprovalRepository {
+  get(runId: string, approvalId: string): Promise<Approval | undefined>;
   resolve(input: ResolveRunApprovalInput): Promise<ResolveRunApprovalResult | undefined>;
 }
 
@@ -1821,8 +1829,55 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       runs: {
         ...base.runs,
 
+        async countActiveAutonomousRuns(): Promise<number> {
+          const [result] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(agentRuns)
+            .where(
+              and(
+                eq(agentRuns.organizationId, orgId),
+                eq(agentRuns.mode, 'autonomous'),
+                inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+              ),
+            );
+          return result?.count ?? 0;
+        },
+
+        async listActiveRunIds(): Promise<readonly string[]> {
+          const rows = await db
+            .select({ id: agentRuns.id })
+            .from(agentRuns)
+            .where(
+              and(
+                eq(agentRuns.organizationId, orgId),
+                inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+              ),
+            );
+          return rows.map((row) => row.id);
+        },
+
         async create(input: NewRunInput): Promise<RunCreateResult> {
           return await db.transaction(async (tx) => {
+            if (input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
+              const [replay] = await tx
+                .select()
+                .from(agentRuns)
+                .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
+                .limit(1);
+              if (replay !== undefined) {
+                return {
+                  outcome: replay.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
+                  run: replay,
+                };
+              }
+              const [active] = await tx
+                .select({ count: sql<number>`count(*)::int` })
+                .from(agentRuns)
+                .where(and(eq(agentRuns.organizationId, orgId), eq(agentRuns.mode, 'autonomous'), inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval'])));
+              if ((active?.count ?? 0) >= input.concurrentAutonomousLimit)
+                throw new PlanLimitConcurrentRunsError();
+            }
             const [inserted] = await tx
               .insert(agentRuns)
               .values({
@@ -1973,6 +2028,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       },
 
       approvals: {
+        async get(runId, approvalId) {
+          const [approval] = await db
+            .select()
+            .from(approvals)
+            .where(
+              scoped(
+                approvals.organizationId,
+                eq(approvals.runId, runId),
+                eq(approvals.id, approvalId),
+              ),
+            )
+            .limit(1);
+          return approval;
+        },
         async resolve(input) {
           return await db.transaction(async (tx) => {
             const [locked] = await tx

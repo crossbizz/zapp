@@ -37,6 +37,7 @@ import {
   budgetApprovalResolvedSignal,
   buildWorkflow,
   cancelRunSignal,
+  creditBalanceExhaustedSignal,
   messageRunSignal,
   pauseRunSignal,
   redirectRunSignal,
@@ -302,6 +303,11 @@ function createTemporalOrchestratorForQueue(
           ...(input.absoluteCeiling === undefined
             ? {}
             : { absoluteCeiling: input.absoluteCeiling }),
+        });
+      } else if (input.signal === 'credit_balance_exhausted') {
+        await handle.signal(creditBalanceExhaustedSignal, {
+          runId: input.runId,
+          operationKey: input.operationKey,
         });
       } else if (input.signal === 'pause') {
         await handle.signal(pauseRunSignal, {

@@ -27,6 +27,7 @@ export const PricingConfigSchema = z
   .object({
     version: z.string().trim().min(1),
     defaultRunCreditCeiling: DecimalSchema,
+    walletBalanceGraceFloor: DecimalSchema.optional(),
     creditsPerUsd: DecimalSchema,
     models: z.record(z.string().regex(/^[a-z0-9-]+\/[a-z0-9][a-z0-9.-]*$/u), ModelRateSchema),
     usageRates: z

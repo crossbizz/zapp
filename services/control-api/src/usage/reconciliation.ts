@@ -17,6 +17,8 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, or, sql } fr
 import { z } from 'zod';
 
 import type { RedisCommands } from '../redis/client.js';
+import type { OrchestratorPort } from '../orchestrator/port.js';
+import { CreditBalanceExhaustedError, type CreditBalanceGate } from './limits.js';
 import {
   FlexpriceUsageEventSchema,
   type FlexpriceIngestPort,
@@ -34,6 +36,55 @@ export function createRedisCreditMirror(redis: RedisCommands, ttlMs = 120_000): 
         JSON.stringify(CreditStateSchema.parse(credits)),
         ttlMs,
       );
+    },
+  };
+}
+
+/** Durable producer for the next-task credit gate; delivery failures are retried next poll. */
+export function createCreditBalanceExhaustionProducer(options: {
+  readonly organizations: { listActiveOrganizationIds(): Promise<readonly string[]> };
+  readonly activeRuns: { list(organizationId: string): Promise<readonly string[]> };
+  readonly creditBalance: CreditBalanceGate;
+  readonly orchestrator: OrchestratorPort;
+}) {
+  return {
+    async runOnce(): Promise<void> {
+      for (const organizationId of await options.organizations.listActiveOrganizationIds()) {
+        try {
+          await options.creditBalance.requireRunAdmission(organizationId);
+          continue;
+        } catch (error) {
+          if (!(error instanceof CreditBalanceExhaustedError)) continue;
+        }
+        const operationKey = `op_${createHash('sha256')
+          .update(`${organizationId}:credit-balance-exhausted`)
+          .digest('hex')}`;
+        await Promise.allSettled(
+          (await options.activeRuns.list(organizationId)).map(async (runId) =>
+            await options.orchestrator.signalRun({
+              runId,
+              workflowId: runId,
+              signal: 'credit_balance_exhausted',
+              operationKey,
+            }),
+          ),
+        );
+      }
+    },
+  };
+}
+
+export function createDatabaseActiveRunOrganizationSource(database: Database): {
+  listActiveOrganizationIds(): Promise<readonly string[]>;
+} {
+  return {
+    async listActiveOrganizationIds() {
+      const rows = await database
+        .select({ organizationId: agentRuns.organizationId })
+        .from(agentRuns)
+        .where(inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']))
+        .groupBy(agentRuns.organizationId);
+      return rows.map((row) => row.organizationId);
     },
   };
 }

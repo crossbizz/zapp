@@ -8,6 +8,7 @@ import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
+import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import {
@@ -25,6 +26,7 @@ import {
 } from '../sandbox/port.js';
 import { WorkspaceSchema, toWorkspace } from '../tenant/view.js';
 import { operationOf, stableId } from './runs.js';
+import { clampResourceProfile, planLimitsFor, type PlanLimitsConfig } from '../usage/limits.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') });
 const WorkspaceParams = z.object({ workspaceId: idSchema('ws') });
@@ -59,6 +61,8 @@ export function toSandboxWorkspace(workspace: Workspace): SandboxWorkspace {
 export interface WorkspaceRoutesDeps {
   readonly now: () => Date;
   readonly sandbox: SandboxServicePort;
+  readonly organizations: OrganizationStore;
+  readonly planLimits?: PlanLimitsConfig;
 }
 
 export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesDeps): void {
@@ -83,11 +87,20 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
       if (request.body.branchId !== undefined && branch === undefined) throw branchNotFound();
       authorize(ctx, 'edit_code');
       const operationKey = operationOf(request);
+      const organization =
+        deps.planLimits === undefined ? undefined : await deps.organizations.findById(ctx.organizationId);
+      const resourceProfile =
+        deps.planLimits === undefined || organization === undefined
+          ? request.body.resourceProfile
+          : clampResourceProfile(
+              planLimitsFor(deps.planLimits, organization.plan),
+              request.body.resourceProfile,
+            );
       const workspace = await ctx.db.workspaces.create({
         id: stableId('ws', operationKey),
         projectId: project.id,
         branchId: request.body.branchId ?? null,
-        resourceProfile: request.body.resourceProfile,
+        resourceProfile,
         now: deps.now(),
         audit: async (tx, row) => {
           await request.audit(tx, {

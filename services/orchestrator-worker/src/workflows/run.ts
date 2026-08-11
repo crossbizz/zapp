@@ -76,6 +76,7 @@ export const RunWorkflowInputSchema = z
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })
       .strict()
       .nullable(),
+    planMaxCredits: z.number().int().positive().max(1_000_000).optional(),
     operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
   })
   .strict();
@@ -298,6 +299,8 @@ const RunControlContinuationSchema = z
     seenOperationKeys: z.array(OperationKeySchema).max(1_000),
     pauseRequested: z.boolean(),
     pauseOperationKey: OperationKeySchema.nullable(),
+    creditBalanceExhausted: z.boolean(),
+    creditBalanceOperationKey: OperationKeySchema.nullable(),
     resumeRequested: z.boolean(),
     resumeOperationKey: OperationKeySchema.nullable(),
     cancelRequested: z.boolean(),
@@ -426,6 +429,12 @@ const BudgetApprovalResolutionSchema = z.discriminatedUnion('decision', [
 ]);
 export const budgetApprovalResolvedSignal = defineSignal<[unknown]>('budgetApprovalResolved');
 export const pauseRunSignal = defineSignal<[unknown]>('pause');
+/**
+ * The credit reconciler signals a durable boundary only; it deliberately never
+ * cancels an in-flight builder task. The workflow enters the existing AR-14
+ * budget-increase approval loop after that task returns.
+ */
+export const creditBalanceExhaustedSignal = defineSignal<[unknown]>('creditBalanceExhausted');
 export const resumeRunSignal = defineSignal<[unknown]>('resume');
 export const cancelRunSignal = defineSignal<[unknown]>('cancel');
 export const redirectRunSignal = defineSignal<[unknown]>('redirect');
@@ -523,9 +532,9 @@ function operationKey(input: RunWorkflowInput, step: string): string {
   return `${input.runId}:task-m1:${step}`;
 }
 
-function nextRunCreditCeiling(currentMaxCredits: number): string {
+function nextRunCreditCeiling(currentMaxCredits: number, planMaxCredits?: number): string {
   if (currentMaxCredits >= 1_000_000) throw new Error('run credit ceiling cannot be increased');
-  return `${String(Math.min(1_000_000, currentMaxCredits * 2))}.0000`;
+  return `${String(Math.min(1_000_000, planMaxCredits ?? 1_000_000, currentMaxCredits * 2))}.0000`;
 }
 
 function controlCheckpointApprovalId(input: RunWorkflowInput): string {
@@ -646,6 +655,8 @@ async function executeRunWorkflow(
   const seenOperationKeys = new Set(input.control?.seenOperationKeys ?? []);
   let pauseRequested = input.control?.pauseRequested ?? false;
   let pauseOperationKey = input.control?.pauseOperationKey ?? null;
+  let creditBalanceExhausted = input.control?.creditBalanceExhausted ?? false;
+  let creditBalanceOperationKey = input.control?.creditBalanceOperationKey ?? null;
   let resumeRequested = input.control?.resumeRequested ?? false;
   let resumeOperationKey = input.control?.resumeOperationKey ?? null;
   let cancelRequested = input.control?.cancelRequested ?? false;
@@ -686,6 +697,8 @@ async function executeRunWorkflow(
       seenOperationKeys: [...seenOperationKeys],
       pauseRequested,
       pauseOperationKey,
+      creditBalanceExhausted,
+      creditBalanceOperationKey,
       resumeRequested,
       resumeOperationKey,
       cancelRequested,
@@ -716,6 +729,12 @@ async function executeRunWorkflow(
     pauseRequested = true;
     pauseOperationKey = signal.operationKey;
     currentStatus = 'pause_requested';
+  });
+  setHandler(creditBalanceExhaustedSignal, (value) => {
+    const signal = acceptControlSignal(value);
+    if (!rememberOperation(signal.operationKey) || cancelRequested || creditBalanceExhausted) return;
+    creditBalanceExhausted = true;
+    creditBalanceOperationKey = signal.operationKey;
   });
   setHandler(resumeRunSignal, (value) => {
     const signal = acceptControlSignal(value);
@@ -1720,6 +1739,16 @@ async function executeRunWorkflow(
         await emitAssistantMessage(input, assistantTurn, sessionResult.summary, model);
         lastEmittedAssistantTurn = assistantTurn;
       }
+      if (
+        creditBalanceExhausted &&
+        (sessionResult.status === 'completed' || sessionResult.status === 'yielded')
+      ) {
+        // Consume this durable boundary exactly once. The existing AR-14
+        // branch below owns the approval, checkpoint, and cancellation logic.
+        creditBalanceExhausted = false;
+        creditBalanceOperationKey = null;
+        sessionResult = { ...sessionResult, status: 'budget_exhausted' };
+      }
       switch (sessionResult.status) {
         case 'completed':
           break;
@@ -1735,7 +1764,7 @@ async function executeRunWorkflow(
             projectId: input.projectId,
             workspaceId: input.continuation.workspaceId,
             currentCeiling,
-            absoluteCeiling: nextRunCreditCeiling(input.budget.maxCredits),
+            absoluteCeiling: nextRunCreditCeiling(input.budget.maxCredits, input.planMaxCredits),
             idempotencyKey: operationKey(
               input,
               `budget-increase-${String(budgetAttempt)}`,

@@ -27,6 +27,8 @@ import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { BuilderPreviewScreenshotStore } from '../../src/routes/builder-preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
+import type { PlanLimitsConfig } from '../../src/usage/limits.js';
+import type { CreditBalanceGate } from '../../src/usage/limits.js';
 import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
 import type { UsageLedgerRepository } from '../../src/usage/ledger.js';
 import type { DeploymentUsagePort } from '../../src/usage/collectors/git.js';
@@ -264,6 +266,8 @@ export interface HarnessOptions {
   readonly serviceTokenVerifier?: ServiceTokenVerifier;
   /** `null` exercises a tenant surface that fails closed with no pricing config. */
   readonly pricing?: PricingConfig | null;
+  readonly planLimits?: PlanLimitsConfig;
+  readonly creditBalance?: CreditBalanceGate;
   readonly modelCompletions?: ModelCompletionRepository;
   readonly usageLedger?: UsageLedgerRepository;
   readonly localAgent?: LocalAgentDeps;
@@ -310,6 +314,8 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             tenantDb: options.tenantDb,
             runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
             ...(options.pricing === null ? {} : { pricing: options.pricing ?? TEST_PRICING }),
+            ...(options.planLimits === undefined ? {} : { planLimits: options.planLimits }),
+            ...(options.creditBalance === undefined ? {} : { creditBalance: options.creditBalance }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.attachmentStorage === undefined
