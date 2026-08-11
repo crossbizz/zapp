@@ -37,6 +37,10 @@ import {
   TransitionPhaseTasksInputSchema,
   type AutonomousActivities,
 } from './autonomous.js';
+import {
+  processRedirectPlanChange,
+  type RedirectPlanChangeHooks,
+} from './redirect.js';
 import { runTaskBatchWorkflow, TaskWorkflowResultSchema } from './task.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
@@ -227,6 +231,17 @@ const BuildExecuteContinuationSchema = z
     workspaceId: z.string().min(1).max(512),
     planArtifactId: workflowIdSchema('art'),
     plan: BuildModePlanSchema,
+    taskCommits: z
+      .array(
+        z
+          .object({
+            taskId: workflowIdSchema('task'),
+            commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+          })
+          .strict(),
+      )
+      .max(5)
+      .default([]),
   })
   .strict();
 const BuildVerifyContinuationSchema = z
@@ -1220,51 +1235,205 @@ async function executeRunWorkflow(
   }
 
   if (input.continuation.phase === 'build_execute') {
-    const { workspaceId, planArtifactId, plan } = input.continuation;
+    const { workspaceId } = input.continuation;
+    let { planArtifactId, plan } = input.continuation;
+    let taskCommits = [...input.continuation.taskCommits];
     currentPhase = 'session';
-    const preExecuteControlResult = await honorControlBoundary(workspaceId, 'session');
-    if (preExecuteControlResult !== undefined) return preExecuteControlResult;
-    const phase = plan.phases[0];
+    let phase = plan.phases[0];
     if (phase === undefined) throw new Error('build_plan_phase_missing');
     try {
+      while (pendingRedirects.length > 0) {
+        const pending = pendingRedirects[0];
+        if (pending === undefined) break;
+        const redirectPhaseId = phase.id;
+        const completedTaskIds = new Set(taskCommits.map(({ taskId }) => taskId));
+        const hooks: RedirectPlanChangeHooks = {
+          async emit(type, suffix, payload, taskId) {
+            await events.emitEvents({
+              events: [
+                event(
+                  input,
+                  type,
+                  `build-redirect:${suffix}`,
+                  payload,
+                  taskId === undefined
+                    ? { phaseId: redirectPhaseId }
+                    : { phaseId: redirectPhaseId, taskId },
+                ),
+              ],
+            });
+          },
+          async transitionRunStatus(status, suffix) {
+            currentStatus = status;
+            await events.transitionRunStatus({
+              runId: input.runId,
+              status,
+              idempotencyKey: operationKey(input, `build-redirect:${suffix}`),
+            });
+          },
+          approvalFor(artifactId) {
+            return buildPlanResolutions.get(artifactId);
+          },
+          cancellationRequested() {
+            return cancelRequested;
+          },
+        };
+        const redirected = await processRedirectPlanChange(
+          {
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            currentPlanArtifactId: planArtifactId,
+            currentPlan: plan,
+            redirect: {
+              instruction: pending.instruction,
+              operationKey: pending.operationKey,
+            },
+            directAffectedTaskIds: plan.tasks
+              .filter(({ id }) => !completedTaskIds.has(id))
+              .map(({ id }) => id),
+            completedTaskIds: [...completedTaskIds],
+          },
+          hooks,
+        );
+        if (redirected.status === 'cancelled') {
+          return await completeCancellation(workspaceId);
+        }
+        pendingRedirects.shift();
+        if (redirected.status === 'applied') {
+          planArtifactId = workflowIdSchema('art').parse(redirected.planArtifactId);
+          plan = BuildModePlanSchema.parse(redirected.plan);
+          const activeTaskIds = new Set(plan.tasks.map(({ id }) => id));
+          taskCommits = taskCommits.filter(({ taskId }) => activeTaskIds.has(taskId));
+          const allocatedCredits = plan.tasks.reduce(
+            (sum, task) => sum + Math.max(1, task.estimate.credits),
+            0,
+          );
+          const availableCredits = Math.min(
+            plan.budget.credits,
+            input.budget?.maxCredits ?? plan.budget.credits,
+          );
+          if (allocatedCredits > availableCredits) {
+            throw ApplicationFailure.nonRetryable(
+              'Redirected Build plan exceeds the approved run budget',
+              'build_redirect_budget_exceeded',
+            );
+          }
+          phase = plan.phases[0];
+          if (phase === undefined) throw new Error('build_plan_phase_missing');
+        }
+      }
+
+      const preExecuteControlResult = await honorControlBoundary(workspaceId, 'session');
+      if (preExecuteControlResult !== undefined) return preExecuteControlResult;
+      const taskCommitById = new Map(taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]));
+      if (taskCommitById.size !== taskCommits.length) {
+        throw ApplicationFailure.nonRetryable(
+          'Build execution continuation contains duplicate task commits',
+          'build_task_commit_duplicate',
+        );
+      }
+      const incomplete = plan.tasks.filter(({ id }) => !taskCommitById.has(id));
+      if (incomplete.length === 0) {
+        const completedTaskIds = plan.tasks.map(({ id }) => id);
+        const head = ResolveIntegrationHeadResultSchema.parse(
+          await buildActivities.resolveIntegrationHead(
+            ResolveIntegrationHeadInputSchema.parse({
+              runId: input.runId,
+              organizationId: input.organizationId,
+              projectId: input.projectId,
+              phaseId: phase.id,
+              integrationBranch: `run/${input.runId}`,
+              completedTaskIds,
+              idempotencyKey: operationKey(input, 'build-integration-head'),
+            }),
+          ),
+        );
+        if (pendingRedirects.length > 0) {
+          return await continueAsNew<typeof runWorkflow>({
+            ...input,
+            continuation: {
+              phase: 'build_execute',
+              workspaceId,
+              planArtifactId,
+              plan,
+              taskCommits,
+            },
+            budgetAttempt,
+            sessionStep,
+            lastEmittedAssistantTurn,
+            control: controlContinuation(),
+          });
+        }
+        const postExecuteControlResult = await honorControlBoundary(workspaceId, 'commit');
+        if (postExecuteControlResult !== undefined) return postExecuteControlResult;
+        return await continueAsNew<typeof runWorkflow>({
+          ...input,
+          continuation: {
+            phase: 'build_verify',
+            workspaceId,
+            planArtifactId,
+            plan,
+            commitSha: head.commitSha,
+            taskCommits,
+          },
+          budgetAttempt,
+          sessionStep,
+          lastEmittedAssistantTurn,
+          control: controlContinuation(),
+        });
+      }
+      const nextTask = incomplete.find((task) =>
+        task.dependsOn.every((dependencyId) => taskCommitById.has(dependencyId)),
+      );
+      if (nextTask === undefined) {
+        throw ApplicationFailure.nonRetryable(
+          'Redirected Build task graph cannot make progress',
+          'build_redirect_task_graph_blocked',
+        );
+      }
       await events.emitEvents({
-        events: plan.tasks.map((task) =>
-          event(input, 'task.created', `build-task-${task.id}-created`, {
+        events: [
+          event(input, 'task.created', `build-task-${nextTask.id}-created`, {
             phaseId: phase.id,
-            taskId: task.id,
-            title: task.title,
-            acceptanceCriteriaIds: task.acceptanceCriteriaIds,
-          }, { phaseId: phase.id, taskId: task.id }),
-        ),
+            taskId: nextTask.id,
+            title: nextTask.title,
+            acceptanceCriteriaIds: nextTask.acceptanceCriteriaIds,
+          }, { phaseId: phase.id, taskId: nextTask.id }),
+        ],
       });
       const taskScope = new CancellationScope();
       activeScope = taskScope;
-      let results: z.infer<typeof TaskWorkflowResultSchema>[];
+      let result: z.infer<typeof TaskWorkflowResultSchema>;
       try {
-        results = z.array(TaskWorkflowResultSchema).parse(
-          await taskScope.run(
-            async () =>
-              await executeChild(runTaskBatchWorkflow, {
-                workflowId: `build:${input.runId}:${planArtifactId}`,
-                args: [
-                  {
-                    runId: input.runId,
-                    maxConcurrency: 1,
-                    tasks: plan.tasks.map((task) => ({
+        const results = z.array(TaskWorkflowResultSchema).length(1).parse(
+          await taskScope.run(async () =>
+            await executeChild(runTaskBatchWorkflow, {
+              workflowId: `build:${input.runId}:${planArtifactId}:${nextTask.id}`,
+              args: [
+                {
+                  runId: input.runId,
+                  maxConcurrency: 1,
+                  tasks: [
+                    {
                       runId: input.runId,
                       organizationId: input.organizationId,
                       projectId: input.projectId,
-                      taskId: task.id,
+                      taskId: nextTask.id,
                       mode: 'build' as const,
                       model: input.model,
-                      prompt: buildTaskPrompt(input, planArtifactId, task),
-                      budget: { maxCredits: Math.max(1, task.estimate.credits) },
-                    })),
-                  },
-                ],
-              }),
+                      prompt: buildTaskPrompt(input, planArtifactId, nextTask),
+                      budget: { maxCredits: Math.max(1, nextTask.estimate.credits) },
+                    },
+                  ],
+                },
+              ],
+            }),
           ),
         );
+        const onlyResult = results[0];
+        if (onlyResult === undefined) throw new Error('build_task_result_missing');
+        result = onlyResult;
       } catch (error: unknown) {
         if (cancelRequested && isCancellation(error)) {
           return await CancellationScope.nonCancellable(
@@ -1275,8 +1444,7 @@ async function executeRunWorkflow(
       } finally {
         activeScope = undefined;
       }
-      const blocked = results.find(({ status }) => status === 'blocked');
-      if (blocked !== undefined) {
+      if (result.status === 'blocked') {
         await buildActivities.transitionPhaseTasks(
           TransitionPhaseTasksInputSchema.parse({
             runId: input.runId,
@@ -1285,39 +1453,23 @@ async function executeRunWorkflow(
             phaseId: phase.id,
             taskIds: plan.tasks.map(({ id }) => id),
             status: 'failed',
-            idempotencyKey: operationKey(input, 'build-tasks-blocked'),
+            idempotencyKey: operationKey(input, `build-task-blocked:${result.taskId}`),
           }),
         );
         throw ApplicationFailure.nonRetryable(
-          `Build task blocked by merge conflict: ${blocked.taskId}`,
+          `Build task blocked by merge conflict: ${result.taskId}`,
           'build_task_blocked',
         );
       }
-      const completedTaskIds = results.map(({ taskId }) => taskId);
-      const head = ResolveIntegrationHeadResultSchema.parse(
-        await buildActivities.resolveIntegrationHead(
-          ResolveIntegrationHeadInputSchema.parse({
-            runId: input.runId,
-            organizationId: input.organizationId,
-            projectId: input.projectId,
-            phaseId: phase.id,
-            integrationBranch: `run/${input.runId}`,
-            completedTaskIds,
-            idempotencyKey: operationKey(input, 'build-integration-head'),
-          }),
-        ),
-      );
-      const postExecuteControlResult = await honorControlBoundary(workspaceId, 'commit');
-      if (postExecuteControlResult !== undefined) return postExecuteControlResult;
+      taskCommits.push({ taskId: result.taskId, commitSha: result.commitSha });
       return await continueAsNew<typeof runWorkflow>({
         ...input,
         continuation: {
-          phase: 'build_verify',
+          phase: 'build_execute',
           workspaceId,
           planArtifactId,
           plan,
-          commitSha: head.commitSha,
-          taskCommits: results.map(({ taskId, commitSha }) => ({ taskId, commitSha })),
+          taskCommits,
         },
         budgetAttempt,
         sessionStep,
@@ -1338,6 +1490,22 @@ async function executeRunWorkflow(
 
   if (input.continuation.phase === 'build_verify') {
     const { workspaceId, plan, commitSha, taskCommits } = input.continuation;
+    if (pendingRedirects.length > 0) {
+      return await continueAsNew<typeof runWorkflow>({
+        ...input,
+        continuation: {
+          phase: 'build_execute',
+          workspaceId,
+          planArtifactId: input.continuation.planArtifactId,
+          plan,
+          taskCommits,
+        },
+        budgetAttempt,
+        sessionStep,
+        lastEmittedAssistantTurn,
+        control: controlContinuation(),
+      });
+    }
     currentPhase = 'commit';
     const phase = plan.phases[0];
     if (phase === undefined) throw new Error('build_plan_phase_missing');
@@ -1375,6 +1543,22 @@ async function executeRunWorkflow(
         throw error;
       } finally {
         activeScope = undefined;
+      }
+      if (pendingRedirects.length > 0) {
+        return await continueAsNew<typeof runWorkflow>({
+          ...input,
+          continuation: {
+            phase: 'build_execute',
+            workspaceId,
+            planArtifactId: input.continuation.planArtifactId,
+            plan,
+            taskCommits,
+          },
+          budgetAttempt,
+          sessionStep,
+          lastEmittedAssistantTurn,
+          control: controlContinuation(),
+        });
       }
       await events.emitEvents({
         events: [

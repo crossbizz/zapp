@@ -45,6 +45,7 @@ import {
   RunWorkflowInputSchema,
   type BuildModeActivities,
 } from './workflows/run.js';
+import type { RedirectActivities } from './workflows/redirect.js';
 
 export type RunActivities =
   & EventActivities
@@ -55,6 +56,7 @@ export type ProductionRunActivities =
   & RunActivities
   & TaskWorkflowActivities
   & AutonomousActivities
+  & RedirectActivities
   & BuildModeActivities
   & FixModeActivities;
 export type ProductionVerificationActivities =
