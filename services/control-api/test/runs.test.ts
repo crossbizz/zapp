@@ -1739,7 +1739,7 @@ describe('workspace passthrough routes', () => {
   });
 
   it.each(['approved', 'rejected'] as const)(
-    'resolves a tenant-scoped budget approval as %s and signals the durable workflow once',
+    'resolves a legacy tenant-scoped budget approval without reason as %s and signals the durable workflow once',
     async (decision) => {
       const wired = await wire();
       const project = await createProject(wired);
@@ -1769,7 +1769,6 @@ describe('workspace passthrough routes', () => {
           currentCeiling: '100.0000',
           absoluteCeiling: '200.0000',
           workspaceId: 'workspace-ar14',
-          reason: 'run_budget_exhausted',
         },
         responseJson: null,
         requestedAt: wired.built.now(),

@@ -95,6 +95,17 @@ describe('migration journal', () => {
       /alter table "agent_runs" alter column "plan_max_credits" set not null/iu,
     );
   });
+
+  it('journals a migration that defaults only missing legacy budget approval reasons', () => {
+    const migration = files.find((file) => file.endsWith('_budget_approval_reason_backfill.sql'));
+    expect(migration).toBeDefined();
+    if (migration === undefined) return;
+    const sql = readFileSync(`${MIGRATIONS_DIR}/${migration}`, 'utf8');
+    expect(sql).toMatch(/update "approvals"/iu);
+    expect(sql).toMatch(/"type" = 'budget_increase'/iu);
+    expect(sql).toMatch(/not \("request_json" \? 'reason'\)/iu);
+    expect(sql).toContain('run_budget_exhausted');
+  });
 });
 
 describe('agent_events partitioning', () => {

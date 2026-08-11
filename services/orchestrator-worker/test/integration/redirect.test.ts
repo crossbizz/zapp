@@ -4,9 +4,11 @@ import { newId } from '@zapp/contracts';
 import { applyPlanDiff, type PlanDiff } from '@zapp/planning-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { ApprovalActivities } from '../../src/activities/approvals.js';
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
 import type { TaskWorkflowActivities } from '../../src/activities/merge.js';
 import {
+  autonomousCreditBalanceExhaustedSignal,
   autonomousPlanApprovalSignal,
   autonomousRedirectSignal,
   autonomousSpecificationApprovalSignal,
@@ -14,6 +16,7 @@ import {
   type AutonomousActivities,
   type AutonomousWorkflowInput,
 } from '../../src/workflows/autonomous.js';
+import { budgetApprovalResolvedSignal } from '../../src/workflows/budget-approval.js';
 import type { RedirectActivities } from '../../src/workflows/redirect.js';
 
 const PHASE_ID = 'phase_01J00000000000000000000001';
@@ -73,6 +76,8 @@ interface RedirectFixtureResult {
   readonly taskRecords: ReadonlyMap<string, TaskRecord>;
   readonly taskPrompts: ReadonlyMap<string, string>;
   readonly appliedBeforeApproval: boolean;
+  readonly redirectPlanCallsBeforeCreditApproval: number | null;
+  readonly revalidationCallsBeforeCreditApproval: number | null;
   readonly finalEvidencePlanArtifactId: string;
 }
 
@@ -96,6 +101,8 @@ describe('AR-20 redirect + plan change', () => {
     readonly approveMaterial: boolean;
     readonly rejectMaterial?: boolean;
     readonly signalAtFinalBoundary?: boolean;
+    readonly exhaustCreditDuringRedirectStatus?: boolean;
+    readonly exhaustCreditDuringRedirectRevalidationEvent?: boolean;
   }): Promise<RedirectFixtureResult> {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar20-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -115,6 +122,10 @@ describe('AR-20 redirect + plan change', () => {
     ]);
     let appliedBeforeApproval = false;
     let redirectApproved = false;
+    let redirectPlanCalls = 0;
+    let redirectPlanCallsBeforeCreditApproval: number | null = null;
+    let revalidationCalls = 0;
+    let revalidationCallsBeforeCreditApproval: number | null = null;
     let finalEvidencePlanArtifactId = ORIGINAL_PLAN_ARTIFACT_ID;
 
     let resolveSpecificationApproval: (() => void) | undefined;
@@ -145,9 +156,29 @@ describe('AR-20 redirect + plan change', () => {
     const redirectApprovalRequested = new Promise<void>((resolve) => {
       resolveRedirectApproval = resolve;
     });
+    let resolveCreditApproval: (() => void) | undefined;
+    const creditApprovalRequested = new Promise<void>((resolve) => {
+      resolveCreditApproval = resolve;
+    });
+    let resolveRedirectPausedStatusStarted: (() => void) | undefined;
+    const redirectPausedStatusStarted = new Promise<void>((resolve) => {
+      resolveRedirectPausedStatusStarted = resolve;
+    });
+    let releaseRedirectPausedStatus: (() => void) | undefined;
+    const redirectPausedStatusReleased = new Promise<void>((resolve) => {
+      releaseRedirectPausedStatus = resolve;
+    });
+    let resolveRevalidationEventStarted: (() => void) | undefined;
+    const revalidationEventStarted = new Promise<void>((resolve) => {
+      resolveRevalidationEventStarted = resolve;
+    });
+    let releaseRevalidationEvent: (() => void) | undefined;
+    const revalidationEventReleased = new Promise<void>((resolve) => {
+      releaseRevalidationEvent = resolve;
+    });
 
     const eventActivities: EventActivities = {
-      emitEvents(input) {
+      async emitEvents(input) {
         events.push(...input.events);
         for (const emitted of input.events) {
           if (emitted.type !== 'approval.requested') continue;
@@ -155,10 +186,24 @@ describe('AR-20 redirect + plan change', () => {
           if (emitted.payload['gate'] === 'plan') resolvePlanApproval?.();
           if (emitted.payload['gate'] === 'plan_diff') resolveRedirectApproval?.();
         }
-        return Promise.resolve();
+        if (
+          options.exhaustCreditDuringRedirectRevalidationEvent === true &&
+          input.events.some(
+            ({ type, payload }) => type === 'task.updated' && payload['status'] === 'superseded',
+          )
+        ) {
+          resolveRevalidationEventStarted?.();
+          await revalidationEventReleased;
+        }
       },
-      transitionRunStatus() {
-        return Promise.resolve();
+      async transitionRunStatus(input) {
+        if (
+          options.exhaustCreditDuringRedirectStatus === true &&
+          input.status === 'paused'
+        ) {
+          resolveRedirectPausedStatusStarted?.();
+          await redirectPausedStatusReleased;
+        }
       },
       storeAssistantContent() {
         return Promise.reject(new Error('AR-20 stores no assistant content'));
@@ -238,6 +283,7 @@ describe('AR-20 redirect + plan change', () => {
         return Promise.resolve({ resumedTaskIds: input.taskIds });
       },
       produceRedirectPlanDiff(input) {
+        redirectPlanCalls += 1;
         expect(input.instruction).toBe(options.instruction);
         expect(input.currentPlanArtifactId).toBe(ORIGINAL_PLAN_ARTIFACT_ID);
         return Promise.resolve({ planDiffArtifactId: DIFF_ARTIFACT_ID, planDiff: options.diff });
@@ -261,6 +307,7 @@ describe('AR-20 redirect + plan change', () => {
         });
       },
       revalidateRedirectedTasks(input) {
+        revalidationCalls += 1;
         revalidatedTaskIds.push(...input.taskIds);
         return Promise.resolve({
           verificationResultId: 'vr_01J00000000000000000000001',
@@ -270,6 +317,22 @@ describe('AR-20 redirect + plan change', () => {
       },
       checkpointRedirect() {
         return Promise.resolve({ checkpointRef: `redirect:${DIFF_ARTIFACT_ID}` });
+      },
+    };
+
+    const approvalActivities: ApprovalActivities = {
+      estimateRunCost() {
+        return Promise.reject(new Error('AR-20 does not estimate run costs'));
+      },
+      requestBudgetIncrease() {
+        resolveCreditApproval?.();
+        return Promise.resolve({
+          approvalId: 'appr_01J00000000000000000000020',
+          absoluteCeiling: '20.0000',
+        });
+      },
+      checkpointBudgetStop() {
+        return Promise.reject(new Error('AR-20 organization-credit approval must resume'));
       },
     };
 
@@ -325,6 +388,7 @@ describe('AR-20 redirect + plan change', () => {
       activities: {
         ...eventActivities,
         ...autonomousActivities,
+        ...approvalActivities,
         ...redirectActivities,
         ...taskActivities,
       },
@@ -397,6 +461,23 @@ describe('AR-20 redirect + plan change', () => {
       releaseTaskA?.();
     }
 
+    if (options.exhaustCreditDuringRedirectStatus === true) {
+      await redirectPausedStatusStarted;
+      await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+        runId,
+        operationKey: `op_${'5'.repeat(64)}`,
+      });
+      releaseRedirectPausedStatus?.();
+      await creditApprovalRequested;
+      redirectPlanCallsBeforeCreditApproval = redirectPlanCalls;
+      await handle.signal(budgetApprovalResolvedSignal, {
+        approvalId: 'appr_01J00000000000000000000020',
+        decision: 'approved',
+        absoluteCeiling: '20.0000',
+        reason: 'organization_credit_exhausted',
+      });
+    }
+
     if (options.approveMaterial) {
       await redirectApprovalRequested;
       redirectApproved = true;
@@ -405,6 +486,23 @@ describe('AR-20 redirect + plan change', () => {
         artifactId: DIFF_ARTIFACT_ID,
         decision: options.rejectMaterial === true ? 'rejected' : 'approved',
         operationKey: `op_${'4'.repeat(64)}`,
+      });
+    }
+
+    if (options.exhaustCreditDuringRedirectRevalidationEvent === true) {
+      await revalidationEventStarted;
+      await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+        runId,
+        operationKey: `op_${'5'.repeat(64)}`,
+      });
+      releaseRevalidationEvent?.();
+      await creditApprovalRequested;
+      revalidationCallsBeforeCreditApproval = revalidationCalls;
+      await handle.signal(budgetApprovalResolvedSignal, {
+        approvalId: 'appr_01J00000000000000000000020',
+        decision: 'approved',
+        absoluteCeiling: '20.0000',
+        reason: 'organization_credit_exhausted',
       });
     }
 
@@ -421,6 +519,8 @@ describe('AR-20 redirect + plan change', () => {
       taskRecords,
       taskPrompts,
       appliedBeforeApproval,
+      redirectPlanCallsBeforeCreditApproval,
+      revalidationCallsBeforeCreditApproval,
       finalEvidencePlanArtifactId,
     };
   }
@@ -506,6 +606,42 @@ describe('AR-20 redirect + plan change', () => {
       ),
     ).toBe(true);
     expect(result.taskPrompts.get(TASK_B)).toContain('Task: Write the clearer primary copy');
+  }, 30_000);
+
+  it('holds an Autonomous redirect planner when credit exhausts during redirect status work', async () => {
+    const result = await runFixture({
+      instruction: 'Change the heading after the current task.',
+      approveMaterial: false,
+      exhaustCreditDuringRedirectStatus: true,
+      diff: {
+        addedTasks: [],
+        removedTaskIds: [],
+        modifiedTasks: [task(TASK_B, 'Write the credit-approved heading', [TASK_A])],
+        supersededTaskIds: [],
+        impact: { scope: false, costDelta: false, archChange: false, dataChange: false },
+      },
+    });
+
+    expect(result.redirectPlanCallsBeforeCreditApproval).toBe(0);
+    expect(result.taskPrompts.get(TASK_B)).toContain('Task: Write the credit-approved heading');
+  }, 30_000);
+
+  it('holds redirect revalidation when credit exhausts during the preceding task event', async () => {
+    const result = await runFixture({
+      instruction: 'Replace the completed foundation task.',
+      approveMaterial: true,
+      exhaustCreditDuringRedirectRevalidationEvent: true,
+      diff: {
+        addedTasks: [],
+        removedTaskIds: [TASK_A],
+        modifiedTasks: [task(TASK_B, 'Write after the replacement', [])],
+        supersededTaskIds: [TASK_A],
+        impact: { scope: true, costDelta: false, archChange: false, dataChange: false },
+      },
+    });
+
+    expect(result.revalidationCallsBeforeCreditApproval).toBe(0);
+    expect(result.revalidatedTaskIds).toEqual([TASK_A]);
   }, 30_000);
 
   it('processes a redirect signalled after the final task before creating release evidence', async () => {

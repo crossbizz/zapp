@@ -100,6 +100,16 @@ Master plan §Global Constraints, plus:
 - [x] Verify focused RED/GREEN, clean migration plus real Postgres/Redis concurrency/failure integrations, touched-package lint/typecheck/build/unit, architecture/provider boundaries, and diff hygiene; no provider calls.
 - [x] Commit: `fix(usage): close plan enforcement production gaps`
 
+#### Task OPS-3-FIX-2 [M2]: Credit-boundary and legacy-approval rollout closure
+
+**Files:** Modify Build and Autonomous workflow credit gates plus unit/real-Temporal interleaving tests; budget-approval legacy decoders plus control-api approval route/tests; `packages/db` next canonical data migration and migration tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-3-FIX-1. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: enforce organization-credit exhaustion before every next planner/provider/child boundary: Build before pending redirect planning, and Autonomous before pending redirect processing, verify-to-repair, and repair-to-reverify; real Temporal interleavings prove exhaustion delivered during the preceding child/verify cannot start the next planner, repair, or reverify until matching organization-credit approval, while Fix semantics remain unchanged.
+- [x] RED/GREEN: preserve rollout compatibility for legacy `budget_increase` approvals and Temporal histories that lack `reason`: a canonical migration backfills persisted request JSON to `run_budget_exhausted`, deterministic legacy decoders default only a missing reason, new external inputs remain strict, and old database approve/reject plus old Temporal signal replay regressions pass.
+- [x] Verify focused RED/GREEN, actual local Temporal interleavings/replay, clean migration plus no-diff generation, affected-package lint/typecheck/build/unit/integration, architecture boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): enforce every credit boundary and replay legacy approvals`
+
 ### Task OPS-4 [M5]: Stripe platform billing
 
 **Files:** Create: `services/control-api/src/billing/{stripe,webhooks,portal}.ts`, `test/integration/billing.test.ts` (Stripe test mode)
@@ -240,6 +250,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-3-FIX-2 done — Gated Build and Autonomous planner, repair, and reverify boundaries and preserved legacy budget approvals through a canonical backfill and deterministic replay decoder; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-1 done — Closed shared Temporal dispatch, immutable plan caps, atomic dispatch retry, durable leased exhaustion delivery, bounded authoritative credit fallback, the desktop request boundary, and deployable sandbox enforcement; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3 done — Added strict deployable plan policy, local run/sandbox enforcement, Flexprice wallet cache/grace admission, deduplicated budget thresholds, and a durable next-task credit gate reusing AR-14; focused RED/GREEN and touched-package static/unit/build gates passed, and an isolated env-backed integration rerun completed after the publisher test passed in focused reproduction.
 - 2026-08-11 OPS-2-FIX-1 done — Closed durable metering, fenced storage, official Flexprice reconciliation, and snapshot-free checkpoint gaps; review fixes added readiness-safe bounded recovery, advisory-locked correction submission, and durable per-category delivery replay, while full verification also fixed the baseline GitHub retry clock fixture.

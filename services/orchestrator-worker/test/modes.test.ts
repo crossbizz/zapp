@@ -8,7 +8,9 @@ import { createRunWorker, type RunActivities } from '../src/worker.js';
 import {
   BUILD_MODE_APPROVAL_CONFIG,
   BuildModePlanSchema,
+  budgetApprovalResolvedSignal,
   buildWorkflow,
+  creditBalanceExhaustedSignal,
   redirectRunSignal,
   runWorkflow,
   shouldAutoApproveBuildPlan,
@@ -364,7 +366,7 @@ describe('AR-18 Build mode', () => {
     ).rejects.toThrow('Workflow execution failed');
   }, 30_000);
 
-  it('auto-approves a small plan, commits every mapped task, and passes only after VF approval', async () => {
+  it('holds redirect planning when credit exhausts during redirect status work, then passes VF', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar18-build-auto-${Date.now().toString(36)}`;
     const workflowInput = buildInput('4');
@@ -376,14 +378,27 @@ describe('AR-18 Build mode', () => {
     const taskTransitions: Array<{ status: string; taskIds: string[] }> = [];
     let legacyCommits = 0;
     let redirectApplied = false;
+    let redirectPlanCalls = 0;
     let resolveHeadCalls = 0;
-    let resolveHeadStarted: (() => void) | undefined;
-    const headStarted = new Promise<void>((resolve) => {
-      resolveHeadStarted = resolve;
+    let resolveTaskSessionStarted: (() => void) | undefined;
+    const taskSessionStarted = new Promise<void>((resolve) => {
+      resolveTaskSessionStarted = resolve;
     });
-    let releaseHead: (() => void) | undefined;
-    const headReleased = new Promise<void>((resolve) => {
-      releaseHead = resolve;
+    let releaseTaskSession: (() => void) | undefined;
+    const taskSessionReleased = new Promise<void>((resolve) => {
+      releaseTaskSession = resolve;
+    });
+    let resolveRedirectPausedStatusStarted: (() => void) | undefined;
+    const redirectPausedStatusStarted = new Promise<void>((resolve) => {
+      resolveRedirectPausedStatusStarted = resolve;
+    });
+    let releaseRedirectPausedStatus: (() => void) | undefined;
+    const redirectPausedStatusReleased = new Promise<void>((resolve) => {
+      releaseRedirectPausedStatus = resolve;
+    });
+    let resolveCreditApprovalRequested: (() => void) | undefined;
+    const creditApprovalRequested = new Promise<void>((resolve) => {
+      resolveCreditApprovalRequested = resolve;
     });
     const redirectedPlanArtifactId = id('art', '6');
     const redirectedTask = plan.tasks[1];
@@ -401,9 +416,12 @@ describe('AR-18 Build mode', () => {
       taskQueue,
       workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
       activities: {
-        transitionRunStatus: ({ status }: { status: string }) => {
+        transitionRunStatus: async ({ status }: { status: string }) => {
           timeline.push(`run:${status}`);
-          return Promise.resolve();
+          if (status === 'paused') {
+            resolveRedirectPausedStatusStarted?.();
+            await redirectPausedStatusReleased;
+          }
         },
         emitEvents: ({ events }: { events: Array<{ type: string }> }) => {
           timeline.push(...events.map(({ type }) => `event:${type}`));
@@ -417,7 +435,13 @@ describe('AR-18 Build mode', () => {
           return Promise.resolve({ commitSha: '0'.repeat(40), diffstat: [] });
         },
         estimateRunCost: () => Promise.resolve({ estimatedCredits: '20.0000' }),
-        requestBudgetIncrease: () => Promise.reject(new Error('not expected')),
+        requestBudgetIncrease: () => {
+          resolveCreditApprovalRequested?.();
+          return Promise.resolve({
+            approvalId: 'appr_01J00000000000000000000004',
+            absoluteCeiling: '40.0000',
+          });
+        },
         checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'checkpoint-build-auto' }),
         producePlan: ({ specificationVersionId }: { specificationVersionId: string }) => {
           timeline.push(`plan:${specificationVersionId}`);
@@ -429,20 +453,18 @@ describe('AR-18 Build mode', () => {
           timeline.push(`approved:${approvalOperationKey}`);
           return Promise.resolve({ planArtifactId, status: 'approved' as const });
         },
-        async resolveIntegrationHead() {
+        resolveIntegrationHead() {
           resolveHeadCalls += 1;
-          if (resolveHeadCalls === 1) {
-            resolveHeadStarted?.();
-            await headReleased;
-          }
-          return { commitSha: integrationCommit };
+          return Promise.resolve({ commitSha: integrationCommit });
         },
         pauseRedirectTasks: ({ affectedTaskIds }: { affectedTaskIds: string[] }) =>
           Promise.resolve({ pausedTaskIds: affectedTaskIds }),
         resumeRedirectTasks: ({ taskIds }: { taskIds: string[] }) =>
           Promise.resolve({ resumedTaskIds: taskIds }),
-        produceRedirectPlanDiff: () =>
-          Promise.resolve({ planDiffArtifactId: id('art', '5'), planDiff: redirectDiff }),
+        produceRedirectPlanDiff: () => {
+          redirectPlanCalls += 1;
+          return Promise.resolve({ planDiffArtifactId: id('art', '5'), planDiff: redirectDiff });
+        },
         applyRedirectPlanDiff: ({ currentPlan }: { currentPlan: typeof plan }) => {
           redirectApplied = true;
           return Promise.resolve({
@@ -469,9 +491,13 @@ describe('AR-18 Build mode', () => {
           timeline.push(`task:${taskId}:${status}`);
           return Promise.resolve();
         },
-        runTaskBuilderSession: ({ prompt }: { prompt: string }) => {
+        async runTaskBuilderSession({ prompt }: { prompt: string }) {
           taskPrompts.push(prompt);
-          return Promise.resolve({ status: 'completed' as const });
+          if (taskPrompts.length === 1) {
+            resolveTaskSessionStarted?.();
+            await taskSessionReleased;
+          }
+          return { status: 'completed' as const };
         },
         commitAndPushTask: ({ taskId }: { taskId: string }) => {
           timeline.push(`commit:${taskId}`);
@@ -526,17 +552,32 @@ describe('AR-18 Build mode', () => {
             workflowId: workflowInput.workflowId,
             args: [workflowInput],
           });
-        await headStarted;
+        await taskSessionStarted;
         await handle?.signal(redirectRunSignal, {
           runId: workflowInput.runId,
           instruction: 'Change the final copy before verification.',
           operationKey: `op_${'6'.repeat(64)}`,
         });
-        releaseHead?.();
+        releaseTaskSession?.();
+        await redirectPausedStatusStarted;
+        await handle?.signal(creditBalanceExhaustedSignal, {
+          runId: workflowInput.runId,
+          operationKey: `op_${'7'.repeat(64)}`,
+        });
+        releaseRedirectPausedStatus?.();
+        await creditApprovalRequested;
+        const redirectPlanCallsBeforeApproval = redirectPlanCalls;
+        await handle?.signal(budgetApprovalResolvedSignal, {
+          approvalId: 'appr_01J00000000000000000000004',
+          decision: 'approved',
+          absoluteCeiling: '40.0000',
+          reason: 'organization_credit_exhausted',
+        });
         await expect(handle?.result()).resolves.toEqual({
           status: 'completed',
           commitSha: integrationCommit,
         });
+        expect(redirectPlanCallsBeforeApproval).toBe(0);
       });
     } finally {
       verificationWorker.shutdown();
@@ -545,7 +586,8 @@ describe('AR-18 Build mode', () => {
 
     expect(legacyCommits).toBe(0);
     expect(redirectApplied).toBe(true);
-    expect(resolveHeadCalls).toBe(2);
+    expect(redirectPlanCalls).toBe(1);
+    expect(resolveHeadCalls).toBe(1);
     expect(taskPrompts).toHaveLength(2);
     expect(taskPrompts[0]).toContain('Acceptance criteria: AC-1');
     expect(taskPrompts[1]).toContain('Acceptance criteria: AC-2');

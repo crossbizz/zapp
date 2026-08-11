@@ -43,6 +43,7 @@ import { runTaskBatchWorkflow, TaskWorkflowResultSchema } from './task.js';
 import {
   BudgetApprovalResolutionSchema,
   budgetApprovalResolvedSignal,
+  decodeBudgetApprovalResolution,
   immutableRunCeiling,
 } from './budget-approval.js';
 
@@ -675,7 +676,7 @@ async function executeRunWorkflow(
     });
 
   setHandler(budgetApprovalResolvedSignal, (value) => {
-    const resolution = BudgetApprovalResolutionSchema.parse(value);
+    const resolution = decodeBudgetApprovalResolution(value);
     budgetResolutions.set(resolution.approvalId, resolution);
   });
   setHandler(autonomousPlanApprovalSignal, (value) => {
@@ -972,7 +973,7 @@ async function executeRunWorkflow(
       status: 'running',
       idempotencyKey: operationKey(input, `status-organization-credit-approved-${episodeOperationKey.slice(-12)}`),
     });
-    return undefined;
+    return await honorOrganizationCreditBoundary(workspaceId, resumedPhase);
   };
 
   const honorNewWorkBoundary = async (
@@ -1342,11 +1343,13 @@ async function executeRunWorkflow(
     if (phase === undefined) throw new Error('build_plan_phase_missing');
     try {
       while (pendingRedirects.length > 0) {
+        const redirectCreditResult = await honorOrganizationCreditBoundary(workspaceId, 'session');
+        if (redirectCreditResult !== undefined) return redirectCreditResult;
         const pending = pendingRedirects[0];
         if (pending === undefined) break;
         const redirectPhaseId = phase.id;
         const completedTaskIds = new Set(taskCommits.map(({ taskId }) => taskId));
-        const hooks: RedirectPlanChangeHooks = {
+        const hooks: RedirectPlanChangeHooks<RunWorkflowResult> = {
           async emit(type, suffix, payload, taskId) {
             await events.emitEvents({
               events: [
@@ -1369,6 +1372,9 @@ async function executeRunWorkflow(
               status,
               idempotencyKey: operationKey(input, `build-redirect:${suffix}`),
             });
+          },
+          async beforePaidBoundary() {
+            return await honorOrganizationCreditBoundary(workspaceId, 'session');
           },
           approvalFor(artifactId) {
             return buildPlanResolutions.get(artifactId);
@@ -1395,6 +1401,7 @@ async function executeRunWorkflow(
           },
           hooks,
         );
+        if (redirected.status === 'controlled') return redirected.result;
         if (redirected.status === 'cancelled') {
           return await completeCancellation(workspaceId);
         }

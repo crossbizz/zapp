@@ -93,6 +93,22 @@ const ApprovalRequestPayload = z
     reason: BudgetApprovalReasonSchema,
   })
   .strict();
+type ApprovalRequest = z.infer<typeof ApprovalRequestPayload>;
+
+function decodeApprovalRequestPayload(value: unknown): ApprovalRequest {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !Object.hasOwn(value, 'reason')
+  ) {
+    return ApprovalRequestPayload.parse({
+      ...value,
+      reason: 'run_budget_exhausted',
+    });
+  }
+  return ApprovalRequestPayload.parse(value);
+}
 const ResolvedBudgetApprovalResponse = z
   .object({
     approval: z
@@ -558,11 +574,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (run === undefined) throw runNotFound();
       authorize(ctx, 'start_run');
       const operationKey = operationOf(request);
-      let pendingRequest: z.infer<typeof ApprovalRequestPayload> | undefined;
+      let pendingRequest: ApprovalRequest | undefined;
       if (request.body.decision === 'approved') {
         const approval = await ctx.db.approvals.get(run.id, request.params.approvalId);
         if (approval === undefined || approval.type !== 'budget_increase') throw approvalNotFound();
-        pendingRequest = ApprovalRequestPayload.parse(approval.requestJson);
+        pendingRequest = decodeApprovalRequestPayload(approval.requestJson);
         const proposed = pendingRequest.absoluteCeiling;
         if (Number(proposed) > Number(run.planMaxCredits)) {
           throw planBudgetExceeded();
@@ -600,7 +616,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         throw approvalNotFound();
       }
       if (resolved.outcome === 'conflict') throw approvalConflict();
-      const approvalRequest = ApprovalRequestPayload.parse(resolved.approval.requestJson);
+      const approvalRequest = decodeApprovalRequestPayload(resolved.approval.requestJson);
       if (
         request.body.decision === 'approved' &&
         approvalRequest.reason === 'run_budget_exhausted'

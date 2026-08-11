@@ -23,6 +23,7 @@ import type { ApprovalActivities } from '../activities/approvals.js';
 import {
   BudgetApprovalResolutionSchema,
   budgetApprovalResolvedSignal,
+  decodeBudgetApprovalResolution,
   immutableRunCeiling,
 } from './budget-approval.js';
 
@@ -522,7 +523,7 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
     creditBalanceOperationKey = signal.operationKey;
   });
   setHandler(budgetApprovalResolvedSignal, (value) => {
-    creditApprovalResolution = BudgetApprovalResolutionSchema.parse(value);
+    creditApprovalResolution = decodeBudgetApprovalResolution(value);
   });
   setHandler(fixResumeSignal, (value) => {
     const signal = controlSignal(value);

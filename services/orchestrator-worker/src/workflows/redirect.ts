@@ -171,7 +171,9 @@ export interface RedirectApprovalResolution {
   readonly operationKey: string;
 }
 
-export interface RedirectPlanChangeHooks {
+export type RedirectPaidBoundary = 'produce_plan_diff' | 'revalidate';
+
+export interface RedirectPlanChangeHooks<ControlResult = never> {
   emit(
     type: PendingAgentEvent['type'],
     suffix: string,
@@ -179,6 +181,7 @@ export interface RedirectPlanChangeHooks {
     taskId?: string,
   ): Promise<void>;
   transitionRunStatus(status: 'paused' | 'waiting_for_approval' | 'running', suffix: string): Promise<void>;
+  beforePaidBoundary(boundary: RedirectPaidBoundary): Promise<ControlResult | undefined>;
   approvalFor(artifactId: string): RedirectApprovalResolution | undefined;
   cancellationRequested(): boolean;
 }
@@ -202,7 +205,7 @@ const RedirectPlanChangeInputSchema = RedirectScopeSchema.extend({
   completedTaskIds: TaskIdListSchema,
 }).strict();
 
-export type RedirectPlanChangeResult =
+export type RedirectPlanChangeResult<ControlResult = never> =
   | {
       readonly status: 'applied';
       readonly planArtifactId: string;
@@ -219,6 +222,7 @@ export type RedirectPlanChangeResult =
       readonly supersededTaskIds: readonly [];
       readonly revalidatedTaskIds: readonly [];
     }
+  | { readonly status: 'controlled'; readonly result: ControlResult }
   | { readonly status: 'cancelled' };
 
 function operationSuffix(operationKey: string): string {
@@ -301,10 +305,10 @@ async function resumeTasks(
   }
 }
 
-export async function processRedirectPlanChange(
+export async function processRedirectPlanChange<ControlResult = never>(
   inputValue: RedirectPlanChangeInput,
-  hooks: RedirectPlanChangeHooks,
-): Promise<RedirectPlanChangeResult> {
+  hooks: RedirectPlanChangeHooks<ControlResult>,
+): Promise<RedirectPlanChangeResult<ControlResult>> {
   const input = RedirectPlanChangeInputSchema.parse(inputValue);
   const scope = {
     runId: input.runId,
@@ -343,6 +347,8 @@ export async function processRedirectPlanChange(
     affectedTaskIds,
   });
 
+  const plannerControl = await hooks.beforePaidBoundary('produce_plan_diff');
+  if (plannerControl !== undefined) return { status: 'controlled', result: plannerControl };
   const produced = ProduceRedirectPlanDiffResultSchema.parse(
     await redirectActivities.produceRedirectPlanDiff(
       ProduceRedirectPlanDiffInputSchema.parse({
@@ -470,6 +476,10 @@ export async function processRedirectPlanChange(
     completedTaskIds,
   );
   if (revalidatedTaskIds.length > 0) {
+    const revalidationControl = await hooks.beforePaidBoundary('revalidate');
+    if (revalidationControl !== undefined) {
+      return { status: 'controlled', result: revalidationControl };
+    }
     const verification = RevalidateRedirectedTasksResultSchema.parse(
       await redirectActivities.revalidateRedirectedTasks(
         RevalidateRedirectedTasksInputSchema.parse({

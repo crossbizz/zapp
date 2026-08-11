@@ -18,6 +18,7 @@ import type { ApprovalActivities } from '../activities/approvals.js';
 import {
   BudgetApprovalResolutionSchema,
   budgetApprovalResolvedSignal,
+  decodeBudgetApprovalResolution,
   immutableRunCeiling,
 } from './budget-approval.js';
 import {
@@ -559,7 +560,7 @@ async function honorControlBoundary(
       checkpointRef: `run:${input.runId}:cancelled`,
     });
   }
-  if (control.creditBalanceExhausted) {
+  while (control.creditBalanceExhausted) {
     const operationKey = OperationKeySchema.parse(control.creditBalanceOperationKey);
     const immutableCeiling = immutableRunCeiling(input);
     const requested = await approvalActivities.requestBudgetIncrease({
@@ -672,7 +673,7 @@ async function honorControlBoundary(
       pendingRedirectCount: control.pendingRedirects.length,
     }),
   );
-  return undefined;
+  return await honorControlBoundary(input, control, boundary);
 }
 
 function matchingResolution(
@@ -788,6 +789,8 @@ async function prepareExecution(
     event(input, 'phase.created', 'interview-created', { stage: 'interview' }, { agentId: 'planner' }),
     event(input, 'phase.started', 'interview-started', { stage: 'interview' }, { agentId: 'planner' }),
   );
+  const interviewControl = await honorControlBoundary(input, control, 'interview');
+  if (interviewControl !== undefined) return { kind: 'terminal', result: interviewControl };
   const interview = ConductInterviewResultSchema.parse(
     await autonomousActivities.conductInterview(
       ConductInterviewInputSchema.parse({
@@ -807,6 +810,10 @@ async function prepareExecution(
     event(input, 'phase.completed', 'interview-completed', { stage: 'interview' }, { agentId: 'planner' }),
   );
 
+  const specificationControl = await honorControlBoundary(input, control, 'specification-draft');
+  if (specificationControl !== undefined) {
+    return { kind: 'terminal', result: specificationControl };
+  }
   const specification = CreateSpecificationDraftResultSchema.parse(
     await autonomousActivities.createSpecificationDraft(
       CreateSpecificationDraftInputSchema.parse({
@@ -888,6 +895,8 @@ async function prepareExecution(
     idempotencyKey: activityKey(input, 'status-specification-approved'),
   });
 
+  const planControl = await honorControlBoundary(input, control, 'plan-produce');
+  if (planControl !== undefined) return { kind: 'terminal', result: planControl };
   const planned = ProducePlanResultSchema.parse(
     await autonomousActivities.producePlan(
       ProducePlanInputSchema.parse({
@@ -1000,12 +1009,18 @@ async function executePhase(
     .map(({ id }) => id);
   const processPendingRedirects = async (): Promise<AutonomousWorkflowResult | undefined> => {
     while (control.pendingRedirects.length > 0) {
+      const controlled = await honorControlBoundary(
+        input,
+        control,
+        `${phase?.id ?? 'final-evidence'}:redirect`,
+      );
+      if (controlled !== undefined) return controlled;
       const redirect = control.pendingRedirects[0];
       if (redirect === undefined) break;
       const directAffectedTaskIds = phaseTasks
         .filter(({ id }) => !completedTaskIds.has(id))
         .map(({ id }) => id);
-      const hooks: RedirectPlanChangeHooks = {
+      const hooks: RedirectPlanChangeHooks<AutonomousWorkflowResult> = {
         async emit(type, suffix, payload, taskId) {
           const phaseId = phase?.id;
           await emit(
@@ -1035,6 +1050,13 @@ async function executePhase(
             idempotencyKey: activityKey(input, `redirect:${suffix}`),
           });
         },
+        async beforePaidBoundary(boundary) {
+          return await honorControlBoundary(
+            input,
+            control,
+            `${phase?.id ?? 'final-evidence'}:redirect:${boundary}`,
+          );
+        },
         approvalFor(artifactId) {
           return matchingResolution(planResolutions, input.runId, artifactId);
         },
@@ -1055,6 +1077,7 @@ async function executePhase(
         },
         hooks,
       );
+      if (result.status === 'controlled') return result.result;
       if (result.status === 'cancelled') {
         return await honorControlBoundary(
           input,
@@ -1216,8 +1239,6 @@ async function executePhase(
     const redirected = await processPendingRedirects();
     if (redirected !== undefined) return redirected;
     if (phaseTasks.every(({ id }) => completedTaskIds.has(id))) break;
-    const controlled = await honorControlBoundary(input, control, `${phase.id}:wave:${String(wave)}`);
-    if (controlled !== undefined) return controlled;
     const ready = phaseTasks.filter(
       (task) =>
         !completedTaskIds.has(task.id) &&
@@ -1250,6 +1271,8 @@ async function executePhase(
         ];
       }),
     );
+    const controlled = await honorControlBoundary(input, control, `${phase.id}:wave:${String(wave)}`);
+    if (controlled !== undefined) return controlled;
     const results = await executeChild(runTaskBatchWorkflow, {
       workflowId: `${input.runId}:phase:${String(phase.sequence)}:${continuation.planArtifactId}:wave:${String(wave)}`,
       args: [{
@@ -1338,6 +1361,8 @@ async function executePhase(
         phaseId: phase.id, status: 'repairing', verificationResultId: verification.verificationResultId,
       }, { phaseId: phase.id, agentId: 'builder' }),
     );
+    const preRepairControl = await honorControlBoundary(input, control, `${phase.id}:repair`);
+    if (preRepairControl !== undefined) return preRepairControl;
     const repair = RepairPhaseResultSchema.parse(
       await autonomousActivities.repairPhase(
         RepairPhaseInputSchema.parse({
@@ -1370,6 +1395,12 @@ async function executePhase(
       throw ApplicationFailure.nonRetryable('Autonomous repair did not produce a new commit', 'autonomous_repair_commit_unchanged');
     }
     verifiedCommitSha = repair.commitSha;
+    const preReverifyControl = await honorControlBoundary(
+      input,
+      control,
+      `${phase.id}:reverification`,
+    );
+    if (preReverifyControl !== undefined) return preReverifyControl;
     verification = PhaseVerificationResultSchema.parse(
       await verificationActivities.verifyPhase(input.runId, phase.id, verifiedCommitSha),
     );
@@ -1526,7 +1557,7 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
     control.creditBalanceOperationKey = signal.operationKey;
   });
   setHandler(budgetApprovalResolvedSignal, (value) => {
-    control.creditApprovalResolution = BudgetApprovalResolutionSchema.parse(value);
+    control.creditApprovalResolution = decodeBudgetApprovalResolution(value);
   });
   setHandler(autonomousResumeSignal, (value) => {
     const signal = AutonomousControlSignalSchema.parse(value);

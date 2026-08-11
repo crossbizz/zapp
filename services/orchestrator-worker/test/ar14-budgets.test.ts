@@ -1,4 +1,5 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { Worker } from '@temporalio/worker';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
@@ -221,12 +222,17 @@ describe('AR-14 durable run budget approval loop', () => {
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000001',
         decision: 'rejected',
-        reason: 'run_budget_exhausted',
       });
       await expect(result).resolves.toEqual({
         status: 'cancelled',
         checkpointRef: 'checkpoint-budget-stop',
       });
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname },
+        history,
+        workflowInput.workflowId,
+      );
     });
 
     expect(checkpoints).toHaveLength(1);

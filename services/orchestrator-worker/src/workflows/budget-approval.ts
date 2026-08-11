@@ -23,6 +23,21 @@ export type BudgetApprovalResolution = z.infer<typeof BudgetApprovalResolutionSc
 
 export const budgetApprovalResolvedSignal = defineSignal<[unknown]>('budgetApprovalResolved');
 
+export function decodeBudgetApprovalResolution(value: unknown): BudgetApprovalResolution {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !Object.hasOwn(value, 'reason')
+  ) {
+    return BudgetApprovalResolutionSchema.parse({
+      ...value,
+      reason: 'run_budget_exhausted',
+    });
+  }
+  return BudgetApprovalResolutionSchema.parse(value);
+}
+
 export function immutableRunCeiling(input: {
   readonly budget: { readonly maxCredits: number } | null;
   readonly planMaxCredits: number;
