@@ -14,6 +14,7 @@ import {
 } from 'react';
 
 import type { CreateRunInput } from '../../lib/api';
+import type { SelectedPreviewElement } from '../preview/SelectMode';
 
 const maximumImages = 10;
 const maximumImageBytes = 8 * 1024 * 1024;
@@ -35,6 +36,7 @@ export interface ConversationSubmission {
   readonly files: readonly File[];
   readonly mode: ConversationMode;
   readonly model?: string;
+  readonly selectedElements: readonly SelectedPreviewElement[];
 }
 
 export interface ConversationImageInput {
@@ -42,6 +44,7 @@ export interface ConversationImageInput {
   readonly file: File;
   readonly id: string;
   readonly onConsumed?: (accepted: boolean) => void;
+  readonly selection?: SelectedPreviewElement;
 }
 
 export interface ConversationComposerProps {
@@ -67,6 +70,7 @@ interface SelectedImage {
   readonly capture?: BuilderPreviewEvent;
   readonly file: File;
   readonly id: string;
+  readonly selection?: SelectedPreviewElement;
 }
 
 function captureDescription(event: BuilderPreviewEvent): string {
@@ -176,7 +180,7 @@ export function Composer({
   };
 
   const addImages = (
-    inputs: readonly Pick<ConversationImageInput, 'capture' | 'file'>[],
+    inputs: readonly Pick<ConversationImageInput, 'capture' | 'file' | 'selection'>[],
   ): readonly boolean[] => {
     let available = maximumImages - imagesRef.current.length;
     let exceededCapacity = false;
@@ -184,7 +188,7 @@ export function Composer({
     let invalidSize = false;
     const results: boolean[] = [];
     const accepted: SelectedImage[] = [];
-    for (const { capture, file } of inputs) {
+    for (const { capture, file, selection } of inputs) {
       if (!supportedImageTypes.has(file.type)) {
         unsupported = true;
         results.push(false);
@@ -206,6 +210,7 @@ export function Composer({
         ...(capture === undefined ? {} : { capture }),
         file,
         id: crypto.randomUUID(),
+        ...(selection === undefined ? {} : { selection }),
       });
     }
     const nextImages = [...imagesRef.current, ...accepted];
@@ -261,6 +266,9 @@ export function Composer({
       files: images.map(({ file }) => file),
       mode: settings.mode,
       ...(settings.model === undefined ? {} : { model: settings.model }),
+      selectedElements: images.flatMap((image) =>
+        image.selection === undefined ? [] : [image.selection],
+      ),
     });
     if (!sent) return;
     setContent('');
@@ -272,7 +280,9 @@ export function Composer({
   return (
     <form className="zapp-conversation-composer" onSubmit={(event) => void submit(event)}>
       <div aria-label="Attached images" className="zapp-conversation-images">
-        {images.map((image) => (
+        {images
+          .filter((image) => image.selection === undefined)
+          .map((image) => (
           <span className="zapp-conversation-image-chip" key={image.id}>
             {image.file.name}
             {image.capture === undefined ? null : ` · ${captureDescription(image.capture)}`}
@@ -291,7 +301,34 @@ export function Composer({
               ×
             </button>
           </span>
-        ))}
+          ))}
+      </div>
+      <div aria-label="Attached selections" className="zapp-conversation-images">
+        {images
+          .filter((image) => image.selection !== undefined)
+          .map((image) => {
+            const selection = image.selection;
+            if (selection === undefined) return null;
+            return (
+              <span className="zapp-conversation-image-chip" key={image.id}>
+                {`Selected: <${selection.componentHint}> '${selection.text}' on ${selection.path}`}
+                <button
+                  aria-label={`Remove selected ${selection.componentHint} ${selection.text}`}
+                  onClick={() => {
+                    const nextImages = imagesRef.current.filter(
+                      (candidate) => candidate.id !== image.id,
+                    );
+                    imagesRef.current = nextImages;
+                    setImages(nextImages);
+                    setImageError(undefined);
+                  }}
+                  type="button"
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
       </div>
       {imageError === undefined ? null : <p role="alert">{imageError}</p>}
       <label className="zapp-sr-only" htmlFor="conversation-message">

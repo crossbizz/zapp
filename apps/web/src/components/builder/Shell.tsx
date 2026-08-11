@@ -20,6 +20,7 @@ import { organizationStorageKey, resolveOrganization } from '../../lib/session';
 import { Thread } from '../conversation/Thread';
 import type { ConversationImageInput } from '../conversation/Composer';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
+import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
 
 const defaultConversationWidth = 40;
@@ -810,6 +811,26 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                           }
                           resolve(accepted);
                         },
+                      },
+                    ]);
+                  });
+                }}
+                onAttachPreviewSelection={(file, selection: SelectedPreviewElement) => {
+                  const id = crypto.randomUUID();
+                  return new Promise<boolean>((resolve) => {
+                    setPreviewAttachments((current) => [
+                      ...current,
+                      {
+                        file,
+                        id,
+                        onConsumed(accepted) {
+                          setPreviewAttachments((pending) =>
+                            pending.filter((candidate) => candidate.id !== id),
+                          );
+                          if (accepted) setActivePane('conversation');
+                          resolve(accepted);
+                        },
+                        selection,
                       },
                     ]);
                   });

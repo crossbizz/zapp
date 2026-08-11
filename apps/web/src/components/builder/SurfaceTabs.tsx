@@ -6,6 +6,7 @@ import { useEffect, useRef, type ReactElement } from 'react';
 
 import type { BuilderRun } from '../../lib/api';
 import { PreviewFrame } from '../preview/PreviewFrame';
+import type { SelectedPreviewElement } from '../preview/SelectMode';
 
 export type SurfaceTab = 'preview' | 'code' | 'logs' | 'tests';
 
@@ -13,6 +14,10 @@ interface SurfaceTabsProps {
   readonly fallbackCommitSha?: string;
   readonly focusPreviewRequest: number;
   readonly onAttachPreviewCapture: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
+  readonly onAttachPreviewSelection: (
+    file: File,
+    selection: SelectedPreviewElement,
+  ) => Promise<boolean>;
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly onValueChange: (value: SurfaceTab) => void;
   readonly organizationId: string;
@@ -27,6 +32,7 @@ export function SurfaceTabs({
   fallbackCommitSha,
   focusPreviewRequest,
   onAttachPreviewCapture,
+  onAttachPreviewSelection,
   onRunCreated,
   onValueChange,
   organizationId,
@@ -54,6 +60,7 @@ export function SurfaceTabs({
               <PreviewFrame
                 {...(fallbackCommitSha === undefined ? {} : { fallbackCommitSha })}
                 onAttachToChat={onAttachPreviewCapture}
+                onAttachSelectionToChat={onAttachPreviewSelection}
                 onRunCreated={onRunCreated}
                 organizationId={organizationId}
                 projectId={projectId}

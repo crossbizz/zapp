@@ -142,9 +142,9 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Create: `src/components/preview/SelectMode.tsx`, composer attachment chips
 **Effort:** M
 
-- [ ] Binding behavior: "Select element" toolbar toggle → postMessage to zapp-client (WS-10) → hover outlines in iframe → click returns `{ selector, role, text, boundingBox, componentHint, screenshot }` → attachment chip in composer ("Selected: `<Button> 'Save'` on /settings"); attachments serialize into run message payload (AR consumes as structured context, PRD §10.0.1 step 6); screenshot attachments auto-captured for error attachments.
-- [ ] e2e: select → chip → sent message payload contains selector JSON (network assertion).
-- [ ] Commit: `feat(web): visual element attach for change requests`
+- [x] Binding behavior: "Select element" toolbar toggle → postMessage to zapp-client (WS-10) → hover outlines in iframe → click returns `{ selector, role, text, boundingBox, componentHint, screenshot }` → attachment chip in composer ("Selected: `<Button> 'Save'` on /settings"); attachments serialize into run message payload (AR consumes as structured context, PRD §10.0.1 step 6); screenshot attachments auto-captured for error attachments.
+- [x] e2e: select → chip → sent message payload contains selector JSON (network assertion).
+- [x] Commit: `feat(web): visual element attach for change requests`
 
 ### Task WEB-9 [M2]: Mission Control drawer
 
@@ -257,3 +257,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-10 WEB-7 done — shipped the public-SDK live preview, lifecycle states, bounded cursor logs, expiring share renewal, capture drawer, keyed recovery actions, and structured screenshot-to-composer handoff; final review residuals were re-scoped to WEB-7-FIX-1 and no provider call was required.
 - 2026-08-10 WEB-7-FIX-1 done — fenced workspace transitions and concurrent actions, retained screenshot keys through body consumption, refreshed terminal failure logs, acknowledged composer capacity, and passed two fresh review rounds with no provider call.
 - 2026-08-10 WEB-7-FIX-2 done — reconciled the preview Fix action with AR-19's strict public request, uploaded retry-stable screenshot evidence with the implicated commit and boot log, passed 76/76 browser and 55/55 SDK tests, and required no provider call.
+- 2026-08-11 WEB-8 done — shipped trusted iframe element selection with stale-preview fencing, public screenshot attachments, bounded canonical context, and a 77/77 web E2E acceptance run; no provider call was required.

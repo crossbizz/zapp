@@ -17,6 +17,7 @@ import { useRunEvents } from '../../hooks/useRunEvents';
 import { createControlPlaneClient, type BuilderRun } from '../../lib/api';
 import { ConsoleDrawer } from './ConsoleDrawer';
 import { PreviewToolbar, type PreviewDevice } from './PreviewToolbar';
+import { SelectMode, type SelectedPreviewElement } from './SelectMode';
 
 const previewWidths: Readonly<Record<PreviewDevice, string>> = {
   desktop: '100%',
@@ -38,6 +39,10 @@ type LogResponse = Awaited<
 interface PreviewFrameProps {
   readonly fallbackCommitSha?: string;
   readonly onAttachToChat: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
+  readonly onAttachSelectionToChat: (
+    file: File,
+    selection: SelectedPreviewElement,
+  ) => Promise<boolean>;
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly organizationId: string;
   readonly projectId: string;
@@ -274,6 +279,7 @@ function PreviewStyles(): ReactElement {
 export function PreviewFrame({
   fallbackCommitSha,
   onAttachToChat,
+  onAttachSelectionToChat,
   onRunCreated,
   organizationId,
   projectId,
@@ -293,6 +299,7 @@ export function PreviewFrame({
   const [previewUrl, setPreviewUrl] = useState<string>();
   const [shareRenewalGeneration, setShareRenewalGeneration] = useState(0);
   const [sharing, setSharing] = useState(false);
+  const [selecting, setSelecting] = useState(false);
   const attachingRef = useRef(false);
   const fixRunAttemptRef = useRef<StoredFixAttempt | undefined>(undefined);
   const fixRunPendingRef = useRef(false);
@@ -308,6 +315,10 @@ export function PreviewFrame({
   const restartKeyRef = useRef<string | undefined>(undefined);
   const restartPendingRef = useRef(false);
   const screenshotKeyRef = useRef<string | undefined>(undefined);
+  const selectionScreenshotKeyRef = useRef<string | undefined>(undefined);
+  const selectionPendingRef = useRef(false);
+  const previewGenerationRef = useRef(0);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const wakeKeyRef = useRef<string | undefined>(undefined);
   const wakePendingRef = useRef(false);
   const workspaceGenerationRef = useRef(0);
@@ -389,6 +400,8 @@ export function PreviewFrame({
     restartKeyRef.current = undefined;
     restartPendingRef.current = false;
     screenshotKeyRef.current = undefined;
+    selectionScreenshotKeyRef.current = undefined;
+    selectionPendingRef.current = false;
     wakeKeyRef.current = undefined;
     wakePendingRef.current = false;
     setLogs(undefined);
@@ -400,6 +413,7 @@ export function PreviewFrame({
     setPreviewUrl(undefined);
     setPublicShareUrl(undefined);
     setSharing(false);
+    setSelecting(false);
     if (workspaceId === undefined) return;
     void refreshLatestWorkspace(true, true).catch(() => {
       setOperationStatus('Preview status could not be refreshed.');
@@ -408,6 +422,13 @@ export function PreviewFrame({
       refreshControllerRef.current?.abort();
     };
   }, [refreshLatestWorkspace, workspaceId]);
+
+  useLayoutEffect(() => {
+    previewGenerationRef.current += 1;
+    selectionPendingRef.current = false;
+    selectionScreenshotKeyRef.current = undefined;
+    setSelecting(false);
+  }, [previewUrl]);
 
   useEffect(() => {
     if (workspaceId === undefined || lifecycle.event?.type !== 'preview.starting') return;
@@ -607,6 +628,68 @@ export function PreviewFrame({
     }
   };
 
+  const attachSelectedElement = useCallback(
+    async (selection: Omit<SelectedPreviewElement, 'path'>): Promise<void> => {
+      if (workspaceId === undefined || selectionPendingRef.current) return;
+      selectionPendingRef.current = true;
+      const generation = workspaceGenerationRef.current;
+      const previewGeneration = previewGenerationRef.current;
+      setSelecting(true);
+      setOperationStatus('Capturing the selected element.');
+      const idempotencyKey = selectionScreenshotKeyRef.current ?? crypto.randomUUID();
+      selectionScreenshotKeyRef.current = idempotencyKey;
+      try {
+        const screenshot = await createControlPlaneClient(organizationId).capturePreviewScreenshot(
+          workspaceId,
+          idempotencyKey,
+        );
+        const blob = await new Response(screenshot.body, {
+          headers: { 'content-type': screenshot.contentType },
+        }).blob();
+        if (
+          generation !== workspaceGenerationRef.current ||
+          previewGeneration !== previewGenerationRef.current
+        )
+          return;
+        selectionScreenshotKeyRef.current = undefined;
+        if (blob.size <= 0 || blob.size > maximumComposerImageBytes) {
+          setOperationStatus('The selected-element screenshot is outside the 1 byte to 8 MiB attachment limit.');
+          return;
+        }
+        const accepted = await onAttachSelectionToChat(
+          new File([blob], 'selected-element.png', { type: 'image/png' }),
+          { ...selection, path },
+        );
+        if (
+          generation !== workspaceGenerationRef.current ||
+          previewGeneration !== previewGenerationRef.current
+        )
+          return;
+        if (!accepted) {
+          setOperationStatus('The chat composer already has the maximum of 10 images.');
+          return;
+        }
+        setOperationStatus('Selected element attached to the chat composer.');
+      } catch {
+        if (
+          generation === workspaceGenerationRef.current &&
+          previewGeneration === previewGenerationRef.current
+        ) {
+          setOperationStatus('The selected element could not be attached.');
+        }
+      } finally {
+        if (
+          generation === workspaceGenerationRef.current &&
+          previewGeneration === previewGenerationRef.current
+        ) {
+          selectionPendingRef.current = false;
+          setSelecting(false);
+        }
+      }
+    },
+    [onAttachSelectionToChat, organizationId, path, workspaceId],
+  );
+
   const createFixRun = async (): Promise<void> => {
     if (fixRunPendingRef.current) return;
     fixRunPendingRef.current = true;
@@ -795,6 +878,7 @@ export function PreviewFrame({
       </div>
     ) : (
       <iframe
+        ref={iframeRef}
         key={`${previewUrl}-${String(iframeGeneration)}`}
         src={previewUrl}
         style={{ '--zapp-preview-width': previewWidths[device] } as CSSProperties}
@@ -819,6 +903,14 @@ export function PreviewFrame({
         path={path}
         {...(publicShareUrl === undefined ? {} : { shareUrl: publicShareUrl })}
         sharing={sharing}
+      />
+      <SelectMode
+        disabled={previewState !== 'ready' || selecting}
+        iframeRef={iframeRef}
+        onSelected={(selection) => {
+          void attachSelectedElement(selection);
+        }}
+        {...(previewUrl === undefined ? {} : { previewUrl })}
       />
       {previewState === 'stale' ? (
         <div className="zapp-preview-stale-banner" role="status">

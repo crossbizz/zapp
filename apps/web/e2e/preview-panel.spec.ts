@@ -531,3 +531,142 @@ test('captures a console error and attaches its screenshot to the conversation c
   await expect(page.getByLabel('Attached images')).toContainText('capacity-9.png');
   expect(screenshotKeys[2]).not.toBe(screenshotKeys[1]);
 });
+
+test('attaches a trusted selected element and sends its canonical context with the public screenshot', async ({
+  page,
+}) => {
+  let sentMessage: unknown;
+  const uploads: unknown[] = [];
+  await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'ready',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/shares`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        share: {
+          expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+          id: '01j00000000000000000000000',
+          policy: 'org',
+          url: shareUrl,
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
+    await route.fulfill({
+      body: captureFrame({
+        type: 'route_change',
+        payload: { url: new URL('/settings', appBaseUrl).toString() },
+      }),
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
+    async (route) => {
+      await route.fulfill({
+        body: Buffer.from([137, 80, 78, 71]),
+        headers: corsHeaders('image/png'),
+        status: 200,
+      });
+    },
+  );
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/attachments`, async (route) => {
+    uploads.push(route.request().postData());
+    await route.fulfill({
+      body: JSON.stringify({
+        attachmentId: previewEvidenceId,
+        byteSize: 4,
+        contentType: 'image/png',
+        kind: 'image',
+        name: 'selected-element.png',
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/messages`, async (route) => {
+    sentMessage = route.request().postDataJSON();
+    await route.fulfill({
+      body: JSON.stringify({ messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FG', sequence: 2 }),
+      headers: corsHeaders(),
+      status: 202,
+    });
+  });
+  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+    await route.fulfill({
+      body: `<!doctype html><script>
+        window.addEventListener('message', (event) => {
+          if (event.data?.type === 'zapp:selection-mode') {
+            document.body.dataset.selectionMode = String(event.data.enabled);
+          }
+        });
+      </script><h1>Preview</h1>`,
+      contentType: 'text/html',
+    });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Select element' }).click();
+  await expect(
+    page.getByTitle('Application preview').contentFrame().locator('body'),
+  ).toHaveAttribute('data-selection-mode', 'true');
+  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(() => {
+    window.parent.postMessage(
+      {
+        payload: {
+          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+          componentHint: 'Button',
+          computedRole: 'button',
+          selector: '[data-testid="save-settings"]',
+          text: 'Save',
+        },
+        type: 'zapp:element-selected',
+      },
+      window.location.origin,
+    );
+  });
+
+  await expect(page.getByLabel('Attached selections')).toContainText(
+    "Selected: <Button> 'Save' on /settings",
+  );
+  await expect(page.getByRole('button', { name: 'Remove selected Button Save' })).toBeVisible();
+  await page.getByLabel('Message the agent').fill('Move this beside the password field.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect.poll(() => uploads).toHaveLength(1);
+  await expect.poll(() => sentMessage).toBeDefined();
+  const body = sentMessage as { attachments: readonly unknown[]; content: string };
+  expect(body.attachments).toEqual([
+    expect.objectContaining({ attachmentId: previewEvidenceId, contentType: 'image/png', kind: 'image' }),
+  ]);
+  expect(JSON.parse(body.content)).toEqual({
+    message: 'Move this beside the password field.',
+    selectedElements: [
+      {
+        boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+        componentHint: 'Button',
+        path: '/settings',
+        role: 'button',
+        selector: '[data-testid="save-settings"]',
+        text: 'Save',
+      },
+    ],
+  });
+});

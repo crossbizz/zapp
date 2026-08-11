@@ -238,7 +238,22 @@ function submissionFingerprint(submission: ConversationSubmission): string {
     files: submission.files.map((file) => [file.name, file.size, file.type, file.lastModified]),
     mode: submission.mode,
     model: submission.model,
+    selectedElements: submission.selectedElements,
   });
+}
+
+function messageContent(submission: ConversationSubmission): string {
+  if (submission.selectedElements.length === 0) return submission.content;
+  return JSON.stringify({
+    message: submission.content,
+    selectedElements: submission.selectedElements,
+  });
+}
+
+function newRunAttachmentContent(submission: ConversationSubmission): string {
+  return submission.selectedElements.length === 0
+    ? 'Use these reference images with my request.'
+    : messageContent(submission);
 }
 
 function recommendedMode(content: string): CreateRunInputMode {
@@ -532,10 +547,10 @@ export function Thread({
       },
       pending.runKey,
     );
-    if (attachments.length > 0) {
+    if (attachments.length > 0 || submission.selectedElements.length > 0) {
       await client.sendRunMessage(
         created.run.id,
-        { attachments: [...attachments], content: 'Use these reference images with my request.' },
+        { attachments: [...attachments], content: newRunAttachmentContent(submission) },
         pending.newRunAttachmentKey,
       );
     }
@@ -554,7 +569,7 @@ export function Thread({
         try {
           await createControlPlaneClient(organizationId).sendRunMessage(
             currentRun.id,
-            { attachments: [...attachments], content: submission.content },
+            { attachments: [...attachments], content: messageContent(submission) },
             pending.messageKey,
           );
         } catch (error) {
