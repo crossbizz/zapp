@@ -1,6 +1,12 @@
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
+import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -105,9 +111,13 @@ const openServers: RecordingFlyServer[] = [];
 class RecordingFlyServer {
   appExists = false;
   unhealthyCandidate = false;
+  failMachineReads = false;
+  failLogReads = false;
   rejectSecretName: string | undefined;
   readonly requests: RecordedRequest[] = [];
+  readonly authorizationHeaders: string[] = [];
   readonly machines: TestMachine[] = [];
+  readonly logPages = new Map<string, unknown>();
   private nextMachine = 1;
   private readonly server = createServer((request, response) => {
     void this.handle(request, response);
@@ -143,6 +153,7 @@ class RecordingFlyServer {
     const url = new URL(request.url ?? '/', 'http://fly.test');
     const body: unknown = bodyText === '' ? undefined : JSON.parse(bodyText);
     this.requests.push({ method: request.method ?? 'GET', path: `${url.pathname}${url.search}`, body });
+    this.authorizationHeaders.push(request.headers.authorization ?? '');
 
     const appMatch = /^\/v1\/apps\/([^/]+)$/u.exec(url.pathname);
     if (request.method === 'GET' && appMatch !== null) {
@@ -184,6 +195,10 @@ class RecordingFlyServer {
 
     const machineMatch = /^\/v1\/apps\/([^/]+)\/machines\/([^/]+)$/u.exec(url.pathname);
     if (request.method === 'GET' && machineMatch !== null) {
+      if (this.failMachineReads) {
+        this.send(response, 503, { error: 'provider unavailable' });
+        return;
+      }
       const machine = this.machines.find(({ id }) => id === machineMatch[2]);
       if (machine === undefined) {
         this.send(response, 404, {});
@@ -196,6 +211,19 @@ class RecordingFlyServer {
         ];
       }
       this.send(response, 200, { ...machine, created_at: NOW });
+      return;
+    }
+
+    const logsMatch = /^\/v1\/apps\/([^/]+)\/logs$/u.exec(url.pathname);
+    if (request.method === 'GET' && logsMatch !== null) {
+      if (this.failLogReads) {
+        this.send(response, 503, { error: 'provider unavailable' });
+        return;
+      }
+      this.send(response, 200, this.logPages.get(url.searchParams.get('next_token') ?? '') ?? {
+        data: [],
+        meta: { next_token: '1779235200000000000' },
+      });
       return;
     }
 
@@ -225,6 +253,7 @@ afterEach(async () => {
 
 class RecordingVault implements FlyVaultPort {
   readonly calls: unknown[] = [];
+  readonly redactionCalls: unknown[] = [];
   values: Readonly<Record<string, string>> = {
     API_KEY: 'top-secret-api-value',
     DATABASE_URL: 'fake-database-value',
@@ -237,6 +266,11 @@ class RecordingVault implements FlyVaultPort {
         Object.keys(input.references).map((name) => [name, this.values[name] ?? '']),
       ),
     );
+  }
+
+  resolveRedactionValues(input: { readonly providerDeploymentId: string; readonly reason: string }) {
+    this.redactionCalls.push(input);
+    return Promise.resolve(this.values);
   }
 }
 
@@ -253,24 +287,39 @@ const contracts: FlyContractPort = {
   resolve: () => Promise.resolve(contract),
 };
 
-async function flyProvider(server: RecordingFlyServer) {
+async function flyProvider(server: RecordingFlyServer, apiToken = 'fly-test-token') {
   const vault = new RecordingVault();
   const usage = new RecordingUsage();
+  const domainCalls: unknown[] = [];
   const apiBaseUrl = await server.start();
   return {
     provider: createFlyDeploymentProvider({
       apiBaseUrl,
-      apiToken: 'fly-test-token',
+      logsBaseUrl: apiBaseUrl,
+      apiToken,
       organizationSlug: 'zapp-staging',
       vault,
       contracts,
       usage,
+      domains: {
+        configure(input: unknown) {
+          domainCalls.push(input);
+          return Promise.resolve({
+            hostname: 'app.example.com',
+            status: 'pending_dns',
+            dnsInstructions: [
+              { type: 'CNAME', name: 'app.example.com', value: 'target.example.net' },
+            ],
+          });
+        },
+      },
       now: () => new Date(NOW),
       sleep: () => Promise.resolve(),
       healthPollAttempts: 1,
     }),
     vault,
     usage,
+    domainCalls,
   };
 }
 
@@ -627,4 +676,494 @@ describe('DEP-4b Fly Machine deploy and rollback', () => {
     ).rejects.toMatchObject({ code: 'fly_cross_app_rollback' });
     expect(server.requests).toEqual([]);
   });
+});
+
+describe('DEP-4c Fly status and log streaming', () => {
+  it.each([
+    {
+      label: 'created Machine',
+      state: 'created',
+      checks: undefined,
+      expectedState: 'queued',
+      detail: undefined,
+    },
+    {
+      label: 'started Machine without checks',
+      state: 'started',
+      checks: undefined,
+      expectedState: 'deploying',
+      detail: undefined,
+    },
+    {
+      label: 'started Machine with pending checks',
+      state: 'started',
+      checks: [{ name: 'health', status: 'pending' }],
+      expectedState: 'deploying',
+      detail: undefined,
+    },
+    {
+      label: 'started Machine with critical checks',
+      state: 'started',
+      checks: [{ name: 'health', status: 'critical' }],
+      expectedState: 'failed',
+      detail: 'Fly Machine health checks failed.',
+    },
+    {
+      label: 'healthy started Machine',
+      state: 'started',
+      checks: [{ name: 'health', status: 'passing' }],
+      expectedState: 'ready',
+      detail: undefined,
+    },
+    {
+      label: 'stopped Machine',
+      state: 'stopped',
+      checks: undefined,
+      expectedState: 'cancelled',
+      detail: undefined,
+    },
+    {
+      label: 'failed Machine',
+      state: 'failed',
+      checks: undefined,
+      expectedState: 'failed',
+      detail: 'Fly Machine entered the failed state.',
+    },
+  ])('maps a $label without a false-ready state', async ({ state, checks, expectedState, detail }) => {
+    const server = new RecordingFlyServer();
+    const appName = flyAppName(PROJECT, PRODUCTION_ENVIRONMENT);
+    server.machines.push({
+      id: 'machine-status',
+      state,
+      config: { image: 'retained-image' },
+      ...(checks === undefined ? {} : { checks }),
+    });
+    const { provider } = await flyProvider(server);
+
+    await expect(
+      provider.getStatus(encodeFlyProviderDeploymentId(appName, 'machine-status')),
+    ).resolves.toEqual({
+      providerDeploymentId: encodeFlyProviderDeploymentId(appName, 'machine-status'),
+      state: expectedState,
+      url: `https://${appName}.fly.dev/`,
+      ...(detail === undefined ? {} : { detail }),
+      updatedAt: NOW,
+    });
+  });
+
+  it('turns a Machines API read failure into an explicit failed status', async () => {
+    const server = new RecordingFlyServer();
+    server.failMachineReads = true;
+    const appName = flyAppName(PROJECT, PRODUCTION_ENVIRONMENT);
+    const { provider } = await flyProvider(server);
+
+    await expect(
+      provider.getStatus(encodeFlyProviderDeploymentId(appName, 'machine-status')),
+    ).resolves.toEqual({
+      providerDeploymentId: encodeFlyProviderDeploymentId(appName, 'machine-status'),
+      state: 'failed',
+      detail: 'Fly status could not be retrieved.',
+      updatedAt: NOW,
+    });
+  });
+
+  it('pages the official Logs API, selects one Machine, maps streams, and redacts all vault values', async () => {
+    const server = new RecordingFlyServer();
+    const appName = flyAppName(PROJECT, PRODUCTION_ENVIRONMENT);
+    const deploymentId = encodeFlyProviderDeploymentId(appName, 'machine-logs');
+    server.logPages.set('', {
+      data: [
+        {
+          id: 'log-1',
+          attributes: {
+            level: 'info',
+            instance: 'machine-logs',
+            message: 'connected with fake-database-value',
+            timestamp: '2026-08-11T16:00:01.000Z',
+          },
+        },
+        {
+          id: 'other-machine-log',
+          attributes: {
+            level: 'error',
+            instance: 'machine-other',
+            message: 'top-secret-api-value belongs elsewhere',
+            timestamp: '2026-08-11T16:00:02.000Z',
+          },
+        },
+      ],
+      meta: { next_token: '1779235200000000001' },
+    });
+    server.logPages.set('1779235200000000001', {
+      data: [
+        {
+          id: 'log-2',
+          attributes: {
+            level: 'error',
+            instance: 'machine-logs',
+            message: 'API top-secret-api-value failed',
+            timestamp: '2026-08-11T16:00:03.000Z',
+          },
+        },
+      ],
+      meta: { next_token: '1779235200000000002' },
+    });
+    server.logPages.set('1779235200000000002', {
+      data: [],
+      meta: { next_token: '1779235200000000003' },
+    });
+    const { provider, vault } = await flyProvider(server);
+
+    const logs = [];
+    for await (const entry of provider.streamLogs(deploymentId)) logs.push(entry);
+
+    expect(logs).toEqual([
+      {
+        at: '2026-08-11T16:00:01.000Z',
+        stream: 'stdout',
+        message: 'connected with [secret:DATABASE_URL]',
+      },
+      {
+        at: '2026-08-11T16:00:03.000Z',
+        stream: 'stderr',
+        message: 'API [secret:API_KEY] failed',
+      },
+    ]);
+    expect(server.requests.filter(({ path }) => path.includes('/logs')).map(({ path }) => path)).toEqual([
+      `/v1/apps/${appName}/logs?instance=machine-logs`,
+      `/v1/apps/${appName}/logs?instance=machine-logs&next_token=1779235200000000001`,
+      `/v1/apps/${appName}/logs?instance=machine-logs&next_token=1779235200000000002`,
+    ]);
+    expect(vault.redactionCalls).toEqual([
+      { providerDeploymentId: deploymentId, reason: 'redact Fly runtime logs' },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain('fake-database-value');
+    expect(JSON.stringify(logs)).not.toContain('top-secret-api-value');
+  });
+
+  it('rejects malformed log records and provider failures with typed errors', async () => {
+    const malformedServer = new RecordingFlyServer();
+    const appName = flyAppName(PROJECT, PRODUCTION_ENVIRONMENT);
+    const deploymentId = encodeFlyProviderDeploymentId(appName, 'machine-logs');
+    malformedServer.logPages.set('', {
+      data: [{ id: 'bad-log', attributes: { message: 42 } }],
+      meta: { next_token: '1779235200000000001' },
+    });
+    const { provider: malformedProvider } = await flyProvider(malformedServer);
+
+    await expect(async () => {
+      for await (const entry of malformedProvider.streamLogs(deploymentId)) void entry;
+    }).rejects.toMatchObject({ code: 'fly_invalid_logs_response' });
+
+    const failedServer = new RecordingFlyServer();
+    failedServer.failLogReads = true;
+    const { provider: failedProvider } = await flyProvider(failedServer);
+    await expect(async () => {
+      for await (const entry of failedProvider.streamLogs(deploymentId)) void entry;
+    }).rejects.toMatchObject({ code: 'fly_api_error' });
+  });
+
+  it('uses FlyV1 authentication for scoped tokens across Machines and Logs APIs', async () => {
+    const server = new RecordingFlyServer();
+    const appName = flyAppName(PROJECT, PRODUCTION_ENVIRONMENT);
+    server.machines.push({
+      id: 'machine-scoped-auth',
+      state: 'started',
+      checks: [{ name: 'health', status: 'passing' }],
+      config: { image: 'retained-image' },
+    });
+    const { provider } = await flyProvider(server, 'fm2_scoped-test-token');
+    const deploymentId = encodeFlyProviderDeploymentId(appName, 'machine-scoped-auth');
+
+    await provider.getStatus(deploymentId);
+    for await (const entry of provider.streamLogs(deploymentId)) void entry;
+
+    expect(server.authorizationHeaders).toEqual([
+      'FlyV1 fm2_scoped-test-token',
+      'FlyV1 fm2_scoped-test-token',
+    ]);
+  });
+
+  it('rejects provider-hosted previews and delegates custom domains to the DEP-10 seam', async () => {
+    const server = new RecordingFlyServer();
+    const { provider, domainCalls } = await flyProvider(server);
+
+    await expect(
+      provider.createPreview({
+        projectId: PROJECT,
+        commitSha: COMMIT,
+        artifact: productionInput().artifact,
+        env: {},
+      }),
+    ).rejects.toMatchObject({ code: 'fly_preview_unsupported' });
+    expect(server.requests).toEqual([]);
+
+    const input = {
+      projectId: PROJECT,
+      environmentId: PRODUCTION_ENVIRONMENT,
+      hostname: 'app.example.com',
+    };
+    await expect(provider.configureDomain(input)).resolves.toEqual({
+      hostname: 'app.example.com',
+      status: 'pending_dns',
+      dnsInstructions: [
+        { type: 'CNAME', name: 'app.example.com', value: 'target.example.net' },
+      ],
+    });
+    expect(domainCalls).toEqual([input]);
+  });
+});
+
+const flyStagingRequired = ['FLY_API_TOKEN', 'FLY_ORG_SLUG'] as const;
+const flyStagingMissing: string[] = flyStagingRequired.filter(
+  (name) => process.env[name] === undefined || process.env[name] === '',
+);
+if (process.env['ZAPP_FLY_STAGING_ENABLED'] !== '1') {
+  flyStagingMissing.push('ZAPP_FLY_STAGING_ENABLED=1');
+}
+const hasFlyStagingGate = flyStagingMissing.length === 0;
+if (!hasFlyStagingGate) {
+  process.stderr.write(
+    `[@zapp/release-service] Fly staging test SKIPPED — not run, not passed: missing gate ${flyStagingMissing.join(', ')}\n`,
+  );
+}
+
+function runLiveCommand(
+  command: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly stdin?: string;
+    readonly timeoutMs: number;
+  },
+): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`${command} exceeded its staging timeout.`));
+    }, options.timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolveResult({ exitCode: code ?? 1, stdout, stderr });
+    });
+    child.stdin.end(options.stdin);
+  });
+}
+
+async function retryUntil<T>(
+  operation: () => Promise<T | undefined>,
+  attempts = 60,
+): Promise<T> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await operation().catch(() => undefined);
+    if (result !== undefined) return result;
+    if (attempt + 1 < attempts) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
+    }
+  }
+  throw new Error('The Fly staging condition did not become ready.');
+}
+
+describe('DEP-4c real Fly staging provider gate', () => {
+  it.skipIf(!hasFlyStagingGate)(
+    'builds, deploys, observes, rolls back, and cleans up one real staging app',
+    async () => {
+      const apiToken = (process.env['FLY_API_TOKEN'] ?? '').replace(
+        /^(?:Bearer|FlyV1)\s+/u,
+        '',
+      );
+      const apiAuthorization = /^(?:fm1r|fm1a|fm2)_/u.test(apiToken)
+        ? `FlyV1 ${apiToken}`
+        : `Bearer ${apiToken}`;
+      const organizationSlug = process.env['FLY_ORG_SLUG'] ?? '';
+      const projectId = newId('proj');
+      const environmentId = newId('env');
+      const releaseId = newId('rel');
+      const secretReference = newId('sec');
+      const appName = flyAppName(projectId, environmentId);
+      const runtimeProof = randomUUID();
+      const fixtureRoot = await mkdtemp(join(tmpdir(), 'zapp-fly-staging-'));
+      const dockerConfig = await mkdtemp(join(tmpdir(), 'zapp-fly-docker-'));
+      const liveEnvironment = { ...process.env, DOCKER_CONFIG: dockerConfig };
+      const liveContract = {
+        ...contract,
+        install: { command: 'true', timeout_seconds: 30 },
+        build: { command: 'true', timeout_seconds: 30 },
+        start: { command: 'node server.mjs' },
+      };
+      const rawFly = async (
+        path: string,
+        method: 'GET' | 'POST' | 'DELETE',
+        body?: unknown,
+      ): Promise<Response> =>
+        fetch(`https://api.machines.dev/v1${path}`, {
+          method,
+          headers: {
+            accept: 'application/json',
+            authorization: apiAuthorization,
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: AbortSignal.timeout(30_000),
+        });
+      const cleanupApp = async (): Promise<void> => {
+        const response = await rawFly(`/apps/${encodeURIComponent(appName)}`, 'DELETE');
+        if (![200, 202, 204, 404].includes(response.status)) {
+          throw new Error(`Fly staging cleanup failed with status ${String(response.status)}.`);
+        }
+      };
+      const writeFixture = async (version: string): Promise<void> => {
+        await writeFile(
+          join(fixtureRoot, 'Dockerfile'),
+          [
+            'FROM node:22-slim',
+            'WORKDIR /app',
+            'COPY server.mjs .',
+            'USER node',
+            'CMD ["node", "server.mjs"]',
+            '',
+          ].join('\n'),
+        );
+        await writeFile(
+          join(fixtureRoot, 'server.mjs'),
+          [
+            "import { createServer } from 'node:http';",
+            `const version = ${JSON.stringify(version)};`,
+            "createServer((request, response) => {",
+            "  response.statusCode = 200;",
+            "  response.setHeader('content-type', 'text/plain');",
+            "  response.end(request.url === '/health' ? 'ok' : `${version}:${process.env.RUNTIME_PROOF ?? 'missing'}`);",
+            "}).listen(3000, '0.0.0.0', () => console.log(`runtime-proof ${process.env.RUNTIME_PROOF ?? 'missing'}`));",
+            '',
+          ].join('\n'),
+        );
+      };
+      const sandbox: FlyBuildSandboxPort = {
+        fileExists: (path) =>
+          access(resolve(fixtureRoot, path)).then(
+            () => true,
+            () => false,
+          ),
+        writeFile: (path, contents) => writeFile(resolve(fixtureRoot, path), contents),
+        deleteFile: (path) => rm(resolve(fixtureRoot, path), { force: true }),
+        exec: (input) =>
+          runLiveCommand(input.command, input.args, {
+            cwd: resolve(fixtureRoot, input.cwd),
+            env: liveEnvironment,
+            timeoutMs: input.timeoutMs,
+          }),
+      };
+      const provider = createFlyDeploymentProvider({
+        apiToken,
+        organizationSlug,
+        vault: {
+          resolveEnvironment: () => Promise.resolve({ RUNTIME_PROOF: runtimeProof }),
+          resolveRedactionValues: () => Promise.resolve({ RUNTIME_PROOF: runtimeProof }),
+        },
+        contracts: { resolve: () => Promise.resolve(liveContract) },
+        usage: { record: () => Promise.resolve() },
+        domains: {
+          configure: () => Promise.reject(new Error('DEP-10 is outside this provider gate.')),
+        },
+        healthPollAttempts: 60,
+        healthPollIntervalMs: 2_000,
+      });
+      const deployVersion = async (commitSha: string, version: string) => {
+        await writeFixture(version);
+        const artifact = await buildFlyImage(
+          { projectId, environmentId, commitSha, contract: liveContract },
+          { sandbox },
+        );
+        return provider.deployProduction({
+          projectId,
+          environmentId,
+          releaseId,
+          commitSha,
+          artifact,
+          env: { RUNTIME_PROOF: secretReference },
+        });
+      };
+
+      try {
+        const login = await runLiveCommand(
+          'docker',
+          ['login', 'registry.fly.io', '--username', 'x', '--password-stdin'],
+          { cwd: fixtureRoot, env: liveEnvironment, stdin: apiToken, timeoutMs: 30_000 },
+        );
+        expect(login.exitCode, login.stderr).toBe(0);
+        const createResponse = await rawFly('/apps', 'POST', {
+          app_name: appName,
+          org_slug: organizationSlug,
+        });
+        expect([200, 201]).toContain(createResponse.status);
+
+        const first = await deployVersion('a'.repeat(40), 'v1');
+        await expect(provider.getStatus(first.providerDeploymentId)).resolves.toMatchObject({
+          state: 'ready',
+        });
+        await retryUntil(async () => {
+          const response = await fetch(first.url ?? '', { signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) return undefined;
+          return (await response.text()) === `v1:${runtimeProof}` ? true : undefined;
+        });
+        await retryUntil(async () => {
+          const entries = [];
+          for await (const entry of provider.streamLogs(first.providerDeploymentId)) entries.push(entry);
+          const startup = entries.find(({ message }) => message.includes('runtime-proof'));
+          if (startup === undefined) return undefined;
+          expect(startup.message).toContain('[secret:RUNTIME_PROOF]');
+          expect(startup.message).not.toContain(runtimeProof);
+          return true;
+        });
+
+        await deployVersion('b'.repeat(40), 'v2');
+        await retryUntil(async () => {
+          const response = await fetch(first.url ?? '', { signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) return undefined;
+          return (await response.text()) === `v2:${runtimeProof}` ? true : undefined;
+        });
+        await provider.rollback({
+          projectId,
+          environmentId,
+          toProviderDeploymentId: first.providerDeploymentId,
+          reason: 'DEP-4 staging rollback proof',
+        });
+        await retryUntil(async () => {
+          const response = await fetch(first.url ?? '', { signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) return undefined;
+          return (await response.text()) === `v1:${runtimeProof}` ? true : undefined;
+        });
+      } finally {
+        try {
+          await cleanupApp();
+        } finally {
+          await Promise.all([
+            rm(fixtureRoot, { recursive: true, force: true }),
+            rm(dockerConfig, { recursive: true, force: true }),
+          ]);
+        }
+      }
+    },
+    600_000,
+  );
 });

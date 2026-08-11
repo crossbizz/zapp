@@ -6,16 +6,26 @@ import {
   CompatibilityResultSchema,
   DeploymentArtifactSchema,
   DeploymentHandleSchema,
+  DeploymentLogSchema,
+  DeploymentStatusSchema,
+  DomainInputSchema,
+  DomainResultSchema,
   EnvironmentIdSchema,
   ExecutionContractSchema,
+  PreviewDeploymentInputSchema,
   ProductionDeploymentInputSchema,
   RollbackInputSchema,
   idSchema,
   type CompatibilityResult,
   type DeploymentArtifact,
   type DeploymentHandle,
+  type DeploymentLog,
   type DeploymentProvider,
+  type DeploymentStatus,
+  type DomainInput,
+  type DomainResult,
   type ExecutionContract,
+  type PreviewDeploymentInput,
   type ProductionDeploymentInput,
   type ProjectContext,
   type RollbackInput,
@@ -37,6 +47,7 @@ const FlyMachineIdSchema = z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/u)
 const FlyProviderDeploymentIdSchema = z
   .string()
   .regex(/^fly:[a-z0-9](?:[a-z0-9-]*[a-z0-9]):[A-Za-z0-9_-]+$/u);
+const FlyLogCursorSchema = z.string().regex(/^[1-9][0-9]*$/u);
 
 const FlyMachineConfigSchema = z
   .object({
@@ -80,6 +91,7 @@ const FlyMachineSchema = z
       )
       .optional(),
     created_at: z.string().datetime({ offset: true }).optional(),
+    updated_at: z.string().datetime({ offset: true }).optional(),
   })
   .passthrough();
 type FlyMachine = z.infer<typeof FlyMachineSchema>;
@@ -116,6 +128,28 @@ const FlyBuildExecResultSchema = z
   })
   .strict();
 
+const FlyLogEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    attributes: z
+      .object({
+        level: z.string().trim().min(1),
+        instance: FlyMachineIdSchema,
+        message: z.string(),
+        timestamp: z.string().datetime({ offset: true }),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+const FlyLogsPageSchema = z
+  .object({
+    data: z.array(FlyLogEntrySchema),
+    meta: z.object({ next_token: FlyLogCursorSchema }).passthrough(),
+  })
+  .passthrough();
+type FlyLogsPage = z.infer<typeof FlyLogsPageSchema>;
+
 export interface FlyBuildSandboxPort {
   fileExists(path: string): Promise<boolean>;
   writeFile(path: string, contents: string): Promise<void>;
@@ -136,6 +170,11 @@ export interface FlyVaultPort {
     readonly references: Readonly<Record<string, string>>;
     readonly reason: string;
   }): Promise<unknown>;
+  /** Returns the deployment's current plaintext values only for in-process log scrubbing. */
+  resolveRedactionValues(input: {
+    readonly providerDeploymentId: string;
+    readonly reason: string;
+  }): Promise<unknown>;
 }
 
 /** Loads the immutable contract recorded for the exact commit being deployed. */
@@ -151,13 +190,20 @@ export interface FlyUsagePort {
   record(input: FlyUsageEntry): Promise<void>;
 }
 
+/** DEP-10 owns provider-domain behavior; DEP-4 only exposes the provider interface seam. */
+export interface FlyDomainPort {
+  configure(input: DomainInput): Promise<unknown>;
+}
+
 export interface FlyDeploymentProviderDependencies {
   readonly apiBaseUrl?: string;
+  readonly logsBaseUrl?: string;
   readonly apiToken: string;
   readonly organizationSlug: string;
   readonly vault: FlyVaultPort;
   readonly contracts: FlyContractPort;
   readonly usage: FlyUsagePort;
+  readonly domains: FlyDomainPort;
   readonly fetch?: typeof fetch;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
@@ -175,12 +221,21 @@ export class FlyProviderError extends Error {
       | 'fly_invalid_deployment_id'
       | 'fly_invalid_artifact'
       | 'fly_invalid_contract'
-      | 'fly_invalid_vault_response',
+      | 'fly_invalid_vault_response'
+      | 'fly_invalid_logs_response'
+      | 'fly_logs_cursor_invalid'
+      | 'fly_preview_unsupported',
     message: string,
   ) {
     super(message);
     this.name = 'FlyProviderError';
   }
+}
+
+function flyAuthorizationHeader(apiToken: string): string {
+  const token = z.string().trim().min(1).parse(apiToken).replace(/^(?:Bearer|FlyV1)\s+/u, '');
+  const scheme = /^(?:fm1r|fm1a|fm2)_/u.test(token) ? 'FlyV1' : 'Bearer';
+  return `${scheme} ${token}`;
 }
 
 function providerSegment(value: string, prefix: 'proj' | 'env'): string {
@@ -308,7 +363,7 @@ class FlyMachinesApiClient {
     private readonly doFetch: typeof fetch,
   ) {
     this.baseUrl = z.string().url().parse(apiBaseUrl).replace(/\/$/u, '');
-    z.string().min(1).parse(apiToken);
+    flyAuthorizationHeader(apiToken);
   }
 
   async appExists(appName: string): Promise<boolean> {
@@ -407,7 +462,7 @@ class FlyMachinesApiClient {
         method: input.method,
         headers: {
           accept: 'application/json',
-          authorization: `Bearer ${this.apiToken}`,
+          authorization: flyAuthorizationHeader(this.apiToken),
           ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
@@ -431,6 +486,60 @@ class FlyMachinesApiClient {
     } catch {
       throw new FlyProviderError('fly_api_error', 'The Fly Machines API returned invalid JSON.');
     }
+  }
+}
+
+class FlyLogsApiClient {
+  private readonly baseUrl: string;
+
+  constructor(
+    logsBaseUrl: string,
+    private readonly apiToken: string,
+    private readonly doFetch: typeof fetch,
+  ) {
+    this.baseUrl = z.string().url().parse(logsBaseUrl).replace(/\/$/u, '');
+    flyAuthorizationHeader(apiToken);
+  }
+
+  async getPage(appName: string, machineId: string, cursor: string): Promise<FlyLogsPage> {
+    const query = new URLSearchParams({ instance: machineId });
+    if (cursor !== '') query.set('next_token', cursor);
+    let response: Response;
+    try {
+      response = await this.doFetch(
+        `${this.baseUrl}/apps/${encodeURIComponent(appName)}/logs?${query.toString()}`,
+        {
+          method: 'GET',
+          headers: {
+            accept: 'application/json',
+            authorization: flyAuthorizationHeader(this.apiToken),
+          },
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch {
+      throw new FlyProviderError('fly_api_error', 'The Fly Logs API could not be reached.');
+    }
+    if (response.status !== 200) {
+      throw new FlyProviderError(
+        'fly_api_error',
+        `The Fly Logs API rejected an operation (${String(response.status)}).`,
+      );
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new FlyProviderError('fly_invalid_logs_response', 'The Fly Logs API returned invalid JSON.');
+    }
+    const parsed = FlyLogsPageSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new FlyProviderError(
+        'fly_invalid_logs_response',
+        'The Fly Logs API returned an invalid log page.',
+      );
+    }
+    return parsed.data;
   }
 }
 
@@ -523,18 +632,69 @@ function isHealthy(machine: FlyMachine): boolean {
   );
 }
 
-type FlyProductionProvider = Pick<
-  DeploymentProvider,
-  'detectCompatibility' | 'deployProduction' | 'rollback'
->;
+function flyMachineStatus(machine: FlyMachine): {
+  readonly state: DeploymentStatus['state'];
+  readonly detail?: string;
+} {
+  if (isHealthy(machine)) return { state: 'ready' };
+  const checkFailed = machine.checks?.some(({ status }) =>
+    ['critical', 'failed', 'failing'].includes(status.toLowerCase()),
+  );
+  if (checkFailed === true) {
+    return { state: 'failed', detail: 'Fly Machine health checks failed.' };
+  }
+  if (machine.state === 'created') return { state: 'queued' };
+  if (['starting', 'replacing', 'started'].includes(machine.state)) return { state: 'deploying' };
+  if (['stopping', 'stopped', 'destroying', 'destroyed'].includes(machine.state)) {
+    return { state: 'cancelled' };
+  }
+  if (machine.state === 'failed') {
+    return { state: 'failed', detail: 'Fly Machine entered the failed state.' };
+  }
+  return { state: 'failed', detail: 'Fly Machine returned an unknown lifecycle state.' };
+}
+
+function redactionValues(value: unknown): readonly { readonly name: string; readonly value: string }[] {
+  const parsed = ResolvedEnvironmentSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new FlyProviderError(
+      'fly_invalid_vault_response',
+      'The release vault returned invalid log redaction values.',
+    );
+  }
+  return Object.entries(parsed.data)
+    .filter(([, secret]) => secret !== '')
+    .map(([name, secret]) => ({ name, value: secret }))
+    .sort((left, right) => right.value.length - left.value.length || left.name.localeCompare(right.name));
+}
+
+function redactLogMessage(
+  message: string,
+  values: readonly { readonly name: string; readonly value: string }[],
+): string {
+  return values.reduce(
+    (redacted, secret) => redacted.split(secret.value).join(`[secret:${secret.name}]`),
+    message,
+  );
+}
+
+function logStream(level: string): DeploymentLog['stream'] {
+  return ['error', 'fatal', 'panic'].includes(level.toLowerCase()) ? 'stderr' : 'stdout';
+}
 
 export function createFlyDeploymentProvider(
   dependencies: FlyDeploymentProviderDependencies,
-): FlyProductionProvider {
+): DeploymentProvider {
   const apiBaseUrl = dependencies.apiBaseUrl ?? 'https://api.machines.dev/v1';
+  const logsBaseUrl = dependencies.logsBaseUrl ?? 'https://api.fly.io/api/v1';
   const organizationSlug = z.string().trim().min(1).max(256).parse(dependencies.organizationSlug);
   const client = new FlyMachinesApiClient(
     apiBaseUrl,
+    dependencies.apiToken,
+    dependencies.fetch ?? fetch,
+  );
+  const logsClient = new FlyLogsApiClient(
+    logsBaseUrl,
     dependencies.apiToken,
     dependencies.fetch ?? fetch,
   );
@@ -616,6 +776,16 @@ export function createFlyDeploymentProvider(
   return {
     detectCompatibility: detectFlyCompatibility,
 
+    createPreview(inputValue: PreviewDeploymentInput): Promise<DeploymentHandle> {
+      PreviewDeploymentInputSchema.parse(inputValue);
+      return Promise.reject(
+        new FlyProviderError(
+          'fly_preview_unsupported',
+          'Fly provider-hosted previews are unsupported; zapp previews run in Modal sandboxes.',
+        ),
+      );
+    },
+
     async deployProduction(inputValue: ProductionDeploymentInput): Promise<DeploymentHandle> {
       const input = validateProductionInput(inputValue);
       const appName = flyAppName(input.projectId, input.environmentId);
@@ -651,6 +821,68 @@ export function createFlyDeploymentProvider(
         environmentId: input.environmentId,
         releaseId: input.releaseId,
       });
+    },
+
+    async getStatus(providerDeploymentIdValue: string): Promise<DeploymentStatus> {
+      const identity = decodeFlyProviderDeploymentId(providerDeploymentIdValue);
+      try {
+        const machine = await client.getMachine(identity.appName, identity.machineId);
+        const status = flyMachineStatus(machine);
+        return DeploymentStatusSchema.parse({
+          providerDeploymentId: providerDeploymentIdValue,
+          ...status,
+          url: new URL(`https://${identity.appName}.fly.dev`).toString(),
+          updatedAt: machine.updated_at ?? machine.created_at ?? now().toISOString(),
+        });
+      } catch {
+        return DeploymentStatusSchema.parse({
+          providerDeploymentId: providerDeploymentIdValue,
+          state: 'failed',
+          detail: 'Fly status could not be retrieved.',
+          updatedAt: now().toISOString(),
+        });
+      }
+    },
+
+    async *streamLogs(providerDeploymentIdValue: string): AsyncIterable<DeploymentLog> {
+      const identity = decodeFlyProviderDeploymentId(providerDeploymentIdValue);
+      const secrets = redactionValues(
+        await dependencies.vault.resolveRedactionValues({
+          providerDeploymentId: providerDeploymentIdValue,
+          reason: 'redact Fly runtime logs',
+        }),
+      );
+      const seenCursors = new Set<string>();
+      let cursor = '';
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        if (seenCursors.has(cursor)) {
+          throw new FlyProviderError(
+            'fly_logs_cursor_invalid',
+            'The Fly Logs API repeated a pagination cursor.',
+          );
+        }
+        seenCursors.add(cursor);
+        const page = await logsClient.getPage(identity.appName, identity.machineId, cursor);
+        for (const record of page.data) {
+          if (record.attributes.instance !== identity.machineId) continue;
+          yield DeploymentLogSchema.parse({
+            at: record.attributes.timestamp,
+            stream: logStream(record.attributes.level),
+            message: redactLogMessage(record.attributes.message, secrets),
+          });
+        }
+        if (page.data.length === 0) return;
+        cursor = page.meta.next_token;
+      }
+      throw new FlyProviderError(
+        'fly_logs_cursor_invalid',
+        'The Fly Logs API exceeded the pagination limit.',
+      );
+    },
+
+    async configureDomain(inputValue: DomainInput): Promise<DomainResult> {
+      const input = DomainInputSchema.parse(inputValue);
+      return DomainResultSchema.parse(await dependencies.domains.configure(input));
     },
 
     async rollback(inputValue: RollbackInput): Promise<DeploymentHandle> {

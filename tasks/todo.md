@@ -200,7 +200,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-1 Release records + ReleasePort
 - [x] DEP-2 Three-state readiness check
 - [x] DEP-3 Deployment type classification
-- [ ] DEP-4 Fly.io container adapter
+- [x] DEP-4 Fly.io container adapter
 - [ ] DEP-5 Vercel adapter
 - [ ] DEP-6 Staged deploy workflow (safe go-live)
 - [ ] DEP-7 Production health + prod-safe smoke
