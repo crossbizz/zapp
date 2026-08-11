@@ -157,6 +157,15 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] **Verify/review/ship:** the cleanup unit regression preserves siblings while removing the exact output tree; the exact build-to-88-E2E sequence plus web lint/typecheck/build and diff checks pass; run at most two fresh review rounds, exiting at zero Critical/Important findings; no provider call is required.
 - [x] Commit: `fix(web): isolate e2e Next build output`
 
+### Task WEB-COLD-FIX-2 — align the repository test contract with isolated E2E startup
+
+**Files:** Modify: `packages/config/test/turbo.test.ts`, `docs/plans/08-web-ux.md`, `tasks/todo.md`
+
+- [x] **RED:** `pnpm --filter @zapp/config test` rejects the WEB-COLD-FIX-1 test command because the cross-package manifest contract still expects bare `playwright test`.
+- [x] **GREEN:** assert the shipped unit-regression-plus-Playwright command while retaining the no-shared-rebuild `test:e2e` contract.
+- [x] **Verify/review/ship:** the config package suite and full pre-push gate pass; one focused review exits when the manifest contract matches the shipped command with no scope expansion; no provider call is required.
+- [x] Commit: `test(config): align isolated web test contract`
+
 ### Task WEB-9 [M2]: Mission Control drawer
 
 **Files:** Create: `src/components/mission-control/{Overview,TaskGraph,Agents,Activity,FilesCommits,Tests,Approvals,Risks}.tsx`
@@ -249,6 +258,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-11 WEB-COLD-FIX-2 done — Updated the stale cross-package manifest assertion exposed by the uncached OPS-4 pre-push gate; the config suite now covers the shipped cleanup-unit-plus-Playwright command without changing build scheduling, and no provider call was required.
 - 2026-08-11 WEB-COLD-FIX-1 done — Removed only the absolute web `.next` before fixture ports bind, added exact-target/tree/sibling coverage, and passed final 2/2 unit plus build→88/88 E2E, lint, typecheck, and capped review; the previously captured cold manifest/chunk failure was the RED while one fresh pre-fix rerun was non-reproducing, and no provider call was required.
 - 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
 - 2026-08-05 WEB-2 done — shipped semantic Tailwind v4 tokens and 23 React components with CI-wired Storybook axe (23/23), Next+Vite package-boundary proofs, independent review clean after three rounds, UI 16/16, web 19/19, and the uncached repository gate passed 38/38.

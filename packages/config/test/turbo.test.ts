@@ -43,7 +43,9 @@ describe('Turbo task graph', () => {
   });
 
   it('keeps web tests from rebuilding shared dependency artifacts', () => {
-    expect(webManifest.scripts?.['test']).toBe('playwright test');
+    expect(webManifest.scripts?.['test']).toBe(
+      'tsx --test test/next-dev-output.test.ts && playwright test',
+    );
     expect(webManifest.scripts?.['test:e2e']).toBe(
       '../../node_modules/.bin/turbo run test --filter=@zapp/web',
     );
