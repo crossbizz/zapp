@@ -12,6 +12,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -70,6 +71,21 @@ export const workspaces = pgTable(
     }),
     /** Latest provider snapshot; null when none exists or it has expired (PRD §18.8). */
     snapshotRef: text('snapshot_ref'),
+    /** Durable usage baseline/accumulators; the sandbox process is never the accounting source. */
+    usageOperationKey: text('usage_operation_key'),
+    usageLastSampleAt: timestamp('usage_last_sample_at', { withTimezone: true }),
+    usageLastCpuMicros: bigint('usage_last_cpu_micros', { mode: 'number' }),
+    usageCpuSeconds: numeric('usage_cpu_seconds', { precision: 24, scale: 6 }),
+    usageMemoryGibSeconds: numeric('usage_memory_gib_seconds', { precision: 24, scale: 6 }),
+    usageCpuSecondUsd: numeric('usage_cpu_second_usd', { precision: 18, scale: 12 }),
+    usageMemoryGibSecondUsd: numeric('usage_memory_gib_second_usd', {
+      precision: 18,
+      scale: 12,
+    }),
+    usageCreditsPerUsd: numeric('usage_credits_per_usd', { precision: 18, scale: 6 }),
+    usageFinalizedAt: timestamp('usage_finalized_at', { withTimezone: true }),
+    usageCpuDeliveredAt: timestamp('usage_cpu_delivered_at', { withTimezone: true }),
+    usageMemoryDeliveredAt: timestamp('usage_memory_delivered_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
     terminatedAt: timestamp('terminated_at', { withTimezone: true }),
@@ -87,6 +103,10 @@ export const workspaces = pgTable(
     check(
       'workspaces_preview_monitor_disabled_check',
       sql`${t.previewMonitorEnabled} or (${t.previewMonitorOwnerId} is null and ${t.previewMonitorLeaseExpiresAt} is null)`,
+    ),
+    check(
+      'workspaces_usage_state_complete_check',
+      sql`((${t.usageOperationKey} is null and num_nonnulls(${t.usageLastSampleAt}, ${t.usageLastCpuMicros}, ${t.usageCpuSeconds}, ${t.usageMemoryGibSeconds}, ${t.usageCpuSecondUsd}, ${t.usageMemoryGibSecondUsd}, ${t.usageCreditsPerUsd}, ${t.usageFinalizedAt}, ${t.usageCpuDeliveredAt}, ${t.usageMemoryDeliveredAt}) = 0) or (${t.usageOperationKey} is not null and num_nonnulls(${t.usageLastSampleAt}, ${t.usageLastCpuMicros}, ${t.usageCpuSeconds}, ${t.usageMemoryGibSeconds}, ${t.usageCpuSecondUsd}, ${t.usageMemoryGibSecondUsd}, ${t.usageCreditsPerUsd}) = 7)) and (num_nonnulls(${t.usageCpuDeliveredAt}, ${t.usageMemoryDeliveredAt}) = 0 or ${t.usageFinalizedAt} is not null)`,
     ),
     // The reaper and the reconciler both sweep by (tenant, status); the project
     // index serves "which sandboxes does this project have running".

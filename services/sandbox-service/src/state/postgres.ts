@@ -251,7 +251,6 @@ export function createPostgresWorkspaceStateStore(
         .where(
           and(
             eq(workspaces.status, 'ready'),
-            eq(workspaces.previewMonitorEnabled, true),
             isNull(workspaces.terminatedAt),
           ),
         );

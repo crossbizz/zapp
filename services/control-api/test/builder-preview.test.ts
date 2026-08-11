@@ -16,7 +16,7 @@ import {
   type Harness,
   type TestSession,
 } from './support/harness.js';
-import { InMemoryTenantData } from './support/tenant-db.js';
+import { EMPTY_WORKSPACE_USAGE, InMemoryTenantData } from './support/tenant-db.js';
 
 const OWNER: AuthIdentity = {
   externalId: 'builder-preview-owner',
@@ -275,6 +275,7 @@ async function seedWorkspace(wired: Wired): Promise<{ project: Project; workspac
     previewMonitorOwnerId: null,
     previewMonitorLeaseExpiresAt: null,
     snapshotRef: null,
+    ...EMPTY_WORKSPACE_USAGE,
     createdAt: new Date('2026-08-10T19:00:00.000Z'),
     lastActiveAt: new Date('2026-08-10T20:00:00.000Z'),
     terminatedAt: null,

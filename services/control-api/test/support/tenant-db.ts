@@ -71,6 +71,33 @@ import {
   NO_SYNC,
 } from '../../src/tenant/vocabulary.js';
 
+export const EMPTY_WORKSPACE_USAGE = {
+  usageOperationKey: null,
+  usageLastSampleAt: null,
+  usageLastCpuMicros: null,
+  usageCpuSeconds: null,
+  usageMemoryGibSeconds: null,
+  usageCpuSecondUsd: null,
+  usageMemoryGibSecondUsd: null,
+  usageCreditsPerUsd: null,
+  usageFinalizedAt: null,
+  usageCpuDeliveredAt: null,
+  usageMemoryDeliveredAt: null,
+} as const satisfies Pick<
+  Workspace,
+  | 'usageOperationKey'
+  | 'usageLastSampleAt'
+  | 'usageLastCpuMicros'
+  | 'usageCpuSeconds'
+  | 'usageMemoryGibSeconds'
+  | 'usageCpuSecondUsd'
+  | 'usageMemoryGibSecondUsd'
+  | 'usageCreditsPerUsd'
+  | 'usageFinalizedAt'
+  | 'usageCpuDeliveredAt'
+  | 'usageMemoryDeliveredAt'
+>;
+
 /**
  * The tenant handle, in memory, for the route suites.
  *
@@ -1161,6 +1188,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           previewMonitorOwnerId: null,
           previewMonitorLeaseExpiresAt: null,
           snapshotRef: null,
+          ...EMPTY_WORKSPACE_USAGE,
           createdAt: input.now,
           lastActiveAt: null,
           terminatedAt: null,

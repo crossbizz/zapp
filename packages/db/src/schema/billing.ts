@@ -107,7 +107,7 @@ export const usageLedger = pgTable(
 
 const COMPLETION_STATES = ['claimed', 'completed'] as const;
 const OUTBOX_STATES = ['pending', 'published', 'delivered'] as const;
-const CORRECTION_STATES = ['pending', 'delivered'] as const;
+const CORRECTION_STATES = ['pending', 'confirmed'] as const;
 
 /**
  * ADR-0025's one authoritative accounting row per run. Reservations and usage
@@ -268,7 +268,9 @@ export const usageReconciliationCorrections = pgTable(
     status: text('status', { enum: CORRECTION_STATES }).notNull(),
     attempts: integer('attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    submissionClaimedAt: timestamp('submission_claimed_at', { withTimezone: true }),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('usage_reconciliation_corrections_operation_idx').on(t.operationKey),

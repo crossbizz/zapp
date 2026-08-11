@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { idSchema } from '@zapp/contracts';
 import { accountingLeaderLeases, projects, type Database } from '@zapp/db';
@@ -57,8 +57,23 @@ interface StorageUsageLedgerPort {
 export interface DailyStorageClaimPort {
   claim(
     bucket: { readonly from: string; readonly to: string },
-  ): Promise<'acquired' | 'completed' | 'busy'>;
-  complete(bucket: { readonly from: string; readonly to: string }): Promise<void>;
+  ): Promise<
+    | { readonly status: 'acquired'; readonly leaseToken: string; readonly renewAfterMs: number }
+    | { readonly status: 'completed' | 'busy' }
+  >;
+  renew(
+    bucket: { readonly from: string; readonly to: string },
+    leaseToken: string,
+  ): Promise<boolean>;
+  runFenced<Result>(
+    bucket: { readonly from: string; readonly to: string },
+    leaseToken: string,
+    operation: () => Promise<Result>,
+  ): Promise<Result>;
+  complete(
+    bucket: { readonly from: string; readonly to: string },
+    leaseToken: string,
+  ): Promise<void>;
 }
 
 export interface DailyStorageCollector {
@@ -76,6 +91,7 @@ export function createDailyStorageCollector(options: {
   readonly sandboxStorage: SandboxStorageMeasurementPort;
   readonly ledger: StorageUsageLedgerPort;
   readonly claims?: DailyStorageClaimPort;
+  readonly claimTimers?: StorageCollectorTimers;
   readonly pricing: PricingConfig;
 }): DailyStorageCollector {
   return {
@@ -87,28 +103,73 @@ export function createDailyStorageCollector(options: {
       const bucketFromDate = new Date(bucketToDate.getTime() - DAY_MS);
       const bucket = { from: bucketFromDate.toISOString(), to: bucketToDate.toISOString() };
       const claim = await options.claims?.claim(bucket);
-      if (claim === 'completed' || claim === 'busy') {
+      if (claim?.status === 'completed' || claim?.status === 'busy') {
         return { projects: 0, recorded: 0 };
       }
+      const timers =
+        options.claimTimers ??
+        ({
+          setInterval: (callback, delayMs) => setInterval(callback, delayMs),
+          clearInterval: (handle) => {
+            clearInterval(handle as ReturnType<typeof setInterval>);
+          },
+        } satisfies StorageCollectorTimers);
+      let renewal = Promise.resolve();
+      let ownershipError: Error | undefined;
+      const renew = (): void => {
+        if (claim?.status !== 'acquired' || ownershipError !== undefined) return;
+        renewal = renewal.then(async () => {
+          try {
+            if (!(await options.claims?.renew(bucket, claim.leaseToken))) {
+              ownershipError = new Error('daily storage lease ownership was lost');
+            }
+          } catch (error: unknown) {
+            ownershipError =
+              error instanceof Error
+                ? error
+                : new Error('daily storage lease renewal failed');
+          }
+        });
+      };
+      const heartbeat =
+        claim?.status === 'acquired'
+          ? timers.setInterval(renew, claim.renewAfterMs)
+          : undefined;
+      const assertOwnership = async (): Promise<void> => {
+        await renewal;
+        if (ownershipError !== undefined) throw ownershipError;
+      };
+      const runFenced = async <Result>(operation: () => Promise<Result>): Promise<Result> => {
+        await assertOwnership();
+        if (claim?.status !== 'acquired') return operation();
+        if (options.claims === undefined) {
+          throw new Error('daily storage claim port is unavailable');
+        }
+        return options.claims.runFenced(bucket, claim.leaseToken, operation);
+      };
       const day = bucket.from.slice(0, 10);
       const occurredAt = new Date(bucketToDate.getTime() - 1).toISOString();
-      const projects = z
-        .array(MeteredProjectSchema)
-        .parse(await options.projects.listMeteredProjects());
-      let recorded = 0;
+      try {
+        const projects = z
+          .array(MeteredProjectSchema)
+          .parse(await options.projects.listMeteredProjects());
+        await assertOwnership();
+        let recorded = 0;
 
-      for (const project of projects) {
-        const artifactOperationKey = stableOperationKey('artifact', project, day);
-        const priorArtifact = await options.ledger.findByOperationKey?.(
-          project.organizationId,
-          artifactOperationKey,
-        );
-        if (priorArtifact === undefined) {
-          const artifactBytes = ByteCountSchema.parse(
-            await options.artifactStorage.measurePrefixBytes(project),
-          );
-          const artifactQuantity = bytesToScaledGib(artifactBytes);
-          if (artifactQuantity > 0n) {
+        for (const project of projects) {
+          await assertOwnership();
+          const artifactOperationKey = stableOperationKey('artifact', project, day);
+          recorded += await runFenced(async () => {
+            const priorArtifact = await options.ledger.findByOperationKey?.(
+              project.organizationId,
+              artifactOperationKey,
+            );
+            if (priorArtifact !== undefined) return 0;
+            const artifactBytes = ByteCountSchema.parse(
+              await options.artifactStorage.measurePrefixBytes(project),
+            );
+            const artifactQuantity = bytesToScaledGib(artifactBytes);
+            if (artifactQuantity === 0n) return 0;
             await options.ledger.recordUsage(
               storageEntry({
                 project,
@@ -120,23 +181,24 @@ export function createDailyStorageCollector(options: {
                 pricing: options.pricing,
               }),
             );
-            recorded += 1;
-          }
-        }
+            return 1;
+          });
+          await assertOwnership();
 
-        const sandboxOperationKey = stableOperationKey('sandbox', project, day);
-        const priorSandbox = await options.ledger.findByOperationKey?.(
-          project.organizationId,
-          sandboxOperationKey,
-        );
-        if (priorSandbox === undefined) {
-          const sandbox = SandboxStorageBytesSchema.parse(
-            await options.sandboxStorage.measureProjectBytes(project),
-          );
-          const storageQuantity = bytesToScaledGib(
-            (sandbox.snapshotBytes + sandbox.volumeBytes) * DAILY_STORAGE_HOURS,
-          );
-          if (storageQuantity > 0n) {
+          const sandboxOperationKey = stableOperationKey('sandbox', project, day);
+          recorded += await runFenced(async () => {
+            const priorSandbox = await options.ledger.findByOperationKey?.(
+              project.organizationId,
+              sandboxOperationKey,
+            );
+            if (priorSandbox !== undefined) return 0;
+            const sandbox = SandboxStorageBytesSchema.parse(
+              await options.sandboxStorage.measureProjectBytes(project),
+            );
+            const storageQuantity = bytesToScaledGib(
+              (sandbox.snapshotBytes + sandbox.volumeBytes) * DAILY_STORAGE_HOURS,
+            );
+            if (storageQuantity === 0n) return 0;
             await options.ledger.recordUsage(
               storageEntry({
                 project,
@@ -148,13 +210,21 @@ export function createDailyStorageCollector(options: {
                 pricing: options.pricing,
               }),
             );
-            recorded += 1;
-          }
+            return 1;
+          });
+          await assertOwnership();
         }
-      }
 
-      await options.claims?.complete(bucket);
-      return { projects: projects.length, recorded };
+        if (heartbeat !== undefined) timers.clearInterval(heartbeat);
+        await assertOwnership();
+        if (claim?.status === 'acquired') {
+          await options.claims?.complete(bucket, claim.leaseToken);
+        }
+        return { projects: projects.length, recorded };
+      } finally {
+        if (heartbeat !== undefined) timers.clearInterval(heartbeat);
+        await renewal;
+      }
     },
   };
 }
@@ -189,7 +259,7 @@ export function createR2ArtifactStorageMeasurement(
   return {
     async measurePrefixBytes(rawProject) {
       const project = MeteredProjectSchema.parse(rawProject);
-      const prefix = `${project.organizationId}/${project.projectId}/`;
+      const prefix = `org/${project.organizationId}/project/${project.projectId}/`;
       let continuationToken: string | undefined;
       let bytes = 0n;
       do {
@@ -245,34 +315,85 @@ export function createDatabaseDailyStorageClaim(options: {
     async claim(bucket) {
       const instant = now();
       const name = nameFor(bucket);
+      const leaseToken = `${options.owner}:${randomUUID()}`;
       const [claimed] = await options.database
         .insert(accountingLeaderLeases)
         .values({
           name,
-          owner: options.owner,
+          owner: leaseToken,
           expiresAt: new Date(instant.getTime() + leaseMs),
         })
         .onConflictDoUpdate({
           target: accountingLeaderLeases.name,
-          set: { owner: options.owner, expiresAt: new Date(instant.getTime() + leaseMs) },
+          set: { owner: leaseToken, expiresAt: new Date(instant.getTime() + leaseMs) },
           setWhere: sql`${accountingLeaderLeases.expiresAt} <= ${instant.toISOString()}::timestamptz and ${accountingLeaderLeases.owner} <> 'completed'`,
         })
         .returning({ owner: accountingLeaderLeases.owner });
-      if (claimed?.owner === options.owner) return 'acquired';
+      if (claimed?.owner === leaseToken) {
+        return { status: 'acquired', leaseToken, renewAfterMs: Math.max(1, Math.floor(leaseMs / 3)) };
+      }
       const [existing] = await options.database
         .select({ owner: accountingLeaderLeases.owner })
         .from(accountingLeaderLeases)
         .where(eq(accountingLeaderLeases.name, name));
-      return existing?.owner === 'completed' ? 'completed' : 'busy';
+      return { status: existing?.owner === 'completed' ? 'completed' : 'busy' };
     },
-    async complete(bucket) {
+    async renew(bucket, leaseToken) {
+      const instant = now();
+      const [renewed] = await options.database
+        .update(accountingLeaderLeases)
+        .set({ expiresAt: new Date(instant.getTime() + leaseMs) })
+        .where(
+          and(
+            eq(accountingLeaderLeases.name, nameFor(bucket)),
+            eq(accountingLeaderLeases.owner, leaseToken),
+            sql`${accountingLeaderLeases.expiresAt} > ${instant.toISOString()}::timestamptz`,
+          ),
+        )
+        .returning({ name: accountingLeaderLeases.name });
+      return renewed !== undefined;
+    },
+    async runFenced(bucket, leaseToken, operation) {
+      return await options.database.transaction(async (tx) => {
+        const instant = now();
+        const [lease] = await tx
+          .select({ owner: accountingLeaderLeases.owner, expiresAt: accountingLeaderLeases.expiresAt })
+          .from(accountingLeaderLeases)
+          .where(eq(accountingLeaderLeases.name, nameFor(bucket)))
+          .limit(1)
+          .for('update');
+        if (
+          lease?.owner !== leaseToken ||
+          lease.expiresAt.getTime() <= instant.getTime()
+        ) {
+          throw new Error('daily storage lease ownership was lost');
+        }
+        const result = await operation();
+        const renewedAt = now();
+        const [renewed] = await tx
+          .update(accountingLeaderLeases)
+          .set({ expiresAt: new Date(renewedAt.getTime() + leaseMs) })
+          .where(
+            and(
+              eq(accountingLeaderLeases.name, nameFor(bucket)),
+              eq(accountingLeaderLeases.owner, leaseToken),
+            ),
+          )
+          .returning({ name: accountingLeaderLeases.name });
+        if (renewed === undefined) {
+          throw new Error('daily storage lease ownership was lost');
+        }
+        return result;
+      });
+    },
+    async complete(bucket, leaseToken) {
       const [completed] = await options.database
         .update(accountingLeaderLeases)
         .set({ owner: 'completed', expiresAt: new Date('9999-12-31T23:59:59.999Z') })
         .where(
           and(
             eq(accountingLeaderLeases.name, nameFor(bucket)),
-            eq(accountingLeaderLeases.owner, options.owner),
+            eq(accountingLeaderLeases.owner, leaseToken),
           ),
         )
         .returning({ name: accountingLeaderLeases.name });
@@ -320,10 +441,11 @@ export function createDailyStorageCollectorLifecycle(options: {
   };
 
   return {
-    async start(): Promise<void> {
+    start(): Promise<void> {
       if (closed) throw new Error('daily storage collector lifecycle is closed');
-      await options.collector.collect(now());
       handle = timers.setInterval(poll, DAY_MS);
+      poll();
+      return Promise.resolve();
     },
     async close(): Promise<void> {
       closed = true;

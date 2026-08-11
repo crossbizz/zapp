@@ -915,6 +915,10 @@ export interface ModalWorkspaceSandbox {
   agentRequest(request: AgentHttpRequest): Promise<AgentHttpResponse>;
   agentStream(request: AgentHttpRequest): Promise<AgentHttpStream>;
   tunnels(timeoutMs: number): Promise<Readonly<Record<number, ModalSdkTunnel>>>;
+  snapshotFilesystem(input: {
+    readonly timeoutMs: number;
+    readonly ttlMs: number;
+  }): Promise<string>;
   terminate(): Promise<void>;
 }
 
@@ -1276,6 +1280,10 @@ function createModalWorkspaceSdk(
           Object.entries(tunnels).map(([port, tunnel]) => [port, { url: tunnel.url }]),
         );
       },
+      async snapshotFilesystem(input) {
+        const snapshot = await sandbox.snapshotFilesystem(input);
+        return ImageDigestSchema.parse(snapshot.imageId);
+      },
       async agentRequest(request) {
         const query = new URLSearchParams(request.query).toString();
         const url = `http://127.0.0.1:8877${request.path}${query === '' ? '' : `?${query}`}`;
@@ -1463,10 +1471,18 @@ function createModalWorkspaceSdk(
         createIfMissing: true,
       });
       const image = await client.images.fromId(input.digest);
-      const volume = await client.volumes.fromName(input.volumeName, {
-        environment: input.environment,
-        createIfMissing: true,
-      });
+      let volume: Awaited<ReturnType<typeof client.volumes.fromName>>;
+      try {
+        volume = await client.volumes.fromName(input.volumeName, {
+          environment: input.environment,
+          createIfMissing: false,
+        });
+      } catch (error) {
+        if (error instanceof NotFoundError || (error as { readonly name?: unknown }).name === 'NotFoundError') {
+          return '0';
+        }
+        throw error;
+      }
       const sandbox = await client.sandboxes.create(app, image, {
         command: ['/bin/sh', '-lc', 'sleep 300'],
         volumes: { '/measure': volume.withMountOptions({ readOnly: true }) },
@@ -1593,6 +1609,42 @@ export class ModalSandboxProvider {
         digest: this.images['forge-node-base'].digest,
         volumeName: projectVolumeName(scope.projectId),
       });
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async snapshotWorkspace(
+    providerWorkspaceId: string,
+    ttlMs: number,
+  ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+    const measurement = await this.exec({
+      providerWorkspaceId: id,
+      command: '/usr/bin/du',
+      args: ['-sb', '/workspace'],
+      timeoutMs: 120_000,
+    });
+    if (measurement.exitCode !== 0) {
+      throw new Error(`workspace logical-byte measurement failed: ${measurement.stderr.trim()}`);
+    }
+    const logicalBytes = z
+      .string()
+      .regex(/^\d+$/u)
+      .parse(measurement.stdout.trim().split(/\s+/u)[0]);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      const providerSnapshotId = ImageDigestSchema.parse(
+        await sandbox.snapshotFilesystem({ timeoutMs: 55_000, ttlMs: retentionMs }),
+      );
+      return {
+        providerSnapshotId,
+        logicalBytes,
+        expiresAt: new Date(this.now().getTime() + retentionMs).toISOString(),
+      };
     } finally {
       sdk.close();
     }

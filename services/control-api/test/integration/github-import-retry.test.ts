@@ -28,6 +28,7 @@ const INSTALLATION_ID = '41122';
 const REPOSITORY = 'zapp/example';
 const BRANCH = 'feature/import';
 const OPERATION_KEY = 'github-import-durable-retry-0001';
+const NOW = new Date('2026-08-11T12:00:00.000Z');
 
 interface Member {
   readonly userId: string;
@@ -87,6 +88,7 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
     auth = new FakeAuthPort();
     app = buildApp({
       logger: false,
+      now: () => NOW,
       auth: { port: auth, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
       orgs: { organizations, audit: createDbAuditSink(database.db) },
       tenant: {
@@ -103,7 +105,7 @@ describe.skipIf(!hasDatabase)('GitHub import failed retry, on PostgreSQL', () =>
         name: 'GitHub import retry',
         slug: 'github-import-retry',
         creatorUserId: owner.userId,
-        now: new Date('2026-08-11T12:00:00.000Z'),
+        now: NOW,
         link: () => Promise.resolve({ externalOrgId: 'external-github-import-retry' }),
         audit: () => Promise.resolve(),
       })

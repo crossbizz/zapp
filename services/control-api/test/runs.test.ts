@@ -17,7 +17,7 @@ import {
   type TestSession,
 } from './support/harness.js';
 import { InMemoryOrganizationStore } from './support/org-store.js';
-import { InMemoryTenantData } from './support/tenant-db.js';
+import { EMPTY_WORKSPACE_USAGE, InMemoryTenantData } from './support/tenant-db.js';
 
 /**
  * The CP-9 public run lifecycle, through the real HTTP stack.
@@ -931,6 +931,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       previewMonitorOwnerId: null,
       previewMonitorLeaseExpiresAt: null,
       snapshotRef: null,
+      ...EMPTY_WORKSPACE_USAGE,
       createdAt: wired.built.now(),
       lastActiveAt: wired.built.now(),
       terminatedAt: null,
@@ -1433,6 +1434,7 @@ describe('workspace passthrough routes', () => {
         runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
         previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
         snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+        ...EMPTY_WORKSPACE_USAGE,
       };
       wired.data.workspaces.push(seeded);
       const callsBefore = sandbox.calls.length;
@@ -1474,6 +1476,7 @@ describe('workspace passthrough routes', () => {
       runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
       previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
       snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+      ...EMPTY_WORKSPACE_USAGE,
     };
     wired.data.projects.push(foreignProject);
     expect(

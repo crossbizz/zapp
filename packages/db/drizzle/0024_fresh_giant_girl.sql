@@ -1,0 +1,1 @@
+ALTER TABLE "usage_reconciliation_corrections" ADD COLUMN "submission_claimed_at" timestamp with time zone;

@@ -307,13 +307,15 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       lastActiveAt: null,
       terminatedAt: null,
     };
+    let attachment: Parameters<WorkspaceRowBoundary['claimCreate']>[2] | undefined;
     const rows: WorkspaceRowBoundary = {
       projectOwnedBy(projectId, organizationId) {
         return Promise.resolve(
           projectId === row.projectId && organizationId === row.organizationId,
         );
       },
-      claimCreate() {
+      claimCreate(_nextRow, _key, nextAttachment) {
+        attachment = nextAttachment;
         return Promise.resolve({ created: true, row });
       },
       bindProviderWorkspaceId(_workspaceId, providerWorkspaceId) {
@@ -330,7 +332,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
         );
       },
       getAttachment() {
-        return Promise.resolve(undefined);
+        return Promise.resolve(attachment === undefined ? undefined : { row, attachment });
       },
       listAttachments() {
         return Promise.resolve([]);

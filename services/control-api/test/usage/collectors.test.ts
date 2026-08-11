@@ -77,11 +77,11 @@ describe('OPS-2 metering collectors', () => {
     expect(commands.map(({ input }) => input)).toEqual([
       {
         Bucket: 'artifacts',
-        Prefix: `${ids.organizationId}/${ids.projectId}/`,
+        Prefix: `org/${ids.organizationId}/project/${ids.projectId}/`,
       },
       {
         Bucket: 'artifacts',
-        Prefix: `${ids.organizationId}/${ids.projectId}/`,
+        Prefix: `org/${ids.organizationId}/project/${ids.projectId}/`,
         ContinuationToken: 'page-2',
       },
     ]);
@@ -102,8 +102,14 @@ describe('OPS-2 metering collectors', () => {
       claims: {
         claim(bucket) {
           claims.push(`${bucket.from}/${bucket.to}`);
-          return Promise.resolve('acquired' as const);
+          return Promise.resolve({
+            status: 'acquired' as const,
+            leaseToken: 'storage-lease-1',
+            renewAfterMs: 10,
+          });
         },
+        renew: () => Promise.resolve(true),
+        runFenced: (_bucket, _leaseToken, operation) => operation(),
         complete: () => Promise.resolve(),
       },
       ledger: {
@@ -245,12 +251,257 @@ describe('OPS-2 metering collectors', () => {
     });
 
     await lifecycle.start();
-    intervalCallback?.();
+    await vi.waitFor(() => {
+      intervalCallback?.();
+      expect(collect).toHaveBeenCalledTimes(2);
+    });
     intervalCallback?.();
     expect(collect).toHaveBeenCalledTimes(2);
     releaseSecond?.();
     await lifecycle.close();
     expect(clearInterval).toHaveBeenCalledOnce();
+  });
+
+  it('does not block service readiness on the initial daily storage scan', async () => {
+    // Break caught: Fastify's composite lifecycle awaits a slow R2/Modal scan
+    // before the API can listen and report ready.
+    let release: (() => void) | undefined;
+    const initial = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onError = vi.fn();
+    const lifecycle = createDailyStorageCollectorLifecycle({
+      collector: {
+        collect: () => initial.then(() => ({ projects: 0, recorded: 0 })),
+      },
+      onError,
+      timers: { setInterval: () => ({ timer: 'daily' }), clearInterval: vi.fn() },
+    });
+    let ready = false;
+    const started = lifecycle.start().then(() => {
+      ready = true;
+    });
+
+    await Promise.resolve();
+    expect(ready).toBe(true);
+    release?.();
+    await started;
+    await lifecycle.close();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('renews the fenced lease while one provider probe exceeds the lease duration', async () => {
+    // Break caught: a long Modal `du` probe lets another replica take over while
+    // the first owner is still measuring the same project-day.
+    let heartbeat: (() => void) | undefined;
+    let releaseProbe: (() => void) | undefined;
+    const probe = new Promise<string>((resolve) => {
+      releaseProbe = () => {
+        resolve('0');
+      };
+    });
+    const renew = vi.fn(() => Promise.resolve(true));
+    const complete = vi.fn(() => Promise.resolve());
+    const collector = createDailyStorageCollector({
+      projects: {
+        listMeteredProjects: () =>
+          Promise.resolve([{ organizationId: ids.organizationId, projectId: ids.projectId }]),
+      },
+      artifactStorage: { measurePrefixBytes: () => probe },
+      sandboxStorage: {
+        measureProjectBytes: () => Promise.resolve({ snapshotBytes: '0', volumeBytes: '0' }),
+      },
+      claims: {
+        claim: () =>
+          Promise.resolve({
+            status: 'acquired' as const,
+            leaseToken: 'fence-1',
+            renewAfterMs: 5,
+          }),
+        renew,
+        runFenced: (_bucket, _leaseToken, operation) => operation(),
+        complete,
+      },
+      claimTimers: {
+        setInterval(callback, delayMs) {
+          expect(delayMs).toBe(5);
+          heartbeat = callback;
+          return { timer: 'lease' };
+        },
+        clearInterval: vi.fn(),
+      },
+      ledger: { recordUsage: () => Promise.resolve({}) },
+      pricing,
+    });
+
+    const collecting = collector.collect(new Date('2026-08-11T12:00:00.000Z'));
+    await vi.waitFor(() => {
+      expect(heartbeat).toBeTypeOf('function');
+    });
+    heartbeat?.();
+    await vi.waitFor(() => {
+      expect(renew).toHaveBeenCalledWith(expect.any(Object), 'fence-1');
+    });
+    releaseProbe?.();
+    await expect(collecting).resolves.toEqual({ projects: 1, recorded: 0 });
+    expect(complete).toHaveBeenCalledWith(expect.any(Object), 'fence-1');
+  });
+
+  it('fails closed before recording when fenced storage ownership is lost mid-scan', async () => {
+    let heartbeat: (() => void) | undefined;
+    const recordUsage = vi.fn(() => Promise.resolve({}));
+    const collector = createDailyStorageCollector({
+      projects: {
+        async listMeteredProjects() {
+          heartbeat?.();
+          await Promise.resolve();
+          return [{ organizationId: ids.organizationId, projectId: ids.projectId }];
+        },
+      },
+      artifactStorage: {
+        measurePrefixBytes: () => Promise.resolve(String(1024 ** 3)),
+      },
+      sandboxStorage: {
+        measureProjectBytes: () => Promise.resolve({ snapshotBytes: '0', volumeBytes: '0' }),
+      },
+      claims: {
+        claim: () =>
+          Promise.resolve({
+            status: 'acquired' as const,
+            leaseToken: 'fence-lost',
+            renewAfterMs: 5,
+          }),
+        renew: () => Promise.resolve(false),
+        runFenced: (_bucket, _leaseToken, operation) => operation(),
+        complete: () => Promise.resolve(),
+      },
+      claimTimers: {
+        setInterval(callback) {
+          heartbeat = callback;
+          return { timer: 'lease' };
+        },
+        clearInterval: vi.fn(),
+      },
+      ledger: { recordUsage },
+      pricing,
+    });
+
+    await expect(
+      collector.collect(new Date('2026-08-11T12:00:00.000Z')),
+    ).rejects.toThrow('daily storage lease ownership was lost');
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('keeps renewing across a 1000-project daily scan', async () => {
+    let heartbeat: (() => void) | undefined;
+    const renew = vi.fn(() => Promise.resolve(true));
+    let probes = 0;
+    const projects = Array.from({ length: 1_000 }, (_, index) => ({
+      organizationId: ids.organizationId,
+      projectId: `proj_${String(index).padStart(26, '0')}`,
+    }));
+    const tickHalfway = async (): Promise<string> => {
+      probes += 1;
+      if (probes === 1_000) {
+        heartbeat?.();
+        await Promise.resolve();
+      }
+      return '0';
+    };
+    const collector = createDailyStorageCollector({
+      projects: { listMeteredProjects: () => Promise.resolve(projects) },
+      artifactStorage: { measurePrefixBytes: tickHalfway },
+      sandboxStorage: {
+        measureProjectBytes: async () => ({
+          snapshotBytes: await tickHalfway(),
+          volumeBytes: '0',
+        }),
+      },
+      claims: {
+        claim: () =>
+          Promise.resolve({
+            status: 'acquired' as const,
+            leaseToken: 'fence-1000',
+            renewAfterMs: 5,
+          }),
+        renew,
+        runFenced: (_bucket, _leaseToken, operation) => operation(),
+        complete: () => Promise.resolve(),
+      },
+      claimTimers: {
+        setInterval(callback) {
+          heartbeat = callback;
+          return { timer: 'lease' };
+        },
+        clearInterval: vi.fn(),
+      },
+      ledger: { recordUsage: () => Promise.resolve({}) },
+      pricing,
+    });
+
+    await expect(collector.collect(new Date('2026-08-11T12:00:00.000Z'))).resolves.toEqual({
+      projects: 1_000,
+      recorded: 0,
+    });
+    expect(renew).toHaveBeenCalled();
+    expect(probes).toBe(2_000);
+  });
+
+  it('holds the durable fence while a ledger write triggers a competing ownership claim', async () => {
+    // Break caught: a pre/post heartbeat detects a lost lease only after the
+    // stale replica has already committed the immutable project-day row.
+    let fenceLocked = false;
+    let ownershipTransferred = false;
+    const rows: UsageEntry[] = [];
+    const collector = createDailyStorageCollector({
+      projects: {
+        listMeteredProjects: () =>
+          Promise.resolve([{ organizationId: ids.organizationId, projectId: ids.projectId }]),
+      },
+      artifactStorage: { measurePrefixBytes: () => Promise.resolve(String(1024 ** 3)) },
+      sandboxStorage: {
+        measureProjectBytes: () => Promise.resolve({ snapshotBytes: '0', volumeBytes: '0' }),
+      },
+      claims: {
+        claim: () =>
+          Promise.resolve({
+            status: 'acquired' as const,
+            leaseToken: 'fence-write',
+            renewAfterMs: 5,
+          }),
+        renew: () => Promise.resolve(!ownershipTransferred),
+        async runFenced(_bucket, _leaseToken, operation) {
+          if (ownershipTransferred) throw new Error('daily storage lease ownership was lost');
+          fenceLocked = true;
+          try {
+            return await operation();
+          } finally {
+            fenceLocked = false;
+          }
+        },
+        complete: () => {
+          if (ownershipTransferred) {
+            return Promise.reject(new Error('daily storage lease ownership was lost'));
+          }
+          return Promise.resolve();
+        },
+      },
+      ledger: {
+        recordUsage(entry) {
+          if (!fenceLocked) ownershipTransferred = true;
+          rows.push(entry);
+          return Promise.resolve({});
+        },
+      },
+      pricing,
+    });
+
+    await expect(collector.collect(new Date('2026-08-11T12:00:00.000Z'))).resolves.toEqual({
+      projects: 1,
+      recorded: 1,
+    });
+    expect(rows).toHaveLength(1);
+    expect(ownershipTransferred).toBe(false);
   });
 
   it('records one deployment unit and preserves provider build seconds when measurable', async () => {
@@ -386,8 +637,9 @@ describe('OPS-2 three-way reconciliation', () => {
         correct(input) {
           order.push('flexprice-write');
           flexpriceHeals.push(input);
-          return Promise.resolve();
+          return Promise.resolve('submitted' as const);
         },
+        confirm: () => Promise.resolve('none' as const),
       },
       alerts: {
         driftDetected(input) {
@@ -413,7 +665,7 @@ describe('OPS-2 three-way reconciliation', () => {
       checked: 8,
       drifted: 2,
       redisHealed: 1,
-      flexpriceHealed: 1,
+      flexpriceHealed: 0,
     });
     expect(redisWrites).toEqual([
       expect.objectContaining({ category: 'model_output_tokens', quantity: '0.000000' }),
@@ -426,10 +678,82 @@ describe('OPS-2 three-way reconciliation', () => {
       }),
     ]);
     expect(alerts).toHaveLength(2);
-    expect(healed).toHaveLength(2);
+    expect(healed).toEqual([
+      expect.objectContaining({ category: 'model_output_tokens', redisDrifted: true }),
+    ]);
     expect(aggregateReads).toHaveBeenCalledOnce();
     expect(order.indexOf('detected')).toBeLessThan(order.indexOf('flexprice-write'));
     expect(order.at(-1)).toBe('healed');
+  });
+
+  it('keeps an accepted correction pending until a later aggregate confirms its target', async () => {
+    // Break caught: HTTP acceptance is logged as healed, or each minute submits
+    // the same full delta while Flexprice analytics still lag the accepted event.
+    let observed = '9';
+    const corrections: unknown[] = [];
+    const healed: unknown[] = [];
+    let pending = false;
+    const aggregate = (): Record<(typeof LEDGER_CATEGORIES)[number], string> =>
+      Object.fromEntries(
+        LEDGER_CATEGORIES.map((category) => [
+          category,
+          category === 'model_input_tokens' ? observed : '0',
+        ]),
+      ) as Record<(typeof LEDGER_CATEGORIES)[number], string>;
+    const reconciler = createThreeWayUsageReconciler({
+      scopes: { list: () => Promise.resolve([ids]) },
+      ledger: {
+        readTotal: (_scope, category) =>
+          Promise.resolve(category === 'model_input_tokens' ? '10' : '0'),
+      },
+      redis: {
+        readTotal: (_scope, category) =>
+          Promise.resolve(category === 'model_input_tokens' ? '10' : '0'),
+        writeTotal: () => Promise.resolve(),
+      },
+      flexprice: { readAggregates: () => Promise.resolve(aggregate()) },
+      corrections: {
+        correct(input) {
+          corrections.push(input);
+          pending = true;
+          return Promise.resolve(corrections.length === 1 ? ('submitted' as const) : ('pending' as const));
+        },
+        confirm(input) {
+          if (input.category !== 'model_input_tokens' || !pending) {
+            return Promise.resolve('none' as const);
+          }
+          pending = false;
+          return Promise.resolve('confirmed' as const);
+        },
+      },
+      alerts: {
+        driftDetected: () => Promise.resolve(),
+        driftHealed(input) {
+          healed.push(input);
+          return Promise.resolve();
+        },
+      },
+    });
+    const window = {
+      from: '2026-08-11T00:00:00.000Z',
+      to: '2026-08-12T00:00:00.000Z',
+    };
+
+    await expect(reconciler.runOnce(window)).resolves.toMatchObject({ flexpriceHealed: 0 });
+    await expect(reconciler.runOnce(window)).resolves.toMatchObject({ flexpriceHealed: 0 });
+    expect(corrections).toHaveLength(2);
+    expect(healed).toEqual([]);
+
+    observed = '10';
+    await expect(reconciler.runOnce(window)).resolves.toMatchObject({ flexpriceHealed: 1 });
+    expect(corrections).toHaveLength(2);
+    expect(healed).toEqual([
+      expect.objectContaining({
+        category: 'model_input_tokens',
+        ledgerQuantity: '10.000000',
+        flexpriceQuantity: '10.000000',
+      }),
+    ]);
   });
 
   it('queries Flexprice analytics once for the nullable ledger attribution scope', async () => {
@@ -439,12 +763,58 @@ describe('OPS-2 three-way reconciliation', () => {
       if (typeof init?.body !== 'string') throw new Error('expected JSON request body');
       const body = JSON.parse(init.body) as Record<string, unknown>;
       requests.push({ path: url.pathname, body });
+      const groupBy = body.group_by;
+      const validGroupBy =
+        Array.isArray(groupBy) &&
+        groupBy.every(
+          (field) =>
+            field === 'source' ||
+            field === 'feature_id' ||
+            (typeof field === 'string' && field.startsWith('properties.')),
+        );
+      if (!validGroupBy) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: 'invalid group_by' }), { status: 400 }),
+        );
+      }
       return Promise.resolve(
         new Response(
           JSON.stringify({
             items: [
-              { event_name: 'model_input_tokens', total_usage: '12.500000' },
-              { event_name: 'model_output_tokens', total_usage: '3' },
+              {
+                feature_id: 'feature-model-input',
+                meter_id: 'meter-model-input',
+                meter: {
+                  id: 'meter-model-input',
+                  event_name: 'model_input_tokens',
+                  name: 'model_input_tokens usage',
+                  environment_id: 'env-test',
+                  status: 'published',
+                },
+                properties: {
+                  project_id: ids.projectId,
+                  run_id: ids.runId,
+                  task_id: null,
+                },
+                total_usage: '12.500000',
+              },
+              {
+                feature_id: 'feature-model-output',
+                meter_id: 'meter-model-output',
+                meter: {
+                  id: 'meter-model-output',
+                  event_name: 'model_output_tokens',
+                  name: 'model_output_tokens usage',
+                  environment_id: 'env-test',
+                  status: 'published',
+                },
+                properties: {
+                  project_id: ids.projectId,
+                  run_id: ids.runId,
+                  task_id: null,
+                },
+                total_usage: '3',
+              },
             ],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
@@ -474,15 +844,55 @@ describe('OPS-2 three-way reconciliation', () => {
         start_time: scope.from,
         end_time: scope.to,
         external_customer_id: ids.organizationId,
-        group_by: ['event_name'],
+        group_by: [
+          'feature_id',
+          'properties.project_id',
+          'properties.run_id',
+          'properties.task_id',
+        ],
+        expand: ['meter'],
         property_filters: {
           project_id: [ids.projectId],
           run_id: [ids.runId],
-          task_id: [null],
         },
       },
     });
     expect(requests).toHaveLength(1);
+  });
+
+  it('rejects an analytics item whose expanded meter lacks its event identity', async () => {
+    // Break caught: a partial test fixture is accepted even though the documented
+    // expanded meter cannot map the feature aggregate back to a ledger category.
+    const client = createFlexpriceUsageAggregateClient({
+      baseUrl: 'https://flexprice.example/v1',
+      apiKey: 'test-api-key',
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              items: [
+                {
+                  event_name: 'model_input_tokens',
+                  feature_id: 'feature-model-input',
+                  meter_id: 'meter-model-input',
+                  meter: {},
+                  total_usage: '12.500000',
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+    });
+
+    await expect(
+      client.readAggregates({
+        ...ids,
+        taskId: null,
+        from: '2026-08-11T00:00:00.000Z',
+        to: '2026-08-12T00:00:00.000Z',
+      }),
+    ).rejects.toThrow(/meter|event_name/u);
   });
 
   it('reconciles the previously closed UTC day at least once per minute without overlap', async () => {

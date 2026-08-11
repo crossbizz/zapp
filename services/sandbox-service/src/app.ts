@@ -52,7 +52,16 @@ import {
 import {
   createDatabaseSnapshotMeasurementStore,
   createProjectStorageMeasurementService,
+  type SnapshotMeasurementStore,
 } from './storage/measurements.js';
+import {
+  createDatabaseCostRecordingStateStore,
+  type CostRecordingStateStore,
+} from './cost/state.js';
+import {
+  createCheckpointService,
+  type CheckpointServiceDependencies,
+} from './checkpoint/service.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -107,11 +116,21 @@ interface BuildAppCommonOptions {
     }): Promise<unknown>;
   };
   readonly storageMetering?: { readonly database: Database };
+  readonly snapshotMeasurements?: SnapshotMeasurementStore;
+  readonly checkpointing?: Omit<
+    CheckpointServiceDependencies,
+    'now' | 'snapshots' | 'snapshotMeasurements'
+  > & {
+    readonly restoreSnapshot: CheckpointServiceDependencies['snapshots']['restore'];
+  };
   readonly usageMetering?: {
     readonly pricing: SandboxPricing;
     readonly nowMs?: () => number;
     readonly scheduler?: CostRecorderDependencies['scheduler'];
   } & (
+    | { readonly state: CostRecordingStateStore; readonly database?: never }
+    | { readonly state?: never; readonly database: Database }
+  ) & (
     | {
         readonly ledger: CostRecorderDependencies['ledger'];
         readonly controlPlane?: never;
@@ -153,12 +172,17 @@ export function buildApp(options: BuildAppOptions) {
     });
   const events =
     options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
-  const storageMeasurements =
-    options.storageMeasurements ??
+  const snapshotMeasurements =
+    options.snapshotMeasurements ??
     (options.storageMetering === undefined
       ? undefined
+      : createDatabaseSnapshotMeasurementStore(options.storageMetering.database));
+  const storageMeasurements =
+    options.storageMeasurements ??
+    (snapshotMeasurements === undefined
+      ? undefined
       : createProjectStorageMeasurementService({
-          snapshots: createDatabaseSnapshotMeasurementStore(options.storageMetering.database),
+          snapshots: snapshotMeasurements,
           volumes: {
             measureProjectVolumeBytes(input) {
               if (options.provider.measureProjectVolumeBytes === undefined) {
@@ -178,6 +202,9 @@ export function buildApp(options: BuildAppOptions) {
           ledger:
             options.usageMetering.ledger ??
             createControlPlaneUsageLedgerClient(options.usageMetering.controlPlane),
+          state:
+            options.usageMetering.state ??
+            createDatabaseCostRecordingStateStore(options.usageMetering.database),
           scheduler:
             options.usageMetering.scheduler ??
             {
@@ -186,6 +213,46 @@ export function buildApp(options: BuildAppOptions) {
                 clearInterval(handle as ReturnType<typeof setInterval>);
               },
             },
+        });
+  const checkpointService =
+    options.checkpointing === undefined
+      ? undefined
+      : createCheckpointService({
+          now,
+          git: options.checkpointing.git,
+          codec: options.checkpointing.codec,
+          crypto: options.checkpointing.crypto,
+          artifacts: options.checkpointing.artifacts,
+          records: options.checkpointing.records,
+          snapshots: {
+            create: async (input) => {
+              if (options.provider.snapshotWorkspace === undefined) {
+                throw new Error('workspace provider cannot create snapshots');
+              }
+              const row = await options.rows.get(
+                input.workspaceId,
+                input.organizationId,
+                input.projectId,
+              );
+              if (row?.providerWorkspaceId === null || row?.providerWorkspaceId === undefined) {
+                throw new Error('workspace provider identity is unavailable for snapshot');
+              }
+              const created = await options.provider.snapshotWorkspace(
+                row.providerWorkspaceId,
+                input.ttlMs,
+              );
+              return {
+                providerSnapshotId: created.providerSnapshotId,
+                logicalBytes: created.logicalBytes,
+              };
+            },
+            restore: options.checkpointing.restoreSnapshot,
+          },
+          snapshotMeasurements: snapshotMeasurements ?? {
+            record() {
+              throw new Error('snapshot measurement persistence is not configured');
+            },
+          },
         });
   const app = Fastify({
     logger: options.logger ?? false,
@@ -291,6 +358,7 @@ export function buildApp(options: BuildAppOptions) {
     ...(storageMeasurements === undefined
       ? {}
       : { storageMeasurements }),
+    ...(checkpointService === undefined ? {} : { checkpointService }),
     ...(rawCostRecorder === undefined || options.usageMetering === undefined
       ? {}
       : {

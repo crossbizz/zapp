@@ -150,6 +150,25 @@ const NON_PRD_COLUMNS = new Map([
         'durable Modal attachment attribution and single-owner preview failure observation required by plan 03 WS-13',
       ] as const,
   ),
+  ...[
+    'usage_operation_key',
+    'usage_last_sample_at',
+    'usage_last_cpu_micros',
+    'usage_cpu_seconds',
+    'usage_memory_gib_seconds',
+    'usage_cpu_second_usd',
+    'usage_memory_gib_second_usd',
+    'usage_credits_per_usd',
+    'usage_finalized_at',
+    'usage_cpu_delivered_at',
+    'usage_memory_delivered_at',
+  ].map(
+    (column) =>
+      [
+        `workspaces.${column}`,
+        'durable provider sampling, finalization, and per-category delivery state required by plan 10 OPS-2 so CPU/memory metering survives sandbox-service restarts',
+      ] as const,
+  ),
   [
     'agent_events.project_id',
     'PRD §14.4 replay contract carries projectId; CP-13 persists it for tenant/project validation and complete event replay although conceptual §23.4 omits it',

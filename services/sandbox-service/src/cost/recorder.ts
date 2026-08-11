@@ -1,4 +1,5 @@
 import { idSchema } from '@zapp/contracts';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 
@@ -6,6 +7,11 @@ import {
   getResourceProfile,
   ResourceProfileNameSchema,
 } from '../provider/profiles.js';
+import {
+  createMemoryCostRecordingStateStore,
+  type CostRecordingState,
+  type CostRecordingStateStore,
+} from './state.js';
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const BYTES_PER_GIBIBYTE = 1024 ** 3;
@@ -56,7 +62,7 @@ const StartCostRecordingSchema = z
     projectId: idSchema('proj'),
     runId: idSchema('run'),
     taskId: idSchema('task'),
-    operationKey: OperationKeySchema,
+    operationKey: OperationKeySchema.optional(),
     profile: ResourceProfileNameSchema,
     pricing: SandboxPricingSchema,
   })
@@ -96,6 +102,7 @@ export interface CostRecorderDependencies {
   ledger: {
     appendIfAbsent(row: UsageLedgerRow): Promise<void>;
   };
+  state?: CostRecordingStateStore;
   scheduler: {
     setInterval(callback: () => Promise<void>, intervalMs: number): unknown;
     clearInterval(handle: unknown): void;
@@ -104,6 +111,7 @@ export interface CostRecorderDependencies {
 
 export interface ActiveCostRecording {
   terminate(): Promise<readonly [UsageLedgerRow, UsageLedgerRow]>;
+  close(): Promise<void>;
 }
 
 export async function loadSandboxPricing(filePath: string): Promise<SandboxPricing> {
@@ -112,53 +120,104 @@ export async function loadSandboxPricing(filePath: string): Promise<SandboxPrici
 }
 
 export function createCostRecorder(dependencies: CostRecorderDependencies) {
+  const stateStore = dependencies.state ?? createMemoryCostRecordingStateStore();
   return {
     async start(inputValue: unknown): Promise<ActiveCostRecording> {
       const input = StartCostRecordingSchema.parse(inputValue);
       const profile = getResourceProfile(input.profile);
-      const baseline = MetricsResponseSchema.parse(
-        await dependencies.metrics.sample(input.providerWorkspaceId ?? input.workspaceId),
-      );
-
-      let previousAtMs = dependencies.nowMs();
-      let previousCpuMicros = totalCpuMicros(baseline);
-      let cpuSeconds = 0;
-      let memoryGibSeconds = 0;
+      let restored = await stateStore.read(input.workspaceId);
+      if (restored !== undefined) assertOperationKey(input.operationKey, restored.operationKey);
+      if (restored === undefined || restored.finalizedAtMs === null) {
+        let baseline: z.infer<typeof MetricsResponseSchema>;
+        try {
+          baseline = MetricsResponseSchema.parse(
+            await dependencies.metrics.sample(input.providerWorkspaceId ?? input.workspaceId),
+          );
+        } catch {
+          baseline = emptyMetrics(dependencies.nowMs());
+        }
+        restored = await advanceState({
+          store: stateStore,
+          input,
+          profile,
+          metrics: baseline,
+          atMs: dependencies.nowMs(),
+          finalize: false,
+        });
+      }
+      let state: CostRecordingState = restored;
       let active = true;
       let sampling = Promise.resolve();
-      let finalized: Promise<readonly [UsageLedgerRow, UsageLedgerRow]> | undefined;
-      let writeAttempt: Promise<readonly [UsageLedgerRow, UsageLedgerRow]> | undefined;
+      let deliveryAttempt: Promise<readonly [UsageLedgerRow, UsageLedgerRow]> | undefined;
+
+      const deliverFinalized = (): Promise<readonly [UsageLedgerRow, UsageLedgerRow]> => {
+        if (deliveryAttempt !== undefined) return deliveryAttempt;
+        const attempt = (async () => {
+          const persisted = await stateStore.read(input.workspaceId);
+          if (persisted === undefined || persisted.finalizedAtMs === null) {
+            throw new Error('cost recording state was not finalized');
+          }
+          state = persisted;
+          const rows = makeFinalizedLedgerRows(input, persisted);
+          if (persisted.cpuDeliveredAtMs === null) {
+            await dependencies.ledger.appendIfAbsent(rows[0]);
+            state = await markCategoryDelivered(
+              stateStore,
+              input.workspaceId,
+              'sandbox_cpu_seconds',
+              dependencies.nowMs(),
+            );
+          }
+          if (state.memoryDeliveredAtMs === null) {
+            await dependencies.ledger.appendIfAbsent(rows[1]);
+            state = await markCategoryDelivered(
+              stateStore,
+              input.workspaceId,
+              'sandbox_mem_gib_seconds',
+              dependencies.nowMs(),
+            );
+          }
+          return rows;
+        })();
+        deliveryAttempt = attempt;
+        void attempt.then(
+          () => {
+            if (deliveryAttempt === attempt) deliveryAttempt = undefined;
+          },
+          () => {
+            if (deliveryAttempt === attempt) deliveryAttempt = undefined;
+          },
+        );
+        return attempt;
+      };
 
       const sample = async () => {
         const current = MetricsResponseSchema.parse(
           await dependencies.metrics.sample(input.providerWorkspaceId ?? input.workspaceId),
         );
-        const currentAtMs = dependencies.nowMs();
-        const durationSeconds = Math.max(0, currentAtMs - previousAtMs) / 1000;
-        const currentCpuMicros = totalCpuMicros(current);
-        const observedCpuSeconds =
-          Math.max(0, currentCpuMicros - previousCpuMicros) / 1_000_000;
-        const requestedCpuSeconds = profile.cpu.requested * durationSeconds;
-        const observedMemoryGib = current.memory.rssBytes / BYTES_PER_GIBIBYTE;
-
-        cpuSeconds += Math.max(requestedCpuSeconds, observedCpuSeconds);
-        memoryGibSeconds +=
-          Math.max(profile.memoryGib.requested, observedMemoryGib) * durationSeconds;
-        previousAtMs = currentAtMs;
-        previousCpuMicros = currentCpuMicros;
-      };
-
-      const finishWithRequestedUsage = () => {
-        const currentAtMs = dependencies.nowMs();
-        const durationSeconds = Math.max(0, currentAtMs - previousAtMs) / 1000;
-        cpuSeconds += profile.cpu.requested * durationSeconds;
-        memoryGibSeconds += profile.memoryGib.requested * durationSeconds;
-        previousAtMs = currentAtMs;
+        state = await advanceState({
+          store: stateStore,
+          input,
+          profile,
+          metrics: current,
+          atMs: dependencies.nowMs(),
+          finalize: false,
+        });
       };
 
       const intervalHandle = dependencies.scheduler.setInterval(async () => {
         if (!active) return;
         sampling = sampling.then(async () => {
+          const persisted = await stateStore.read(input.workspaceId);
+          if (persisted?.finalizedAtMs !== null && persisted?.finalizedAtMs !== undefined) {
+            state = persisted;
+            try {
+              await deliverFinalized();
+            } catch {
+              // Stable undelivered rows remain durable and are retried by this interval.
+            }
+            return;
+          }
           try {
             await sample();
           } catch {
@@ -168,57 +227,202 @@ export function createCostRecorder(dependencies: CostRecorderDependencies) {
         });
         await sampling;
       }, SAMPLE_INTERVAL_MS);
+      if (state.finalizedAtMs !== null) {
+        void deliverFinalized().catch(() => {
+          // Restart recovery remains non-blocking; the interval retries the durable row.
+        });
+      }
 
       return {
         terminate() {
-          finalized ??= (async () => {
+          const attempt = (async () => {
             active = false;
             dependencies.scheduler.clearInterval(intervalHandle);
             await sampling;
-            try {
-              await sample();
-            } catch {
-              finishWithRequestedUsage();
+            const persisted = await stateStore.read(input.workspaceId);
+            if (persisted !== undefined) state = persisted;
+            if (state.finalizedAtMs === null) {
+              let current: z.infer<typeof MetricsResponseSchema> | undefined;
+              try {
+                current = MetricsResponseSchema.parse(
+                  await dependencies.metrics.sample(
+                    input.providerWorkspaceId ?? input.workspaceId,
+                  ),
+                );
+              } catch {
+                current = undefined;
+              }
+              if (current === undefined) {
+                state = await finalizeWithRequestedUsage({
+                  store: stateStore,
+                  input,
+                  profile,
+                  atMs: dependencies.nowMs(),
+                });
+              } else {
+                state = await advanceState({
+                  store: stateStore,
+                  input,
+                  profile,
+                  metrics: current,
+                  atMs: dependencies.nowMs(),
+                  finalize: true,
+                });
+              }
             }
-
-            const occurredAt = new Date(dependencies.nowMs()).toISOString();
-            const operationHash = input.operationKey.slice('op_'.length);
-            const cpuRow = makeLedgerRow({
-              input,
-              operationHash,
-              category: 'sandbox_cpu_seconds',
-              unit: 'cpu_second',
-              quantity: cpuSeconds,
-              rateUsd: input.pricing.cpuSecondUsd,
-              occurredAt,
-            });
-            const memoryRow = makeLedgerRow({
-              input,
-              operationHash,
-              category: 'sandbox_mem_gib_seconds',
-              unit: 'gib_second',
-              quantity: memoryGibSeconds,
-              rateUsd: input.pricing.memoryGibSecondUsd,
-              occurredAt,
-            });
-            return [cpuRow, memoryRow] as const;
+            return await deliverFinalized();
           })();
-          if (writeAttempt === undefined) {
-            const attempt = finalized.then(async (rows) => {
-              await dependencies.ledger.appendIfAbsent(rows[0]);
-              await dependencies.ledger.appendIfAbsent(rows[1]);
-              return rows;
-            });
-            writeAttempt = attempt;
-            void attempt.catch(() => {
-              if (writeAttempt === attempt) writeAttempt = undefined;
-            });
-          }
-          return writeAttempt;
+          return attempt;
+        },
+        async close() {
+          active = false;
+          dependencies.scheduler.clearInterval(intervalHandle);
+          await sampling;
         },
       };
     },
   };
+}
+
+async function markCategoryDelivered(
+  store: CostRecordingStateStore,
+  workspaceId: string,
+  category: z.infer<typeof UsageCategorySchema>,
+  deliveredAtMs: number,
+): Promise<CostRecordingState> {
+  return await store.mutate(workspaceId, (current) => {
+    if (current === undefined || current.finalizedAtMs === null) {
+      throw new Error('cost recording state was not finalized');
+    }
+    return category === 'sandbox_cpu_seconds'
+      ? { ...current, cpuDeliveredAtMs: current.cpuDeliveredAtMs ?? deliveredAtMs }
+      : { ...current, memoryDeliveredAtMs: current.memoryDeliveredAtMs ?? deliveredAtMs };
+  });
+}
+
+function makeFinalizedLedgerRows(
+  input: z.infer<typeof StartCostRecordingSchema>,
+  state: CostRecordingState,
+): readonly [UsageLedgerRow, UsageLedgerRow] {
+  if (state.finalizedAtMs === null) throw new Error('cost recording state was not finalized');
+  const occurredAt = new Date(state.finalizedAtMs).toISOString();
+  const operationHash = state.operationKey.slice('op_'.length);
+  return [
+    makeLedgerRow({
+      input,
+      state,
+      operationHash,
+      category: 'sandbox_cpu_seconds',
+      unit: 'cpu_second',
+      quantity: state.cpuSeconds,
+      rateUsd: state.cpuSecondUsd,
+      occurredAt,
+    }),
+    makeLedgerRow({
+      input,
+      state,
+      operationHash,
+      category: 'sandbox_mem_gib_seconds',
+      unit: 'gib_second',
+      quantity: state.memoryGibSeconds,
+      rateUsd: state.memoryGibSecondUsd,
+      occurredAt,
+    }),
+  ];
+}
+
+async function advanceState(input: {
+  readonly store: CostRecordingStateStore;
+  readonly input: z.infer<typeof StartCostRecordingSchema>;
+  readonly profile: ReturnType<typeof getResourceProfile>;
+  readonly metrics: z.infer<typeof MetricsResponseSchema>;
+  readonly atMs: number;
+  readonly finalize: boolean;
+}): Promise<CostRecordingState> {
+  return input.store.mutate(input.input.workspaceId, (current) => {
+    if (current === undefined) {
+      return {
+        workspaceId: input.input.workspaceId,
+        operationKey:
+          input.input.operationKey ?? stableRecoveryOperationKey(input.input.workspaceId),
+        lastSampleAtMs: input.atMs,
+        lastCpuMicros: totalCpuMicros(input.metrics),
+        cpuSeconds: 0,
+        memoryGibSeconds: 0,
+        cpuSecondUsd: input.input.pricing.cpuSecondUsd,
+        memoryGibSecondUsd: input.input.pricing.memoryGibSecondUsd,
+        creditsPerUsd: input.input.pricing.creditsPerUsd,
+        finalizedAtMs: input.finalize ? input.atMs : null,
+        cpuDeliveredAtMs: null,
+        memoryDeliveredAtMs: null,
+      };
+    }
+    assertOperationKey(input.input.operationKey, current.operationKey);
+    if (current.finalizedAtMs !== null) return current;
+    const durationSeconds = Math.max(0, input.atMs - current.lastSampleAtMs) / 1000;
+    const cpuMicros = totalCpuMicros(input.metrics);
+    const observedCpuSeconds = Math.max(0, cpuMicros - current.lastCpuMicros) / 1_000_000;
+    const observedMemoryGib = input.metrics.memory.rssBytes / BYTES_PER_GIBIBYTE;
+    return {
+      ...current,
+      lastSampleAtMs: input.atMs,
+      lastCpuMicros: cpuMicros,
+      cpuSeconds:
+        current.cpuSeconds +
+        Math.max(input.profile.cpu.requested * durationSeconds, observedCpuSeconds),
+      memoryGibSeconds:
+        current.memoryGibSeconds +
+        Math.max(input.profile.memoryGib.requested, observedMemoryGib) * durationSeconds,
+      finalizedAtMs: input.finalize ? input.atMs : null,
+    };
+  });
+}
+
+async function finalizeWithRequestedUsage(input: {
+  readonly store: CostRecordingStateStore;
+  readonly input: z.infer<typeof StartCostRecordingSchema>;
+  readonly profile: ReturnType<typeof getResourceProfile>;
+  readonly atMs: number;
+}): Promise<CostRecordingState> {
+  return input.store.mutate(input.input.workspaceId, (current) => {
+    if (current === undefined) throw new Error('cost recording state was not initialized');
+    assertOperationKey(input.input.operationKey, current.operationKey);
+    if (current.finalizedAtMs !== null) return current;
+    const durationSeconds = Math.max(0, input.atMs - current.lastSampleAtMs) / 1000;
+    return {
+      ...current,
+      lastSampleAtMs: input.atMs,
+      cpuSeconds: current.cpuSeconds + input.profile.cpu.requested * durationSeconds,
+      memoryGibSeconds:
+        current.memoryGibSeconds + input.profile.memoryGib.requested * durationSeconds,
+      finalizedAtMs: input.atMs,
+    };
+  });
+}
+
+function assertOperationKey(provided: string | undefined, persisted: string): void {
+  if (provided !== undefined && provided !== persisted) {
+    throw new Error('cost recording operation identity conflicts with durable state');
+  }
+}
+
+function stableRecoveryOperationKey(workspaceId: string): string {
+  return `op_${createHash('sha256').update(`legacy-workspace-usage:${workspaceId}`).digest('hex')}`;
+}
+
+function emptyMetrics(atMs: number): z.infer<typeof MetricsResponseSchema> {
+  return MetricsResponseSchema.parse({
+    at: new Date(atMs).toISOString(),
+    activeChildren: 0,
+    cpu: { userMicros: 0, systemMicros: 0 },
+    memory: {
+      rssBytes: 0,
+      heapTotalBytes: 0,
+      heapUsedBytes: 0,
+      externalBytes: 0,
+      arrayBuffersBytes: 0,
+    },
+  });
 }
 
 function totalCpuMicros(metrics: z.infer<typeof MetricsResponseSchema>): number {
@@ -227,6 +431,7 @@ function totalCpuMicros(metrics: z.infer<typeof MetricsResponseSchema>): number 
 
 function makeLedgerRow(input: {
   input: z.infer<typeof StartCostRecordingSchema>;
+  state: CostRecordingState;
   operationHash: string;
   category: z.infer<typeof UsageCategorySchema>;
   unit: 'cpu_second' | 'gib_second';
@@ -246,7 +451,7 @@ function makeLedgerRow(input: {
     quantity: formatQuantity(input.quantity),
     unit: input.unit,
     costUsd: costUsd.toFixed(6),
-    creditsCharged: (costUsd * input.input.pricing.creditsPerUsd).toFixed(4),
+    creditsCharged: (costUsd * input.state.creditsPerUsd).toFixed(4),
     occurredAt: input.occurredAt,
   });
 }

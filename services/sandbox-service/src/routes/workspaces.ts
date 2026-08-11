@@ -1,5 +1,6 @@
 import {
   CreateWorkspaceInputSchema,
+  CheckpointKindSchema,
   ExecutionContractSchema,
   ExecInputSchema,
   EnvVarsSchema,
@@ -37,6 +38,7 @@ import {
 } from '../provider/modal.js';
 import { BranchLockedResponseSchema } from '../provider/volumes.js';
 import type { ActiveCostRecording } from '../cost/recorder.js';
+import type { CheckpointRecord } from '../checkpoint/service.js';
 import {
   assertSandboxEnvironment,
   createSecretStreamRedactor,
@@ -170,6 +172,10 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
     readonly organizationId: string;
     readonly projectId: string;
   }): Promise<string>;
+  snapshotWorkspace?(
+    providerWorkspaceId: string,
+    ttlMs: number,
+  ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }>;
   resolvePreviewTunnel?(providerWorkspaceId: string): Promise<URL>;
   exec(input: ExecInput, idempotencyKey?: string): Promise<z.infer<typeof ExecResultSchema>>;
   execStream(
@@ -236,6 +242,12 @@ const StorageMeasurementSchema = z
   })
   .strict();
 const TerminateBodySchema = z.object({ operationKey: OperationKeySchema }).strict();
+const CheckpointBodySchema = z
+  .object({ kind: CheckpointKindSchema, operationKey: OperationKeySchema })
+  .strict();
+const CheckpointResponseSchema = z
+  .object({ snapshotRef: z.string().regex(/^ckpt_[a-f0-9]{64}$/u) })
+  .strict();
 const AttachBodySchema = TerminateBodySchema;
 const OrganizationParamsSchema = z.object({ organizationId: idSchema('org') }).strict();
 const TerminateAllBodySchema = z
@@ -478,6 +490,9 @@ export function registerWorkspaceRoutes(
         readonly projectId: string;
       }): Promise<unknown>;
     };
+    readonly checkpointService?: {
+      checkpoint(input: unknown): Promise<CheckpointRecord>;
+    };
     readonly costRecorder?: {
       start(input: {
         readonly workspaceId: string;
@@ -486,7 +501,7 @@ export function registerWorkspaceRoutes(
         readonly projectId: string;
         readonly runId: string;
         readonly taskId: string;
-        readonly operationKey: string;
+        readonly operationKey?: string;
         readonly profile: string;
       }): Promise<ActiveCostRecording>;
     };
@@ -498,9 +513,52 @@ export function registerWorkspaceRoutes(
   >();
   const failureMonitorClaims = new Set<string>();
   const activeCostRecordings = new Map<string, ActiveCostRecording>();
+  const costRecordingStarts = new Map<string, Promise<ActiveCostRecording | undefined>>();
+  const lifecycle = { closing: false };
+  const ensureCostRecording = async (
+    record: WorkspaceAttachmentRecord,
+    operationKey?: string,
+  ): Promise<ActiveCostRecording | undefined> => {
+    if (deps.costRecorder === undefined || record.row.providerWorkspaceId === null) {
+      return undefined;
+    }
+    const current = activeCostRecordings.get(record.row.id);
+    if (current !== undefined) return current;
+    const pending = costRecordingStarts.get(record.row.id);
+    if (pending !== undefined) return await pending;
+    const providerWorkspaceId = record.row.providerWorkspaceId;
+    const costRecorder = deps.costRecorder;
+    const start = (async () => {
+      const recording = await costRecorder.start({
+        workspaceId: record.row.id,
+        providerWorkspaceId,
+        organizationId: record.row.organizationId,
+        projectId: record.row.projectId,
+        runId: record.attachment.requiredTags.run_id,
+        taskId: record.attachment.requiredTags.task_id,
+        ...(operationKey === undefined ? {} : { operationKey }),
+        profile: record.row.resourceProfile,
+      });
+      if (lifecycle.closing) {
+        await recording.close();
+        return undefined;
+      }
+      activeCostRecordings.set(record.row.id, recording);
+      return recording;
+    })();
+    costRecordingStarts.set(record.row.id, start);
+    try {
+      return await start;
+    } finally {
+      if (costRecordingStarts.get(record.row.id) === start) {
+        costRecordingStarts.delete(record.row.id);
+      }
+    }
+  };
   const acquisitionController = new AbortController();
   let acquisitionLoop: Promise<void> | undefined;
-  const lifecycle = { closing: false };
+  const costRecoveryController = new AbortController();
+  let costRecoveryLoop: Promise<void> | undefined;
   app.addHook('onReady', () => {
     deps.governor.start();
   });
@@ -511,8 +569,9 @@ export function registerWorkspaceRoutes(
   const previewMonitorLeaseMs = deps.previewMonitorLeaseMs ?? 5_000;
   const previewMonitorStandbyPollIntervalMs =
     deps.previewMonitorStandbyPollIntervalMs ?? Math.max(250, previewMonitorLeaseMs / 2);
-  const waitFor = (milliseconds: number, signal: AbortSignal): Promise<boolean> =>
-    new Promise((resolve) => {
+  const waitFor = (milliseconds: number, signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return Promise.resolve(true);
+    return new Promise((resolve) => {
       const onAbort = (): void => {
         clearTimeout(timeout);
         resolve(true);
@@ -523,8 +582,28 @@ export function registerWorkspaceRoutes(
       }, milliseconds);
       signal.addEventListener('abort', onAbort, { once: true });
     });
+  };
   const waitForPoll = (signal: AbortSignal): Promise<boolean> =>
     waitFor(deps.previewFailurePollIntervalMs ?? 1_000, signal);
+  const settleOrAbort = async <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
+    if (signal.aborted) throw new Error('cost recording recovery aborted');
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        reject(new Error('cost recording recovery aborted'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      void promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error instanceof Error ? error : new Error('cost recording recovery failed'));
+        },
+      );
+    });
+  };
   const resolveWorkspace = async (
     workspaceId: string,
     request: FastifyRequest,
@@ -712,7 +791,39 @@ export function registerWorkspaceRoutes(
       }
     }
   };
+  const recoverCostRecordings = async (signal: AbortSignal): Promise<void> => {
+    const records = await settleOrAbort(deps.rows.listAttachments(), signal);
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(8, records.length) },
+      async (): Promise<void> => {
+        while (!signal.aborted) {
+          const record = records[cursor];
+          cursor += 1;
+          if (record === undefined) return;
+          try {
+            await settleOrAbort(ensureCostRecording(record), signal);
+          } catch {
+            // Durable rows remain discoverable and are retried on the next pass.
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+  };
   app.addHook('onReady', async () => {
+    if (deps.costRecorder !== undefined) {
+      costRecoveryLoop = (async () => {
+        while (!costRecoveryController.signal.aborted) {
+          try {
+            await recoverCostRecordings(costRecoveryController.signal);
+          } catch {
+            // Startup/readiness does not inherit a transient provider or DB outage.
+          }
+          if (await waitFor(1_000, costRecoveryController.signal)) return;
+        }
+      })();
+    }
     await acquireEnabledFailureMonitors();
     acquisitionLoop = (async () => {
       while (!acquisitionController.signal.aborted) {
@@ -735,7 +846,9 @@ export function registerWorkspaceRoutes(
   });
   app.addHook('onClose', async () => {
     lifecycle.closing = true;
+    costRecoveryController.abort();
     acquisitionController.abort();
+    await costRecoveryLoop;
     await acquisitionLoop;
     const monitors = [...failureMonitors.entries()];
     for (const { controller } of failureMonitors.values()) controller.abort();
@@ -745,6 +858,9 @@ export function registerWorkspaceRoutes(
         await deps.previewMonitors.release(workspaceId, leaseToken);
       }),
     );
+    const recordings = [...activeCostRecordings.values()];
+    activeCostRecordings.clear();
+    await Promise.all(recordings.map(async (recording) => recording.close()));
   });
   if (deps.storageMeasurements !== undefined) {
     app.get(
@@ -757,6 +873,9 @@ export function registerWorkspaceRoutes(
         },
       },
       async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
         const { projectId } = ProjectParamsSchema.parse(request.params);
         const scope = readWorkspaceScope(request);
         if (scope.projectId !== projectId) {
@@ -770,6 +889,43 @@ export function registerWorkspaceRoutes(
             projectId,
           }),
         );
+      },
+    );
+  }
+  if (deps.checkpointService !== undefined) {
+    const checkpointService = deps.checkpointService;
+    app.post(
+      '/internal/workspaces/:workspaceId/checkpoint',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: WorkspaceParamsSchema,
+          body: CheckpointBodySchema,
+          response: { 200: CheckpointResponseSchema },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+        const body = CheckpointBodySchema.parse(request.body);
+        requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
+        const row = await resolveWorkspace(workspaceId, request);
+        if (row.branchId === null) {
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        const checkpoint = await checkpointService.checkpoint({
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          branchId: row.branchId,
+          workspaceId: row.id,
+          operationKey: body.operationKey,
+          kind: body.kind,
+          taskBoundary: true,
+          includeSnapshot: true,
+        });
+        return { snapshotRef: checkpoint.checkpointId };
       },
     );
   }
@@ -864,6 +1020,13 @@ export function registerWorkspaceRoutes(
             statusCode: 502,
           });
         }
+        const record = await deps.rows.getAttachment(
+          claim.row.id,
+          claim.row.organizationId,
+          claim.row.projectId,
+        );
+        if (record === undefined) throw new Error('workspace attachment was not persisted');
+        await ensureCostRecording(record);
         return await reply.status(200).send({ workspace: claim.row });
       }
 
@@ -930,21 +1093,13 @@ export function registerWorkspaceRoutes(
           operationKey: body.operationKey,
         });
         const ready = await deps.rows.transition(claim.row.id, 'ready');
-        if (deps.costRecorder !== undefined) {
-          activeCostRecordings.set(
-            ready.id,
-            await deps.costRecorder.start({
-              workspaceId: ready.id,
-              providerWorkspaceId: handle.providerWorkspaceId,
-              organizationId: ready.organizationId,
-              projectId: ready.projectId,
-              runId: body.runId,
-              taskId: body.taskId,
-              operationKey: body.operationKey,
-              profile: ready.resourceProfile,
-            }),
-          );
-        }
+        const record = await deps.rows.getAttachment(
+          ready.id,
+          ready.organizationId,
+          ready.projectId,
+        );
+        if (record === undefined) throw new Error('workspace attachment was not persisted');
+        await ensureCostRecording(record, body.operationKey);
         return await reply.status(201).send({ workspace: ready });
       } catch (error) {
         await deps.provider.terminateWorkspace(providerWorkspaceId);
@@ -1061,6 +1216,7 @@ export function registerWorkspaceRoutes(
         if (row.status === 'terminated') {
           throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
         }
+        await ensureCostRecording({ ...record, row });
         return { workspace: PublicWorkspaceLifecycleRowSchema.parse(row) };
       } catch (error) {
         if (error instanceof ModalWorkspaceTagMismatchError) {
@@ -1179,7 +1335,15 @@ export function registerWorkspaceRoutes(
         return { workspace: row };
       }
       if (row.providerWorkspaceId !== null) {
-        const recording = activeCostRecordings.get(row.id);
+        let recording = activeCostRecordings.get(row.id);
+        if (recording === undefined) {
+          const record = await deps.rows.getAttachment(
+            row.id,
+            row.organizationId,
+            row.projectId,
+          );
+          if (record !== undefined) recording = await ensureCostRecording(record);
+        }
         if (recording !== undefined) {
           await recording.terminate();
           activeCostRecordings.delete(row.id);

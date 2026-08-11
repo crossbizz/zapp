@@ -10,6 +10,8 @@ import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import type { CheckpointRecord } from '../../src/checkpoint/service.js';
+import { createMemoryCostRecordingStateStore } from '../../src/cost/state.js';
 import {
   SandboxQuotaExceededError,
   type RunawayComputeGovernor,
@@ -196,6 +198,7 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   waitUntilReadyError: Error | undefined;
   disappearAfterTags = false;
   disappearDuringTags = false;
+  readonly snapshotEvents: string[] = [];
 
   constructor(private readonly owner: FakeModalWorkspaceSdk) {}
 
@@ -240,6 +243,12 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     this.terminateCalls += 1;
     this.owner.present = false;
     return Promise.resolve();
+  }
+
+  snapshotFilesystem(input: { readonly timeoutMs: number; readonly ttlMs: number }): Promise<string> {
+    expect(input).toEqual({ timeoutMs: 55_000, ttlMs: 30 * 86_400_000 });
+    this.snapshotEvents.push('snapshot');
+    return Promise.resolve('im-checkpoint0123');
   }
 
   agentRequest(request: AgentRequest): Promise<AgentResponse> {
@@ -534,7 +543,7 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   }
 }
 
-function requestedRow(id = IDS.workspaceId): WorkspaceLifecycleRow {
+function requestedRow(id: string = IDS.workspaceId): WorkspaceLifecycleRow {
   return {
     id,
     organizationId: IDS.organizationId,
@@ -661,8 +670,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
         const attachment = this.attachments.get(row.id);
         return row.status === 'ready' &&
           row.providerWorkspaceId !== null &&
-          attachment !== undefined &&
-          this.previewMonitorsEnabled.has(row.id)
+          attachment !== undefined
           ? [{ row, attachment }]
           : [];
       }),
@@ -1530,7 +1538,270 @@ describe('create status terminate and idempotency', () => {
     expect(response.json()).toEqual({ snapshotBytes: '13', volumeBytes: '17' });
   });
 
-  it('records CPU and memory usage through the real recorder on workspace create and terminate', async () => {
+  it('hides the billing storage measurement route from non-control-api callers', async () => {
+    const measureProjectBytes = vi.fn(() =>
+      Promise.resolve({ snapshotBytes: '13', volumeBytes: '17' }),
+    );
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens: {
+        verifyServiceToken: () =>
+          Promise.resolve({
+            ok: true as const,
+            claims: { service: 'orchestrator-worker', audience: 'sandbox-service' },
+          }),
+      },
+      storageMeasurements: { measureProjectBytes },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/storage-measurement`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(measureProjectBytes).not.toHaveBeenCalled();
+  });
+
+  it('measures logical bytes before the real Modal snapshot and persists the structured result', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.method === 'POST' && request.path === '/exec') {
+        sdk.sandbox.snapshotEvents.push('measure');
+        return jsonResponse({
+          exitCode: 0,
+          stdout: '4096\t/workspace\n',
+          stderr: '',
+          durationMs: 1,
+          truncated: false,
+        });
+      }
+      return strictAgentResponse(request);
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+    });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      status: 'ready',
+    });
+    const record = vi.fn((measurement: unknown) => {
+      sdk.sandbox.snapshotEvents.push('persist');
+      return Promise.resolve(measurement);
+    });
+    let savedCheckpoint: CheckpointRecord | undefined;
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      snapshotMeasurements: { record, sumActiveBytes: () => Promise.resolve('0') },
+      checkpointing: {
+        git: {
+          commitAndPush: () => {
+            sdk.sandbox.snapshotEvents.push('commit-push');
+            return Promise.resolve();
+          },
+          captureUncommitted: () => {
+            sdk.sandbox.snapshotEvents.push('capture');
+            return Promise.resolve({
+              patch: new TextEncoder().encode('patch'),
+              untrackedTar: new TextEncoder().encode('untracked'),
+            });
+          },
+          clone: () => Promise.resolve(),
+          applyUncommitted: () => Promise.resolve(),
+        },
+        codec: {
+          compressZstd: () => {
+            sdk.sandbox.snapshotEvents.push('compress');
+            return Promise.resolve(new Uint8Array([1, 2, 3]));
+          },
+          decompressZstd: () =>
+            Promise.resolve({ patch: new Uint8Array(), untrackedTar: new Uint8Array() }),
+        },
+        crypto: {
+          encrypt: () => {
+            sdk.sandbox.snapshotEvents.push('encrypt');
+            return Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 });
+          },
+          decrypt: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+        },
+        artifacts: {
+          putIfAbsent: (input) => {
+            sdk.sandbox.snapshotEvents.push('artifact-put');
+            return Promise.resolve({ key: input.key, sha256: 'a'.repeat(64), keyVersion: 1 });
+          },
+          get: () => Promise.resolve(undefined),
+        },
+        records: {
+          findByOperationKey: () => Promise.resolve(savedCheckpoint),
+          claimCheckpoint: () =>
+            Promise.resolve(
+              savedCheckpoint === undefined
+                ? { status: 'claimed' as const }
+                : { status: 'completed' as const, record: savedCheckpoint },
+            ),
+          save: (checkpoint) => {
+            sdk.sandbox.snapshotEvents.push('record-save');
+            savedCheckpoint = checkpoint;
+            return Promise.resolve(checkpoint);
+          },
+          resolve: () => Promise.resolve(savedCheckpoint),
+          claimRestore: () => Promise.resolve({ status: 'conflict' as const }),
+          completeRestore: () => Promise.resolve(),
+        },
+        restoreSnapshot: () => Promise.resolve(false),
+      },
+      now: () => NOW,
+    } as Parameters<typeof buildTestApp>[0]);
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/checkpoint`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: { kind: 'active', operationKey: OPERATION_KEY },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const responseBody = response.json<{ snapshotRef: string }>();
+    expect(responseBody.snapshotRef).toMatch(/^ckpt_[a-f0-9]{64}$/u);
+    expect(sdk.sandbox.snapshotEvents).toEqual([
+      'commit-push',
+      'capture',
+      'compress',
+      'encrypt',
+      'artifact-put',
+      'measure',
+      'snapshot',
+      'persist',
+      'record-save',
+    ]);
+    expect(record).toHaveBeenCalledWith({
+      providerSnapshotId: 'im-checkpoint0123',
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+      logicalBytes: '4096',
+      expiresAt: '2026-09-07T12:00:00.000Z',
+    });
+  });
+
+  it('keeps the encrypted patch checkpoint route available when snapshots are unsupported', async () => {
+    // Break caught: buildApp omitted the entire WS-7 checkpoint route whenever
+    // a provider lacked optional snapshot support.
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => new FakeModalWorkspaceSdk(),
+      now: () => NOW,
+    });
+    Object.defineProperty(provider, 'snapshotWorkspace', { value: undefined });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: 'sb-patch-only',
+      status: 'ready',
+    });
+    let savedCheckpoint: CheckpointRecord | undefined;
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      checkpointing: {
+        git: {
+          commitAndPush: () => Promise.resolve(),
+          captureUncommitted: () =>
+            Promise.resolve({
+              patch: new TextEncoder().encode('patch'),
+              untrackedTar: new TextEncoder().encode('untracked'),
+            }),
+          clone: () => Promise.resolve(),
+          applyUncommitted: () => Promise.resolve(),
+        },
+        codec: {
+          compressZstd: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+          decompressZstd: () =>
+            Promise.resolve({ patch: new Uint8Array(), untrackedTar: new Uint8Array() }),
+        },
+        crypto: {
+          encrypt: () =>
+            Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 }),
+          decrypt: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+        },
+        artifacts: {
+          putIfAbsent: (input) =>
+            Promise.resolve({ key: input.key, sha256: 'a'.repeat(64), keyVersion: 1 }),
+          get: () => Promise.resolve(undefined),
+        },
+        records: {
+          findByOperationKey: () => Promise.resolve(savedCheckpoint),
+          claimCheckpoint: () => Promise.resolve({ status: 'claimed' as const }),
+          save: (checkpoint) => {
+            savedCheckpoint = checkpoint;
+            return Promise.resolve(checkpoint);
+          },
+          resolve: () => Promise.resolve(savedCheckpoint),
+          claimRestore: () => Promise.resolve({ status: 'conflict' as const }),
+          completeRestore: () => Promise.resolve(),
+        },
+        restoreSnapshot: () => Promise.resolve(false),
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/checkpoint`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: { kind: 'active', operationKey: OPERATION_KEY },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(savedCheckpoint?.snapshot).toBeNull();
+    expect(response.json<{ snapshotRef: string }>().snapshotRef).toBe(
+      savedCheckpoint?.checkpointId,
+    );
+  });
+
+  it('preserves CPU and memory usage across restart, create replay, attach, and termination', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     const provider = createModalSandboxProvider({
       environment: 'dev',
@@ -1541,40 +1812,42 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
+    const meteringState = createMemoryCostRecordingStateStore();
     const ledgerRows: Array<{ category: string; quantity: string }> = [];
     let clock = NOW.getTime();
-    const app = buildTestApp({
+    const usageMetering = {
+      state: meteringState,
+      pricing: {
+        cpuSecondUsd: 0.00001,
+        memoryGibSecondUsd: 0.00001,
+        creditsPerUsd: 100,
+      },
+      controlPlane: {
+        baseUrl: 'https://control.zapp.test',
+        serviceTokens: { secret: 'u'.repeat(32) },
+        fetch(_input: string | URL | globalThis.Request, init?: RequestInit) {
+          if (typeof init?.body !== 'string') throw new Error('usage request body was not JSON');
+          ledgerRows.push(JSON.parse(init.body) as { category: string; quantity: string });
+          return Promise.resolve(
+            new Response(JSON.stringify({ ledgerRowId: 'usage_recorded', event: {} }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        },
+      },
+      nowMs: () => clock,
+      scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+    } as const;
+    const firstApp = buildTestApp({
       provider,
       rows,
       workspaceGit: WORKSPACE_GIT_FIXTURE,
       serviceTokens,
-      usageMetering: {
-        pricing: {
-          cpuSecondUsd: 0.00001,
-          memoryGibSecondUsd: 0.00001,
-          creditsPerUsd: 100,
-        },
-        controlPlane: {
-          baseUrl: 'https://control.zapp.test',
-          serviceTokens: { secret: 'u'.repeat(32) },
-          fetch(_input, init) {
-            if (typeof init.body !== 'string') throw new Error('usage request body was not JSON');
-            ledgerRows.push(JSON.parse(init.body) as { category: string; quantity: string });
-            return Promise.resolve(
-              new Response(JSON.stringify({ ledgerRowId: 'usage_recorded', event: {} }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-              }),
-            );
-          },
-        },
-        nowMs: () => clock,
-        scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
-      },
+      usageMetering,
       now: () => new Date(clock),
     });
-    apps.push(app);
-    await app.ready();
+    await firstApp.ready();
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
@@ -1593,13 +1866,42 @@ describe('create status terminate and idempotency', () => {
     };
 
     expect(
-      (await app.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+      (await firstApp.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
         .statusCode,
     ).toBe(201);
     clock += 1_000;
+    await firstApp.close();
+
+    clock += 1_000;
+    const restartedApp = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering,
+      now: () => new Date(clock),
+    });
+    apps.push(restartedApp);
+    await restartedApp.ready();
+    expect(
+      (await restartedApp.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(200);
     expect(
       (
-        await app.inject({
+        await restartedApp.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+          headers,
+          payload: { operationKey: OPERATION_KEY },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    clock += 1_000;
+    expect(
+      (
+        await restartedApp.inject({
           method: 'POST',
           url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
           headers,
@@ -1611,7 +1913,106 @@ describe('create status terminate and idempotency', () => {
       'sandbox_cpu_seconds',
       'sandbox_mem_gib_seconds',
     ]);
-    expect(ledgerRows.every(({ quantity }) => Number(quantity) > 0)).toBe(true);
+    expect(ledgerRows.map(({ category, quantity }) => ({ category, quantity }))).toEqual([
+      { category: 'sandbox_cpu_seconds', quantity: '1.5' },
+      { category: 'sandbox_mem_gib_seconds', quantity: '3' },
+    ]);
+  });
+
+  it('recovers 1000 legacy metering rows in the background and closes while metrics never settle', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+    });
+    let releaseMetrics: (() => void) | undefined;
+    const metricsGate = new Promise<void>((resolve) => {
+      releaseMetrics = resolve;
+    });
+    let activeMetrics = 0;
+    let maxActiveMetrics = 0;
+    let metricCalls = 0;
+    Object.assign(provider, {
+      async metrics() {
+        metricCalls += 1;
+        activeMetrics += 1;
+        maxActiveMetrics = Math.max(maxActiveMetrics, activeMetrics);
+        await metricsGate;
+        activeMetrics -= 1;
+        throw new Error('metrics unavailable');
+      },
+    });
+    const rows = new MemoryWorkspaceRows();
+    for (let index = 0; index < 1_000; index += 1) {
+      rows.seed({
+        ...requestedRow(newId('ws')),
+        providerWorkspaceId: `${sdk.sandbox.providerWorkspaceId}-${String(index)}`,
+        status: 'ready',
+      });
+    }
+    const app = buildTestApp({
+      provider,
+      rows,
+      previewMonitors: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering: {
+        state: createMemoryCostRecordingStateStore(),
+        pricing: {
+          cpuSecondUsd: 0.00001,
+          memoryGibSecondUsd: 0.00001,
+          creditsPerUsd: 100,
+        },
+        ledger: { appendIfAbsent: () => Promise.resolve() },
+        nowMs: () => NOW.getTime(),
+        scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+
+    const readyPromise = app.ready();
+    const readiness = await Promise.race([
+      readyPromise.then(() => 'ready' as const),
+      new Promise<'blocked'>((resolve) =>
+        setTimeout(() => {
+          resolve('blocked');
+        }, 100),
+      ),
+    ]);
+    let closeResult: 'closed' | 'blocked' | 'not-run' = 'not-run';
+    if (readiness === 'ready') {
+      for (let attempt = 0; attempt < 100 && metricCalls === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      apps.splice(apps.indexOf(app), 1);
+      const closePromise = app.close();
+      closeResult = await Promise.race([
+        closePromise.then(() => 'closed' as const),
+        new Promise<'blocked'>((resolve) =>
+          setTimeout(() => {
+            resolve('blocked');
+          }, 100),
+        ),
+      ]);
+      if (closeResult === 'blocked') {
+        releaseMetrics?.();
+        await closePromise;
+      }
+    } else {
+      releaseMetrics?.();
+      await readyPromise;
+    }
+
+    expect(readiness).toBe('ready');
+    expect(metricCalls).toBeGreaterThan(0);
+    expect(maxActiveMetrics).toBeGreaterThan(1);
+    expect(maxActiveMetrics).toBeLessThanOrEqual(8);
+    expect(closeResult).toBe('closed');
   });
 
   it('enforces the runaway compute governor across create, replay, terminate, and app lifetime', async () => {

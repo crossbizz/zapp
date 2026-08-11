@@ -449,6 +449,27 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
     expect(state.events).not.toContain('record-save');
   });
 
+  test('fails closed when the provider reports a created snapshot with an invalid measurement', async () => {
+    const state = fixture();
+    state.dependencies.snapshots.create = () =>
+      Promise.resolve({ providerSnapshotId: 'snap-created', logicalBytes: 'not-bytes' });
+    const service = createCheckpointService(state.dependencies);
+
+    await expect(
+      service.checkpoint({
+        organizationId: state.organizationId,
+        projectId: state.projectId,
+        branchId: state.branchId,
+        workspaceId: state.workspaceId,
+        operationKey: state.operationKey,
+        kind: 'active',
+        taskBoundary: false,
+        includeSnapshot: true,
+      }),
+    ).rejects.toThrow();
+    expect(state.events).not.toContain('record-save');
+  });
+
   test('rejects cross-tenant and tampered artifacts before mutating the restore target', async () => {
     const state = fixture();
     const service = createCheckpointService(state.dependencies);

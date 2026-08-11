@@ -278,7 +278,9 @@ describe('billing tables', () => {
       'status',
       'attempts',
       'created_at',
+      'submission_claimed_at',
       'delivered_at',
+      'confirmed_at',
     ]);
     expect(columnNames(accountingLeaderLeases)).toEqual([
       'name',

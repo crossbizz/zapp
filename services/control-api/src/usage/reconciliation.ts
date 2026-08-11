@@ -276,9 +276,17 @@ export interface UsageCorrectionPort {
     input: WindowedUsageReconciliationScope & {
       readonly category: UsageCategory;
       readonly targetQuantity: string;
+      readonly observedQuantity: string;
       readonly deltaQuantity: string;
     },
-  ): Promise<void>;
+  ): Promise<'submitted' | 'pending' | 'confirmed'>;
+  confirm(
+    input: WindowedUsageReconciliationScope & {
+      readonly category: UsageCategory;
+      readonly targetQuantity: string;
+      readonly observedQuantity: string;
+    },
+  ): Promise<'none' | 'confirmed'>;
 }
 
 export function createDatabaseUsageCorrectionJournal(options: {
@@ -287,106 +295,242 @@ export function createDatabaseUsageCorrectionJournal(options: {
   readonly now?: () => Date;
 }): UsageCorrectionPort {
   const now = options.now ?? ((): Date => new Date());
+  const baseSchema = z
+    .object({
+      organizationId: idSchema('org'),
+      projectId: idSchema('proj').nullable(),
+      runId: idSchema('run').nullable(),
+      taskId: idSchema('task').nullable(),
+      from: z.string().datetime({ offset: true }),
+      to: z.string().datetime({ offset: true }),
+      category: z.enum(USAGE_CATEGORIES),
+      targetQuantity: UsageQuantitySchema,
+      observedQuantity: UsageQuantitySchema,
+    })
+    .strict();
+  const correctionSchema = baseSchema.extend({ deltaQuantity: UsageQuantitySchema }).strict();
+  type CorrectionScope = z.infer<typeof baseSchema>;
+  const submissionClaimMs = 5 * 60_000;
+
+  const scopePredicate = (input: CorrectionScope) =>
+    and(
+      eq(usageReconciliationCorrections.organizationId, input.organizationId),
+      nullableCorrectionPredicate(usageReconciliationCorrections.projectId, input.projectId),
+      nullableCorrectionPredicate(usageReconciliationCorrections.runId, input.runId),
+      nullableCorrectionPredicate(usageReconciliationCorrections.taskId, input.taskId),
+      eq(usageReconciliationCorrections.category, input.category),
+      eq(usageReconciliationCorrections.windowFrom, new Date(input.from)),
+      eq(usageReconciliationCorrections.windowTo, new Date(input.to)),
+    );
+  const scopeLockIdentity = (input: CorrectionScope): string =>
+    JSON.stringify([
+      input.organizationId,
+      input.projectId,
+      input.runId,
+      input.taskId,
+      input.category,
+      input.from,
+      input.to,
+    ]);
+
   return {
     async correct(rawInput) {
-      const input = z
-        .object({
-          organizationId: idSchema('org'),
-          projectId: idSchema('proj').nullable(),
-          runId: idSchema('run').nullable(),
-          taskId: idSchema('task').nullable(),
-          from: z.string().datetime({ offset: true }),
-          to: z.string().datetime({ offset: true }),
-          category: z.enum(USAGE_CATEGORIES),
-          targetQuantity: UsageQuantitySchema,
-          deltaQuantity: UsageQuantitySchema,
-        })
-        .strict()
-        .parse(rawInput);
-      const operationKey = `ops2-flexprice-correction-${createHash('sha256')
-        .update(
-          JSON.stringify([
-            input.organizationId,
-            input.projectId,
-            input.runId,
-            input.taskId,
-            input.category,
-            input.from,
-            input.to,
-            input.targetQuantity,
-          ]),
-        )
-        .digest('hex')}`;
-      const id = `usgcorr_${createHash('sha256').update(operationKey).digest('hex')}`;
-      const timestamp = new Date(Date.parse(input.to) - 1).toISOString();
-      const event = FlexpriceUsageEventSchema.parse({
-        event_name: input.category,
-        external_customer_id: input.organizationId,
-        event_id: id,
-        timestamp,
-        properties: {
-          project_id: input.projectId,
-          run_id: input.runId,
-          task_id: input.taskId,
-          quantity: Number(input.deltaQuantity),
-          unit: 'reconciliation_delta',
-          provider: null,
-        },
-      });
-      await options.database
-        .insert(usageReconciliationCorrections)
-        .values({
-          id,
-          operationKey,
-          organizationId: input.organizationId,
-          projectId: input.projectId,
-          runId: input.runId,
-          taskId: input.taskId,
-          category: input.category,
-          windowFrom: new Date(input.from),
-          windowTo: new Date(input.to),
-          targetQuantity: input.targetQuantity,
-          deltaQuantity: input.deltaQuantity,
-          eventJson: event,
-          status: 'pending',
-          attempts: 0,
-          createdAt: now(),
-          deliveredAt: null,
-        })
-        .onConflictDoNothing({ target: usageReconciliationCorrections.operationKey });
-      const [row] = await options.database
-        .select()
-        .from(usageReconciliationCorrections)
-        .where(eq(usageReconciliationCorrections.operationKey, operationKey));
-      if (row === undefined) throw new Error('usage correction journal row is missing');
-      const persisted = FlexpriceUsageEventSchema.parse(row.eventJson);
+      const input = correctionSchema.parse(rawInput);
       if (
-        row.targetQuantity !== input.targetQuantity ||
-        row.deltaQuantity !== input.deltaQuantity ||
-        JSON.stringify(persisted) !== JSON.stringify(event)
+        quantityUnits(input.targetQuantity) - quantityUnits(input.observedQuantity) !==
+        quantityUnits(input.deltaQuantity)
       ) {
-        throw new Error('usage correction operation conflicts with durable journal');
+        throw new Error('usage correction delta does not reach its target');
       }
-      if (row.status === 'delivered') return;
+      const decision = await options.database.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${scopeLockIdentity(input)}, 0))`,
+        );
+        const [priorPending] = await tx
+          .select()
+          .from(usageReconciliationCorrections)
+          .where(and(scopePredicate(input), eq(usageReconciliationCorrections.status, 'pending')))
+          .orderBy(
+            desc(usageReconciliationCorrections.createdAt),
+            desc(usageReconciliationCorrections.id),
+          )
+          .limit(1);
+        const claimedAt = now();
+        if (priorPending !== undefined) {
+          if (priorPending.deliveredAt === null) {
+            if (
+              priorPending.submissionClaimedAt !== null &&
+              priorPending.submissionClaimedAt.getTime() > claimedAt.getTime() - submissionClaimMs
+            ) {
+              return { kind: 'pending' } as const;
+            }
+            const [claimed] = await tx
+              .update(usageReconciliationCorrections)
+              .set({
+                attempts: priorPending.attempts + 1,
+                submissionClaimedAt: claimedAt,
+              })
+              .where(
+                and(
+                  eq(usageReconciliationCorrections.id, priorPending.id),
+                  eq(usageReconciliationCorrections.status, 'pending'),
+                ),
+              )
+              .returning();
+            if (claimed === undefined) return { kind: 'pending' } as const;
+            return {
+              kind: 'submit',
+              id: claimed.id,
+              event: FlexpriceUsageEventSchema.parse(claimed.eventJson),
+            } as const;
+          }
+          if (priorPending.targetQuantity !== input.observedQuantity) {
+            return { kind: 'pending' } as const;
+          }
+          await tx
+            .update(usageReconciliationCorrections)
+            .set({ status: 'confirmed', confirmedAt: claimedAt })
+            .where(
+              and(
+                eq(usageReconciliationCorrections.id, priorPending.id),
+                eq(usageReconciliationCorrections.status, 'pending'),
+              ),
+            );
+          if (input.observedQuantity === input.targetQuantity) {
+            return { kind: 'confirmed' } as const;
+          }
+        } else if (input.observedQuantity === input.targetQuantity) {
+          return { kind: 'confirmed' } as const;
+        }
+
+        const [history] = await tx
+          .select({ count: sql<number>`count(*)::integer` })
+          .from(usageReconciliationCorrections)
+          .where(scopePredicate(input));
+        const generation = (history?.count ?? 0) + 1;
+        const operationKey = `ops2-flexprice-correction-${createHash('sha256')
+          .update(
+            JSON.stringify([
+              input.organizationId,
+              input.projectId,
+              input.runId,
+              input.taskId,
+              input.category,
+              input.from,
+              input.to,
+              input.targetQuantity,
+              input.observedQuantity,
+              generation,
+            ]),
+          )
+          .digest('hex')}`;
+        const id = `usgcorr_${createHash('sha256').update(operationKey).digest('hex')}`;
+        const event = FlexpriceUsageEventSchema.parse({
+          event_name: input.category,
+          external_customer_id: input.organizationId,
+          event_id: id,
+          timestamp: new Date(Date.parse(input.to) - 1).toISOString(),
+          properties: {
+            project_id: input.projectId,
+            run_id: input.runId,
+            task_id: input.taskId,
+            quantity: Number(input.deltaQuantity),
+            unit: 'reconciliation_delta',
+            provider: null,
+          },
+        });
+        const [row] = await tx
+          .insert(usageReconciliationCorrections)
+          .values({
+            id,
+            operationKey,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            runId: input.runId,
+            taskId: input.taskId,
+            category: input.category,
+            windowFrom: new Date(input.from),
+            windowTo: new Date(input.to),
+            targetQuantity: input.targetQuantity,
+            deltaQuantity: input.deltaQuantity,
+            eventJson: event,
+            status: 'pending',
+            attempts: 1,
+            createdAt: claimedAt,
+            submissionClaimedAt: claimedAt,
+            deliveredAt: null,
+            confirmedAt: null,
+          })
+          .returning();
+        if (row === undefined) throw new Error('usage correction journal row is missing');
+        return {
+          kind: 'submit',
+          id: row.id,
+          event: FlexpriceUsageEventSchema.parse(row.eventJson),
+        } as const;
+      });
+      if (decision.kind === 'pending') return 'pending';
+      if (decision.kind === 'confirmed') return 'confirmed';
+      try {
+        await options.ingest.ingest(decision.event);
+      } catch (error) {
+        await options.database
+          .update(usageReconciliationCorrections)
+          .set({ submissionClaimedAt: null })
+          .where(
+            and(
+              eq(usageReconciliationCorrections.id, decision.id),
+              eq(usageReconciliationCorrections.status, 'pending'),
+              isNull(usageReconciliationCorrections.deliveredAt),
+            ),
+          );
+        throw error;
+      }
       await options.database
         .update(usageReconciliationCorrections)
-        .set({ attempts: row.attempts + 1 })
+        .set({ submissionClaimedAt: null, deliveredAt: now() })
         .where(
           and(
-            eq(usageReconciliationCorrections.id, row.id),
+            eq(usageReconciliationCorrections.id, decision.id),
             eq(usageReconciliationCorrections.status, 'pending'),
           ),
         );
-      await options.ingest.ingest(persisted);
-      await options.database
-        .update(usageReconciliationCorrections)
-        .set({ status: 'delivered', deliveredAt: now() })
-        .where(
-          and(
-            eq(usageReconciliationCorrections.id, row.id),
-            eq(usageReconciliationCorrections.status, 'pending'),
-          ),
+      return 'submitted';
+    },
+    async confirm(rawInput) {
+      const input = baseSchema.parse(rawInput);
+      return await options.database.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${scopeLockIdentity(input)}, 0))`,
         );
+        const [pending] = await tx
+          .select()
+          .from(usageReconciliationCorrections)
+          .where(and(scopePredicate(input), eq(usageReconciliationCorrections.status, 'pending')))
+          .orderBy(
+            desc(usageReconciliationCorrections.createdAt),
+            desc(usageReconciliationCorrections.id),
+          )
+          .limit(1);
+        if (
+          pending === undefined ||
+          pending.deliveredAt === null ||
+          pending.targetQuantity !== input.observedQuantity
+        ) {
+          return 'none' as const;
+        }
+        const [confirmed] = await tx
+          .update(usageReconciliationCorrections)
+          .set({ status: 'confirmed', confirmedAt: now() })
+          .where(
+            and(
+              eq(usageReconciliationCorrections.id, pending.id),
+              eq(usageReconciliationCorrections.status, 'pending'),
+            ),
+          )
+          .returning({ id: usageReconciliationCorrections.id });
+        return confirmed === undefined ? ('none' as const) : ('confirmed' as const);
+      });
     },
   };
 }
@@ -463,11 +607,30 @@ export function createThreeWayUsageReconciler(options: {
             scope.runId !== null && driftOverOnePercent(ledgerUnits, redisUnits);
           const flexpriceDrifted = driftOverOnePercent(ledgerUnits, flexpriceUnits);
           checked += 1;
-          if (!redisDrifted && !flexpriceDrifted) continue;
-
           const ledgerQuantity = formatQuantity(ledgerUnits);
           const redisQuantity = formatQuantity(redisUnits);
           const flexpriceQuantity = formatQuantity(flexpriceUnits);
+          if (!redisDrifted && !flexpriceDrifted) {
+            const confirmation = await options.corrections.confirm({
+              ...windowedScope,
+              category,
+              targetQuantity: ledgerQuantity,
+              observedQuantity: flexpriceQuantity,
+            });
+            if (confirmation === 'confirmed') {
+              flexpriceHealed += 1;
+              await options.alerts.driftHealed({
+                ...windowedScope,
+                category,
+                ledgerQuantity,
+                redisQuantity,
+                flexpriceQuantity,
+                redisDrifted: false,
+                flexpriceDrifted: true,
+              });
+            }
+            continue;
+          }
           const drift = {
             ...windowedScope,
             category,
@@ -487,16 +650,21 @@ export function createThreeWayUsageReconciler(options: {
             });
             redisHealed += 1;
           }
+          let flexpriceState: 'submitted' | 'pending' | 'confirmed' | 'not-needed' =
+            'not-needed';
           if (flexpriceDrifted) {
-            await options.corrections.correct({
+            flexpriceState = await options.corrections.correct({
               ...windowedScope,
               category,
               targetQuantity: ledgerQuantity,
+              observedQuantity: flexpriceQuantity,
               deltaQuantity: formatQuantity(ledgerUnits - flexpriceUnits),
             });
-            flexpriceHealed += 1;
+            if (flexpriceState === 'confirmed') flexpriceHealed += 1;
           }
-          await options.alerts.driftHealed(drift);
+          if (!flexpriceDrifted || flexpriceState === 'confirmed') {
+            await options.alerts.driftHealed(drift);
+          }
         }
       }
 
@@ -752,13 +920,47 @@ const FlexpriceAnalyticsResponseSchema = z
     items: z.array(
       z
         .object({
-          event_name: z.string().min(1),
+          feature_id: z.string().min(1),
+          meter_id: z.string().min(1),
+          meter: z
+            .object({
+              id: z.string().min(1),
+              event_name: z.enum(USAGE_CATEGORIES),
+              name: z.string().min(1),
+              environment_id: z.string().min(1),
+              status: z.string().min(1),
+            })
+            .passthrough(),
+          properties: z.record(z.string().nullable()).default({}),
           total_usage: z.union([z.string(), z.number().finite()]),
         })
-        .passthrough(),
+        .passthrough()
+        .refine((item) => item.meter.id === item.meter_id, {
+          message: 'expanded meter identity does not match meter_id',
+          path: ['meter', 'id'],
+        }),
     ),
   })
   .passthrough();
+
+const FlexpriceAnalyticsRequestSchema = z
+  .object({
+    start_time: z.string().datetime({ offset: true }),
+    end_time: z.string().datetime({ offset: true }),
+    external_customer_id: idSchema('org'),
+    group_by: z
+      .array(
+        z.union([
+          z.literal('source'),
+          z.literal('feature_id'),
+          z.string().regex(/^properties\.[A-Za-z0-9_]+$/u),
+        ]),
+      )
+      .min(1),
+    expand: z.tuple([z.literal('meter')]),
+    property_filters: z.record(z.array(z.string().min(1))).optional(),
+  })
+  .strict();
 
 /** Official Flexprice `/events/analytics` aggregate query, fetched once per attribution scope. */
 export function createFlexpriceUsageAggregateClient(options: {
@@ -770,37 +972,72 @@ export function createFlexpriceUsageAggregateClient(options: {
   const baseUrl = `${options.baseUrl.replace(/\/+$/u, '')}/`;
   return {
     async readAggregates(scope) {
+      const propertyFilters: Record<string, string[]> = {};
+      const scopeProperties: readonly (readonly [string, string | null])[] = [
+          ['project_id', scope.projectId],
+          ['run_id', scope.runId],
+          ['task_id', scope.taskId],
+      ];
+      for (const [field, value] of scopeProperties) {
+        if (value !== null) propertyFilters[field] = [value];
+      }
+      const payload = FlexpriceAnalyticsRequestSchema.parse({
+        start_time: scope.from,
+        end_time: scope.to,
+        external_customer_id: scope.organizationId,
+        group_by: [
+          'feature_id',
+          'properties.project_id',
+          'properties.run_id',
+          'properties.task_id',
+        ],
+        expand: ['meter'],
+        ...(Object.keys(propertyFilters).length === 0
+          ? {}
+          : { property_filters: propertyFilters }),
+      });
       const response = await request(new URL('events/analytics', baseUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-api-key': options.apiKey },
-        body: JSON.stringify({
-          start_time: scope.from,
-          end_time: scope.to,
-          external_customer_id: scope.organizationId,
-          group_by: ['event_name'],
-          property_filters: {
-            project_id: [scope.projectId],
-            run_id: [scope.runId],
-            task_id: [scope.taskId],
-          },
-        }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) {
         throw new Error(`Flexprice usage analytics failed with status ${String(response.status)}`);
       }
       const body = FlexpriceAnalyticsResponseSchema.parse(await response.json());
-      const aggregates: Partial<Record<UsageCategory, string>> = {};
+      const aggregates: Partial<Record<UsageCategory, bigint>> = {};
       for (const item of body.items) {
-        const category = z.enum(USAGE_CATEGORIES).safeParse(item.event_name);
-        if (category.success) {
-          aggregates[category.data] = formatQuantity(quantityUnits(item.total_usage));
-        }
+        if (!matchesFlexpriceScope(item.properties, scope)) continue;
+        const category = item.meter.event_name;
+        aggregates[category] =
+          (aggregates[category] ?? 0n) + quantityUnits(item.total_usage);
       }
       return Object.fromEntries(
-        USAGE_CATEGORIES.map((category) => [category, aggregates[category] ?? '0.000000']),
+        USAGE_CATEGORIES.map((category) => [
+          category,
+          formatQuantity(aggregates[category] ?? 0n),
+        ]),
       );
     },
   };
+}
+
+function matchesFlexpriceScope(
+  properties: Readonly<Record<string, string | null>>,
+  scope: Pick<UsageReconciliationScope, 'projectId' | 'runId' | 'taskId'>,
+): boolean {
+  return (
+    matchesNullableProperty(properties.project_id, scope.projectId) &&
+    matchesNullableProperty(properties.run_id, scope.runId) &&
+    matchesNullableProperty(properties.task_id, scope.taskId)
+  );
+}
+
+function matchesNullableProperty(
+  actual: string | null | undefined,
+  expected: string | null,
+): boolean {
+  return expected === null ? actual === undefined || actual === null : actual === expected;
 }
 
 function usageCounterKey(
@@ -813,6 +1050,16 @@ function usageCounterKey(
 
 function nullablePredicate(
   column: typeof usageLedger.projectId | typeof usageLedger.runId | typeof usageLedger.taskId,
+  value: string | null,
+) {
+  return value === null ? isNull(column) : eq(column, value);
+}
+
+function nullableCorrectionPredicate(
+  column:
+    | typeof usageReconciliationCorrections.projectId
+    | typeof usageReconciliationCorrections.runId
+    | typeof usageReconciliationCorrections.taskId,
   value: string | null,
 ) {
   return value === null ? isNull(column) : eq(column, value);

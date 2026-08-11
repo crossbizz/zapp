@@ -462,7 +462,7 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
     ).rejects.toThrow('category');
   });
 
-  it('durably journals one idempotent Flexprice correction before delivery', async () => {
+  it('keeps an accepted correction pending until analytics converge, then permits a residual', async () => {
     const events: unknown[] = [];
     const journal = createDatabaseUsageCorrectionJournal({
       database: database.db,
@@ -483,11 +483,12 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
       from: '2026-08-10T00:00:00.000Z',
       to: '2026-08-11T00:00:00.000Z',
       targetQuantity: '2.000000',
+      observedQuantity: '1.500000',
       deltaQuantity: '0.500000',
     };
 
-    await journal.correct(correction);
-    await journal.correct(correction);
+    await expect(journal.correct(correction)).resolves.toBe('submitted');
+    await expect(journal.correct(correction)).resolves.toBe('pending');
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -496,12 +497,117 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
       timestamp: '2026-08-10T23:59:59.999Z',
       properties: { project_id: null, run_id: null, task_id: null, quantity: 0.5 },
     });
-    const [stored] = await database.sql<{ rows: string; status: string; attempts: number }[]>`
-      select count(*)::text as rows, min(status) as status, max(attempts)::integer as attempts
+    const [stored] = await database.sql<
+      {
+        rows: string;
+        status: string;
+        attempts: number;
+        accepted: boolean;
+        confirmed: boolean;
+      }[]
+    >`
+      select
+        count(*)::text as rows,
+        min(status) as status,
+        max(attempts)::integer as attempts,
+        bool_and(delivered_at is not null) as accepted,
+        bool_or(confirmed_at is not null) as confirmed
       from usage_reconciliation_corrections
       where organization_id = ${organizationId}
     `;
-    expect(stored).toEqual({ rows: '1', status: 'delivered', attempts: 1 });
+    expect(stored).toEqual({
+      rows: '1',
+      status: 'pending',
+      attempts: 1,
+      accepted: true,
+      confirmed: false,
+    });
+
+    await expect(
+      journal.confirm({
+        organizationId: correction.organizationId,
+        projectId: correction.projectId,
+        runId: correction.runId,
+        taskId: correction.taskId,
+        from: correction.from,
+        to: correction.to,
+        category: correction.category,
+        targetQuantity: correction.targetQuantity,
+        observedQuantity: correction.targetQuantity,
+      }),
+    ).resolves.toBe('confirmed');
+    await expect(
+      journal.correct({
+        ...correction,
+        observedQuantity: '1.750000',
+        deltaQuantity: '0.250000',
+      }),
+    ).resolves.toBe('submitted');
+    expect(events).toHaveLength(2);
+    const [afterResidual] = await database.sql<
+      { rows: string; confirmed: string; pending: string }[]
+    >`
+      select
+        count(*)::text as rows,
+        count(*) filter (where status = 'confirmed')::text as confirmed,
+        count(*) filter (where status = 'pending')::text as pending
+      from usage_reconciliation_corrections
+      where organization_id = ${organizationId}
+    `;
+    expect(afterResidual).toEqual({ rows: '2', confirmed: '1', pending: '1' });
+  });
+
+  it('serializes concurrent correction creation and submits only the persisted winner', async () => {
+    const events: unknown[] = [];
+    let releaseFirstIngest: (() => void) | undefined;
+    const firstIngestGate = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    const journal = createDatabaseUsageCorrectionJournal({
+      database: database.db,
+      now: () => new Date('2026-08-12T01:00:00.000Z'),
+      ingest: {
+        async ingest(event) {
+          events.push(event);
+          if (events.length === 1) await firstIngestGate;
+        },
+      },
+    });
+    const base = {
+      organizationId,
+      projectId: null,
+      runId: null,
+      taskId: null,
+      category: 'artifact_storage' as const,
+      from: '2026-08-10T00:00:00.000Z',
+      to: '2026-08-11T00:00:00.000Z',
+      targetQuantity: '2.000000',
+    };
+
+    const first = journal.correct({
+      ...base,
+      observedQuantity: '1.500000',
+      deltaQuantity: '0.500000',
+    });
+    for (let attempt = 0; attempt < 100 && events.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const second = journal.correct({
+      ...base,
+      observedQuantity: '1.250000',
+      deltaQuantity: '0.750000',
+    });
+
+    await expect(second).resolves.toBe('pending');
+    releaseFirstIngest?.();
+    await expect(first).resolves.toBe('submitted');
+    expect(events).toHaveLength(1);
+    const [stored] = await database.sql<{ rows: string; attempts: number }[]>`
+      select count(*)::text as rows, max(attempts)::integer as attempts
+      from usage_reconciliation_corrections
+      where organization_id = ${organizationId}
+    `;
+    expect(stored).toEqual({ rows: '1', attempts: 1 });
   });
 
   it('claims a daily storage bucket once across replicas and persists completion', async () => {
@@ -521,10 +627,15 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
       to: '2026-08-11T00:00:00.000Z',
     };
 
-    await expect(first.claim(bucket)).resolves.toBe('acquired');
-    await expect(second.claim(bucket)).resolves.toBe('busy');
-    await first.complete(bucket);
-    await expect(second.claim(bucket)).resolves.toBe('completed');
+    const claim = await first.claim(bucket);
+    expect(claim).toMatchObject({ status: 'acquired' });
+    if (claim.status !== 'acquired') throw new Error('expected first replica to own the bucket');
+    await expect(second.claim(bucket)).resolves.toEqual({ status: 'busy' });
+    await expect(first.runFenced(bucket, claim.leaseToken, () => Promise.resolve('safe'))).resolves.toBe(
+      'safe',
+    );
+    await first.complete(bucket, claim.leaseToken);
+    await expect(second.claim(bucket)).resolves.toEqual({ status: 'completed' });
   });
 
   it('derives completed and runless nullable scopes from the closed ledger window', async () => {

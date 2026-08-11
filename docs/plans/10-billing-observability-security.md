@@ -62,6 +62,22 @@ Master plan §Global Constraints, plus:
 - [x] Binding behavior (PRD §30.1 full category coverage): storage cron (daily): R2 prefix sizes per project → `artifact_storage`; snapshot/volume sizes via sandbox-service → `storage_gib_hours`; deploy-provider usage recorded per deployment (build seconds where measurable); reconciliation job (three-way): Redis run counters vs ledger sums vs Flexprice aggregates (per-category API query) — drift > 1% → alert + heal (ledger is arbiter); **every provider cost category maps to a ledger category and a Flexprice metered feature** — coverage test enumerates PRD §30.1 list against emitter registry and bootstrap output.
 - [x] Commit: `feat(usage): full metering coverage + three-way reconciliation`
 
+#### Task OPS-2-FIX-1 [M2]: Durable metering and reconciliation closure
+
+**Files:** Modify OPS-2 control-api usage collectors/reconciliation/Flexprice composition and tests; sandbox-service app/checkpoint/cost/storage/Modal composition and tests; `packages/db` billing schema/migration/tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-2. **Review cap:** two rounds; exit = zero Critical/Important.
+
+- [x] RED/GREEN: query Flexprice analytics only with documented `group_by` fields (`source`, `feature_id`, `properties.<field>`), validate the real response contract, expand the meter and map `meter.event_name` to every usage category, and make the fake reject invalid analytics payloads.
+- [x] RED/GREEN: persist sandbox CPU/memory metering identity and the active interval across restart/replay/attach/termination; two real `buildApp` instances over the same durable workspace rows must emit the complete interval exactly once.
+- [x] RED/GREEN: use the exact artifact prefix `org/{orgId}/project/{projectId}/`.
+- [x] RED/GREEN: persist pending Flexprice correction state; HTTP 202 does not mean healed, later aggregate convergence confirms healing, pending work blocks duplicate full-delta submission, and a new residual is allowed only after the prior target converges.
+- [x] RED/GREEN: production checkpoint composition measures logical bytes before Modal snapshot creation, returns them structurally, records them durably, and fails closed on measurement/contract failure.
+- [x] RED/GREEN: daily storage scan holds a renewable fenced lease for the full scan, including probes longer than one lease and a 1000-project scan; ownership loss fails closed and prevents a second replica from remeasuring.
+- [x] RED/GREEN: control-api starts/readies without waiting for the daily storage scan and reports asynchronous scan failures.
+- [x] RED/GREEN (in-scope Minors): read-only Modal volume probes never create an absent volume; the billing storage route accepts only the control-api service caller.
+- [x] Verify focused RED/GREEN, then full DB/control-api/sandbox tests plus lint, typecheck, sequential build, architecture lint, and diff hygiene; no real-provider calls.
+- [x] Commit: `fix(usage): close durable metering and reconciliation gaps`
+
 ### Task OPS-3 [M2]: Budgets, quotas, plan limits
 
 **Files:** Create: `services/control-api/src/usage/limits.ts`, `config/plans.json`, enforcement hooks
@@ -211,6 +227,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-2-FIX-1 done — Closed durable metering, fenced storage, official Flexprice reconciliation, and snapshot-free checkpoint gaps; review fixes added readiness-safe bounded recovery, advisory-locked correction submission, and durable per-category delivery replay, while full verification also fixed the baseline GitHub retry clock fixture.
 - 2026-08-11 OPS-2 done — Full metering coverage, durable three-way reconciliation, and production call paths completed under approved ADR-0030; no remaining blockers or deviations.
 - 2026-08-11 OPS-12 CI repair follow-up done — Replaced ANSI-sensitive human-reporter matching with Vitest's JSON result contract for the 54-case tenant gate after exact-head Security proved the matrix passed but the wrapper could not parse its colored summary.
 - 2026-08-11 OPS-1B-FIX-1 done — Replaced correction row locking with a transaction-scoped advisory lock keyed by the immutable target, preserving SELECT+INSERT-only application grants and concurrent over-correction serialization; no blockers or deviations.

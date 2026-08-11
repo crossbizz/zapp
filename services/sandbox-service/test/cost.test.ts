@@ -11,6 +11,7 @@ import {
   type UsageLedgerRow,
 } from '../src/cost/recorder.js';
 import { getResourceProfile } from '../src/provider/profiles.js';
+import { createMemoryCostRecordingStateStore } from '../src/cost/state.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -179,7 +180,7 @@ describe('resource profiles and sandbox cost recording', () => {
     ]);
   });
 
-  test('retries deterministic ledger appends after a partial terminate failure', async () => {
+  test('retries only the undelivered ledger category after a partial terminate failure', async () => {
     const appended: string[] = [];
     let nowMs = 0;
     let memoryAttempts = 0;
@@ -208,9 +209,116 @@ describe('resource profiles and sandbox cost recording', () => {
     expect(appended).toEqual([
       'sandbox_cpu_seconds',
       'sandbox_mem_gib_seconds',
-      'sandbox_cpu_seconds',
       'sandbox_mem_gib_seconds',
     ]);
+  });
+
+  test('replays the stable undelivered row after a crash between category appends', async () => {
+    const state = createMemoryCostRecordingStateStore();
+    const appended: UsageLedgerRow[] = [];
+    let nowMs = 0;
+    let failMemory = true;
+    const dependencies = {
+      nowMs: () => nowMs,
+      metrics: { sample: () => Promise.resolve(metric(0, 0)) },
+      ledger: {
+        appendIfAbsent(row: UsageLedgerRow) {
+          appended.push(row);
+          if (row.category === 'sandbox_mem_gib_seconds' && failMemory) {
+            failMemory = false;
+            return Promise.reject(new Error('crash after CPU append'));
+          }
+          return Promise.resolve();
+        },
+      },
+      state,
+      scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+    } satisfies CostRecorderDependencies;
+    const original = recordingInput('d', 'small');
+    const first = await createCostRecorder(dependencies).start(original);
+    nowMs = 30_000;
+    await expect(first.terminate()).rejects.toThrow('crash after CPU append');
+
+    const resumed = await createCostRecorder(dependencies).start({
+      ...original,
+      operationKey: undefined,
+    });
+    await expect(resumed.terminate()).resolves.toHaveLength(2);
+
+    expect(appended.map(({ id }) => id)).toEqual([
+      `usage_${'d'.repeat(64)}_sandbox_cpu_seconds`,
+      `usage_${'d'.repeat(64)}_sandbox_mem_gib_seconds`,
+      `usage_${'d'.repeat(64)}_sandbox_mem_gib_seconds`,
+    ]);
+    expect(new Set(appended.map(({ occurredAt }) => occurredAt))).toEqual(
+      new Set(['1970-01-01T00:00:30.000Z']),
+    );
+  });
+
+  test('serializes two active replica samples without double-counting the interval', async () => {
+    const state = createMemoryCostRecordingStateStore();
+    const scheduled: Array<() => Promise<void>> = [];
+    const rows: UsageLedgerRow[] = [];
+    let nowMs = 0;
+    const dependencies: CostRecorderDependencies = {
+      nowMs: () => nowMs,
+      metrics: { sample: () => Promise.resolve(metric(0, 0)) },
+      ledger: {
+        appendIfAbsent(row) {
+          rows.push(row);
+          return Promise.resolve();
+        },
+      },
+      state,
+      scheduler: {
+        setInterval(callback) {
+          scheduled.push(callback);
+          return callback;
+        },
+        clearInterval: () => undefined,
+      },
+    };
+    const input = recordingInput('e', 'small');
+    const [first, second] = await Promise.all([
+      createCostRecorder(dependencies).start(input),
+      createCostRecorder(dependencies).start(input),
+    ]);
+    nowMs = 30_000;
+    await Promise.all(scheduled.map(async (sample) => sample()));
+    await first.terminate();
+    await second.close();
+
+    expect(rows.map(({ category, quantity }) => ({ category, quantity }))).toEqual([
+      { category: 'sandbox_cpu_seconds', quantity: '15' },
+      { category: 'sandbox_mem_gib_seconds', quantity: '30' },
+    ]);
+  });
+
+  test('canonicalizes durable decimal state before returning it to a ledger writer', async () => {
+    const state = createMemoryCostRecordingStateStore();
+    const workspaceId = newId('ws');
+    const stored = await state.mutate(workspaceId, () => ({
+      workspaceId,
+      operationKey: `op_${'f'.repeat(64)}`,
+      lastSampleAtMs: 1,
+      lastCpuMicros: 1,
+      cpuSeconds: 0.1234567,
+      memoryGibSeconds: 0.7654321,
+      cpuSecondUsd: 0.0000001234567,
+      memoryGibSecondUsd: 0.0000007654321,
+      creditsPerUsd: 100.1234567,
+      finalizedAtMs: 1,
+      cpuDeliveredAtMs: null,
+      memoryDeliveredAtMs: null,
+    }));
+
+    expect(stored).toMatchObject({
+      cpuSeconds: 0.123457,
+      memoryGibSeconds: 0.765432,
+      cpuSecondUsd: 0.000000123457,
+      memoryGibSecondUsd: 0.000000765432,
+      creditsPerUsd: 100.123457,
+    });
   });
 });
 
