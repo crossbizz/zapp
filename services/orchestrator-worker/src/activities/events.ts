@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 
-import { AgentEventInputObjectSchema, AgentEventInputSchema } from '@zapp/contracts';
+import { AgentEventInputObjectSchema, AgentEventInputSchema, idSchema } from '@zapp/contracts';
 import { z } from 'zod';
+import type { SessionEvent } from '../session/loop.js';
 
 export type PublishedAgentEvent = z.infer<typeof AgentEventInputSchema>;
 
@@ -41,6 +42,54 @@ const EmitEventsInputSchema = z
   })
   .strict();
 export type EmitEventsInput = z.infer<typeof EmitEventsInputSchema>;
+
+export const StoreAssistantContentInputSchema = z
+  .object({
+    artifactId: idSchema('art'),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    runId: idSchema('run'),
+    content: z.string().min(1).max(1_000_000),
+    idempotencyKey: z.string().min(1).max(512),
+  })
+  .strict();
+export type StoreAssistantContentInput = z.infer<typeof StoreAssistantContentInputSchema>;
+
+const StoredAssistantContentSchema = z
+  .object({ artifactId: idSchema('art'), contentHash: z.string().regex(/^[a-f0-9]{64}$/u) })
+  .strict();
+export type StoredAssistantContent = z.infer<typeof StoredAssistantContentSchema>;
+
+export interface AssistantContentStore {
+  store(
+    input: StoreAssistantContentInput & { readonly contentHash: string },
+  ): Promise<StoredAssistantContent>;
+}
+
+export function sessionEventToPendingAgentEvent(
+  scope: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly runId: string;
+  },
+  sessionEvent: SessionEvent,
+): PendingAgentEvent {
+  const taskId = /^task_[0-9A-HJKMNP-TV-Z]{26}$/u.test(sessionEvent.taskId)
+    ? sessionEvent.taskId
+    : undefined;
+  return PendingAgentEventSchema.parse({
+    eventKey: sessionEvent.eventKey,
+    organizationId: scope.organizationId,
+    projectId: scope.projectId,
+    runId: scope.runId,
+    ...(taskId === undefined ? {} : { taskId }),
+    agentId: 'builder',
+    occurredAt: sessionEvent.occurredAt,
+    type: sessionEvent.type,
+    visibility: 'user',
+    payload: sessionEvent.payload,
+  });
+}
 
 export interface EventBatchClientOptions {
   readonly flushIntervalMs?: number;
@@ -184,15 +233,21 @@ export class EventBatchClient {
 
 export interface EventActivities {
   emitEvents(input: EmitEventsInput): Promise<void>;
+  storeAssistantContent(input: StoreAssistantContentInput): Promise<StoredAssistantContent>;
   transitionRunStatus(input: RunStatusTransition): Promise<void>;
 }
 
 export interface EventActivityDependencies {
   readonly client: EventBatchClient;
+  readonly assistantContent: AssistantContentStore;
   readonly transitionStatus: (input: RunStatusTransition) => Promise<void>;
 }
 
 export function createEventActivities(dependencies: EventActivityDependencies): EventActivities {
+  const assistantContent = (dependencies as Partial<EventActivityDependencies>).assistantContent;
+  if (assistantContent === undefined) {
+    throw new Error('Assistant content storage is required');
+  }
   return {
     async emitEvents(inputValue) {
       const input = EmitEventsInputSchema.parse(inputValue);
@@ -202,6 +257,15 @@ export function createEventActivities(dependencies: EventActivityDependencies): 
           ? {}
           : { flushImmediately: input.flushImmediately },
       );
+    },
+    async storeAssistantContent(inputValue) {
+      const input = StoreAssistantContentInputSchema.parse(inputValue);
+      const contentHash = createHash('sha256').update(input.content).digest('hex');
+      const stored = await assistantContent.store({ ...input, contentHash });
+      if (stored.artifactId !== input.artifactId || stored.contentHash !== contentHash) {
+        throw new Error('Assistant content storage returned a mismatched receipt');
+      }
+      return StoredAssistantContentSchema.parse(stored);
     },
     async transitionRunStatus(inputValue) {
       const input = RunStatusTransitionSchema.parse(inputValue);

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { ApplicationFailure } from '@temporalio/activity';
 import type { Client } from '@temporalio/client';
 import { Worker, type NativeConnection, type WorkerOptions } from '@temporalio/worker';
+import { MessageUserPayloadSchema } from '@zapp/contracts';
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 import { z } from 'zod';
 
@@ -22,6 +23,7 @@ import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
   budgetApprovalResolvedSignal,
   cancelRunSignal,
+  messageRunSignal,
   pauseRunSignal,
   redirectRunSignal,
   resumeRunSignal,
@@ -212,6 +214,7 @@ function createTemporalOrchestratorForQueue(
           approvalId: z.string().optional(),
           decision: z.enum(['approved', 'rejected']).optional(),
           absoluteCeiling: z.string().optional(),
+          message: MessageUserPayloadSchema.optional(),
         })
         .passthrough()
         .parse(inputValue);
@@ -243,6 +246,12 @@ function createTemporalOrchestratorForQueue(
         await handle.signal(redirectRunSignal, {
           runId: input.runId,
           instruction: z.string().trim().min(1).max(20_000).parse(input.prompt),
+          operationKey: input.operationKey,
+        });
+      } else if (input.signal === 'message') {
+        await handle.signal(messageRunSignal, {
+          runId: input.runId,
+          message: MessageUserPayloadSchema.parse(input.message),
           operationKey: input.operationKey,
         });
       } else {

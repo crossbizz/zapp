@@ -171,6 +171,41 @@ function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
 }
 
 describe('agent session loop', () => {
+  it('retains the workflow operation window for long-running conversations', async () => {
+    const transcripts = new MemoryTranscriptStore();
+    const appliedMessageOperationKeys = Array.from(
+      { length: 1_000 },
+      (_, index) => `op_${index.toString(16).padStart(64, '0')}`,
+    );
+
+    await expect(
+      transcripts.save(null, {
+        key: { runId: 'run-test', taskId: 'task-test' },
+        role: 'builder',
+        mode: 'build',
+        tools: [],
+        budgets: { maxTurns: 4, maxTokens: 1_000, maxWallClockMs: 30_000 },
+        startedAtMs: Date.now(),
+        provenance: [],
+        messages: [],
+        turns: 0,
+        tokensUsed: 0,
+        completedToolCallIds: [],
+        appliedMessageOperationKeys,
+        pendingToolCalls: [],
+        activeToolCallId: null,
+        executionLease: null,
+        nextFence: 1,
+        eventOutbox: [],
+        commits: [],
+        artifacts: [],
+        summary: '',
+        terminalStatus: null,
+        terminalErrorCode: null,
+      }),
+    ).resolves.toMatchObject({ appliedMessageOperationKeys });
+  });
+
   it('places run-mode guardrails in the model system message', async () => {
     const { registry } = await memoryRegistry();
     const transcripts = new MemoryTranscriptStore();
@@ -426,6 +461,8 @@ describe('agent session loop', () => {
       commits: ['0123456789abcdef0123456789abcdef01234567'],
       artifacts: [],
       summary: 'Implemented and verified.',
+      model: 'anthropic/claude-test',
+      turn: 2,
     });
     expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe('registered-secret removed');
     expect(scripted.requests).toHaveLength(2);
@@ -438,6 +475,8 @@ describe('agent session loop', () => {
       'tool.output',
       'tool.completed',
     ]);
+    expect(events[0]?.payload['userSummary']).toBe('Started write file');
+    expect(events[2]?.payload['userSummary']).toBe('Wrote result.txt');
     const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
     expect(saved?.turns).toBe(2);
     expect(saved?.tokensUsed).toBe(500);
@@ -568,7 +607,11 @@ describe('agent session loop', () => {
       code: 'ENOENT',
     });
     expect(events.map((event) => event.type)).toEqual(['tool.started', 'tool.failed']);
-    expect(events[1]?.payload).toMatchObject({ code: 'ask_mode_mutation' });
+    expect(events[0]?.payload['userSummary']).toBe('Started write file');
+    expect(events[1]?.payload).toMatchObject({
+      code: 'ask_mode_mutation',
+      userSummary: 'Could not complete write file',
+    });
     expect(scripted.requests[1]?.messages.at(-1)).toMatchObject({
       role: 'tool',
       content: [
@@ -643,6 +686,8 @@ describe('agent session loop', () => {
       commits: [],
       artifacts: [],
       summary: 'Migration completed.',
+      model: 'anthropic/claude-test',
+      turn: 2,
     });
     expect(migrationCalls).toBe(1);
     expect(scripted.requests).toHaveLength(2);
@@ -761,7 +806,10 @@ describe('agent session loop', () => {
     expect(result.status).toBe('cancelled');
     expect(scripted.requests).toHaveLength(1);
     expect(events.map((event) => event.type)).toEqual(['tool.started', 'tool.failed']);
-    expect(events[1]?.payload).toMatchObject({ code: 'tool_cancelled' });
+    expect(events[1]?.payload).toMatchObject({
+      code: 'tool_cancelled',
+      userSummary: 'Could not complete set environment variable',
+    });
   });
 
   it('treats the token budget as a hard pre-execution limit', async () => {

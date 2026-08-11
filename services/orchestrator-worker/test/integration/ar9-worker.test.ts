@@ -57,6 +57,7 @@ describe('AR-9 Temporal worker hardening', () => {
         statuses.push(status);
         return Promise.resolve();
       },
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: ({ events }) => {
         eventTypes.push(...events.map((event) => event.type));
         return Promise.resolve();
@@ -144,7 +145,12 @@ describe('AR-9 Temporal worker hardening', () => {
     expect(statuses).toEqual(['running', 'completed']);
     expect(eventTypes).toEqual([
       'run.started',
+      'phase.created',
+      'phase.started',
+      'message.user',
       'agent.started',
+      'message.assistant',
+      'phase.completed',
       'commit.created',
       'run.completed',
     ]);
@@ -158,6 +164,7 @@ describe('AR-9 Temporal worker hardening', () => {
       Promise.reject(new Error('AR-9 does not execute AR-14 approval activities'));
     const activities: RunActivities = {
       transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: () => Promise.resolve(),
       ensureWorkspace: () => {
         ensureAttempts += 1;

@@ -1,6 +1,6 @@
 import { CompleteAsyncError, Context } from '@temporalio/activity';
 import { ActivityCancelledError } from '@temporalio/client';
-import { idSchema, RunModeSchema, TOOL_NAMES } from '@zapp/contracts';
+import { idSchema, MessageUserPayloadSchema, RunModeSchema, TOOL_NAMES } from '@zapp/contracts';
 import { z } from 'zod';
 
 import {
@@ -8,8 +8,10 @@ import {
   SessionInputSchema,
   SessionResultSchema,
   type SessionInput,
+  type SessionEvent,
   type SessionResult,
 } from '../session/loop.js';
+import { sessionEventToPendingAgentEvent, type PendingAgentEvent } from './events.js';
 import {
   CheckpointTranscriptStore,
   MAX_TEMPORAL_TRANSCRIPT_BYTES,
@@ -55,6 +57,12 @@ export const RunBuilderSessionInputSchema = z
           })
           .strict()
           .nullable(),
+        message: MessageUserPayloadSchema.extend({
+          operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+        })
+          .strict()
+          .nullable()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -67,6 +75,7 @@ export interface BuilderSessionContext {
   readonly resumeCheckpoint: SessionCheckpoint | undefined;
   readonly transcripts: TranscriptStore;
   readonly signal: AbortSignal;
+  readonly events: { emit(event: SessionEvent): Promise<void> };
 }
 
 export interface BuilderSessionRunner {
@@ -82,22 +91,45 @@ export interface SessionActivities {
 
 export interface SessionActivityOptions {
   readonly heartbeatIntervalMs?: number;
+  readonly publishSessionEvent?: (event: PendingAgentEvent) => Promise<void>;
 }
 
 /** Binds the coarse durable-run input to the exact AR-6 session-loop contract. */
 export function adaptSessionLoop(
-  createLoop: (transcripts: TranscriptStore) => Pick<ReturnType<typeof createSessionLoop>, 'run'>,
+  createLoop: (
+    transcripts: TranscriptStore,
+    events: BuilderSessionContext['events'],
+  ) => Pick<ReturnType<typeof createSessionLoop>, 'run'>,
   buildInput: (input: RunBuilderSessionInput) => SessionInput,
 ): BuilderSessionRunner {
   return {
     run(input, context) {
       const built = buildInput(input);
-      return createLoop(context.transcripts).run(
+      return createLoop(context.transcripts, context.events).run(
         SessionInputSchema.parse({
           ...built,
           tools: input.allowedTools,
           modeInstructions: input.modeInstructions,
-          ...(input.control === undefined ? {} : { control: input.control }),
+          ...(input.control === undefined
+            ? {}
+            : {
+                control: {
+                  yieldAfterTool: input.control.yieldAfterTool,
+                  redirect: input.control.redirect,
+                  message:
+                    input.control.message === null || input.control.message === undefined
+                      ? null
+                      : {
+                          operationKey: input.control.message.operationKey,
+                          message: MessageUserPayloadSchema.parse({
+                            messageId: input.control.message.messageId,
+                            content: input.control.message.content,
+                            attachments: input.control.message.attachments,
+                            source: input.control.message.source,
+                          }),
+                        },
+                },
+              }),
         }),
         context.signal,
       );
@@ -183,6 +215,23 @@ export function createSessionActivities(
           resumeCheckpoint: checkpoint,
           transcripts,
           signal: runnerController.signal,
+          events: {
+            emit: async (sessionEvent) => {
+              if (options.publishSessionEvent === undefined) {
+                throw new Error('Session event publishing is not configured');
+              }
+              await options.publishSessionEvent(
+                sessionEventToPendingAgentEvent(
+                  {
+                    organizationId: input.organizationId,
+                    projectId: input.projectId,
+                    runId: input.runId,
+                  },
+                  sessionEvent,
+                ),
+              );
+            },
+          },
         });
         clearInterval(timer);
         await checkpointHeartbeatTail;

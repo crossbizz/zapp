@@ -41,6 +41,7 @@ describe('AR-15 Ask and Prototype modes', () => {
     let commits = 0;
     const activities: RunActivities = {
       transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: ({ events }) => {
         emitted.push(...events.map(({ type, payload }) => ({ type, payload })));
         return Promise.resolve();
@@ -103,6 +104,7 @@ describe('AR-15 Ask and Prototype modes', () => {
     const emitted: Array<{ type: string; payload: Record<string, unknown> }> = [];
     const activities: RunActivities = {
       transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: ({ events }) => {
         emitted.push(...events.map(({ type, payload }) => ({ type, payload })));
         return Promise.resolve();
@@ -185,6 +187,7 @@ describe('AR-15 Ask and Prototype modes', () => {
         statuses.push(status);
         return Promise.resolve();
       },
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: () => Promise.resolve(),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-prototype-gate' }),
       runBuilderSession: () =>

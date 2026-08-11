@@ -126,6 +126,11 @@ export interface AnyToolSpec extends ToolDefinition<UnknownSchema, UnknownSchema
 }
 
 export interface ExecutableToolDefinition extends ToolDefinition<UnknownSchema, UnknownSchema> {
+  timelineSummary(
+    stage: 'started' | 'completed' | 'failed',
+    rawInput: unknown,
+    rawOutput?: unknown,
+  ): string;
   execute(rawInput: unknown, rawContext: unknown, callerSignal?: AbortSignal): Promise<unknown>;
   executeWithAudit(
     rawInput: unknown,
@@ -305,6 +310,24 @@ function assertExactRegistry(specs: readonly AnyToolSpec[]): void {
   ) {
     throw new Error('Tool registry must match TOOL_NAMES exactly and in order');
   }
+}
+
+function oneLineSummary(value: string): string {
+  const summary = value.replace(/\s+/gu, ' ').trim();
+  if (summary.length === 0) throw new Error('Tool timeline summary must not be empty');
+  return summary.slice(0, 500);
+}
+
+function fallbackTimelineSummary(
+  name: ToolName,
+  stage: 'started' | 'completed' | 'failed',
+): string {
+  const action = name.replaceAll('_', ' ');
+  return stage === 'started'
+    ? `Started ${action}`
+    : stage === 'completed'
+      ? `Completed ${action}`
+      : `Could not complete ${action}`;
 }
 
 export class ToolRegistry {
@@ -494,6 +517,17 @@ export class ToolRegistry {
       callerSignal?: AbortSignal,
     ): Promise<unknown> =>
       (await executeWithAudit(rawInput, rawContext, callerSignal)).output;
+    const timelineSummary = (
+      stage: 'started' | 'completed' | 'failed',
+      rawInput: unknown,
+      rawOutput?: unknown,
+    ): string => {
+      if (stage !== 'completed') return fallbackTimelineSummary(spec.name, stage);
+      const input = spec.inputSchema.safeParse(rawInput);
+      const output = spec.outputSchema.safeParse(rawOutput);
+      if (!input.success || !output.success) return fallbackTimelineSummary(spec.name, stage);
+      return oneLineSummary(redactor.redact(spec.userSummary(input.data, output.data)));
+    };
 
     return {
       name: spec.name,
@@ -507,6 +541,7 @@ export class ToolRegistry {
       timeoutMs: spec.timeoutMs,
       retryPolicy: spec.retryPolicy,
       redactOutput: spec.redactOutput,
+      timelineSummary,
       userSummary: (input, output) => spec.userSummary(input, output),
       auditPayload: (input, output) =>
         redactAuditPayload(spec.auditPayload(input, output), redactor),

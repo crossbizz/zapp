@@ -88,6 +88,7 @@ describe('AR-9 production Postgres worker composition', () => {
         Promise.reject(new Error('AR-9 does not execute AR-12 task activities'));
       const activities: ProductionRunActivities = {
         transitionRunStatus: () => Promise.resolve(),
+        storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
         emitEvents: () => Promise.resolve(),
         ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar9-postgres' }),
         runBuilderSession: () =>

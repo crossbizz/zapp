@@ -444,8 +444,18 @@ describe('ToolRegistry contract', () => {
       const parsedInput = definition.inputSchema.parse(input);
       const parsedOutput = definition.outputSchema.parse(output);
       const summary = definition.userSummary(parsedInput, parsedOutput);
+      const startedSummary = definition.timelineSummary('started', parsedInput);
+      const completedSummary = definition.timelineSummary(
+        'completed',
+        parsedInput,
+        parsedOutput,
+      );
+      const failedSummary = definition.timelineSummary('failed', parsedInput);
       const audit = definition.auditPayload(parsedInput, parsedOutput);
       expect(summary.length).toBeGreaterThan(0);
+      expect(startedSummary.trim().length).toBeGreaterThan(0);
+      expect(completedSummary).toBe(summary.replace(/\s+/gu, ' ').trim().slice(0, 500));
+      expect(failedSummary.trim().length).toBeGreaterThan(0);
       expect(
         Object.values(audit).every((value) =>
           ['string', 'number', 'boolean'].includes(typeof value),

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idSchema } from './ids.js';
+import { idSchema } from './id-schema.js';
 import { ModelIdentifierSchema } from './run-intent.js';
 
 /** PRD §14.4, in order. Both the membership and the order are contractual. */

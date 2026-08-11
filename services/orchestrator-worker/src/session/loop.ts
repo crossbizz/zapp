@@ -12,7 +12,12 @@ import {
   type ToolRegistry,
   type ToolExecutionWithAudit,
 } from '@zapp/agent-tools';
-import { RunModeSchema, TOOL_NAMES, type ToolName } from '@zapp/contracts';
+import {
+  MessageUserPayloadSchema,
+  RunModeSchema,
+  TOOL_NAMES,
+  type ToolName,
+} from '@zapp/contracts';
 import {
   GatewayStreamEventSchema,
   InputJsonSchema,
@@ -76,6 +81,14 @@ export const SessionInputSchema = z
           })
           .strict()
           .nullable(),
+        message: z
+          .object({
+            operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+            message: MessageUserPayloadSchema,
+          })
+          .strict()
+          .nullable()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -127,6 +140,8 @@ export const SessionResultSchema = z
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),
+    model: z.string().min(1).max(160).optional(),
+    turn: z.number().int().nonnegative().safe().optional(),
     completedTools: z.array(z.enum(TOOL_NAMES)).optional(),
     mocks: z
       .array(
@@ -140,6 +155,7 @@ export const SessionResultSchema = z
       .max(100)
       .optional(),
     redirectApplied: z.boolean().optional(),
+    messageApplied: z.boolean().optional(),
     pendingApproval: ApprovalRequestSchema.optional(),
   })
   .strict();
@@ -176,7 +192,22 @@ export const SessionEventSchema = z
     occurredAt: z.string().datetime(),
     payload: z.record(z.unknown()),
   })
-  .strict();
+  .strict()
+  .superRefine((event, validation) => {
+    if (
+      (event.type === 'tool.started' ||
+        event.type === 'tool.completed' ||
+        event.type === 'tool.failed') &&
+      (typeof event.payload['userSummary'] !== 'string' ||
+        event.payload['userSummary'].trim().length === 0)
+    ) {
+      validation.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['payload', 'userSummary'],
+        message: 'Tool lifecycle events require a userSummary',
+      });
+    }
+  });
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
 export interface SessionGateway {
@@ -326,12 +357,15 @@ function terminal(
   transcript: SessionTranscript,
   pendingApproval?: ApprovalRequest,
   redirectApplied = false,
+  messageApplied = false,
 ): SessionResult {
   return SessionResultSchema.parse({
     status: transcript.terminalStatus ?? 'needs_approval',
     commits: transcript.commits,
     artifacts: transcript.artifacts,
     summary: transcript.summary,
+    ...(transcript.model === null ? {} : { model: transcript.model }),
+    turn: transcript.turns,
     ...(transcript.mode === 'prototype'
       ? {
           completedTools: transcript.successfulToolNames,
@@ -340,17 +374,36 @@ function terminal(
       : {}),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(redirectApplied ? { redirectApplied: true } : {}),
+    ...(messageApplied ? { messageApplied: true } : {}),
   });
 }
 
-function yielded(transcript: SessionTranscript, redirectApplied: boolean): SessionResult {
+function yielded(
+  transcript: SessionTranscript,
+  redirectApplied: boolean,
+  messageApplied: boolean,
+): SessionResult {
   return SessionResultSchema.parse({
     status: 'yielded',
     commits: transcript.commits,
     artifacts: transcript.artifacts,
     summary: transcript.summary,
+    ...(transcript.model === null ? {} : { model: transcript.model }),
+    turn: transcript.turns,
     ...(redirectApplied ? { redirectApplied: true } : {}),
+    ...(messageApplied ? { messageApplied: true } : {}),
   });
+}
+
+function conversationMessageContent(
+  message: z.infer<typeof MessageUserPayloadSchema>,
+): string {
+  if (message.attachments.length === 0) return message.content;
+  const attachments = message.attachments.map(
+    (attachment) =>
+      `[image attachment: ${attachment.name}; ${attachment.contentType}; ${String(attachment.byteSize)} bytes; id=${attachment.attachmentId}]`,
+  );
+  return `${message.content}\n\n${attachments.join('\n')}`;
 }
 
 const ABORTED = Symbol('aborted');
@@ -441,6 +494,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           inFlightCompletion: null,
           completedToolCallIds: [],
           appliedRedirectOperationKeys: [],
+          appliedMessageOperationKeys: [],
           completedToolNames: [],
           successfulToolNames: [],
           prototypeMocks: [],
@@ -452,6 +506,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           commits: [],
           artifacts: [],
           summary: '',
+          model: null,
           terminalStatus: null,
           terminalErrorCode: null,
         });
@@ -488,6 +543,34 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             transcriptDraft(transcript),
           );
           redirectApplied = true;
+        }
+      }
+
+      let messageApplied = false;
+      const conversationMessage = input.control?.message;
+      if (conversationMessage !== null && conversationMessage !== undefined) {
+        if (
+          transcript.appliedMessageOperationKeys.includes(conversationMessage.operationKey)
+        ) {
+          messageApplied = true;
+        } else if (
+          transcript.pendingToolCalls.length === 0 &&
+          transcript.activeToolCallId === null &&
+          (transcript.terminalStatus === null || transcript.terminalStatus === 'completed')
+        ) {
+          transcript.messages.push({
+            role: 'user',
+            content: conversationMessageContent(conversationMessage.message),
+          });
+          transcript.appliedMessageOperationKeys.push(conversationMessage.operationKey);
+          transcript.terminalStatus = null;
+          transcript.terminalErrorCode = null;
+          transcript.summary = '';
+          transcript = await dependencies.transcripts.save(
+            transcript.version,
+            transcriptDraft(transcript),
+          );
+          messageApplied = true;
         }
       }
 
@@ -532,25 +615,47 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         transcript.terminalErrorCode = errorCode;
         await save();
         await flushOutbox();
-        return terminal(transcript, undefined, redirectApplied);
+        return terminal(transcript, undefined, redirectApplied, messageApplied);
       };
       const eventFor = (
         type: SessionEvent['type'],
         call: SessionToolCall,
         suffix: string,
         payload: Record<string, unknown>,
-      ): SessionEvent =>
-        SessionEventSchema.parse({
+        rawOutput?: unknown,
+      ): SessionEvent => {
+        const lifecycle =
+          type === 'tool.started'
+            ? 'started'
+            : type === 'tool.completed'
+              ? 'completed'
+              : type === 'tool.failed'
+                ? 'failed'
+                : undefined;
+        const userSummary =
+          lifecycle === undefined
+            ? {}
+            : {
+                userSummary: dependencies.tools
+                  .get(call.toolName)
+                  .timelineSummary(
+                    lifecycle,
+                    rawInputs.get(call.toolCallId) ?? call.input,
+                    rawOutput,
+                  ),
+              };
+        return SessionEventSchema.parse({
           eventKey: `${input.runId}:${taskId}:${call.toolCallId}:${suffix}`,
           runId: input.runId,
           taskId,
           type,
           occurredAt: new Date(now()).toISOString(),
           payload: redactJson(
-            { toolCallId: call.toolCallId, tool: call.toolName, ...payload },
+            { toolCallId: call.toolCallId, tool: call.toolName, ...userSummary, ...payload },
             dependencies.redact,
           ),
         });
+      };
       const enqueue = (event: SessionEvent): void => {
         if (!transcript.eventOutbox.some((entry) => entry.event.eventKey === event.eventKey)) {
           transcript.eventOutbox.push({ event, delivered: false });
@@ -574,7 +679,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       }
       if (transcript.terminalStatus !== null) {
         cleanup();
-        return terminal(transcript, undefined, redirectApplied);
+        return terminal(transcript, undefined, redirectApplied, messageApplied);
       }
 
       if (transcript.activeToolCallId !== null) {
@@ -618,7 +723,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         await save();
         await flushOutbox();
         cleanup();
-        return terminal(transcript, undefined, redirectApplied);
+        return terminal(transcript, undefined, redirectApplied, messageApplied);
       }
 
       try {
@@ -746,6 +851,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 const event = GatewayStreamEventSchema.parse(next.value);
                 if (event.type === 'text-delta') text.push(dependencies.redact(event.text));
                 if (event.type === 'usage') {
+                  const attributedModel = `${event.provider}/${event.model}`;
+                  const modelChanged = transcript.model !== attributedModel;
+                  transcript.model = attributedModel;
                   const observedTurnTokens = Math.max(
                     usedBy(event),
                     requestTokens + (event.outputTokens ?? 0),
@@ -757,6 +865,8 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                     if (transcript.tokensUsed > input.budgets.maxTokens) {
                       pendingTokenCutoff = true;
                     }
+                  } else if (modelChanged) {
+                    await save();
                   }
                 }
                 if (event.type === 'usage.recorded') {
@@ -938,7 +1048,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             await save();
             await flushOutbox();
             if (input.control?.yieldAfterTool === true) {
-              return yielded(transcript, redirectApplied);
+              return yielded(transcript, redirectApplied, messageApplied);
             }
             continue;
           }
@@ -983,7 +1093,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               );
               await save();
               await flushOutbox();
-              return terminal(transcript, approval, redirectApplied);
+              return terminal(transcript, approval, redirectApplied, messageApplied);
             }
             enqueue(eventFor('approval.resolved', call, 'approval-resolved', { decision: status }));
             if (status === 'denied') {
@@ -1004,7 +1114,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               await save();
               await flushOutbox();
               if (input.control?.yieldAfterTool === true) {
-                return yielded(transcript, redirectApplied);
+                return yielded(transcript, redirectApplied, messageApplied);
               }
               continue;
             }
@@ -1027,7 +1137,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             await save();
             await flushOutbox();
             if (input.control?.yieldAfterTool === true) {
-              return yielded(transcript, redirectApplied);
+              return yielded(transcript, redirectApplied, messageApplied);
             }
             continue;
           }
@@ -1119,7 +1229,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             await save();
             await flushOutbox();
             if (input.control?.yieldAfterTool === true) {
-              return yielded(transcript, redirectApplied);
+              return yielded(transcript, redirectApplied, messageApplied);
             }
             continue;
           }
@@ -1168,11 +1278,19 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           appendUnique(transcript.artifacts, references.artifacts.map(dependencies.redact));
           appendUnique(transcript.changedPaths, executed.changedPaths);
           enqueue(eventFor('tool.output', call, 'output', { output: visible.value }));
-          enqueue(eventFor('tool.completed', call, 'completed', { audit: executed.auditPayload }));
+          enqueue(
+            eventFor(
+              'tool.completed',
+              call,
+              'completed',
+              { audit: executed.auditPayload },
+              executed.output,
+            ),
+          );
           await save();
           await flushOutbox();
           if (input.control?.yieldAfterTool === true) {
-            return yielded(transcript, redirectApplied);
+            return yielded(transcript, redirectApplied, messageApplied);
           }
         }
       } finally {

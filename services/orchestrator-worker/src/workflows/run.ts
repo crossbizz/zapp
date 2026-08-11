@@ -10,6 +10,10 @@ import {
   setHandler,
   type RetryPolicy,
 } from '@temporalio/workflow';
+import {
+  MessageAssistantPayloadSchema,
+  MessageUserPayloadSchema,
+} from '@zapp/contracts/events';
 import { TOOL_GROUPS, TOOL_NAMES, type ToolName } from '@zapp/contracts/tools';
 import { z } from 'zod';
 
@@ -20,7 +24,7 @@ import type { WorkspaceActivities } from '../activities/workspace.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
 
-const workflowIdSchema = (prefix: 'run' | 'org' | 'proj' | 'br'): z.ZodString =>
+const workflowIdSchema = (prefix: 'run' | 'org' | 'proj' | 'br' | 'art'): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
 
 export const RunWorkflowInputSchema = z
@@ -62,6 +66,9 @@ const RunControlSignalSchema = z
 const RunRedirectSignalSchema = RunControlSignalSchema.extend({
   instruction: z.string().trim().min(1).max(20_000),
 }).strict();
+const RunMessageSignalSchema = RunControlSignalSchema.extend({
+  message: MessageUserPayloadSchema,
+}).strict();
 const RunControlContinuationSchema = z
   .object({
     seenOperationKeys: z.array(OperationKeySchema).max(1_000),
@@ -73,12 +80,14 @@ const RunControlContinuationSchema = z
     cancelOperationKey: OperationKeySchema.nullable(),
     cancelAcknowledgementDeadlineAt: z.string().datetime().nullable(),
     pendingRedirects: z.array(RunRedirectSignalSchema).max(100),
+    pendingMessages: z.array(RunMessageSignalSchema).max(100).default([]),
   })
   .strict();
 const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
   continuation: RunWorkflowContinuationSchema.optional(),
   budgetAttempt: z.number().int().nonnegative().max(100).optional(),
   sessionStep: z.number().int().nonnegative().max(10_000).optional(),
+  lastEmittedAssistantTurn: z.number().int().nonnegative().max(10_000).optional(),
   control: RunControlContinuationSchema.optional(),
 }).strict();
 
@@ -115,6 +124,14 @@ const session = proxyActivities<SessionActivities>({
 });
 const events = proxyActivities<EventActivities>({
   startToCloseTimeout: '30 seconds',
+  retry: ACTIVITY_RETRY_POLICY,
+});
+const assistantContent = proxyActivities<{
+  storeAssistantContent(
+    input: Parameters<EventActivities['storeAssistantContent']>[0],
+  ): ReturnType<EventActivities['storeAssistantContent']>;
+}>({
+  startToCloseTimeout: '2 minutes',
   retry: ACTIVITY_RETRY_POLICY,
 });
 const approvals = proxyActivities<ApprovalActivities>({
@@ -157,6 +174,7 @@ export const pauseRunSignal = defineSignal<[unknown]>('pause');
 export const resumeRunSignal = defineSignal<[unknown]>('resume');
 export const cancelRunSignal = defineSignal<[unknown]>('cancel');
 export const redirectRunSignal = defineSignal<[unknown]>('redirect');
+export const messageRunSignal = defineSignal<[unknown]>('message');
 
 export const RunControlStatusSchema = z
   .object({
@@ -174,6 +192,7 @@ export const RunControlStatusSchema = z
     taskId: z.literal('task-m1'),
     workspaceId: z.string().min(1).max(512).nullable(),
     pendingRedirectCount: z.number().int().nonnegative().max(100),
+    pendingMessageCount: z.number().int().nonnegative().max(100),
   })
   .strict();
 export type RunControlStatus = z.infer<typeof RunControlStatusSchema>;
@@ -260,6 +279,86 @@ function event(
   };
 }
 
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+function opaqueConversationId(
+  prefix: 'msg' | 'turn' | 'art',
+  input: RunWorkflowInput,
+  ordinal: number,
+): string {
+  let value = z.number().int().nonnegative().max(0x3fffffff).parse(ordinal);
+  let tail = '';
+  for (let index = 0; index < 6; index += 1) {
+    tail = `${CROCKFORD[value & 31] ?? '0'}${tail}`;
+    value >>>= 5;
+  }
+  return `${prefix}_${input.runId.slice('run_'.length, -6)}${tail}`;
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+async function emitAssistantMessage(
+  input: RunWorkflowInput,
+  assistantTurn: number,
+  content: string,
+  model: string,
+): Promise<void> {
+  if (content.length === 0) return;
+  const ordinal = assistantTurn;
+  const messageId = opaqueConversationId('msg', input, 1_000 + ordinal);
+  const turnId = opaqueConversationId('turn', input, ordinal);
+  const common = { messageId, turnId, model };
+  if (utf8ByteLength(content) <= 48 * 1024) {
+    await events.emitEvents({
+      events: [
+        event(
+          input,
+          'message.assistant',
+          `message-assistant-${String(assistantTurn)}`,
+          MessageAssistantPayloadSchema.parse({ ...common, content }),
+        ),
+      ],
+    });
+    return;
+  }
+  const artifactId = workflowIdSchema('art').parse(
+    opaqueConversationId('art', input, 1_000 + ordinal),
+  );
+  const stored = await assistantContent.storeAssistantContent({
+    artifactId,
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    runId: input.runId,
+    content,
+    idempotencyKey: operationKey(input, `assistant-content-${String(assistantTurn)}`),
+  });
+  await events.emitEvents({
+    events: [
+      event(input, 'artifact.created', `assistant-content-${String(assistantTurn)}`, {
+        artifactId: stored.artifactId,
+        type: 'assistant_message',
+        contentHash: stored.contentHash,
+      }),
+      event(
+        input,
+        'message.assistant',
+        `message-assistant-${String(assistantTurn)}`,
+        MessageAssistantPayloadSchema.parse({
+          ...common,
+          contentArtifactId: stored.artifactId,
+        }),
+      ),
+    ],
+  });
+}
+
 export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
   const input = RunWorkflowStateSchema.parse(inputValue);
   const budgetResolutions = new Map<string, z.infer<typeof BudgetApprovalResolutionSchema>>();
@@ -273,6 +372,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
   let cancelAcknowledgementDeadlineAt =
     input.control?.cancelAcknowledgementDeadlineAt ?? null;
   const pendingRedirects = [...(input.control?.pendingRedirects ?? [])];
+  const pendingMessages = [...(input.control?.pendingMessages ?? [])];
   let currentStatus: RunControlStatus['status'] = cancelRequested
     ? 'cancel_requested'
     : pauseRequested
@@ -309,6 +409,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       cancelOperationKey,
       cancelAcknowledgementDeadlineAt,
       pendingRedirects,
+      pendingMessages,
     });
 
   setHandler(budgetApprovalResolvedSignal, (value) => {
@@ -348,6 +449,13 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     if (pendingRedirects.length >= 100) throw new Error('run redirect queue is full');
     pendingRedirects.push(signal);
   });
+  setHandler(messageRunSignal, (value) => {
+    const signal = RunMessageSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('run message does not match workflow');
+    if (!rememberOperation(signal.operationKey) || cancelRequested) return;
+    if (pendingMessages.length >= 100) throw new Error('run message queue is full');
+    pendingMessages.push(signal);
+  });
   setHandler(getRunStatusQuery, () =>
     RunControlStatusSchema.parse({
       status: currentStatus,
@@ -355,6 +463,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       taskId: 'task-m1',
       workspaceId: currentWorkspaceId,
       pendingRedirectCount: pendingRedirects.length,
+      pendingMessageCount: pendingMessages.length,
     }),
   );
 
@@ -488,6 +597,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
 
   const budgetAttempt = input.budgetAttempt ?? 0;
   const sessionStep = input.sessionStep ?? 0;
+  let lastEmittedAssistantTurn = input.lastEmittedAssistantTurn ?? 0;
   if (input.continuation === undefined) {
     let workspaceId: string;
     try {
@@ -521,6 +631,24 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
                   maxCredits: input.budget?.maxCredits,
                 }),
           }),
+          event(input, 'phase.created', 'phase-created', {
+            phase: 'm1-chat',
+            name: 'Conversation',
+          }),
+          event(input, 'phase.started', 'phase-started', {
+            phase: 'm1-chat',
+          }),
+          event(
+            input,
+            'message.user',
+            'message-user-initial',
+            MessageUserPayloadSchema.parse({
+              messageId: opaqueConversationId('msg', input, 1),
+              content: input.prompt,
+              attachments: [],
+              source: 'api',
+            }),
+          ),
         ],
       });
 
@@ -549,6 +677,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       continuation: { phase: 'session', workspaceId },
       budgetAttempt,
       sessionStep,
+      lastEmittedAssistantTurn,
       control: controlContinuation(),
     });
   }
@@ -597,6 +726,14 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
                         operationKey: pendingRedirects[0].operationKey,
                         instruction: pendingRedirects[0].instruction,
                       },
+                ...(pendingMessages[0] === undefined
+                  ? {}
+                  : {
+                      message: {
+                        operationKey: pendingMessages[0].operationKey,
+                        ...pendingMessages[0].message,
+                      },
+                    }),
               },
               idempotencyKey: operationKey(
                 input,
@@ -620,6 +757,16 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       );
       if (controlResult !== undefined) return controlResult;
       if (sessionResult.redirectApplied === true) pendingRedirects.shift();
+      if (sessionResult.messageApplied === true) pendingMessages.shift();
+      const assistantTurn = sessionResult.turn ?? sessionStep + 1;
+      if (
+        (sessionResult.status === 'completed' || sessionResult.status === 'yielded') &&
+        assistantTurn > lastEmittedAssistantTurn
+      ) {
+        const model = sessionResult.model ?? input.model ?? 'policy/default';
+        await emitAssistantMessage(input, assistantTurn, sessionResult.summary, model);
+        lastEmittedAssistantTurn = assistantTurn;
+      }
       switch (sessionResult.status) {
         case 'completed':
           break;
@@ -728,6 +875,9 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       if (pendingRedirects.length > 0) {
         continueSession = true;
       }
+      if (pendingMessages.length > 0) {
+        continueSession = true;
+      }
       if (!continueSession && input.mode === 'ask') {
         const completedEvents: PendingAgentEvent[] = [
           event(input, 'agent.completed', 'agent-completed', { agent: 'builder' }),
@@ -740,6 +890,9 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
             }),
           );
         }
+        completedEvents.push(
+          event(input, 'phase.completed', 'phase-completed', { phase: 'm1-chat' }),
+        );
         completedEvents.push(
           event(input, 'run.completed', 'run-completed', { status: 'completed' }),
         );
@@ -789,6 +942,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
           ? {}
           : { budget: { maxCredits: approvedMaxCredits }, budgetAttempt: budgetAttempt + 1 }),
         sessionStep: sessionStep + 1,
+        lastEmittedAssistantTurn,
         continuation: {
           phase: 'session',
           workspaceId: input.continuation.workspaceId,
@@ -802,6 +956,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         budget: { maxCredits: approvedMaxCredits },
         budgetAttempt: budgetAttempt + 1,
         sessionStep: sessionStep + 1,
+        lastEmittedAssistantTurn,
         continuation: {
           phase: 'session',
           workspaceId: input.continuation.workspaceId,
@@ -814,6 +969,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       continuation: { phase: 'commit', workspaceId: input.continuation.workspaceId },
       budgetAttempt,
       sessionStep,
+      lastEmittedAssistantTurn,
       control: controlContinuation(),
     });
   }
@@ -835,7 +991,7 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
             projectId: input.projectId,
             workspaceId: commitWorkspaceId,
             message: M1_COMMIT_MESSAGE,
-            idempotencyKey: operationKey(input, 'commit-and-push'),
+            idempotencyKey: operationKey(input, `commit-and-push-${String(sessionStep)}`),
           }),
       );
     } catch (error: unknown) {
@@ -851,14 +1007,32 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     if (cancelRequested) return await completeCancellation(commitWorkspaceId);
     const postCommitControlResult = await honorControlBoundary(commitWorkspaceId, 'commit');
     if (postCommitControlResult !== undefined) return postCommitControlResult;
+    const commitCreated = event(
+      input,
+      'commit.created',
+      `commit-created-${String(sessionStep)}`,
+      {
+        commitSha: committed.commitSha,
+        message: M1_COMMIT_MESSAGE,
+        diffstat: committed.diffstat,
+        mode: input.mode,
+      },
+    );
+    if (pendingRedirects.length > 0 || pendingMessages.length > 0) {
+      await events.emitEvents({ events: [commitCreated] });
+      return await continueAsNew<typeof runWorkflow>({
+        ...input,
+        continuation: { phase: 'session', workspaceId: commitWorkspaceId },
+        budgetAttempt,
+        sessionStep: sessionStep + 1,
+        lastEmittedAssistantTurn,
+        control: controlContinuation(),
+      });
+    }
     await events.emitEvents({
       events: [
-        event(input, 'commit.created', 'commit-created', {
-          commitSha: committed.commitSha,
-          message: M1_COMMIT_MESSAGE,
-          diffstat: committed.diffstat,
-          mode: input.mode,
-        }),
+        event(input, 'phase.completed', 'phase-completed', { phase: 'm1-chat' }),
+        commitCreated,
         event(input, 'run.completed', 'run-completed', { status: 'completed' }),
       ],
     });

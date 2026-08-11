@@ -126,6 +126,9 @@ function workerProgram(): string {
     });
     const eventActivities = createEventActivities({
       client: eventClient,
+      assistantContent: {
+        store: ({ artifactId, contentHash }) => Promise.resolve({ artifactId, contentHash }),
+      },
       transitionStatus: async ({ status, idempotencyKey }) => update((state) => {
         const marker = 'status:' + idempotencyKey;
         if (state.eventBatches[marker]) return;
@@ -452,12 +455,25 @@ describe('AR-8 M1 durable Temporal run', () => {
       expect(state.statuses).toEqual(['queued', 'running', 'completed']);
       expect(state.events.map((event) => event.type)).toEqual([
         'run.started',
+        'phase.created',
+        'phase.started',
+        'message.user',
         'agent.started',
         'tool.completed',
+        'message.assistant',
+        'phase.completed',
         'commit.created',
         'run.completed',
       ]);
-      expect(state.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4]);
+      expect(state.events.map((event) => event.sequence)).toEqual([
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+      ]);
+      expect(state.events.find((event) => event.type === 'message.assistant')?.payload).toMatchObject(
+        {
+          content: 'Builder resumed from its durable transcript.',
+          model: 'policy/default',
+        },
+      );
       expect(state.events.find((event) => event.type === 'commit.created')?.payload).toEqual({
         commitSha: '0123456789abcdef0123456789abcdef01234567',
         message: 'Complete M1 builder task',

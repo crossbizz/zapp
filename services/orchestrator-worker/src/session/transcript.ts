@@ -35,7 +35,22 @@ export const SessionEventRecordSchema = z
     occurredAt: z.string().datetime(),
     payload: z.record(z.unknown()),
   })
-  .strict();
+  .strict()
+  .superRefine((event, validation) => {
+    if (
+      (event.type === 'tool.started' ||
+        event.type === 'tool.completed' ||
+        event.type === 'tool.failed') &&
+      (typeof event.payload['userSummary'] !== 'string' ||
+        event.payload['userSummary'].trim().length === 0)
+    ) {
+      validation.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['payload', 'userSummary'],
+        message: 'Tool lifecycle events require a userSummary',
+      });
+    }
+  });
 export type SessionEventRecord = z.infer<typeof SessionEventRecordSchema>;
 
 const ExecutionLeaseSchema = z
@@ -97,6 +112,10 @@ const SessionTranscriptBaseSchema = z
       .array(z.string().regex(/^op_[a-f0-9]{64}$/u))
       .max(100)
       .default([]),
+    appliedMessageOperationKeys: z
+      .array(z.string().regex(/^op_[a-f0-9]{64}$/u))
+      .max(1_000)
+      .default([]),
     completedToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
     successfulToolNames: z.array(z.enum(TOOL_NAMES)).default([]),
     prototypeMocks: z
@@ -121,6 +140,7 @@ const SessionTranscriptBaseSchema = z
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),
+    model: z.string().min(1).max(160).nullable().default(null),
     terminalStatus: z.enum(['completed', 'budget_exhausted', 'failed', 'cancelled']).nullable(),
     terminalErrorCode: z.string().min(1).nullable(),
   })

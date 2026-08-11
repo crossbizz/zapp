@@ -48,6 +48,7 @@ describe('AR-14 durable run budget approval loop', () => {
         statuses.push(status);
         return Promise.resolve();
       },
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: ({ events: batch }) => {
         events.push(...batch.map(({ type, payload }) => ({ type, payload })));
         return Promise.resolve();
@@ -136,6 +137,7 @@ describe('AR-14 durable run budget approval loop', () => {
         statuses.push(status);
         return Promise.resolve();
       },
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       emitEvents: () => Promise.resolve(),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar14-reject' }),
       runBuilderSession: () =>

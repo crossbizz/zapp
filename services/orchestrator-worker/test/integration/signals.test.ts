@@ -79,6 +79,9 @@ describe('AR-10 durable run control signals', () => {
           return Promise.resolve();
         },
       }),
+      assistantContent: {
+        store: ({ artifactId, contentHash }) => Promise.resolve({ artifactId, contentHash }),
+      },
       transitionStatus: () => Promise.resolve(),
     });
     const startedAt = Date.now();
@@ -145,6 +148,7 @@ describe('AR-10 durable run control signals', () => {
     const checkpoints: string[] = [];
     let sessions = 0;
     const activities: RunActivities = {
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar10-pause' }),
       runBuilderSession: () => {
         sessions += 1;
@@ -277,6 +281,7 @@ describe('AR-10 durable run control signals', () => {
     let activityCancelledAt = Number.POSITIVE_INFINITY;
     let checkpointedAt = Number.POSITIVE_INFINITY;
     const activities: RunActivities = {
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar10-cancel' }),
       runBuilderSession: () =>
         new Promise((resolve) => {
@@ -384,6 +389,7 @@ describe('AR-10 durable run control signals', () => {
     }>();
     let activityStarted = false;
     const activities: RunActivities = {
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar10-deadline' }),
       runBuilderSession: () => {
         activityStarted = true;
@@ -456,6 +462,7 @@ describe('AR-10 durable run control signals', () => {
     const prompts: string[] = [];
     const controls: Array<Parameters<RunActivities['runBuilderSession']>[0]['control']> = [];
     const activities: RunActivities = {
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
       ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar10-redirect' }),
       runBuilderSession: ({ prompt, control }) => {
         prompts.push(prompt);
