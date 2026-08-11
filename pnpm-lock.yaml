@@ -1263,6 +1263,9 @@ importers:
 
   services/release-service:
     dependencies:
+      '@temporalio/workflow':
+        specifier: 1.22.0
+        version: 1.22.0
       '@zapp/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

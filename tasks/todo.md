@@ -202,7 +202,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-3 Deployment type classification
 - [x] DEP-4 Fly.io container adapter
 - [x] DEP-5 Vercel adapter
-- [ ] DEP-6 Staged deploy workflow (safe go-live)
+- [x] DEP-6 Staged deploy workflow (safe go-live)
 - [ ] DEP-7 Production health + prod-safe smoke
 - [ ] DEP-8 Success contract + release annotations
 - [ ] DEP-9 Rollback with DB-compatibility gating

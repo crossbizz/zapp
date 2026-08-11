@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@temporalio/workflow": "1.22.0",
     "@zapp/contracts": "workspace:*",
     "@zapp/db": "workspace:*",
     "drizzle-orm": "^0.45.2",
