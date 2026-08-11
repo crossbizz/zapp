@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { idSchema } from '@zapp/contracts';
 import { USAGE_CATEGORIES, usageLedger, usageOutbox, type Database } from '@zapp/db';
-import { and, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { FlexpriceUsageEventSchema, type FlexpriceUsageEvent } from './outbox.js';
@@ -89,6 +89,13 @@ export class UsageOperationConflictError extends Error {
   }
 }
 
+export class UsageCorrectionError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'UsageCorrectionError';
+  }
+}
+
 export interface UsageLedgerRepository {
   recordUsage(entry: UsageEntry): Promise<RecordedUsage>;
   getUsageSummary(organizationId: string, window: UsageWindow): Promise<UsageSummary>;
@@ -107,6 +114,73 @@ export function createUsageLedgerRepository(options: {
         const ledgerRowId = deterministicId('usage', entry.organizationId, entry.operationKey);
         const event = flexpriceEvent(entry, ledgerRowId);
         const instant = now();
+        const correctionOf = entry.metadata.correction_of;
+        if (correctionOf !== undefined) {
+          const [original] = await tx
+            .select()
+            .from(usageLedger)
+            .where(
+              and(
+                eq(usageLedger.id, correctionOf),
+                eq(usageLedger.organizationId, entry.organizationId),
+              ),
+            )
+            .for('update')
+            .limit(1);
+          const originalMetadata = UsageMetadataSchema.safeParse(original?.metadata);
+          if (
+            original === undefined ||
+            !originalMetadata.success ||
+            originalMetadata.data.correction_of !== undefined ||
+            decimalUnits(original.quantity, 6) <= 0n
+          ) {
+            throw new UsageCorrectionError('correction_of must identify a valid positive original');
+          }
+          if (!matchesCorrectionAttribution(original, entry)) {
+            throw new UsageCorrectionError('correction must match the original attribution');
+          }
+
+          const originalAmounts = usageAmounts(original);
+          const correctionAmounts = usageAmounts(entry);
+          if (originalAmounts.cost < 0n || originalAmounts.credits < 0n) {
+            throw new UsageCorrectionError('correction_of must identify a valid positive original');
+          }
+          if (correctionAmounts.cost > 0n || correctionAmounts.credits > 0n) {
+            throw new UsageCorrectionError('correction cost and credits must be non-positive');
+          }
+          if (!isProportionalCompensation(originalAmounts, correctionAmounts)) {
+            throw new UsageCorrectionError(
+              'correction quantity, cost, and credits must be proportional',
+            );
+          }
+
+          const [prior] = await tx
+            .select({
+              cost: sql<string>`coalesce(sum(${usageLedger.costUsd}), 0)::text`,
+              credits: sql<string>`coalesce(sum(${usageLedger.creditsCharged}), 0)::text`,
+              quantity: sql<string>`coalesce(sum(${usageLedger.quantity}), 0)::text`,
+            })
+            .from(usageLedger)
+            .where(
+              and(
+                eq(usageLedger.organizationId, entry.organizationId),
+                ne(usageLedger.id, ledgerRowId),
+                sql`${usageLedger.metadata} ->> 'correction_of' = ${correctionOf}`,
+              ),
+            );
+          const aggregate = {
+            quantity: decimalUnits(prior?.quantity ?? '0', 6) + correctionAmounts.quantity,
+            cost: decimalUnits(prior?.cost ?? '0', 6) + correctionAmounts.cost,
+            credits: decimalUnits(prior?.credits ?? '0', 4) + correctionAmounts.credits,
+          };
+          if (
+            -aggregate.quantity > originalAmounts.quantity ||
+            -aggregate.cost > originalAmounts.cost ||
+            -aggregate.credits > originalAmounts.credits
+          ) {
+            throw new UsageCorrectionError('aggregate correction exceeds the original');
+          }
+        }
         const [inserted] = await tx
           .insert(usageLedger)
           .values({
@@ -243,6 +317,58 @@ function matchesEntry(row: typeof usageLedger.$inferSelect, entry: UsageEntry): 
     row.occurredAt.toISOString() === new Date(entry.occurredAt).toISOString() &&
     JSON.stringify(row.metadata) === JSON.stringify(entry.metadata)
   );
+}
+
+interface UsageAmounts {
+  readonly quantity: bigint;
+  readonly cost: bigint;
+  readonly credits: bigint;
+}
+
+function usageAmounts(
+  value: Pick<UsageEntry, 'costUsd' | 'creditsCharged' | 'quantity'>,
+): UsageAmounts {
+  return {
+    quantity: decimalUnits(value.quantity, 6),
+    cost: decimalUnits(value.costUsd, 6),
+    credits: decimalUnits(value.creditsCharged, 4),
+  };
+}
+
+function matchesCorrectionAttribution(
+  original: typeof usageLedger.$inferSelect,
+  correction: UsageEntry,
+): boolean {
+  return (
+    original.category === correction.category &&
+    original.projectId === correction.projectId &&
+    original.runId === correction.runId &&
+    original.taskId === correction.taskId &&
+    original.provider === correction.provider &&
+    original.unit === correction.unit
+  );
+}
+
+function isProportionalCompensation(original: UsageAmounts, correction: UsageAmounts): boolean {
+  const correctedQuantity = -correction.quantity;
+  const correctedCost = -correction.cost;
+  const correctedCredits = -correction.credits;
+  return (
+    correctedQuantity > 0n &&
+    proportionalAmount(original.quantity, correctedQuantity, original.cost, correctedCost) &&
+    proportionalAmount(original.quantity, correctedQuantity, original.credits, correctedCredits)
+  );
+}
+
+function proportionalAmount(
+  originalQuantity: bigint,
+  correctedQuantity: bigint,
+  originalAmount: bigint,
+  correctedAmount: bigint,
+): boolean {
+  return originalAmount === 0n
+    ? correctedAmount === 0n
+    : correctedAmount * originalQuantity === originalAmount * correctedQuantity;
 }
 
 function deterministicId(prefix: string, ...parts: readonly string[]): string {
