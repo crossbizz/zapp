@@ -536,6 +536,7 @@ test('attaches a trusted selected element and sends its canonical context with t
   page,
 }) => {
   let sentMessage: unknown;
+  const screenshotRequests: string[] = [];
   const uploads: unknown[] = [];
   await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
   await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
@@ -578,6 +579,7 @@ test('attaches a trusted selected element and sends its canonical context with t
   await page.route(
     `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
     async (route) => {
+      screenshotRequests.push(route.request().headers()['idempotency-key'] ?? '');
       await route.fulfill({
         body: Buffer.from([137, 80, 78, 71]),
         headers: corsHeaders('image/png'),
@@ -646,7 +648,34 @@ test('attaches a trusted selected element and sends its canonical context with t
   await expect(page.getByLabel('Attached selections')).toContainText(
     "Selected: <Button> 'Save' on /settings",
   );
+  await expect(
+    page.getByTitle('Application preview').contentFrame().locator('body'),
+  ).toHaveAttribute('data-selection-mode', 'false');
   await expect(page.getByRole('button', { name: 'Remove selected Button Save' })).toBeVisible();
+  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(async () => {
+    window.parent.postMessage(
+      {
+        payload: {
+          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+          componentHint: 'Button',
+          computedRole: 'button',
+          selector: '[data-testid="save-settings"]',
+          text: 'Save',
+        },
+        type: 'zapp:element-selected',
+      },
+      window.location.origin,
+    );
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+    });
+  });
+  expect(screenshotRequests).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Remove selected Button Save' })).toHaveCount(1);
   await page.getByLabel('Message the agent').fill('Move this beside the password field.');
   await page.getByRole('button', { name: 'Send message' }).click();
 
@@ -669,4 +698,103 @@ test('attaches a trusted selected element and sends its canonical context with t
       },
     ],
   });
+});
+
+test('does not attach a selected-element screenshot completed after the preview iframe is refreshed', async ({
+  page,
+}) => {
+  let markScreenshotStarted: (() => void) | undefined;
+  let releaseScreenshot: (() => void) | undefined;
+  const screenshotStarted = new Promise<void>((resolve) => {
+    markScreenshotStarted = resolve;
+  });
+  const screenshotReleased = new Promise<void>((resolve) => {
+    releaseScreenshot = resolve;
+  });
+  await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'ready',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/shares`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        share: {
+          expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+          id: '01j00000000000000000000000',
+          policy: 'org',
+          url: shareUrl,
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
+    async (route) => {
+      markScreenshotStarted?.();
+      await screenshotReleased;
+      await route.fulfill({
+        body: Buffer.from([137, 80, 78, 71]),
+        headers: corsHeaders('image/png'),
+        status: 200,
+      });
+    },
+  );
+  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+    await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Select element' }).click();
+  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(() => {
+    window.parent.postMessage(
+      {
+        payload: {
+          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+          componentHint: 'Button',
+          computedRole: 'button',
+          selector: '[data-testid="save-settings"]',
+          text: 'Save',
+        },
+        type: 'zapp:element-selected',
+      },
+      window.location.origin,
+    );
+  });
+  await screenshotStarted;
+
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(page.getByTitle('Application preview').contentFrame().getByRole('heading', { name: 'Preview' })).toBeVisible();
+  const screenshotResponse = page.waitForResponse(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
+  );
+  releaseScreenshot?.();
+  await screenshotResponse;
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+    });
+  });
+
+  await expect(page.getByLabel('Attached selections')).toBeEmpty();
 });

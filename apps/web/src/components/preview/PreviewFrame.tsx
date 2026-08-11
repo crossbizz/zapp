@@ -897,6 +897,10 @@ export function PreviewFrame({
           if (previewUrl !== undefined) window.open(previewUrl, '_blank', 'noopener,noreferrer');
         }}
         onRefresh={() => {
+          previewGenerationRef.current += 1;
+          selectionPendingRef.current = false;
+          selectionScreenshotKeyRef.current = undefined;
+          setSelecting(false);
           setIframeGeneration((value) => value + 1);
         }}
         onShare={() => void createPublicShare()}

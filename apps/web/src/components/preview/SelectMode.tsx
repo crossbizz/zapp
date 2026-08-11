@@ -1,7 +1,7 @@
 'use client';
 
 import { Button } from '@zapp/ui';
-import { useCallback, useEffect, useMemo, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 const maximumComponentHintChars = 256;
 const maximumRoleChars = 64;
@@ -86,6 +86,7 @@ export function SelectMode({
 }: SelectModeProps): React.ReactElement {
   const [enabled, setEnabled] = useState(false);
   const [status, setStatus] = useState('Selection mode is off.');
+  const enabledRef = useRef(false);
   const origin = useMemo(() => previewOrigin(previewUrl), [previewUrl]);
 
   const postSelectionMode = useCallback(
@@ -99,16 +100,28 @@ export function SelectMode({
   );
 
   useEffect(() => {
+    enabledRef.current = false;
     setEnabled(false);
     setStatus('Selection mode is off.');
   }, [origin]);
 
   useEffect(() => {
+    if (!disabled || !enabledRef.current) return;
+    postSelectionMode(false);
+    enabledRef.current = false;
+    setEnabled(false);
+    setStatus('Selection mode is off.');
+  }, [disabled, postSelectionMode]);
+
+  useEffect(() => {
     const receiveSelection = (event: MessageEvent<unknown>): void => {
       if (origin === undefined || event.origin !== origin) return;
       if (event.source !== iframeRef.current?.contentWindow) return;
+      if (disabled || !enabledRef.current) return;
       const selection = selectionFromMessage(event.data);
       if (selection === undefined) return;
+      postSelectionMode(false);
+      enabledRef.current = false;
       setEnabled(false);
       setStatus('Element selected. Capturing its screenshot.');
       onSelected(selection);
@@ -117,7 +130,7 @@ export function SelectMode({
     return () => {
       window.removeEventListener('message', receiveSelection);
     };
-  }, [iframeRef, onSelected, origin]);
+  }, [disabled, iframeRef, onSelected, origin, postSelectionMode]);
 
   return (
     <div className="zapp-preview-select-mode">
@@ -130,6 +143,7 @@ export function SelectMode({
             setStatus('The authenticated preview is not ready for element selection.');
             return;
           }
+          enabledRef.current = nextEnabled;
           setEnabled(nextEnabled);
           setStatus(nextEnabled ? 'Selection mode is on. Choose an element in the preview.' : 'Selection mode is off.');
         }}
