@@ -162,6 +162,28 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/forks": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/integrations/github/install": {
     "post": {
       "security": [

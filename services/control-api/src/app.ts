@@ -77,6 +77,8 @@ import {
   type AttachmentStoragePort,
 } from './routes/attachments.js';
 import { registerAuditRoutes } from './routes/audit.js';
+import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
+import { registerForkRoutes } from './routes/forks.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import {
@@ -187,6 +189,8 @@ export interface TenantDeps {
   readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
   /** Test seam for periodic preview stream authorization checks. */
   readonly builderPreviewRecheckIntervalMs?: number;
+  /** AR-21's structurally typed project/branch/run/release fork boundary. */
+  readonly fork?: ForkActivity;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
@@ -594,6 +598,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             ...(tenant.builderPreviewRecheckIntervalMs === undefined
               ? {}
               : { recheckIntervalMs: tenant.builderPreviewRecheckIntervalMs }),
+          });
+          registerForkRoutes(app, {
+            activity: tenant.fork ?? createUnavailableForkActivity(),
+            organizations: orgs.organizations,
           });
           if (deps.localAgent !== undefined) {
             registerLocalAgentRoutes(app, { ...deps.localAgent, now });

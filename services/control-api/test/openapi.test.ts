@@ -110,8 +110,9 @@ describe('GET /v1/openapi.json', () => {
       '/v1/workspaces/{workspaceId}/dev-server/restart',
       '/v1/workspaces/{workspaceId}/preview/events',
       '/v1/workspaces/{workspaceId}/preview/screenshot',
+      '/v1/forks',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(66);
+    expect(Object.keys(document.paths)).toHaveLength(67);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 
