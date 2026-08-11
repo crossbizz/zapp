@@ -713,6 +713,11 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     announcedConversationMinimum,
     Math.round(effectiveConversationWidth),
   );
+  const fallbackCommitSha = project.branches.find((branch) =>
+    activeRun?.branchId === undefined || activeRun.branchId === null
+      ? branch.name === project.repository?.defaultBranch
+      : branch.id === activeRun.branchId,
+  )?.headCommitSha;
 
   return (
     <>
@@ -783,6 +788,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
               id="surface-pane"
             >
               <SurfaceTabs
+                {...(fallbackCommitSha === undefined || fallbackCommitSha === null
+                  ? {}
+                  : { fallbackCommitSha })}
                 focusPreviewRequest={focusPreviewRequest}
                 onAttachPreviewCapture={(file, capture) => {
                   const id = crypto.randomUUID();

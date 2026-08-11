@@ -128,6 +128,15 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] **GREEN:** renew authenticated shares before expiry; keep screenshot keys until the response body is consumed; abort/fence stale workspace reads and mutation completions while clearing workspace-scoped keys; refresh the last log cursor on failure; and acknowledge composer acceptance before reporting a capture as attached.
 - [x] **Verify/review/ship:** run focused and full web gates plus API-client gates; run at most two fresh Critical/Important review rounds (exit zero); then close WEB-7 and WEB-7-FIX-1 together with no provider call.
 
+#### WEB-7-FIX-2 — structured Fix evidence after AR-19 lands
+
+**Files:** Modify: `src/components/preview/PreviewFrame.tsx`, `src/components/builder/{Shell,SurfaceTabs}.tsx`, `e2e/preview-panel.spec.ts`
+
+- [x] **RED/evidence:** reproduce the clean-checkout type failure after AR-19 makes `fixRequest` mandatory, then assert the fixture sends the captured artifact, implicated commit, reproduction reference, and retry-stable body.
+- [x] **GREEN:** capture and upload immutable preview evidence through the public SDK, derive the relevant commit from events with the public branch head as fallback, and submit the strict Fix request without repeating successful evidence writes on retry.
+- [x] **Verify/review/ship:** run focused and full web gates plus API-client gates, complete at most two review rounds with zero Critical/Important findings, and confirm GitHub CI green; no provider call is required.
+- [x] Commit: `fix(web): send structured evidence with preview Fix runs`
+
 ### Task WEB-8 [M2]: Element selection + rich attachments
 
 **Files:** Create: `src/components/preview/SelectMode.tsx`, composer attachment chips
@@ -247,3 +256,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-10 WEB-6 done — shipped the public-SDK event-sourced conversation, keyed continuation/new-run retry handling, persisted run controls, live progress, cancellation, and image paste/upload capped at 10; two review rounds closed with 74/74 web tests plus repository lint/typecheck green.
 - 2026-08-10 WEB-7 done — shipped the public-SDK live preview, lifecycle states, bounded cursor logs, expiring share renewal, capture drawer, keyed recovery actions, and structured screenshot-to-composer handoff; final review residuals were re-scoped to WEB-7-FIX-1 and no provider call was required.
 - 2026-08-10 WEB-7-FIX-1 done — fenced workspace transitions and concurrent actions, retained screenshot keys through body consumption, refreshed terminal failure logs, acknowledged composer capacity, and passed two fresh review rounds with no provider call.
+- 2026-08-10 WEB-7-FIX-2 done — reconciled the preview Fix action with AR-19's strict public request, uploaded retry-stable screenshot evidence with the implicated commit and boot log, passed 76/76 browser and 55/55 SDK tests, and required no provider call.

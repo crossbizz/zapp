@@ -10,6 +10,7 @@ import { PreviewFrame } from '../preview/PreviewFrame';
 export type SurfaceTab = 'preview' | 'code' | 'logs' | 'tests';
 
 interface SurfaceTabsProps {
+  readonly fallbackCommitSha?: string;
   readonly focusPreviewRequest: number;
   readonly onAttachPreviewCapture: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
   readonly onRunCreated: (run: BuilderRun) => void;
@@ -23,6 +24,7 @@ interface SurfaceTabsProps {
 const tabValues = new Set<SurfaceTab>(['preview', 'code', 'logs', 'tests']);
 
 export function SurfaceTabs({
+  fallbackCommitSha,
   focusPreviewRequest,
   onAttachPreviewCapture,
   onRunCreated,
@@ -50,6 +52,7 @@ export function SurfaceTabs({
           {
             content: (
               <PreviewFrame
+                {...(fallbackCommitSha === undefined ? {} : { fallbackCommitSha })}
                 onAttachToChat={onAttachPreviewCapture}
                 onRunCreated={onRunCreated}
                 organizationId={organizationId}

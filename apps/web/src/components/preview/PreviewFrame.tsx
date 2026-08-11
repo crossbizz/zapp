@@ -36,6 +36,7 @@ type LogResponse = Awaited<
 >;
 
 interface PreviewFrameProps {
+  readonly fallbackCommitSha?: string;
   readonly onAttachToChat: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly organizationId: string;
@@ -48,9 +49,31 @@ interface StoredShareAttempt {
   readonly idempotencyKey: string;
 }
 
+interface StoredFixAttempt {
+  readonly attachmentIdempotencyKey: string;
+  readonly evidenceArtifactId?: string;
+  readonly evidenceSummary: string;
+  readonly idempotencyKey: string;
+  readonly prompt: string;
+  readonly relevantCommitSha: string;
+  readonly reproductionRef: string;
+  readonly screenshotIdempotencyKey: string;
+  readonly summary: string;
+}
+
 function eventWorkspaceId(event: RunEvent | undefined): string | undefined {
   const value = event?.data.payload['workspaceId'];
   return typeof value === 'string' && value.startsWith('ws_') ? value : undefined;
+}
+
+function latestCommitSha(events: readonly RunEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== 'commit.created') continue;
+    const commitSha = event.data.payload['commitSha'] ?? event.data.payload['sha'];
+    if (typeof commitSha === 'string' && /^[0-9a-f]{40}$/u.test(commitSha)) return commitSha;
+  }
+  return undefined;
 }
 
 function previewLifecycle(events: readonly RunEvent[]): {
@@ -249,6 +272,7 @@ function PreviewStyles(): ReactElement {
 }
 
 export function PreviewFrame({
+  fallbackCommitSha,
   onAttachToChat,
   onRunCreated,
   organizationId,
@@ -270,9 +294,7 @@ export function PreviewFrame({
   const [shareRenewalGeneration, setShareRenewalGeneration] = useState(0);
   const [sharing, setSharing] = useState(false);
   const attachingRef = useRef(false);
-  const fixRunAttemptRef = useRef<
-    { readonly idempotencyKey: string; readonly prompt: string } | undefined
-  >(undefined);
+  const fixRunAttemptRef = useRef<StoredFixAttempt | undefined>(undefined);
   const fixRunPendingRef = useRef(false);
   const logCursorRef = useRef(0);
   const logsRef = useRef<LogResponse | undefined>(undefined);
@@ -595,16 +617,68 @@ export function PreviewFrame({
       if (attempt === undefined) {
         await refreshLatestWorkspace();
         if (generation !== workspaceGenerationRef.current) return;
+        const relevantCommitSha = latestCommitSha(events) ?? fallbackCommitSha;
+        if (relevantCommitSha === undefined) {
+          setOperationStatus('A committed preview revision is required before Fix can start.');
+          return;
+        }
+        const capturedLog = logContext(logsRef.current).slice(0, 8_000);
         attempt = {
+          attachmentIdempotencyKey: crypto.randomUUID(),
+          evidenceSummary: `Preview boot log:\n${capturedLog}`.slice(0, 2_000),
           idempotencyKey: crypto.randomUUID(),
-          prompt: `Fix the preview boot failure. Use this captured boot log:\n\n${logContext(logsRef.current)}`,
+          prompt: `Fix the preview boot failure. Use this captured boot log:\n\n${capturedLog}`,
+          relevantCommitSha,
+          reproductionRef: `preview-workspace:${workspaceId ?? 'unknown'}`,
+          screenshotIdempotencyKey: crypto.randomUUID(),
+          summary: `Preview boot failure.\n${capturedLog}`.slice(0, 10_000),
         };
         fixRunAttemptRef.current = attempt;
       }
-      const created = await createControlPlaneClient(organizationId).createRun(
+      const client = createControlPlaneClient(organizationId);
+      if (attempt.evidenceArtifactId === undefined) {
+        if (workspaceId === undefined) return;
+        const screenshot = await client.capturePreviewScreenshot(
+          workspaceId,
+          attempt.screenshotIdempotencyKey,
+        );
+        if (generation !== workspaceGenerationRef.current) return;
+        const blob = await new Response(screenshot.body, {
+          headers: { 'content-type': 'image/png' },
+        }).blob();
+        if (generation !== workspaceGenerationRef.current) return;
+        if (blob.size > maximumComposerImageBytes) {
+          setOperationStatus('The preview evidence is larger than the 8 MiB attachment limit.');
+          return;
+        }
+        const evidence = await client.uploadAttachment(
+          projectId,
+          new File([blob], 'preview-boot-failure.png', { type: 'image/png' }),
+          attempt.attachmentIdempotencyKey,
+        );
+        if (generation !== workspaceGenerationRef.current) return;
+        attempt = { ...attempt, evidenceArtifactId: evidence.attachmentId };
+        fixRunAttemptRef.current = attempt;
+      }
+      const evidenceArtifactId = attempt.evidenceArtifactId;
+      if (evidenceArtifactId === undefined) return;
+      const created = await client.createRun(
         projectId,
         {
           appType: 'web',
+          fixRequest: {
+            evidence: [
+              {
+                artifactId: evidenceArtifactId,
+                kind: 'preview_console',
+                summary: attempt.evidenceSummary,
+              },
+            ],
+            relevantCommitSha: attempt.relevantCommitSha,
+            reproductionRef: attempt.reproductionRef,
+            source: 'error_report',
+            summary: attempt.summary,
+          },
           mode: 'fix',
           prompt: attempt.prompt,
         },

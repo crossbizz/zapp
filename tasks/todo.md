@@ -143,6 +143,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-21-FIX-1 Durable screenshot operation reservation
 - [x] WEB-7 Preview panel + states + capture drawer
 - [x] WEB-7-FIX-1 Bounded preview lifecycle closure
+- [x] WEB-7-FIX-2 Structured preview Fix evidence
 - [ ] WEB-8 Element selection attachments
 - [ ] WEB-9 Mission Control drawer
 - [ ] WEB-10 Interview/spec/plan approval cards

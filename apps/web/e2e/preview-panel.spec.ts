@@ -6,6 +6,8 @@ const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
 const fixRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FZ';
 const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FG';
+const previewEvidenceId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FH';
+const previewCommitSha = '0123456789abcdef0123456789abcdef01234567';
 const organizationId = 'org-alpha';
 const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const shareUrl = `${appBaseUrl}/preview/org-alpha/01j00000000000000000000000#token=psb_fixture`;
@@ -120,6 +122,8 @@ test('renders preview lifecycle states from structured events and public workspa
   const shareKeys: string[] = [];
   const fixRunBodies: unknown[] = [];
   const fixRunKeys: string[] = [];
+  const fixScreenshotKeys: string[] = [];
+  const fixUploadKeys: string[] = [];
   const observedRunStreams: string[] = [];
   await installBuilder(page, () => frames);
   await page.route(`${apiBaseUrl}/v1/runs/${fixRunId}/events*`, async (route) => {
@@ -140,6 +144,31 @@ test('renders preview lifecycle states from structured events and public workspa
     }
     await route.fulfill({
       body: JSON.stringify({ run: { ...activeRun, id: fixRunId, mode: 'fix' } }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
+    async (route) => {
+      fixScreenshotKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      await route.fulfill({
+        body: Buffer.from([137, 80, 78, 71]),
+        headers: corsHeaders('image/png'),
+        status: 200,
+      });
+    },
+  );
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/attachments`, async (route) => {
+    fixUploadKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    await route.fulfill({
+      body: JSON.stringify({
+        attachmentId: previewEvidenceId,
+        byteSize: 4,
+        contentType: 'image/png',
+        kind: 'image',
+        name: 'preview-boot-failure.png',
+      }),
       headers: corsHeaders(),
       status: 201,
     });
@@ -314,7 +343,7 @@ test('renders preview lifecycle states from structured events and public workspa
   expect(publicShareKeys).toHaveLength(2);
   expect(publicShareKeys[0]).toBe(publicShareKeys[1]);
 
-  frames += runFrame(3, 'commit.created', { commitSha: '0123456789abcdef' });
+  frames += runFrame(3, 'commit.created', { commitSha: previewCommitSha });
   await page.reload();
   await expect(page.getByText('Preview is behind latest changes — Restart')).toBeVisible();
   await page.getByRole('button', { name: 'Restart', exact: true }).evaluate((button) => {
@@ -370,9 +399,26 @@ test('renders preview lifecycle states from structured events and public workspa
   expect(fixRunBodies[1]).toEqual(fixRunBodies[0]);
   expect(fixRunBodies[0]).toMatchObject({
     appType: 'web',
+    fixRequest: {
+      evidence: [
+        {
+          artifactId: previewEvidenceId,
+          kind: 'preview_console',
+          summary: expect.stringContaining('Checkout boot crashed after binding the port'),
+        },
+      ],
+      relevantCommitSha: previewCommitSha,
+      reproductionRef: `preview-workspace:${workspaceId}`,
+      source: 'error_report',
+      summary: expect.stringContaining('Checkout boot crashed after binding the port'),
+    },
     mode: 'fix',
     prompt: expect.stringContaining('Checkout boot crashed after binding the port'),
   });
+  expect(fixScreenshotKeys).toHaveLength(1);
+  expect(fixUploadKeys).toHaveLength(1);
+  expect(fixScreenshotKeys[0]).not.toBe('');
+  expect(fixUploadKeys[0]).not.toBe('');
   await expect
     .poll(() => observedRunStreams.filter((id) => id === fixRunId).length)
     .toBeGreaterThan(0);
