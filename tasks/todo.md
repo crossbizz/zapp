@@ -197,7 +197,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-7 Neon branch workflows
 - [x] INT-8 Generated-app Stripe adapter
 - [ ] INT-9 Stripe E2E integration tests
-- [ ] DEP-1 Release records + ReleasePort
+- [x] DEP-1 Release records + ReleasePort
 - [ ] DEP-2 Three-state readiness check
 - [ ] DEP-3 Deployment type classification
 - [ ] DEP-4 Fly.io container adapter
