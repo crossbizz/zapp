@@ -77,6 +77,14 @@ const NON_PRD_TABLES = new Map([
     'github_webhook_deliveries',
     'the durable signature-free delivery receipt and SQS outbox required by plan 06 INT-1 and ADR-0028',
   ],
+  [
+    'github_imports',
+    'the one-row-per-project durable GitHub import state machine required by plan 06 INT-2 and ADR-0028',
+  ],
+  [
+    'github_import_outbox',
+    'the transactional one-stage-per-delivery SQS outbox required by plan 06 INT-2 and ADR-0028',
+  ],
 ]);
 
 /**

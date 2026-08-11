@@ -14,6 +14,7 @@ import {
 import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
 import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
 import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
+import type { paths as GeneratedPaths } from '../../../packages/api-client/src/generated.js';
 
 const GENERATED_TYPES = resolve(
   import.meta.dirname,
@@ -28,6 +29,12 @@ const apps: AppInstance[] = [];
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
 
 interface OpenApiOperation {
+  parameters?: {
+    in?: string;
+    name?: string;
+    required?: boolean;
+    schema?: Record<string, unknown>;
+  }[];
   requestBody?: {
     required?: boolean;
     content?: Record<string, { schema?: Record<string, unknown> }>;
@@ -269,6 +276,32 @@ describe('generated API types', () => {
         { additionalProperties: false, required: ['builderCanDeploy'] },
         { additionalProperties: false, required: ['defaultModelPolicy'] },
       ],
+    });
+  });
+
+  it('requires a validated GitHub import idempotency header in OpenAPI and generated types', async () => {
+    // Break caught: runtime-only header extraction leaves the public SDK unable
+    // to require the operation key that makes import acceptance replay-safe.
+    type ImportPost = NonNullable<
+      GeneratedPaths['/v1/projects/{projectId}/import/github']['post']
+    >;
+    type ImportHeaders = NonNullable<ImportPost['parameters']['header']>;
+    const generatedHeaders: ImportHeaders = {
+      'idempotency-key': 'github-import-operation-0001',
+    };
+    expect(generatedHeaders['idempotency-key']).toBe('github-import-operation-0001');
+
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const operation = paths['/v1/projects/{projectId}/import/github']?.['post'];
+    expect(
+      operation?.parameters?.find(
+        (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',
+      ),
+    ).toMatchObject({
+      required: true,
+      schema: { pattern: '^[A-Za-z0-9._:-]{8,255}$', type: 'string' },
     });
   });
 

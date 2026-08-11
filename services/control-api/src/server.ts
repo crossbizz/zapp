@@ -11,6 +11,7 @@ import {
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
   loadGitHubAppEnv,
+  loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadModelGatewayUrl,
@@ -23,7 +24,7 @@ import {
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
-import { loadGitServiceUrl } from './git/client.js';
+import { loadGitServiceUrl, resolveGitService } from './git/client.js';
 import { loggerOptions } from './logging.js';
 import { createRedisConnection } from './redis/client.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
@@ -47,6 +48,17 @@ import {
   createSqsGitHubWebhookQueue,
 } from './integrations/github/queue.js';
 import { createDbGitHubWebhookStore } from './integrations/github/store.js';
+import { createGitHubProvider } from './integrations/github/app.js';
+import {
+  createGitHubImportConsumerLifecycle,
+  createGitHubImportPublisher,
+  createGitHubImportPublisherLifecycle,
+  createGitHubImportWorker,
+  createSqsGitHubImportQueue,
+} from './integrations/github/import-queue.js';
+import { createDbGitHubImportWorkerStore } from './integrations/github/import-store.js';
+import { createTenantDbFactory } from './tenant/db.js';
+import { createTemporalCapabilityScanPort } from './orchestrator/capability-scan.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -86,6 +98,7 @@ const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
 const github = loadGitHubAppEnv();
 const githubQueueConfig = loadGitHubWebhookQueueEnv();
+const githubImportQueueConfig = loadGitHubImportQueueEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -243,6 +256,58 @@ const githubWebhookLifecycle = {
     githubQueue.close?.();
   },
 };
+const githubImportQueue = createSqsGitHubImportQueue(githubImportQueueConfig);
+const githubImportWorker = createGitHubImportWorker({
+  store: createDbGitHubImportWorkerStore({
+    database: database.db,
+    tenantDb: createTenantDbFactory(database.db),
+  }),
+  provider: createGitHubProvider({
+    appId: github.appId,
+    clientId: github.clientId,
+    clientSecret: github.clientSecret,
+    privateKey: github.privateKey,
+    ...(github.apiBaseUrl === undefined ? {} : { baseUrl: github.apiBaseUrl }),
+  }),
+  git: resolveGitService({ baseUrl: gitServiceUrl, serviceTokens }),
+  capabilityScan: createTemporalCapabilityScanPort(temporal),
+});
+const githubImportPublisherLifecycle = createGitHubImportPublisherLifecycle({
+  publisher: createGitHubImportPublisher({
+    database: database.db,
+    queue: githubImportQueue,
+    onError: (error) => {
+      app.log.error({ errorName: error.name }, 'GitHub import outbox publish failed');
+    },
+  }),
+  batchSize: 100,
+  intervalMs: 1_000,
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'GitHub import outbox poll failed');
+  },
+});
+const githubImportConsumerLifecycle = createGitHubImportConsumerLifecycle({
+  queue: githubImportQueue,
+  worker: githubImportWorker,
+  batchSize: 10,
+  waitTimeSeconds: 10,
+  visibilityTimeoutSeconds: 180,
+  intervalMs: 1_000,
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'GitHub import delivery failed');
+  },
+});
+const githubImportLifecycle = {
+  async start() {
+    await githubImportPublisherLifecycle.start();
+    await githubImportConsumerLifecycle.start();
+  },
+  async close() {
+    await githubImportConsumerLifecycle.close();
+    await githubImportPublisherLifecycle.close();
+    githubImportQueue.close?.();
+  },
+};
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
@@ -274,6 +339,7 @@ try {
     eventPublisherLifecycle,
     usageOutboxLifecycle,
     githubWebhookLifecycle,
+    githubImportLifecycle,
   });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');

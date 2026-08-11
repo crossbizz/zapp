@@ -3,11 +3,15 @@ import { z } from 'zod';
 
 import {
   GIT_CREATE_DEADLINE_MS,
+  GIT_IMPORT_DEADLINE_MS,
   GitServiceError,
+  GitServiceImportConflictError,
+  GitRepositoryImportInputSchema,
+  GitRepositoryImportResultSchema,
   createRecordOnlyGitService,
   type CreateRepositoryInput,
   type CreatedRepository,
-  type GitServicePort,
+  type GitImportServicePort,
 } from './port.js';
 
 /**
@@ -95,7 +99,7 @@ export interface GitServiceClientOptions {
   readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
 }
 
-export function createGitServiceClient(options: GitServiceClientOptions): GitServicePort {
+export function createGitServiceClient(options: GitServiceClientOptions): GitImportServicePort {
   const baseUrl = options.baseUrl.replace(/\/+$/, '');
   const signer = createServiceTokenSigner(options.serviceTokens);
   const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
@@ -175,6 +179,51 @@ export function createGitServiceClient(options: GitServiceClientOptions): GitSer
           : { provisionedAt }),
       };
     },
+    async importRepository(rawInput) {
+      const input = GitRepositoryImportInputSchema.parse(rawInput);
+      const { token } = await signer.signServiceToken({
+        service: 'control-api',
+        aud: 'git-service',
+      });
+      let response: Response;
+      try {
+        response = await doFetch(
+          `${baseUrl}/internal/git/repositories/${input.organizationId}/${input.projectId}/import`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json',
+              'x-zapp-service-token': token,
+            },
+            body: JSON.stringify({
+              externalRepoRef: input.externalRepoRef,
+              sourceCloneUrl: input.sourceCloneUrl,
+              sourceToken: input.sourceToken,
+              sourceBranch: input.sourceBranch,
+            }),
+            signal: AbortSignal.timeout(GIT_IMPORT_DEADLINE_MS),
+          },
+        );
+      } catch (error) {
+        throw new GitServiceError('the git service could not be reached for repository import', {
+          cause: error,
+        });
+      }
+      if (response.status === 409) throw new GitServiceImportConflictError();
+      if (response.status !== 200) {
+        throw new GitServiceError(
+          `the git service refused the repository import (${String(response.status)})`,
+        );
+      }
+      try {
+        return GitRepositoryImportResultSchema.parse(await response.json());
+      } catch (error) {
+        throw new GitServiceError('the git service returned invalid repository import metadata', {
+          cause: error,
+        });
+      }
+    },
   };
 }
 
@@ -209,7 +258,7 @@ function isDevelopment(): boolean {
 export function resolveGitService(options: {
   readonly baseUrl: string | undefined;
   readonly serviceTokens: ServiceTokenConfig;
-}): GitServicePort {
+}): GitImportServicePort {
   if (options.baseUrl === undefined) {
     if (!isDevelopment()) {
       throw new Error(

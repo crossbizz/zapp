@@ -126,9 +126,10 @@ describe('GET /v1/openapi.json', () => {
       '/v1/integrations/github/install',
       '/v1/integrations/github/repositories',
       '/v1/integrations/github/repositories/{repositoryId}/branches',
+      '/v1/projects/{projectId}/import/github',
       '/v1/webhooks/github',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(67);
+    expect(Object.keys(document.paths)).toHaveLength(68);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

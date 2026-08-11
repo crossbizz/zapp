@@ -21,6 +21,8 @@ import {
   decisions,
   environments,
   forOrg,
+  githubImportOutbox,
+  githubImports,
   integrationConnections,
   MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
@@ -68,8 +70,14 @@ import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQ
 import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
+import {
+  GitHubImportRequestSchema,
+  GitHubImportRowSchema,
+  type GitHubImportRow,
+} from '../integrations/github/schemas.js';
 import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
+import { IdempotencyKeySchema } from '../plugins/idempotency.js';
 import type { SecretEnvelope } from '../secrets/crypto.js';
 import type { PricingConfig } from '../usage/pricing.js';
 import {
@@ -668,6 +676,30 @@ export interface TenantIntegrationRepository {
   connectGitHub(input: ConnectGitHubInstallationInput): Promise<IntegrationConnectionView>;
 }
 
+export const AcceptGitHubImportInputSchema = GitHubImportRequestSchema.extend({
+  projectId: idSchema('proj'),
+  operationKey: IdempotencyKeySchema,
+  now: z.date(),
+}).strict();
+
+export const AcceptedGitHubImportSchema = z.union([
+  GitHubImportRowSchema,
+  z.literal('operation_conflict'),
+  z.literal('project_not_found'),
+  z.literal('installation_not_found'),
+  z.literal('source_type_required'),
+]);
+
+export type AcceptGitHubImportInput = z.infer<typeof AcceptGitHubImportInputSchema>;
+export type AcceptedGitHubImport = z.infer<typeof AcceptedGitHubImportSchema>;
+
+export interface TenantGitHubImportRepository {
+  /** Missing and foreign projects/imports are deliberately the same answer. */
+  get(projectId: string): Promise<GitHubImportRow | undefined>;
+  /** Atomically creates the import row and its first queued stage delivery. */
+  accept(input: AcceptGitHubImportInput): Promise<AcceptedGitHubImport>;
+}
+
 function integrationView(row: IntegrationConnection): IntegrationConnectionView {
   return IntegrationConnectionSchema.parse({
     id: row.id,
@@ -698,6 +730,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly approvals: TenantApprovalRepository;
   readonly auditEvents: TenantAuditEventRepository;
   readonly integrations: TenantIntegrationRepository;
+  readonly githubImports: TenantGitHubImportRepository;
 }
 
 /**
@@ -809,6 +842,95 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await input.audit(tx, result);
             return result;
           });
+        },
+      },
+
+      githubImports: {
+        async get(projectId) {
+          const [row] = await db
+            .select()
+            .from(githubImports)
+            .where(
+              scoped(
+                githubImports.organizationId,
+                eq(githubImports.projectId, idSchema('proj').parse(projectId)),
+              ),
+            )
+            .limit(1);
+          return row === undefined ? undefined : GitHubImportRowSchema.parse(row);
+        },
+        async accept(rawInput) {
+          const input = AcceptGitHubImportInputSchema.parse(rawInput);
+          const result = await db.transaction(async (tx) => {
+            const [project] = await tx
+              .select({ id: projects.id, sourceType: projects.sourceType })
+              .from(projects)
+              .where(scoped(projects.organizationId, eq(projects.id, input.projectId)))
+              .limit(1)
+              .for('update');
+            if (project === undefined) return 'project_not_found' as const;
+            if (project.sourceType !== 'github_import') return 'source_type_required' as const;
+
+            const [installation] = await tx
+              .select({ id: integrationConnections.id })
+              .from(integrationConnections)
+              .where(
+                scoped(
+                  integrationConnections.organizationId,
+                  eq(integrationConnections.provider, 'github'),
+                  isNull(integrationConnections.projectId),
+                  sql`${integrationConnections.configurationJson} ->> 'installationId' = ${input.installationId}`,
+                ),
+              )
+              .limit(1);
+            if (installation === undefined) return 'installation_not_found' as const;
+
+            const [existing] = await tx
+              .select()
+              .from(githubImports)
+              .where(scoped(githubImports.organizationId, eq(githubImports.projectId, project.id)))
+              .limit(1);
+            if (existing !== undefined) {
+              return existing.operationKey === input.operationKey &&
+                existing.installationId === input.installationId &&
+                existing.repo === input.repo &&
+                existing.branch === input.branch
+                ? existing
+                : ('operation_conflict' as const);
+            }
+
+            const [inserted] = await tx
+              .insert(githubImports)
+              .values({
+                projectId: project.id,
+                organizationId: orgId,
+                installationId: input.installationId,
+                repo: input.repo,
+                branch: input.branch,
+                operationKey: input.operationKey,
+                status: 'queued',
+                externalRepoRef: null,
+                headCommitSha: null,
+                scanId: null,
+                errorCode: null,
+                createdAt: input.now,
+                updatedAt: input.now,
+              })
+              .onConflictDoNothing()
+              .returning();
+            if (inserted === undefined) return 'operation_conflict' as const;
+            await tx.insert(githubImportOutbox).values({
+              projectId: project.id,
+              stage: 'queued',
+              status: 'pending',
+              attempts: 0,
+              nextAttemptAt: input.now,
+              createdAt: input.now,
+              publishedAt: null,
+            });
+            return inserted;
+          });
+          return AcceptedGitHubImportSchema.parse(result);
         },
       },
 

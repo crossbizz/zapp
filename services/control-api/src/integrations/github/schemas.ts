@@ -1,4 +1,57 @@
+import { CommitShaSchema, idSchema } from '@zapp/contracts';
 import { z } from 'zod';
+
+export const GitHubRepositoryFullNameSchema = z
+  .string()
+  .trim()
+  .max(255)
+  .regex(/^[^/\s]+\/[^/\s]+$/u);
+
+export const GitHubImportRequestSchema = z
+  .object({
+    installationId: z.string().trim().min(1).max(200),
+    repo: GitHubRepositoryFullNameSchema,
+    branch: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
+export const GitHubInstallationConfigurationSchema = z
+  .object({ installationId: z.string().trim().min(1).max(200) })
+  .strict();
+
+export const GitHubImportStatusValueSchema = z.enum([
+  'queued',
+  'mirroring',
+  'scan_pending',
+  'scan_accepted',
+  'failed',
+]);
+
+export const GitHubImportErrorCodeSchema = z.enum([
+  'github_unavailable',
+  'repository_not_found',
+  'branch_not_found',
+  'mirror_failed',
+  'scan_unavailable',
+]);
+
+export const GitHubImportRowSchema = z
+  .object({
+    projectId: idSchema('proj'),
+    organizationId: idSchema('org'),
+    installationId: z.string().min(1),
+    repo: GitHubRepositoryFullNameSchema,
+    branch: z.string().min(1),
+    operationKey: z.string().min(1),
+    status: GitHubImportStatusValueSchema,
+    externalRepoRef: z.string().min(1).nullable(),
+    headCommitSha: CommitShaSchema.nullable(),
+    scanId: z.string().min(1).nullable(),
+    errorCode: GitHubImportErrorCodeSchema.nullable(),
+    createdAt: z.date(),
+    updatedAt: z.date(),
+  })
+  .strict();
 
 export const GitHubAuthorizationBindingSchema = z
   .object({
@@ -12,7 +65,7 @@ export const GitHubAuthorizeResponseSchema = z.object({ url: z.string().url() })
 export const GitHubRepositorySchema = z
   .object({
     id: z.string().min(1),
-    fullName: z.string().min(1),
+    fullName: GitHubRepositoryFullNameSchema,
     private: z.boolean(),
     defaultBranch: z.string().min(1),
   })
@@ -104,6 +157,10 @@ export const GitHubWebhookQueueMessageSchema = z
   .strict();
 
 export type GitHubAuthorizationBinding = z.infer<typeof GitHubAuthorizationBindingSchema>;
+export type GitHubImportRequest = z.infer<typeof GitHubImportRequestSchema>;
+export type GitHubImportStatusValue = z.infer<typeof GitHubImportStatusValueSchema>;
+export type GitHubImportErrorCode = z.infer<typeof GitHubImportErrorCodeSchema>;
+export type GitHubImportRow = z.infer<typeof GitHubImportRowSchema>;
 export type GitHubRepository = z.infer<typeof GitHubRepositorySchema>;
 export type GitHubBranch = z.infer<typeof GitHubBranchSchema>;
 export type GitHubCompleteInstallationInput = z.infer<typeof GitHubCompleteInstallationInputSchema>;

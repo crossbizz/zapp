@@ -2,7 +2,14 @@ import { Octokit } from '@octokit/rest';
 import { importPKCS8, SignJWT } from 'jose';
 import { z } from 'zod';
 
-import { GitHubProviderError, type GitHubProviderPort } from './ports.js';
+import {
+  GitHubImportProviderError,
+  GitHubPrepareImportInputSchema,
+  GitHubPreparedImportSchema,
+  GitHubProviderError,
+  type GitHubImportProviderPort,
+  type GitHubProviderPort,
+} from './ports.js';
 import {
   GitHubBranchSchema,
   GitHubBranchPageSchema,
@@ -39,6 +46,9 @@ const RepositoryApiSchema = z
     default_branch: z.string().min(1),
   })
   .strict();
+const ImportRepositoryApiSchema = z
+  .object({ clone_url: z.string().url() })
+  .strict();
 const BranchApiSchema = z
   .object({ name: z.string().min(1), commit: z.object({ sha: z.string().min(1) }).strict() })
   .strict();
@@ -71,6 +81,12 @@ function providerFailure(error: unknown): GitHubProviderError {
   return new GitHubProviderError(status === 404 ? 'not_found' : 'unavailable');
 }
 
+function errorStatus(error: unknown): unknown {
+  return typeof error === 'object' && error !== null && 'status' in error
+    ? (error as { status?: unknown }).status
+    : undefined;
+}
+
 function oauthEndpoint(baseUrl: string | undefined): string {
   if (baseUrl === undefined) return 'https://github.com/login/oauth/access_token';
   const url = new URL(baseUrl);
@@ -81,7 +97,9 @@ function oauthEndpoint(baseUrl: string | undefined): string {
   return url.href;
 }
 
-export function createGitHubProvider(rawConfig: GitHubProviderConfig): GitHubProviderPort {
+export function createGitHubProvider(
+  rawConfig: GitHubProviderConfig,
+): GitHubProviderPort & GitHubImportProviderPort {
   const config = GitHubProviderConfigSchema.parse(rawConfig);
   const base = config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl.replace(/\/+$/u, '') };
 
@@ -100,13 +118,19 @@ export function createGitHubProvider(rawConfig: GitHubProviderConfig): GitHubPro
     return new Octokit({ ...base, auth: await appJwt() });
   }
 
-  async function installationClient(installationId: string): Promise<Octokit> {
+  async function installationAccess(
+    installationId: string,
+  ): Promise<{ readonly client: Octokit; readonly token: string }> {
     const app = await appClient();
     const response = await app.rest.apps.createInstallationAccessToken({
       installation_id: Number(installationId),
     });
     const parsed = InstallationTokenSchema.parse({ token: response.data.token });
-    return new Octokit({ ...base, auth: parsed.token });
+    return { client: new Octokit({ ...base, auth: parsed.token }), token: parsed.token };
+  }
+
+  async function installationClient(installationId: string): Promise<Octokit> {
+    return (await installationAccess(installationId)).client;
   }
 
   async function exchangeUserToken(code: string): Promise<string> {
@@ -209,6 +233,42 @@ export function createGitHubProvider(rawConfig: GitHubProviderConfig): GitHubPro
         });
       } catch (error) {
         throw providerFailure(error);
+      }
+    },
+    async prepareImport(rawInput) {
+      const input = GitHubPrepareImportInputSchema.parse(rawInput);
+      const [owner, repo] = z.tuple([z.string().min(1), z.string().min(1)]).parse(input.repo.split('/'));
+      try {
+        const access = await installationAccess(input.installationId);
+        let repositoryResponse;
+        try {
+          repositoryResponse = await access.client.rest.repos.get({ owner, repo });
+        } catch (error) {
+          throw new GitHubImportProviderError(
+            errorStatus(error) === 404 ? 'repository_not_found' : 'github_unavailable',
+          );
+        }
+        try {
+          await access.client.rest.repos.getBranch({
+            owner,
+            repo,
+            branch: input.branch,
+          });
+        } catch (error) {
+          throw new GitHubImportProviderError(
+            errorStatus(error) === 404 ? 'branch_not_found' : 'github_unavailable',
+          );
+        }
+        const repository = ImportRepositoryApiSchema.parse({
+          clone_url: repositoryResponse.data.clone_url,
+        });
+        return GitHubPreparedImportSchema.parse({
+          sourceCloneUrl: repository.clone_url,
+          sourceToken: access.token,
+        });
+      } catch (error) {
+        if (error instanceof GitHubImportProviderError) throw error;
+        throw new GitHubImportProviderError('github_unavailable');
       }
     },
   };

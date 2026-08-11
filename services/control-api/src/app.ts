@@ -112,6 +112,7 @@ import {
   registerGitHubWebhookRoute,
   type GitHubWebhookDependencies,
 } from './integrations/github/webhooks.js';
+import { registerGitHubImportRoutes } from './integrations/github/import.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -541,6 +542,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
           });
+          registerGitHubImportRoutes(app, now);
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,

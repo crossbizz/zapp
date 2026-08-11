@@ -102,7 +102,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-3 Home screen (Emergent-modeled)
 - [x] CP-21 Project dashboard summary read model (M1 pull-forward)
 - [x] INT-1 GitHub App installation, discovery + verified webhooks (M1 pull-forward)
-- [ ] INT-2 Durable GitHub import + internal mirror (M1 pull-forward)
+- [x] INT-2 Durable GitHub import + internal mirror (M1 pull-forward)
 - [ ] WEB-4 Dashboard + org switcher + import entry
 - [x] WEB-5 Builder two-pane shell
 - [x] WEB-6 Event-sourced conversation thread

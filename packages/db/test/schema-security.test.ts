@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   auditEvents,
+  githubImportOutbox,
+  githubImports,
   githubWebhookDeliveries,
   integrationConnections,
   secretCiphertexts,
@@ -82,6 +84,69 @@ describe('security and integrations (PRD §23.6)', () => {
     expect(columnNames(githubWebhookDeliveries)).not.toEqual(
       expect.arrayContaining(['signature', 'secret']),
     );
+  });
+
+  it('stores one tenant-bound durable GitHub import per project', () => {
+    expect(columnNames(githubImports)).toEqual([
+      'project_id',
+      'organization_id',
+      'installation_id',
+      'repo',
+      'branch',
+      'operation_key',
+      'status',
+      'external_repo_ref',
+      'head_commit_sha',
+      'scan_id',
+      'error_code',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(indexNames(githubImports)).toEqual(['github_imports_org_operation_key_idx']);
+    expect(indexColumns(githubImports)['github_imports_org_operation_key_idx']).toEqual([
+      'organization_id',
+      'operation_key',
+    ]);
+    expect(foreignKeys(githubImports)).toEqual([
+      'project_id -> projects.id',
+      'organization_id -> organizations.id',
+      'project_id, organization_id -> projects.id, organization_id',
+    ]);
+    expect(requiredColumns(githubImports)).toEqual([
+      'project_id',
+      'organization_id',
+      'installation_id',
+      'repo',
+      'branch',
+      'operation_key',
+      'status',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(columnNames(githubImports)).not.toEqual(
+      expect.arrayContaining(['token', 'credential', 'clone_url']),
+    );
+  });
+
+  it('keys each import stage delivery once and keeps retry settlement durable', () => {
+    expect(columnNames(githubImportOutbox)).toEqual([
+      'project_id',
+      'stage',
+      'status',
+      'attempts',
+      'next_attempt_at',
+      'created_at',
+      'published_at',
+    ]);
+    expect(indexNames(githubImportOutbox)).toEqual([
+      'github_import_outbox_project_stage_idx',
+      'github_import_outbox_pending_idx',
+    ]);
+    expect(indexColumns(githubImportOutbox)['github_import_outbox_project_stage_idx']).toEqual([
+      'project_id',
+      'stage',
+    ]);
+    expect(foreignKeys(githubImportOutbox)).toEqual(['project_id -> github_imports.project_id']);
   });
 
   it('stores references to secrets, never secrets', () => {

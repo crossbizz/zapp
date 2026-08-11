@@ -771,6 +771,47 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/projects/{projectId}/import/github": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    },
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "202": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/projects/{projectId}/preview/shares": {
     "get": {
       "security": [

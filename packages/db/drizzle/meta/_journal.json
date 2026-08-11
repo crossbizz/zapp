@@ -155,6 +155,13 @@
       "when": 1786424211772,
       "tag": "0021_tough_prowler",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786425323400,
+      "tag": "0022_broken_psynapse",
+      "breakpoints": true
     }
   ]
 }

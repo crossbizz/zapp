@@ -1,4 +1,4 @@
-import { newId } from '@zapp/contracts';
+import { idSchema, newId } from '@zapp/contracts';
 import { specificationContentEtag } from '@zapp/specification-engine';
 import type {
   AgentEventRow,
@@ -11,6 +11,8 @@ import type {
   Branch,
   Deployment,
   Environment,
+  GitHubImport,
+  GitHubImportOutboxEntry,
   IntegrationConnection,
   Project,
   ProjectContract,
@@ -27,10 +29,16 @@ import type {
 } from '@zapp/db';
 
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
+import {
+  GitHubImportRowSchema,
+  GitHubInstallationConfigurationSchema,
+} from '../../src/integrations/github/schemas.js';
 import type { StorePage } from '../../src/pagination.js';
 import type { SecretEnvelope } from '../../src/secrets/crypto.js';
 import { IntegrationConnectionSchema } from '../../src/tenant/view.js';
 import {
+  AcceptGitHubImportInputSchema,
+  AcceptedGitHubImportSchema,
   vaultRef,
   type CreatedProject,
   type CreatedSecret,
@@ -43,6 +51,7 @@ import {
   type SecretListRequest,
   type StoredSecret,
   type ApproveSpecificationInput,
+  type AcceptGitHubImportInput,
   type NewSpecificationInput,
   type TenantDatabase,
   type TenantDbFactory,
@@ -89,6 +98,8 @@ export class InMemoryTenantData {
   readonly releases: Release[] = [];
   readonly deployments: Deployment[] = [];
   readonly integrationConnections: IntegrationConnection[] = [];
+  readonly githubImports: GitHubImport[] = [];
+  readonly githubImportOutbox: GitHubImportOutboxEntry[] = [];
   /** Makes concurrent GitHub callbacks expose a check/insert race in this double. */
   yieldGitHubConnects = false;
   readonly contracts: ProjectContract[] = [];
@@ -99,6 +110,7 @@ export class InMemoryTenantData {
   readonly runCreateLocks = new Map<string, Promise<void>>();
   readonly capabilityScanLocks = new Map<string, Promise<void>>();
   readonly githubConnectLocks = new Map<string, Promise<void>>();
+  readonly githubImportLocks = new Map<string, Promise<void>>();
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
@@ -270,6 +282,32 @@ async function withGitHubConnectLock<T>(
   }
 }
 
+async function withGitHubImportLock<T>(
+  data: InMemoryTenantData,
+  input: AcceptGitHubImportInput,
+  work: () => T | Promise<T>,
+): Promise<T> {
+  const key = input.projectId;
+  const previous = data.githubImportLocks.get(key) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.githubImportLocks.set(key, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.githubImportLocks.get(key) === current) data.githubImportLocks.delete(key);
+  }
+}
+
+function githubInstallationId(configuration: unknown): string | undefined {
+  const parsed = GitHubInstallationConfigurationSchema.safeParse(configuration);
+  return parsed.success ? parsed.data.installationId : undefined;
+}
+
 /** One organization's view of `data`. A free function, so nothing aliases `this`. */
 function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
   return {
@@ -281,10 +319,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           (connection) =>
             connection.provider === 'github' &&
             connection.projectId === null &&
-            typeof connection.configurationJson === 'object' &&
-            connection.configurationJson !== null &&
-            (connection.configurationJson as Record<string, unknown>)['installationId'] ===
-              installationId,
+            githubInstallationId(connection.configurationJson) === installationId,
         );
         return Promise.resolve(
           row === undefined
@@ -306,10 +341,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
             (connection) =>
               connection.provider === 'github' &&
               connection.projectId === null &&
-              typeof connection.configurationJson === 'object' &&
-              connection.configurationJson !== null &&
-              (connection.configurationJson as Record<string, unknown>)['installationId'] ===
-                input.installationId,
+              githubInstallationId(connection.configurationJson) === input.installationId,
           );
           const row =
             existing ??
@@ -370,6 +402,75 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           items,
           nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
         });
+      },
+    },
+
+    githubImports: {
+      get(projectId) {
+        const parsedProjectId = idSchema('proj').parse(projectId);
+        const row = mine(orgId, data.githubImports).find(
+          (candidate) => candidate.projectId === parsedProjectId,
+        );
+        return Promise.resolve(row === undefined ? undefined : GitHubImportRowSchema.parse(row));
+      },
+      async accept(rawInput) {
+        const input = AcceptGitHubImportInputSchema.parse(rawInput);
+        const result = await withGitHubImportLock(data, input, () => {
+          const project = mine(orgId, data.projects).find((row) => row.id === input.projectId);
+          if (project === undefined) return 'project_not_found' as const;
+          if (project.sourceType !== 'github_import') return 'source_type_required' as const;
+          const installation = mine(orgId, data.integrationConnections).find(
+            (row) =>
+              row.provider === 'github' &&
+              row.projectId === null &&
+              githubInstallationId(row.configurationJson) === input.installationId,
+          );
+          if (installation === undefined) return 'installation_not_found' as const;
+          const existing = mine(orgId, data.githubImports).find(
+            (row) => row.projectId === project.id,
+          );
+          if (existing !== undefined) {
+            return existing.operationKey === input.operationKey &&
+              existing.installationId === input.installationId &&
+              existing.repo === input.repo &&
+              existing.branch === input.branch
+              ? existing
+              : ('operation_conflict' as const);
+          }
+          if (
+            mine(orgId, data.githubImports).some((row) => row.operationKey === input.operationKey)
+          ) {
+            return 'operation_conflict' as const;
+          }
+          const row: GitHubImport = {
+            projectId: project.id,
+            organizationId: orgId,
+            installationId: input.installationId,
+            repo: input.repo,
+            branch: input.branch,
+            operationKey: input.operationKey,
+            status: 'queued',
+            externalRepoRef: null,
+            headCommitSha: null,
+            scanId: null,
+            errorCode: null,
+            createdAt: input.now,
+            updatedAt: input.now,
+          };
+          const outbox: GitHubImportOutboxEntry = {
+            projectId: project.id,
+            stage: 'queued',
+            status: 'pending',
+            attempts: 0,
+            nextAttemptAt: input.now,
+            createdAt: input.now,
+            publishedAt: null,
+          };
+          data.githubImports.push(row);
+          data.githubImportOutbox.push(outbox);
+          return row;
+        });
+        return AcceptedGitHubImportSchema.parse(result);
       },
     },
 

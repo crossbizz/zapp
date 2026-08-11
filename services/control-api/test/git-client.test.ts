@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createGitServiceClient, loadGitServiceUrl, resolveGitService } from '../src/git/client.js';
 import {
   GIT_CREATE_DEADLINE_MS,
+  GIT_IMPORT_DEADLINE_MS,
+  GitServiceImportConflictError,
   GitServiceError,
   createRecordOnlyGitService,
 } from '../src/git/port.js';
@@ -29,6 +31,26 @@ const INPUT = {
   projectSlug: 'checkout',
   defaultBranch: 'main',
 };
+
+const IMPORT_INPUT = {
+  organizationId: ORGANIZATION,
+  projectId: PROJECT,
+  externalRepoRef: 'zapp/example',
+  sourceCloneUrl: 'https://github.test/zapp/example.git',
+  sourceToken: 'ghs_source-token-must-not-leak',
+  sourceBranch: 'feature/import',
+};
+
+const imported = (overrides: Record<string, unknown> = {}, status = 200): Response =>
+  new Response(
+    JSON.stringify({
+      externalRepoRef: IMPORT_INPUT.externalRepoRef,
+      branch: IMPORT_INPUT.sourceBranch,
+      headCommitSha: 'a'.repeat(40),
+      ...overrides,
+    }),
+    { status, headers: { 'content-type': 'application/json' } },
+  );
 
 interface Captured {
   readonly url: string;
@@ -263,5 +285,87 @@ describe('the git service client', () => {
     const result = await client.createRepository(INPUT);
     expect(result.provisionedAt).toBeUndefined();
     expect(result.internalRepoRef).toBeDefined();
+  });
+
+  it('sends source credentials only to the authenticated import boundary with a fresh token', async () => {
+    const stub = stubFetch(imported);
+    const client = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stub.fetch,
+    });
+
+    await client.importRepository(IMPORT_INPUT);
+    await client.importRepository(IMPORT_INPUT);
+
+    expect(stub.calls.map((call) => call.url)).toEqual([
+      `http://git-service:4500/internal/git/repositories/${ORGANIZATION}/${PROJECT}/import`,
+      `http://git-service:4500/internal/git/repositories/${ORGANIZATION}/${PROJECT}/import`,
+    ]);
+    expect(stub.calls.map((call) => JSON.parse(call.init.body as string) as unknown)).toEqual([
+      {
+        externalRepoRef: IMPORT_INPUT.externalRepoRef,
+        sourceCloneUrl: IMPORT_INPUT.sourceCloneUrl,
+        sourceToken: IMPORT_INPUT.sourceToken,
+        sourceBranch: IMPORT_INPUT.sourceBranch,
+      },
+      {
+        externalRepoRef: IMPORT_INPUT.externalRepoRef,
+        sourceCloneUrl: IMPORT_INPUT.sourceCloneUrl,
+        sourceToken: IMPORT_INPUT.sourceToken,
+        sourceBranch: IMPORT_INPUT.sourceBranch,
+      },
+    ]);
+    const authorizations = stub.calls.map(
+      (call) => (call.init.headers as Record<string, string>)['x-zapp-service-token'],
+    );
+    expect(authorizations[0]).toBeDefined();
+    expect(authorizations[1]).toBeDefined();
+    expect(authorizations[1]).not.toBe(authorizations[0]);
+  });
+
+  it('parses strict mirror metadata and bounds the internal request', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const client = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stubFetch(imported).fetch,
+    });
+
+    await expect(client.importRepository(IMPORT_INPUT)).resolves.toEqual({
+      externalRepoRef: IMPORT_INPUT.externalRepoRef,
+      branch: IMPORT_INPUT.sourceBranch,
+      headCommitSha: 'a'.repeat(40),
+    });
+    expect(timeout).toHaveBeenCalledWith(GIT_IMPORT_DEADLINE_MS);
+
+    const malformed = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stubFetch(() => imported({ credential: IMPORT_INPUT.sourceToken })).fetch,
+    });
+    await expect(malformed.importRepository(IMPORT_INPUT)).rejects.toBeInstanceOf(GitServiceError);
+  });
+
+  it('maps only a 409 to a mirror conflict and redacts every remote failure body', async () => {
+    const conflict = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stubFetch(() => imported({ message: IMPORT_INPUT.sourceToken }, 409)).fetch,
+    });
+    const unavailable = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stubFetch(() => imported({ message: IMPORT_INPUT.sourceToken }, 502)).fetch,
+    });
+
+    const conflictError = await conflict.importRepository(IMPORT_INPUT).catch((error: unknown) => error);
+    const unavailableError = await unavailable
+      .importRepository(IMPORT_INPUT)
+      .catch((error: unknown) => error);
+    expect(conflictError).toBeInstanceOf(GitServiceImportConflictError);
+    expect(unavailableError).toBeInstanceOf(GitServiceError);
+    expect((conflictError as Error).message).not.toContain(IMPORT_INPUT.sourceToken);
+    expect((unavailableError as Error).message).not.toContain(IMPORT_INPUT.sourceToken);
   });
 });

@@ -1,4 +1,5 @@
-import { internalRepoRef } from '@zapp/contracts';
+import { CommitShaSchema, idSchema, internalRepoRef } from '@zapp/contracts';
+import { z } from 'zod';
 
 /**
  * The internal Git service, as the control plane needs it.
@@ -69,6 +70,13 @@ export class GitServiceError extends Error {
   }
 }
 
+export class GitServiceImportConflictError extends GitServiceError {
+  constructor(options?: { cause?: unknown }) {
+    super('the git service refused to overwrite existing repository history', options);
+    this.name = 'GitServiceImportConflictError';
+  }
+}
+
 /**
  * How long an implementation may take before it must give up.
  *
@@ -92,6 +100,32 @@ export class GitServiceError extends Error {
  * trade; an unbounded one is not a side of it at all.
  */
 export const GIT_CREATE_DEADLINE_MS = 10_000;
+export const GIT_IMPORT_DEADLINE_MS = 120_000;
+
+export const GitRepositoryImportInputSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    externalRepoRef: z.string().trim().min(1).max(255),
+    sourceCloneUrl: z
+      .string()
+      .url()
+      .refine((value) => /^https?:\/\//u.test(value), 'sourceCloneUrl must use HTTP(S)'),
+    sourceToken: z.string().min(1),
+    sourceBranch: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
+export const GitRepositoryImportResultSchema = z
+  .object({
+    externalRepoRef: z.string().min(1),
+    branch: z.string().min(1),
+    headCommitSha: CommitShaSchema,
+  })
+  .strict();
+
+export type GitRepositoryImportInput = z.infer<typeof GitRepositoryImportInputSchema>;
+export type GitRepositoryImportResult = z.infer<typeof GitRepositoryImportResultSchema>;
 
 export interface GitServicePort {
   /**
@@ -108,6 +142,12 @@ export interface GitServicePort {
    * @throws {GitServiceError}
    */
   createRepository(input: CreateRepositoryInput): Promise<CreatedRepository>;
+  /** Present on the shipping client; optional for project-create-only test doubles. */
+  importRepository?(input: GitRepositoryImportInput): Promise<GitRepositoryImportResult>;
+}
+
+export interface GitImportServicePort extends GitServicePort {
+  importRepository(input: GitRepositoryImportInput): Promise<GitRepositoryImportResult>;
 }
 
 /**
@@ -152,10 +192,13 @@ export interface GitServicePort {
  * plane no longer expects. One function, called by both, cannot disagree with
  * itself.
  */
-export function createRecordOnlyGitService(): GitServicePort {
+export function createRecordOnlyGitService(): GitImportServicePort {
   return {
     createRepository(input) {
       return Promise.resolve({ internalRepoRef: internalRepoRef(input) });
+    },
+    importRepository() {
+      return Promise.reject(new GitServiceError('the git service is unavailable'));
     },
   };
 }
