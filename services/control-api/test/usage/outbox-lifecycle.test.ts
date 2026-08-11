@@ -173,13 +173,16 @@ describe('OPS-1A production usage outbox lifecycle', () => {
     const delivered: string[] = [];
     const failures: Error[] = [];
     const scheduled: (() => void)[] = [];
+    let flexpriceAvailable = false;
     const lifecycle = createUsageEventConsumerLifecycle({
       queue: {
         receive: () =>
-          Promise.resolve([
-            { body: goodBody, receiptHandle: 'receipt-good' },
-            { body: failedBody, receiptHandle: 'receipt-failed' },
-          ]),
+          Promise.resolve(
+            [
+              { body: goodBody, receiptHandle: 'receipt-good' },
+              { body: failedBody, receiptHandle: 'receipt-failed' },
+            ].filter((message) => !deleted.includes(message.receiptHandle)),
+          ),
         delete: (receiptHandle) => {
           deleted.push(receiptHandle);
           return Promise.resolve();
@@ -188,7 +191,7 @@ describe('OPS-1A production usage outbox lifecycle', () => {
       consumer: createUsageEventConsumer(
         {
           ingest: (received) =>
-            received.event_id === failedEvent.event_id
+            received.event_id === failedEvent.event_id && !flexpriceAvailable
               ? Promise.reject(new Error('Flexprice unavailable'))
               : Promise.resolve(),
         },
@@ -222,6 +225,11 @@ describe('OPS-1A production usage outbox lifecycle', () => {
     expect(delivered).toEqual(['outbox_1']);
     expect(failures.map((failure) => failure.message)).toEqual(['Flexprice unavailable']);
     expect(scheduled).toHaveLength(1);
+    flexpriceAvailable = true;
+    scheduled[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deleted).toEqual(['receipt-good', 'receipt-failed']);
+    expect(delivered).toEqual(['outbox_1', 'outbox_2']);
     await lifecycle.close();
   });
 

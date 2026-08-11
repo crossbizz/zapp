@@ -88,7 +88,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-2 Routing/retry/fallback
 - [x] AR-3A Stable completion identity + exhaustive terminal envelope
 - [x] OPS-1A Durable completion journal + authoritative usage reservation
-- [ ] AR-3B Usage telemetry + budget cutoff + Anthropic cache proof
+- [x] AR-3B Usage telemetry + budget cutoff + Anthropic cache proof
 - [x] AR-3B-FIX-1 Durable abort settlement + renewal retry classification
 - [x] AR-4 agent-tools registry (PRD §16.1 complete)
 - [x] AR-5 agent-policies + injection defense + role prompts
@@ -208,17 +208,17 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-7 Neon branch workflows
 - [x] INT-8 Generated-app Stripe adapter
 - [ ] INT-9 Stripe E2E integration tests
-- [ ] DEP-1 Release records + ReleasePort
-- [ ] DEP-2 Three-state readiness check
-- [ ] DEP-3 Deployment type classification
-- [ ] DEP-4 Fly.io container adapter
-- [ ] DEP-5 Vercel adapter
-- [ ] DEP-6 Staged deploy workflow (safe go-live)
-- [ ] DEP-7 Production health + prod-safe smoke
-- [ ] DEP-8 Success contract + release annotations
-- [ ] DEP-9 Rollback with DB-compatibility gating
-- [ ] DEP-10 Custom domains + SSL
-- [ ] DEP-11 Synthetic checks
+- [x] DEP-1 Release records + ReleasePort
+- [x] DEP-2 Three-state readiness check
+- [x] DEP-3 Deployment type classification
+- [x] DEP-4 Fly.io container adapter
+- [x] DEP-5 Vercel adapter
+- [x] DEP-6 Staged deploy workflow (safe go-live)
+- [x] DEP-7 Production health + prod-safe smoke
+- [x] DEP-8 Success contract + release annotations
+- [x] DEP-9 Rollback with DB-compatibility gating
+- [x] DEP-10 Custom domains + SSL
+- [x] DEP-11 Synthetic checks
 - [ ] DEP-12 E2E release lifecycle + fork-to-repair
 - [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [ ] WEB-15 Production health + guarded rollback UI

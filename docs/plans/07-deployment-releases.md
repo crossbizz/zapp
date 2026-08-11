@@ -62,26 +62,26 @@ idempotency/cancellation call options without changing these lifecycle operation
 Release flow states: `candidate → verifying → ready|warnings|blocked → approved → deploying → healthy|failed → superseded`. Creation requires: exact commit SHA exists in internal Git (GIT-2 lookup), spec version reference (or explicit waiver object), no release for prototype-only runs (AR-15 rule).
 **Effort:** M
 
-- [ ] Failing tests: create validates commit exists (unknown SHA → 422 `commit_not_found`); immutability (attempt to change commit → no code path; status transition table enforced); approve requires RBAC `approve_production_deploy` (checked at CP-11, re-checked here with actor).
-- [ ] Commit: `feat(release-service): immutable release candidates + ReleasePort`
+- [x] Failing tests: create validates commit exists (unknown SHA → 422 `commit_not_found`); immutability (attempt to change commit → no code path; status transition table enforced); approve requires RBAC `approve_production_deploy` (checked at CP-11, re-checked here with actor).
+- [x] Commit: `feat(release-service): immutable release candidates + ReleasePort`
 
 ### Task DEP-2: Pre-deployment readiness check
 
 **Files:** Create: `src/release/readiness.ts`, `test/readiness.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26A.2): evaluates exactly: production build + start commands (gate reuse VF-5), lockfile consistency (`pnpm install --frozen-lockfile` dry check), required env/secrets present in target environment (contract-declared + detected `process.env` reads missing → finding), database connectivity + approved migrations (INT-6/7 validation state), provider compatibility (adapter `detectCompatibility`), health endpoint defined, critical browser flows green (latest VF results for the commit), release-policy + verifier decision (VF-10). Output: exactly three states — `ready | warnings | blocked` with findings `[{ id, severity: "blocker"|"warning", title, detail, action: "fix_and_recheck"|"review"|"waive" }]`; blockers list which mandatory gate failed; primary action for blocked = Fix and recheck (spawns Fix run via AR-19).
-- [ ] Failing tests: missing env secret → warning (or blocker for Managed); failed critical flow → blocked; all green → ready; findings payload drives WEB-14 UI snapshot.
-- [ ] Commit: `feat(release-service): three-state readiness report`
+- [x] Binding behavior (PRD §26A.2): evaluates exactly: production build + start commands (gate reuse VF-5), lockfile consistency (`pnpm install --frozen-lockfile` dry check), required env/secrets present in target environment (contract-declared + detected `process.env` reads missing → finding), database connectivity + approved migrations (INT-6/7 validation state), provider compatibility (adapter `detectCompatibility`), health endpoint defined, critical browser flows green (latest VF results for the commit), release-policy + verifier decision (VF-10). Output: exactly three states — `ready | warnings | blocked` with findings `[{ id, severity: "blocker"|"warning", title, detail, action: "fix_and_recheck"|"review"|"waive" }]`; blockers list which mandatory gate failed; primary action for blocked = Fix and recheck (spawns Fix run via AR-19).
+- [x] Failing tests: missing env secret → warning (or blocker for Managed); failed critical flow → blocked; all green → ready; findings payload drives WEB-14 UI snapshot.
+- [x] Commit: `feat(release-service): three-state readiness report`
 
 ### Task DEP-3: Deployment type classification + confirmation contract
 
 **Files:** Create: `src/release/types.ts`, `test/types.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §26A.3): classify(environment history, target): `first_deploy` (no prior deployment for env) | `redeploy` (same project lineage) | `replace_deployment` (different project/major identity change — detected via repo lineage mismatch or explicit user retarget); confirmation payload states, in user language: production data effect (`preserved | migrated (n migrations, reversibility) | reset — requires explicit selection`), secrets effect (added/changed/removed names), URL effect, active-user effect (brief interruption vs zero-downtime per provider); `replace_deployment` requires explicit data disposition selection (`preserve | transfer | reset`) — API rejects absent selection (422 `data_disposition_required`).
-- [ ] Failing tests: each classification from seeded histories; replace without disposition rejected; confirmation text snapshots (used verbatim by WEB-14).
-- [ ] Commit: `feat(release-service): deployment type classification + explicit data behavior`
+- [x] Binding behavior (PRD §26A.3): classify(environment history, target): `first_deploy` (no prior deployment for env) | `redeploy` (same project lineage) | `replace_deployment` (different project/major identity change — detected via repo lineage mismatch or explicit user retarget); confirmation payload states, in user language: production data effect (`preserved | migrated (n migrations, reversibility) | reset — requires explicit selection`), secrets effect (added/changed/removed names), URL effect, active-user effect (brief interruption vs zero-downtime per provider); `replace_deployment` requires explicit data disposition selection (`preserve | transfer | reset`) — API rejects absent selection (422 `data_disposition_required`).
+- [x] Failing tests: each classification from seeded histories; replace without disposition rejected; confirmation text snapshots (used verbatim by WEB-14).
+- [x] Commit: `feat(release-service): deployment type classification + explicit data behavior`
 
 ### Task DEP-4: Fly.io generic Node container adapter
 
@@ -90,67 +90,90 @@ Release flow states: `candidate → verifying → ready|warnings|blocked → app
 
 Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility` (any Node app with build+start or Dockerfile); build: in sandbox — Dockerfile template (node:22-slim multi-stage, contract build command, non-root user) unless project Dockerfile exists → `docker buildx` → push to Fly registry `registry.fly.io/zapp-{projectId}-{env}`; deploy: Fly app per project-env under zapp org (locked decision #4), machines update with new image ref (blue-green: start new machine → health check → stop old), secrets via Fly secrets API from vault (release-service is decrypt-allowlisted, CP-7); `getStatus`/`streamLogs` from Machines API; `rollback` = machines update to previous image ref (image refs retained on `deployments` rows); cost attribution stub → OPS-2 (deploy provider usage category).
 
+#### DEP-4a: Sandbox image build + push
+
+- [x] Failing tests first: compatibility accepts a Dockerfile or a Node `package.json` with both build/start scripts and rejects incomplete projects; stable Fly app/registry naming handles prefixed IDs and provider length limits; generated Dockerfile snapshot is `node:22-slim` multi-stage, executes the contract install/build/start commands through JSON-form shell arguments, and ends as a non-root user; an existing project Dockerfile is used unchanged; a failed `docker buildx build --push` never returns an artifact.
+- [x] Implement strict Zod inputs/outputs plus a minimal sandbox execution port; `buildFlyImage` writes only a temporary generated Dockerfile when needed, never passes secrets/build args, runs buildx in the contract workspace, pushes `registry.fly.io/<stable project-environment app>:<exact commit sha>`, removes the temporary file, and returns a validated `container_image` artifact. The sandbox is pre-authenticated with a registry-scoped credential outside this adapter.
+- [x] Run the focused red/green cycle, then the release-service test/lint/typecheck/build commands. Check only DEP-4a boxes in this commit.
+- [x] Commit: `feat(release-service): build and push Fly images`
+
+#### DEP-4b: Machines deploy, vault secrets, health, rollback
+
+- [x] Failing local integration tests first, against a recording HTTP server: app creation is idempotent in the configured zapp Fly org; environment values are resolved only through an injected decrypt-allowlisted vault port and sent by name to the Fly Secrets API without appearing in adapter results/errors; production deploy creates a new Machine with `skip_service_registration: true`, waits for `started` plus passing service health checks, uncordons it, then and only then stops the prior Machine; a failed health check stops the candidate and leaves the prior Machine serving.
+- [x] Implement a strict Machines API client and `DeploymentProvider` production path. Machine config uses the exact image artifact, contract start command/port/health path, restart policy, release/project/environment metadata, and app secrets; provider deployment IDs durably encode app + Machine identity. Call the OPS-2 seam with usage category `deploy_provider` after an accepted provider mutation, without recording secret material.
+- [x] Failing rollback tests first: resolve the explicit prior provider deployment ID, retain its image/config, perform the same cordoned health-gated handoff, and return a new deployment handle; invalid cross-app targets fail before mutation.
+- [x] Run the focused red/green cycles, then the release-service test/lint/typecheck/build commands. Check only DEP-4b boxes in this commit.
+- [x] Commit: `feat(release-service): health-gated Fly Machine deploys and rollback`
+
+#### DEP-4c: Status, log streaming, final staging proof
+
+- [x] Failing local integration tests first: map Fly Machine lifecycle/check states into the FND-4 deployment status without false-ready states; page the official Logs API cursor, emit only the selected Machine's validated stdout/stderr records, and redact every vault value before yielding; provider/API failures surface as failed status detail or typed errors, never success.
+- [x] Implement `getStatus` and `streamLogs`, plus the FND-4 preview rejection and DEP-10 domain seam without inventing provider-hosted previews or premature custom-domain behavior. Keep all Fly-specific identity inside the adapter.
+- [x] After local suites and the single capped review are complete, run the env-gated Fly staging test exactly once when `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are present: build/push the fixture, deploy it, prove runtime env + URL health, observe status/logs, roll back to the retained image, and clean up the staging app. Otherwise print a visible `SKIPPED — not run, not passed` reason naming the missing gate.
+- [x] Run release-service test/lint/typecheck/build, root lint/typecheck, and the task's one real-provider gate; record any credential skip honestly. Check DEP-4 and tracker boxes and append the Execution log in this final substep commit.
+- [x] Commit: `feat(release-service): Fly status and log streaming`
+
 ### Task DEP-5: Vercel adapter
 
 **Files:** Create: `src/providers/vercel.ts`, `test/integration/vercel.test.ts` (env-gated)
 **Effort:** L
 
-- [ ] Binding behavior: user-connected Vercel (OAuth token in vault, `integration_connections` provider `vercel`); `detectCompatibility` from project-adapters hints (next/vite/astro/sveltekit/nuxt); deploy: file-digest upload of the sandbox-built output via Vercel deployments API (deterministic: we build, Vercel serves; framework preset set explicitly), env vars synced from vault per environment, `target: production` only on user-approved deploy; preview deployments NOT used for zapp previews (Modal previews remain the dev loop; Vercel = production path) — keeps environments visibly distinct (PRD §26A.1); rollback = re-promote previous deployment id; domains via Vercel domains API (DEP-9).
-- [ ] Failing tests (staging token): deploy fixture static next app → URL 200; env var present at runtime; promote-previous restores prior content.
-- [ ] Commit: `feat(release-service): vercel production adapter`
+- [x] Binding behavior: user-connected Vercel (OAuth token in vault, `integration_connections` provider `vercel`); `detectCompatibility` from project-adapters hints (next/vite/astro/sveltekit/nuxt); deploy: file-digest upload of the sandbox-built output via Vercel deployments API (deterministic: we build, Vercel serves; framework preset set explicitly), env vars synced from vault per environment, `target: production` only on user-approved deploy; preview deployments NOT used for zapp previews (Modal previews remain the dev loop; Vercel = production path) — keeps environments visibly distinct (PRD §26A.1); rollback = re-promote previous deployment id; domains via Vercel domains API (DEP-9).
+- [x] Failing tests (staging token): deploy fixture static next app → URL 200; env var present at runtime; promote-previous restores prior content.
+- [x] Commit: `feat(release-service): vercel production adapter`
 
 ### Task DEP-6: Deploy workflow with stage timeline
 
 **Files:** Create: `src/workflows/deploy.ts`, `test/integration/deploy-workflow.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26A.4, §27.3): Temporal workflow stages exactly: `readiness_check → build_artifact → configure_secrets → apply_migrations → provision_runtime → start_services → production_health_check → go_live`; each stage emits `deployment.updated` event `{ stage, status: running|passed|failed, elapsedMs, summary, evidenceArtifactId? }`; migrations stage: only pre-approved migration plan (INT-6/7), destructive ops re-verified against approval record; traffic switch (`go_live`) happens only after `production_health_check` passes — failure at any stage leaves previous deployment serving (test asserts old URL content unchanged after induced failure); idempotent stages (activity idempotency keys); deployment row status transitions recorded.
-- [ ] Failing integration test (fly staging + fixture app): full deploy walks all 8 stages in order with events; induced health-check failure → status `failed`, previous deployment still live, no partial traffic switch.
-- [ ] Commit: `feat(release-service): staged deploy workflow with safe go-live`
+- [x] Binding behavior (PRD §26A.4, §27.3): Temporal workflow stages exactly: `readiness_check → build_artifact → configure_secrets → apply_migrations → provision_runtime → start_services → production_health_check → go_live`; each stage emits `deployment.updated` event `{ stage, status: running|passed|failed, elapsedMs, summary, evidenceArtifactId? }`; migrations stage: only pre-approved migration plan (INT-6/7), destructive ops re-verified against approval record; traffic switch (`go_live`) happens only after `production_health_check` passes — failure at any stage leaves previous deployment serving (test asserts old URL content unchanged after induced failure); idempotent stages (activity idempotency keys); deployment row status transitions recorded.
+- [x] Failing integration test (fly staging + fixture app): full deploy walks all 8 stages in order with events; induced health-check failure → status `failed`, previous deployment still live, no partial traffic switch.
+- [x] Commit: `feat(release-service): staged deploy workflow with safe go-live`
 
 ### Task DEP-7: Production health checks + post-deploy smoke
 
 **Files:** Create: `src/release/health.ts`
 **Effort:** M
 
-- [ ] Binding behavior: health = contract health path 200 × 3 consecutive (10 s apart) + error-rate guard (no 5xx burst in first 2 min via provider logs); post-deploy smoke = Playwright critical-flow subset against production URL (read-only flows only — no data mutation in prod smoke; flows tagged `@prod-safe` from VF-8 generation); results attached to release evidence (`preview` block gains `production` sibling); failure → automatic `mark failed` + rollback offer event (never auto-rollback without policy flag `autoRollbackOnFailedHealth: true`, default true for Managed).
-- [ ] Failing tests: 2-of-3 health → still failed; prod smoke excludes non-safe flows (fixture with mutating flow asserts exclusion).
-- [ ] Commit: `feat(release-service): production health + safe smoke verification`
+- [x] Binding behavior: health = contract health path 200 × 3 consecutive (10 s apart) + error-rate guard (no 5xx burst in first 2 min via provider logs); post-deploy smoke = Playwright critical-flow subset against production URL (read-only flows only — no data mutation in prod smoke; flows tagged `@prod-safe` from VF-8 generation); results attached to release evidence (`preview` block gains `production` sibling); failure → automatic `mark failed` + rollback offer event (never auto-rollback without policy flag `autoRollbackOnFailedHealth: true`, default true for Managed).
+- [x] Failing tests: 2-of-3 health → still failed; prod smoke excludes non-safe flows (fixture with mutating flow asserts exclusion).
+- [x] Commit: `feat(release-service): production health + safe smoke verification`
 
 ### Task DEP-8: Success state + release annotations
 
 **Files:** Create: `src/annotations/{grafana,posthog}.ts`, success payload assembly
 **Effort:** S
 
-- [ ] Binding behavior (PRD §26A.5): success payload: permanent URL, custom-domain action link, release id + exact commit, evidence status link, production health status, monitoring links (Grafana dashboard/Faro app, PostHog annotation), previous healthy release + one-click rollback action, note that preview changes require redeploy; annotations: Grafana deployment annotation (annotations API, tagged `release:{id}` + commit sha) on the project's dashboards, Faro sourcemap upload hook (generated-app template), PostHog annotation `release {id}` on project analytics.
-- [ ] Commit: `feat(release-service): deployment success contract + release annotations`
+- [x] Binding behavior (PRD §26A.5): success payload: permanent URL, custom-domain action link, release id + exact commit, evidence status link, production health status, monitoring links (Grafana dashboard/Faro app, PostHog annotation), previous healthy release + one-click rollback action, note that preview changes require redeploy; annotations: Grafana deployment annotation (annotations API, tagged `release:{id}` + commit sha) on the project's dashboards, Faro sourcemap upload hook (generated-app template), PostHog annotation `release {id}` on project analytics.
+- [x] Commit: `feat(release-service): deployment success contract + release annotations`
 
 ### Task DEP-9: Rollback
 
 **Files:** Create: `src/rollback/service.ts`, `test/integration/rollback.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §27.5): rollback restores: previous artifact/deployment (provider switch), previous env-config version (env config is versioned per deployment row), previous commit reference, static assets (implicit in artifact); DB compatibility state machine: migration reversibility from release evidence — `reversible` → allow; `compensating` → require approved compensating plan attached; `unavailable` → **block** with explanation; UI contract: response includes `databaseState: "compatible" | "requires_compensation" | "incompatible"` — code rollback never presented as full system rollback when incompatible (WEB-15 renders warning verbatim); rollback creates a new deployment row `rollback_of_deployment_id` set; post-rollback health check runs (DEP-7).
-- [ ] Failing tests: rollback after compatible migration succeeds end-to-end (staging); incompatible fixture blocked with correct state; env config restored (secret renamed between releases → old name active after rollback).
-- [ ] Commit: `feat(release-service): rollback with database-compatibility gating`
+- [x] Binding behavior (PRD §27.5): rollback restores: previous artifact/deployment (provider switch), previous env-config version (env config is versioned per deployment row), previous commit reference, static assets (implicit in artifact); DB compatibility state machine: migration reversibility from release evidence — `reversible` → allow; `compensating` → require approved compensating plan attached; `unavailable` → **block** with explanation; UI contract: response includes `databaseState: "compatible" | "requires_compensation" | "incompatible"` — code rollback never presented as full system rollback when incompatible (WEB-15 renders warning verbatim); rollback creates a new deployment row `rollback_of_deployment_id` set; post-rollback health check runs (DEP-7).
+- [x] Failing tests: rollback after compatible migration succeeds end-to-end (staging); incompatible fixture blocked with correct state; env config restored (secret renamed between releases → old name active after rollback).
+- [x] Commit: `feat(release-service): rollback with database-compatibility gating`
 
 ### Task DEP-10: Custom domains + SSL
 
 **Files:** Create: `src/domains/service.ts`, `test/domains.test.ts`
 **Effort:** M
 
-- [ ] Binding behavior: `POST /v1/projects/:id/domains` `{ hostname, environmentId }` → provider call (Fly certs API / Vercel domains API) → returns DNS instructions (CNAME/A + verification TXT) → polling verification → status `pending_dns → verifying → active | failed` with user-readable failure causes (wrong record, CAA, rate limit); SSL auto via provider; apex + www handling documented in payload; domain rows on `environments`.
-- [ ] Failing tests: instruction payload per provider snapshot; verification state machine transitions on fake DNS results.
-- [ ] Commit: `feat(release-service): custom domains with guided DNS verification`
+- [x] Binding behavior: `POST /v1/projects/:id/domains` `{ hostname, environmentId }` → provider call (Fly certs API / Vercel domains API) → returns DNS instructions (CNAME/A + verification TXT) → polling verification → status `pending_dns → verifying → active | failed` with user-readable failure causes (wrong record, CAA, rate limit); SSL auto via provider; apex + www handling documented in payload; domain rows on `environments`.
+- [x] Failing tests: instruction payload per provider snapshot; verification state machine transitions on fake DNS results.
+- [x] Commit: `feat(release-service): custom domains with guided DNS verification`
 
 ### Task DEP-11: Synthetic checks
 
 **Files:** Create: `src/synthetics/{runner,scheduler}.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §23.5, §29.2): `synthetic_checks` rows (name, schedule cron, flow ref) created by default for Managed releases (critical flows from spec); scheduler (Temporal cron workflow) runs prod-safe Playwright flow via verification-service against production URL; failure → incident event + notification (OPS-7) + offer Fix run (AR-19 entry point, PRD §10.3); results retained 30 d; status shown on project health (WEB-15).
-- [ ] Failing tests: schedule → run → failure creates event linked to release; disabled check doesn't run.
-- [ ] Commit: `feat(release-service): synthetic production checks`
+- [x] Binding behavior (PRD §23.5, §29.2): `synthetic_checks` rows (name, schedule cron, flow ref) created by default for Managed releases (critical flows from spec); scheduler (Temporal cron workflow) runs prod-safe Playwright flow via verification-service against production URL; failure → incident event + notification (OPS-7) + offer Fix run (AR-19 entry point, PRD §10.3); results retained 30 d; status shown on project health (WEB-15).
+- [x] Failing tests: schedule → run → failure creates event linked to release; disabled check doesn't run.
+- [x] Commit: `feat(release-service): synthetic production checks`
 
 ### Task DEP-12: Wire CP-11 + evidence + forking touchpoint
 
@@ -185,3 +208,15 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 
 - 2026-08-04: **BLOCKER SURFACED BY GIT-2/3 (before DEP-1 starts).** Forgejo's `release/*` branch protection refuses pushes from the platform **admin** token too — proven by `services/git-service/test/integration/forgejo.test.ts` (an admin push to `release/1` is rejected by the hook). So the release service CANNOT create or move `release/*` branches over git with the credentials it was assumed to have. Resolve before DEP-1: either (a) set `apply_to_admins = false` and confirm the API branch-create path is likewise ungated (the git hook and the API may differ — verify, don't assume), (b) create release branches through the Forgejo API rather than a push, or (c) tag-only releases (PRD §27.3 requires an exact commit SHA, which a tag satisfies without a protected branch). Whichever is chosen, add an integration test that actually creates a release ref through the intended path — this was found because a test pushed for real rather than trusting the config.
 - 2026-08-07 GIT-4 gate rewire — ci.yml's `git-backup-live` job was removed when Actions were parked (owner decision: metered minutes), which broke workflow.test.ts's never-silently-vanish assertion the moment caches went cold. The property now attaches to the real gate: scripts/git-hooks/pre-push.local exports GIT_BACKUP_LIVE=1 (backup.test.ts throws rather than skips when armed with a dependency missing), and workflow.test.ts asserts hook + turbo env + verify chain instead of the ci.yml job. Live proof against the local stack: backup/delete/restore/clone 1/1 in 6.2s, git-service integration 16/16, workflow.test.ts 4/4. The scheduled git-backups.yml workflow (nightly R2 drill) is untouched.
+- 2026-08-11 DEP-1 done — Added the minimally required release-service package scaffold, immutable exact-SHA candidates, the six-method ReleasePort, authoritative tenant/provenance/RBAC context, append-only specification-waiver audit evidence, durable replay, guarded routes, and transition tests; the prior branch-protection blocker was resolved by GIT-3's live-tested idempotent `rel_*` exact-SHA tag path, and the single capped review's four Major findings were remediated with no remaining task blocker or interface deviation.
+- 2026-08-11 DEP-2 done — Added an exact-SHA three-state readiness evaluator for every binding gate, canonical support-level secret severity, stable WEB-14 findings, and a keyed release/commit-bound AR-19 Fix action; the single capped review's three Major findings were remediated with no remaining blocker or deviation.
+- 2026-08-11 DEP-3 done — Added latest-environment deployment classification, explicit replacement data-disposition enforcement, and stable user-language data, secret-name, URL, and active-user effects for WEB-14; the single capped review's two Major project-identity and non-replacement-disposition findings were remediated with no remaining blocker or deviation.
+- 2026-08-11 DEP-4 done — Added exact-SHA sandbox image builds, health-gated blue-green Fly Machines deploys and rollback, strict status/log pagination with vault-value redaction, provider auth, preview rejection, domain seam, usage attribution, and a destructive-cleanup-safe staging proof; the single capped review's scoped-token auth, finite-cursor, and credential-cleanup findings were remediated with no deviation, while the one real-provider gate skipped visibly because `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are absent.
+- 2026-08-11 DEP-5 done — Added deterministic Build Output API uploads, vault-backed production env sync, exact adapter presets, strict status/log redaction, true Vercel rollback, and domains; the single capped review's rollback-endpoint, nullable-events, runtime-env-proof, and staging restoration findings were remediated with no remaining blocker or deviation, while the one real-provider gate skipped visibly because `VERCEL_ACCESS_TOKEN`, `VERCEL_PROJECT_ID`, `VERCEL_PROJECT_NAME`, and `ZAPP_VERCEL_STAGING_ENABLED=1` are absent.
+- 2026-08-11 DEP-6 done — Added the exact eight-stage Temporal deploy workflow with schema-derived activity boundaries, durable activity/event/status keys, authoritative migration-plan and destructive-approval re-verification, health-gated go-live, and a Fly fixture proving failed health leaves the prior release serving; the single capped review fixed derived-key limits, event identity, event-store failure classification, and duplicated boundary types with no deviation, while the real Fly gate skipped visibly because `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are absent.
+- 2026-08-11 DEP-7 done — Added three consecutive 10-second health probes, a typed provider-log 5xx-burst guard for the first two minutes, structurally read-only same-origin `@prod-safe` Playwright selection, a production evidence sibling, failed-deployment and rollback-offer actions, and authoritative Managed auto-rollback policy; the single capped review moved policy out of caller input and added burst/off-origin regressions with no deviation, while real provider gates remained visibly skipped for absent Fly/Vercel credentials.
+- 2026-08-11 DEP-8 done — Added schema-validated success payload assembly, keyed Grafana dashboard annotations, a generated-app Faro Source Map v3 upload hook, and keyed PostHog project release annotations; the single capped review bounded long dashboard mutation keys and aligned optional PostHog response fields with the official OpenAPI, with no deviation, while real Grafana/PostHog calls remain unverified because M5 credentials are not yet available.
+- 2026-08-11 DEP-9 done — Added a keyed rollback state machine that restores the exact target release/provider artifact and per-deployment config version, blocks incompatible evidence, requires and applies approved compensating plans, creates an auditable `rollback_of_deployment_id` record, runs the full DEP-7 health result contract, and recovers the formerly healthy deployment on failed health; the existing activity seam carries config-version persistence for DEP-12 wiring, the single capped review fixed explicit-target binding, DEP-7 output proof, safe compensation ordering/recovery, and in-progress identity replay with no interface deviation, while the real provider journey remains unverified because Fly/Vercel staging credentials are absent.
+- 2026-08-11 DEP-10 done — Added environment-scoped custom-domain persistence, keyed Fly/Vercel provider activities, the concrete Fly ACME certificates adapter, guided CNAME/A and ownership-TXT instructions, public-suffix-aware apex/www guidance, automatic SSL state, and CAS-safe DNS/provider polling with readable wrong-record, CAA, and rate-limit failures; the single capped review closed DEP-4's Fly certificate seam and hardened replay/concurrency invariants with no interface deviation, while the public control-API adapter remains in DEP-12's binding wiring task and real provider calls remain unverified because Fly/Vercel staging credentials are absent.
+- 2026-08-11 DEP-11 done — Added Managed-only default cron checks for critical structurally read-only production flows, exact release/flow bindings in Temporal schedule inputs alongside PRD-exact health-index rows, unique keyed workflow runs, verification-service execution, 30-day results, project-health status, and keyed incident/OPS-7 notification/AR-19 Fix offers on failure; the single capped review bounded maximum identifiers and fingerprints and required immutable failure evidence with no interface deviation, while the Temporal, verification, notification, and Fix activity ports remain for DEP-12 wiring.
+- 2026-08-11 DEP-12 BLOCKED — The binding file list permits only the control-API release route and one E2E test, but the required target is not callable: `services/release-service` has no app/server runtime and its internal HTTP surface implements only create/get/approve, with no readiness/deploy/evidence/rollback endpoints or production composition for DEP-2 through DEP-11. A mock-only control client would not make PRD §32.4 “fully live.” Completing this requires an approved scope expansion for release-service runtime/routes plus control-api composition; task remains unchecked and no fake success path was added.
