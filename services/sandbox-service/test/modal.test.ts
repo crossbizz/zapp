@@ -784,6 +784,7 @@ describe('Modal image provider facade', () => {
       'osv-scanner scan source',
       '--offline',
       'package-lock.json',
+      'node_modules/zapp-osv-smoke-dependency',
     ]) {
       expect(serializedCommands).toContain(requiredProbe);
     }

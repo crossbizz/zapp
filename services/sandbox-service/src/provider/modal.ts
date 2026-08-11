@@ -766,7 +766,7 @@ async function runSmoke(
           'probe=$(mktemp -d)',
           'trap \'rm -rf "$probe"\' EXIT INT TERM',
           'cd "$probe"',
-          'printf \'%s\\n\' \'{"name":"zapp-osv-smoke","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"zapp-osv-smoke","version":"1.0.0"}}}\' > package-lock.json',
+          'printf \'%s\\n\' \'{"name":"zapp-osv-smoke","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"zapp-osv-smoke","version":"1.0.0","dependencies":{"zapp-osv-smoke-dependency":"1.0.0"}},"node_modules/zapp-osv-smoke-dependency":{"version":"1.0.0"}}}\' > package-lock.json',
           'osv-scanner scan source --offline --format=json --config=/dev/null --lockfile=package-lock.json > report.json',
           'jq -e \'.results | type == "array"\' report.json >/dev/null',
         ].join('; '),
