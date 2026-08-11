@@ -315,6 +315,15 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Integration test: seeded template app with planted bug + failing repro script → fix run produces regression test file + patch commit + green verification; unrelated-file-churn guard triggers on an oversized diff fixture.
 - [x] Commit: `feat(orchestrator): fix mode with reproduce-first + regression-test policy`
 
+#### AR-19-FIX-1 — isolate Temporal acceptance from the parallel unit DAG
+
+**Files:** Modify: `services/orchestrator-worker/package.json`, `services/orchestrator-worker/test/integration/fix.test.ts` only if an assertion defect is found
+
+- [x] **RED/evidence:** authoritative clean Linux CI on `main` and the merge checkout times out the active-patch cancellation case at 30 seconds while the focused case completes locally in under 3 seconds.
+- [x] **GREEN:** keep the assertions and deadline intact; route the new Fix and Autonomous Temporal suites through the existing serial `test:integration` lane instead of running multiple local Temporal servers in the parallel unit DAG.
+- [x] **Verify/review/ship:** run the focused cancellation case, the ordinary worker suite, and the serial integration suite; complete at most two review rounds and confirm GitHub CI green; no provider call is required.
+- [x] Commit: `fix(orchestrator): serialize Temporal acceptance suites`
+
 ### Task AR-20 [M3]: Redirect + plan change
 
 **Files:** Create: `src/workflows/redirect.ts` logic in run/autonomous workflows, `packages/planning-engine/src/diff.ts`
@@ -413,3 +422,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-10 AR-17 done — Added production-routed autonomous interview/spec/plan approvals, phase-scoped AR-12 execution, bounded credits and repair, verified task transitions, lifecycle controls, durable continuation checkpoints, and scope-validated final evidence; the single capped review findings were resolved in one remediation pass, and production registration required the documented file-list joins with no interface deviation.
 - 2026-08-10 AR-18 done — Added the production-routed lightweight Build workflow with code-owned policy assessment, exact approval gating, AC-mapped per-task commits, independent VF approval, and provenance-protected continuations; production routing and existing mode/worker tests were required file-list joins, and the single capped review's two P1 findings were resolved in one remediation pass.
 - 2026-08-10 AR-19 done — Added the public API-routed reproduce-first Fix workflow with captured preview/Grafana evidence, regression-before-patch policy, immutable candidate diff guard, targeted/full verification, final symptom proof, and checkpointed control handling; the strict generated SDK and evidence-aware browser compatibility work required API, contract, generated-client, worker-routing, and web files beyond the terse create-only list, generic composers no longer expose Fix until they can supply immutable evidence, and the single capped review's P1/P2 findings were resolved in one remediation pass.
+- 2026-08-10 AR-19-FIX-1 done — moved the new Fix and Autonomous Temporal acceptance files out of the parallel unit DAG and into the existing serial integration lane without weakening their deadlines; ordinary worker tests passed 203/203 and serial integration passed 32/32 with no provider call.

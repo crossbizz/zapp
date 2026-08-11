@@ -180,6 +180,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-17 Autonomous mode workflow
 - [x] AR-18 Build mode
 - [x] AR-19 Fix mode (reproduce-first)
+- [x] AR-19-FIX-1 Serialize Temporal Fix/Autonomous acceptance
 - [ ] AR-20 Redirect + plan diff
 - [ ] AR-21 Forking (project/branch/conversation/run)
 - [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
