@@ -20,13 +20,12 @@ export const FlexpriceUsageEventSchema = z
     timestamp: z.string().datetime({ offset: true }),
     properties: z
       .object({
-        project_id: idSchema('proj'),
-        run_id: idSchema('run'),
+        project_id: idSchema('proj').nullable(),
+        run_id: idSchema('run').nullable(),
         task_id: idSchema('task').nullable(),
-        quantity: z.number().finite().nonnegative(),
+        quantity: z.number().finite(),
         unit: z.string().min(1),
-        provider: z.string().min(1),
-        model: z.string().min(1),
+        provider: z.string().min(1).nullable(),
       })
       .strict(),
   })
@@ -90,9 +89,7 @@ export function createSqsUsageQueue(config: UsageQueueEnv): UsageQueuePort {
     });
   return {
     async send(body) {
-      await client.send(
-        new SendMessageCommand({ QueueUrl: await queueUrl, MessageBody: body }),
-      );
+      await client.send(new SendMessageCommand({ QueueUrl: await queueUrl, MessageBody: body }));
     },
     async receive(input) {
       const response = await client.send(
@@ -138,9 +135,7 @@ export function createUsageOutboxPublisher(options: UsageOutboxPublisherOptions)
         const rows = await tx
           .select()
           .from(usageOutbox)
-          .where(
-            and(eq(usageOutbox.status, 'pending'), lte(usageOutbox.nextAttemptAt, instant)),
-          )
+          .where(and(eq(usageOutbox.status, 'pending'), lte(usageOutbox.nextAttemptAt, instant)))
           .orderBy(asc(usageOutbox.createdAt), asc(usageOutbox.id))
           .limit(limit)
           .for('update', { skipLocked: true });

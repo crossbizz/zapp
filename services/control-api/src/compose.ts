@@ -35,6 +35,7 @@ import type { ArtifactStorageEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
+import { createUsageLedgerRepository } from './usage/ledger.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
@@ -207,6 +208,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       database,
       mirror: createRedisCreditMirror(redis),
     }),
+    usageLedger: createUsageLedgerRepository({ database }),
     localAgent: {
       sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
       gateway: createModelGatewayLocalAgentClient({
@@ -220,10 +222,16 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           preview: {
             shares: createDbPreviewShareStore(database),
             sessions: createRedisPreviewSessionStore(
-              runtime.previewRedis ?? (() => { throw new Error('preview Redis publisher missing'); })(),
+              runtime.previewRedis ??
+                (() => {
+                  throw new Error('preview Redis publisher missing');
+                })(),
             ),
             revocations: createRedisPreviewRevocationSource(
-              runtime.previewRedis ?? (() => { throw new Error('preview Redis subscriber missing'); })(),
+              runtime.previewRedis ??
+                (() => {
+                  throw new Error('preview Redis subscriber missing');
+                })(),
             ),
             proxy: previewRuntime.proxy,
             signingKey: previewRuntime.config.signingKey,

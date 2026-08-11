@@ -106,6 +106,8 @@ export const SERVICE_TOKEN_AUDIENCES = [
   'control-api:model-completions',
   /** ADR-0025 approval-backed run ceiling increase boundary. */
   'control-api:credit-ceilings',
+  /** OPS-1B append-only non-model usage writer. */
+  'control-api:usage.ingest',
   ...SERVICE_NAMES,
 ] as const;
 

@@ -68,6 +68,8 @@ export const usageLedger = pgTable(
   'usage_ledger',
   {
     id: text('id').primaryKey(), // also the Flexprice ingestion `event_id` (plan 10 OPS-1)
+    /** A caller-supplied stable identity makes a ledger append retry-safe. */
+    operationKey: text('operation_key').notNull(),
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
@@ -88,6 +90,8 @@ export const usageLedger = pgTable(
     unit: text('unit').notNull(),
     costUsd: numeric('cost_usd', { precision: 12, scale: 6 }).notNull(),
     creditsCharged: numeric('credits_charged', { precision: 12, scale: 4 }).notNull(),
+    /** Corrections reference the original append with `correction_of`. */
+    metadata: jsonb('metadata').notNull().default({}),
     // No default: usage happens when it happens, and late-arriving batches must
     // not be silently stamped with their insert time.
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
@@ -96,6 +100,7 @@ export const usageLedger = pgTable(
     // Every read is org-scoped and time-bounded (invoicing periods, budget
     // windows, the three-way reconciliation job in plan 10).
     index('usage_ledger_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+    uniqueIndex('usage_ledger_operation_idx').on(t.organizationId, t.operationKey),
     check('usage_ledger_category_check', oneOf('category', USAGE_CATEGORIES)),
   ],
 );

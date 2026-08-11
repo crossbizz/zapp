@@ -156,6 +156,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       const occurredAt = new Date('2026-08-03T12:00:00.000Z');
       await handle.db.insert(usageLedger).values({
         id,
+        operationKey: id,
         organizationId,
         projectId: newId('proj'),
         runId: newId('run'),
@@ -185,6 +186,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       const id = newId('evt');
       await handle.db.insert(usageLedger).values({
         id,
+        operationKey: id,
         organizationId,
         category: 'sandbox_cpu_seconds',
         provider: 'modal',
@@ -278,9 +280,11 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
     // environments. The harness must preserve both layers after every reset.
     for (const table of ['usage_ledger', 'audit_events']) {
       it(`refuses TRUNCATE on ${table}, owner or not`, async () => {
-        expect(await rejection(handle.sql.unsafe(`truncate table ${table} cascade`))).toMatchObject({
-          code: '42501',
-        });
+        expect(await rejection(handle.sql.unsafe(`truncate table ${table} cascade`))).toMatchObject(
+          {
+            code: '42501',
+          },
+        );
       });
     }
 
@@ -296,6 +300,7 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
     it('lets the harness reset the ledger, and re-arms the guard afterwards', async () => {
       await handle.db.insert(usageLedger).values({
         id: newId('evt'),
+        operationKey: `reset-${newId('evt')}`,
         organizationId,
         category: 'storage_gib_hours',
         provider: 'r2',
@@ -324,7 +329,9 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       expect(guards).toHaveLength(4); // update/delete + truncate, on both tables
       expect(guards.every((guard) => guard.enabled === 'O')).toBe(true);
 
-      expect(await rejection(handle.sql.unsafe('truncate table usage_ledger cascade'))).toMatchObject({
+      expect(
+        await rejection(handle.sql.unsafe('truncate table usage_ledger cascade')),
+      ).toMatchObject({
         code: '42501',
       });
     });

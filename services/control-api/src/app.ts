@@ -53,7 +53,9 @@ import {
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { registerInternalEventRoutes } from './internal/events.js';
 import { registerInternalModelCompletionRoutes } from './internal/model-completions.js';
+import { registerInternalUsageRoutes } from './internal/usage.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
+import type { UsageLedgerRepository } from './usage/ledger.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -89,9 +91,7 @@ import {
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
-import {
-  registerLocalAgentRoutes,
-} from './routes/local-agent.js';
+import { registerLocalAgentRoutes } from './routes/local-agent.js';
 import type {
   LocalAgentCompletionGateway,
   LocalAgentSessionRepository,
@@ -282,6 +282,7 @@ export interface AppDeps {
   /** WS-12 durable share/session and authenticated preview data plane. */
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   readonly modelCompletions?: ModelCompletionRepository;
+  readonly usageLedger?: UsageLedgerRepository;
   /** MAC-6's public, user-authenticated desktop local-agent accounting scope. */
   readonly localAgent?: LocalAgentDeps;
 }
@@ -414,6 +415,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   }
   if (deps.modelCompletions !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: model completion routes require service authentication');
+  }
+  if (deps.usageLedger !== undefined && deps.secrets === undefined) {
+    throw new Error('refusing to start: usage routes require service authentication');
   }
 
   if (deps.tenant !== undefined && deps.orgs === undefined) {
@@ -569,8 +573,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
           });
           registerBuilderPreviewRoutes(app, {
-            sandbox:
-              tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),
+            sandbox: tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),
             proxy: tenant.builderPreviewProxy ?? createUnavailableBuilderPreviewProxy(),
             screenshots:
               tenant.builderPreviewScreenshotStore ??
@@ -615,6 +618,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
             if (deps.modelCompletions !== undefined) {
               registerInternalModelCompletionRoutes(app, deps.modelCompletions);
+            }
+            if (deps.usageLedger !== undefined) {
+              registerInternalUsageRoutes(app, deps.usageLedger);
             }
             // One vault for both surfaces, so the key that encrypted a value on
             // the way in is by construction the key that unwraps it on the way

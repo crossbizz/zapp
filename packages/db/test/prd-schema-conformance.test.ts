@@ -95,6 +95,14 @@ const NON_PRD_COLUMNS = new Map([
     'durable organization settings for CP-12 and its configurable deploy policy; accepted physical-schema extension in ADR-0004',
   ],
   [
+    'usage_ledger.operation_key',
+    'caller-supplied stable operation identity required by plan 10 OPS-1B so an append retry returns its original immutable ledger row and outbox event',
+  ],
+  [
+    'usage_ledger.metadata',
+    'correction_of metadata required by plan 10 OPS-1B to make negative compensating ledger entries traceable without ever mutating the original row',
+  ],
+  [
     'secret_metadata.key_version',
     'which master-key generation wrapped this secret’s data key (PRD §18.12, plan 02 CP-7); metadata rather than key material, and what a re-encrypt sweep is planned from',
   ],

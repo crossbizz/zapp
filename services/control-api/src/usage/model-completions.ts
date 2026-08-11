@@ -61,9 +61,7 @@ export class CompletionNotFoundError extends Error {
 }
 
 export class CreditCeilingIncreaseRejectedError extends Error {
-  public constructor(
-    public readonly reason: 'approval_not_resolved' | 'not_an_increase',
-  ) {
+  public constructor(public readonly reason: 'approval_not_resolved' | 'not_an_increase') {
     super(
       reason === 'approval_not_resolved'
         ? 'credit ceiling increase requires a matching resolved approval'
@@ -98,101 +96,101 @@ export function createModelCompletionRepository(
       const input = ModelCompletionClaimRequestSchema.parse(rawInput);
       const result = ModelCompletionClaimResponseSchema.parse(
         await database.transaction(async (tx) => {
-        const account = await lockAccount(tx, input.organizationId, input.runId);
-        await assertScope(tx, input);
-        const ceiling = await effectiveCeiling(tx, input.runId, account.baseCeiling);
-        const [existing] = await tx
-          .select()
-          .from(modelCompletionJournal)
-          .where(eq(modelCompletionJournal.completionId, input.completionId))
-          .for('update')
-          .limit(1);
+          const account = await lockAccount(tx, input.organizationId, input.runId);
+          await assertScope(tx, input);
+          const ceiling = await effectiveCeiling(tx, input.runId, account.baseCeiling);
+          const [existing] = await tx
+            .select()
+            .from(modelCompletionJournal)
+            .where(eq(modelCompletionJournal.completionId, input.completionId))
+            .for('update')
+            .limit(1);
 
-        if (existing !== undefined) {
-          assertIdentity(existing, input);
-          if (existing.state === 'completed') {
+          if (existing !== undefined) {
+            assertIdentity(existing, input);
+            if (existing.state === 'completed') {
+              return {
+                status: 'completed',
+                completion: completionRecord(existing),
+                credits: creditState(account, ceiling),
+              };
+            }
+            const claimExpiresAt = existing.claimExpiresAt;
+            if (
+              existing.claimOwner !== input.claimOwner &&
+              claimExpiresAt !== null &&
+              claimExpiresAt.getTime() > now().getTime()
+            ) {
+              return {
+                status: 'leased',
+                retryAfterMs: Math.max(1, claimExpiresAt.getTime() - now().getTime()),
+              };
+            }
+            const renewedUntil = new Date(now().getTime() + input.leaseMs);
+            await tx
+              .update(modelCompletionJournal)
+              .set({
+                claimOwner: input.claimOwner,
+                claimExpiresAt: renewedUntil,
+                updatedAt: now(),
+              })
+              .where(eq(modelCompletionJournal.completionId, input.completionId));
             return {
-              status: 'completed',
-              completion: completionRecord(existing),
+              status: 'claimed',
+              claimExpiresAt: renewedUntil.toISOString(),
+              reservedCredits: normalizeCredits(existing.reservedCredits),
               credits: creditState(account, ceiling),
             };
           }
-          const claimExpiresAt = existing.claimExpiresAt;
+
+          const pricing = loadPricingConfig(account.pricingSnapshotJson);
+          const required = worstCaseReservation(pricing, input.route);
           if (
-            existing.claimOwner !== input.claimOwner &&
-            claimExpiresAt !== null &&
-            claimExpiresAt.getTime() > now().getTime()
+            creditUnits(account.usedCredits) +
+              creditUnits(account.reservedCredits) +
+              creditUnits(required) >
+            creditUnits(ceiling)
           ) {
             return {
-              status: 'leased',
-              retryAfterMs: Math.max(1, claimExpiresAt.getTime() - now().getTime()),
+              status: 'budget_exceeded',
+              requiredCredits: required,
+              credits: creditState(account, ceiling),
             };
           }
-          const renewedUntil = new Date(now().getTime() + input.leaseMs);
-          await tx
-            .update(modelCompletionJournal)
+
+          const claimExpiresAt = new Date(now().getTime() + input.leaseMs);
+          await tx.insert(modelCompletionJournal).values({
+            completionId: input.completionId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            runId: input.runId,
+            taskId: input.taskId ?? null,
+            requestFingerprint: input.requestFingerprint,
+            claimOwner: input.claimOwner,
+            claimExpiresAt,
+            reservedCredits: required,
+            state: 'claimed',
+            responseJson: null,
+            terminalJson: null,
+            createdAt: now(),
+            updatedAt: now(),
+          });
+          const [updated] = await tx
+            .update(runCreditAccounts)
             .set({
-              claimOwner: input.claimOwner,
-              claimExpiresAt: renewedUntil,
+              reservedCredits: sql`${runCreditAccounts.reservedCredits} + ${required}::numeric`,
+              version: sql`${runCreditAccounts.version} + 1`,
               updatedAt: now(),
             })
-            .where(eq(modelCompletionJournal.completionId, input.completionId));
+            .where(eq(runCreditAccounts.runId, input.runId))
+            .returning();
+          if (updated === undefined) throw new Error('locked run credit account disappeared');
           return {
             status: 'claimed',
-            claimExpiresAt: renewedUntil.toISOString(),
-            reservedCredits: normalizeCredits(existing.reservedCredits),
-            credits: creditState(account, ceiling),
+            claimExpiresAt: claimExpiresAt.toISOString(),
+            reservedCredits: required,
+            credits: creditState(updated, ceiling),
           };
-        }
-
-        const pricing = loadPricingConfig(account.pricingSnapshotJson);
-        const required = worstCaseReservation(pricing, input.route);
-        if (
-          creditUnits(account.usedCredits) +
-            creditUnits(account.reservedCredits) +
-            creditUnits(required) >
-          creditUnits(ceiling)
-        ) {
-          return {
-            status: 'budget_exceeded',
-            requiredCredits: required,
-            credits: creditState(account, ceiling),
-          };
-        }
-
-        const claimExpiresAt = new Date(now().getTime() + input.leaseMs);
-        await tx.insert(modelCompletionJournal).values({
-          completionId: input.completionId,
-          organizationId: input.organizationId,
-          projectId: input.projectId,
-          runId: input.runId,
-          taskId: input.taskId ?? null,
-          requestFingerprint: input.requestFingerprint,
-          claimOwner: input.claimOwner,
-          claimExpiresAt,
-          reservedCredits: required,
-          state: 'claimed',
-          responseJson: null,
-          terminalJson: null,
-          createdAt: now(),
-          updatedAt: now(),
-        });
-        const [updated] = await tx
-          .update(runCreditAccounts)
-          .set({
-            reservedCredits: sql`${runCreditAccounts.reservedCredits} + ${required}::numeric`,
-            version: sql`${runCreditAccounts.version} + 1`,
-            updatedAt: now(),
-          })
-          .where(eq(runCreditAccounts.runId, input.runId))
-          .returning();
-        if (updated === undefined) throw new Error('locked run credit account disappeared');
-        return {
-          status: 'claimed',
-          claimExpiresAt: claimExpiresAt.toISOString(),
-          reservedCredits: required,
-          credits: creditState(updated, ceiling),
-        };
         }),
       );
       if ('credits' in result) await mirrorSafely(input.runId, result.credits);
@@ -253,6 +251,7 @@ export function createModelCompletionRepository(
             actualCredits += creditUnits(part.credits);
             ledgerRows.push({
               id: ledgerRowId,
+              operationKey: ledgerRowId,
               organizationId: input.organizationId,
               projectId: input.projectId,
               runId: input.runId,
@@ -263,6 +262,7 @@ export function createModelCompletionRepository(
               unit,
               costUsd: part.costUsd,
               creditsCharged: part.credits,
+              metadata: {},
               occurredAt: new Date(usage.occurredAt),
             });
             outboxRows.push({
@@ -281,7 +281,6 @@ export function createModelCompletionRepository(
                   quantity: Number(part.quantity),
                   unit,
                   provider: usage.provider,
-                  model: usage.model,
                 },
               },
               status: 'pending',
@@ -371,10 +370,7 @@ export function createModelCompletionRepository(
           ) {
             throw new CompletionConflictError();
           }
-          return creditState(
-            account,
-            await effectiveCeiling(tx, input.runId, account.baseCeiling),
-          );
+          return creditState(account, await effectiveCeiling(tx, input.runId, account.baseCeiling));
         }
 
         const [approval] = await tx
@@ -453,10 +449,7 @@ async function lockAccount(executor: Executor, organizationId: string, runId: st
     .select()
     .from(runCreditAccounts)
     .where(
-      and(
-        eq(runCreditAccounts.organizationId, organizationId),
-        eq(runCreditAccounts.runId, runId),
-      ),
+      and(eq(runCreditAccounts.organizationId, organizationId), eq(runCreditAccounts.runId, runId)),
     )
     .for('update')
     .limit(1);
@@ -466,10 +459,7 @@ async function lockAccount(executor: Executor, organizationId: string, runId: st
 
 async function assertScope(
   executor: Executor,
-  input: Pick<
-    ModelCompletionClaimRequest,
-    'organizationId' | 'projectId' | 'runId' | 'taskId'
-  >,
+  input: Pick<ModelCompletionClaimRequest, 'organizationId' | 'projectId' | 'runId' | 'taskId'>,
 ): Promise<void> {
   const [run] = await executor
     .select({ id: agentRuns.id })
@@ -560,10 +550,7 @@ function completionRecord(row: typeof modelCompletionJournal.$inferSelect): Comp
   });
 }
 
-function creditState(
-  account: typeof runCreditAccounts.$inferSelect,
-  ceiling: string,
-): CreditState {
+function creditState(account: typeof runCreditAccounts.$inferSelect, ceiling: string): CreditState {
   return {
     used: normalizeCredits(account.usedCredits),
     reserved: normalizeCredits(account.reservedCredits),

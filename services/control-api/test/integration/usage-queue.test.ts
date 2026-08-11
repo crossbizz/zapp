@@ -37,7 +37,6 @@ describe.skipIf(!gate.present)('OPS-1A LocalStack usage queue', () => {
           quantity: 1,
           unit: 'input_tokens',
           provider: 'anthropic',
-          model: 'claude-sonnet-5',
         },
       },
     });

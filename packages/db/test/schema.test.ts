@@ -131,6 +131,7 @@ describe('billing tables', () => {
   it('gives usage_ledger exactly the PRD §23.1 columns, in order', () => {
     expect(columnNames(usageLedger)).toEqual([
       'id',
+      'operation_key',
       'organization_id',
       'project_id',
       'run_id',
@@ -141,6 +142,7 @@ describe('billing tables', () => {
       'unit',
       'cost_usd',
       'credits_charged',
+      'metadata',
       'occurred_at',
     ]);
   });
@@ -152,7 +154,10 @@ describe('billing tables', () => {
   });
 
   it('scopes every ledger read by organization and time', () => {
-    expect(indexNames(usageLedger)).toEqual(['usage_ledger_org_occurred_at_idx']);
+    expect(indexNames(usageLedger)).toEqual([
+      'usage_ledger_org_occurred_at_idx',
+      'usage_ledger_operation_idx',
+    ]);
     expect(foreignKeys(usageLedger)).toEqual(['organization_id -> organizations.id']);
     // project/run/task attribution is deliberately unconstrained: those tables
     // arrive with FND-6, and a purge there must never orphan a billing row.

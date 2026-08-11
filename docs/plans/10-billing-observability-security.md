@@ -41,8 +41,8 @@ Master plan §Global Constraints, plus:
 - Internal route `POST /internal/usage` (service token) for non-model emitters extends OPS-1A; model-gateway uses only ADR-0025's claim/commit/get boundary.
 **Effort:** L
 
-- [ ] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
-- [ ] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
+- [x] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
+- [x] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
 
 ### Task OPS-2 [M2]: Metering collectors completion
 
@@ -201,6 +201,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-1B done — Append-only keyed ledger, exact SQS-to-Flexprice event shape, summaries, pricing, and bootstrap acceptance verified with LocalStack; `dev-up` still reports its unrelated missing `zapp-notifications` queue.
 - 2026-08-09 OPS-1A done — Durable claim/commit accounting, exact reservations, Postgres-led Redis healing, and SQS-to-Flexprice delivery verified; at the two-review cap, three round-two correctness findings were closed by deterministic RED/GREEN without a third review, the cold gate's real early-abort DB test received the same bounded 15 s process budget as its load-bearing pool assertion, and clean CI repairs release the preview coordinator after aborted CDP cleanup, atomically publish complete native workspace helpers, bound transient normal-filesystem removal retries in the cgroup test double, probe append-only ledger TRUNCATE guards through the new outbox FK with CASCADE, launch the real Chrome primitive-capture test directly instead of through a redundant browser-server reconnect, and extend configurable application-role revocation plus real append-only integration coverage to the approval-backed ceiling-adjustment ledger.
 - 2026-08-04: DEPLOYMENT NOTE (from CP-5 fix): rate-limit proxy trust defaults to NONE. Any deploy behind an edge proxy MUST set `proxy.trustedHops` (or trustedProxies) in config/rate-limits.json in the same change, or ip-scoped classes bucket by the ingress. The plugin warns at boot naming the field; setting both fields refuses to boot. Owner: OPS deploy runbook.
 - 2026-08-08 ADR-0022: OPS-9, OPS-15, OPS-16, OPS-18 deferred post-P0 — no P0 PRD basis (PRD §5 non-goals exclude custom compliance programs); all four return before public beta. Backups themselves (Neon PITR, logical dumps, nightly Git bundles) stay in P0.
