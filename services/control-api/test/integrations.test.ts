@@ -86,7 +86,7 @@ function requestFor(provider: 'github' | 'supabase' | 'neon' | 'stripe', project
   switch (provider) {
     case 'github': return { url: '/v1/integrations/github/install', body: { installationId: '1188', state: 'oauth-state', code: CREDENTIAL } };
     case 'supabase': return { url: '/v1/integrations/supabase/connect', body: { projectId, accessToken: CREDENTIAL, configuration: { projectRef: 'acme-db' } } };
-    case 'neon': return { url: '/v1/integrations/neon/connect', body: { projectId, apiKey: CREDENTIAL, configuration: { projectId: 'neon-db' } } };
+    case 'neon': return { url: '/v1/integrations/neon/connect', body: { projectId, apiKey: CREDENTIAL, configuration: { projectId: 'neon-db', databaseName: 'neondb' } } };
     case 'stripe': return { url: '/v1/integrations/stripe/connect', body: { projectId, apiKey: CREDENTIAL, configuration: { accountId: 'acct_123', mode: 'test' } } };
   }
 }

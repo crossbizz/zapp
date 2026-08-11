@@ -920,6 +920,9 @@ export interface paths {
                                 } | {
                                     projectRef: string;
                                 } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
                                     projectId: string;
                                 } | {
                                     accountId: string;
@@ -1206,6 +1209,7 @@ export interface paths {
                     "application/json": {
                         apiKey: string;
                         configuration: {
+                            databaseName: string;
                             projectId: string;
                         };
                         projectId: string;
@@ -1262,6 +1266,9 @@ export interface paths {
                                 } | {
                                     projectRef: string;
                                 } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
                                     projectId: string;
                                 } | {
                                     accountId: string;
@@ -1366,6 +1373,9 @@ export interface paths {
                                 } | {
                                     projectRef: string;
                                 } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
                                     projectId: string;
                                 } | {
                                     accountId: string;
@@ -1468,6 +1478,9 @@ export interface paths {
                                 } | {
                                     projectRef: string;
                                 } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
                                     projectId: string;
                                 } | {
                                     accountId: string;

@@ -47,6 +47,11 @@ import {
 } from './integrations/github/store.js';
 import { createSupabaseIntegrationPort } from './integrations/supabase/connect.js';
 import { createSupabaseManagementClient } from './integrations/supabase/provision.js';
+import {
+  createNeonIntegrationPort,
+  createNeonProjectManagementPort,
+} from './integrations/neon/connect.js';
+import { createNeonManagementClient, createNeonSqlFactory } from './integrations/neon/branches.js';
 import type { IntegrationPort } from './routes/integrations.js';
 
 /**
@@ -149,9 +154,18 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     masterKey: runtime.masterKey,
     management: createSupabaseManagementClient(),
   });
+  const neonIntegration = createNeonIntegrationPort({
+    database,
+    masterKey: runtime.masterKey,
+    management: createNeonProjectManagementPort({
+      management: createNeonManagementClient(),
+      sql: createNeonSqlFactory(),
+    }),
+  });
   const integrationPort: IntegrationPort = {
     connect: (request) => {
       if (request.provider === 'supabase') return supabaseIntegration.connect(request);
+      if (request.provider === 'neon') return neonIntegration.connect(request);
       if (request.provider === 'github' && githubIntegration !== undefined) {
         return githubIntegration.connect(request);
       }
@@ -260,10 +274,16 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           preview: {
             shares: createDbPreviewShareStore(database),
             sessions: createRedisPreviewSessionStore(
-              runtime.previewRedis ?? (() => { throw new Error('preview Redis publisher missing'); })(),
+              runtime.previewRedis ??
+                (() => {
+                  throw new Error('preview Redis publisher missing');
+                })(),
             ),
             revocations: createRedisPreviewRevocationSource(
-              runtime.previewRedis ?? (() => { throw new Error('preview Redis subscriber missing'); })(),
+              runtime.previewRedis ??
+                (() => {
+                  throw new Error('preview Redis subscriber missing');
+                })(),
             ),
             proxy: createSandboxPreviewProxy({
               baseUrl: runtime.preview.sandboxServiceUrl,

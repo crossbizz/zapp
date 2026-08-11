@@ -15644,10 +15644,23 @@
                                 "projectId": {
                                   "type": "string",
                                   "minLength": 1
+                                },
+                                "databaseName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "previewBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "productionBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
                                 }
                               },
                               "required": [
-                                "projectId"
+                                "projectId",
+                                "databaseName"
                               ],
                               "additionalProperties": false
                             },
@@ -15908,10 +15921,23 @@
                                 "projectId": {
                                   "type": "string",
                                   "minLength": 1
+                                },
+                                "databaseName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "previewBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "productionBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
                                 }
                               },
                               "required": [
-                                "projectId"
+                                "projectId",
+                                "databaseName"
                               ],
                               "additionalProperties": false
                             },
@@ -16073,10 +16099,17 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 200
+                      },
+                      "databaseName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 63,
+                        "pattern": "^[a-z_][a-z0-9_]*$"
                       }
                     },
                     "required": [
-                      "projectId"
+                      "projectId",
+                      "databaseName"
                     ],
                     "additionalProperties": false
                   }
@@ -16172,10 +16205,23 @@
                                 "projectId": {
                                   "type": "string",
                                   "minLength": 1
+                                },
+                                "databaseName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "previewBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "productionBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
                                 }
                               },
                               "required": [
-                                "projectId"
+                                "projectId",
+                                "databaseName"
                               ],
                               "additionalProperties": false
                             },
@@ -16444,10 +16490,23 @@
                                 "projectId": {
                                   "type": "string",
                                   "minLength": 1
+                                },
+                                "databaseName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "previewBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "productionBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
                                 }
                               },
                               "required": [
-                                "projectId"
+                                "projectId",
+                                "databaseName"
                               ],
                               "additionalProperties": false
                             },

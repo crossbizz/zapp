@@ -219,9 +219,9 @@ be built:
 **Files:** Create: `src/integrations/neon/{connect,branches,migrations}.ts`, `test/neon.test.ts` (env-gated)
 **Effort:** L
 
-- [ ] Binding behavior (PRD §25.3): connect via API key → vault; project/branch management (create `verify/run-{id}` temp branches for migration validation, TTL-deleted after gate); schema inspection via SQL over branch connection; migration validation = apply to temp branch + smoke queries + reversibility classification; connection-role separation: app role vs migration role connection strings stored as separate secrets; branch-based dev workflow (preview env → dedicated branch).
-- [ ] Failing tests: temp branch lifecycle (created→validated→deleted); role separation (app role lacks DDL — asserted via failed ALTER).
-- [ ] Commit: `feat(integrations): neon branch-based database workflows`
+- [x] Binding behavior (PRD §25.3): connect via API key → vault; project/branch management (create `verify/run-{id}` temp branches for migration validation, TTL-deleted after gate); schema inspection via SQL over branch connection; migration validation = apply to temp branch + smoke queries + reversibility classification; connection-role separation: app role vs migration role connection strings stored as separate secrets; branch-based dev workflow (preview env → dedicated branch).
+- [x] Failing tests: temp branch lifecycle (created→validated→deleted); role separation (app role lacks DDL — asserted via failed ALTER).
+- [x] Commit: `feat(integrations): neon branch-based database workflows`
 
 ### Task INT-8 [M4]: Generated-app Stripe adapter
 
@@ -274,3 +274,4 @@ be built:
 - 2026-08-11 INT-5 done — Supabase connect/provision/schema/typegen and agent-tool bindings now vault the management token, isolate preview/production project secrets, and keep migrations behind INT-6; one capped review corrected the current Management API provisioning payload, PostgreSQL/local suites passed, no blockers or plan deviations, and the live Supabase test skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
 - 2026-08-11 INT-5-FIX-1 done — The exact authoritative CI failure reproduced after wall time crossed the retry test's fixed publisher instant; injecting one clock into the app and publisher made the PostgreSQL retry proof deterministic, focused and package checks passed, and one capped review found no Critical/Major issue.
 - 2026-08-11 INT-6 done — Supabase migrations now stage keyed monotonic repo files, apply only to linked non-production projects, feed pending history through the VF-16 shadow receipt recorded in release evidence, and generate owner-scoped RLS plus pgTAP denial tests; one capped review fixed fixture-vacuity and migration-ordering risks, local PostgreSQL proved cross-user denial, no blockers or plan deviations occurred, and live Supabase verification skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
+- 2026-08-11 INT-7 done — Neon API connect now vaults explicit-database app/migration URLs for default and dedicated preview branches, VF-16 validates on TTL verification branches with response-loss reconciliation and cleanup, schema SQL and real DDL denial passed, and one capped review fixed concurrent password persistence, post-create compensation, explicit database targeting, and cursor pagination; no blockers or plan deviations, while live Neon skipped because `NEON_API_KEY` and `NEON_PROJECT_ID` are unset.

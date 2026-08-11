@@ -12,13 +12,13 @@ import { operationOf } from './runs.js';
 
 const GitHubBody = z.object({ installationId: z.string().trim().min(1).max(200), state: z.string().trim().min(1).max(500), code: z.string().trim().min(1).max(10_000) }).strict();
 const SupabaseBody = z.object({ projectId: idSchema('proj'), accessToken: z.string().trim().min(1).max(10_000), configuration: z.object({ projectRef: z.string().trim().min(1).max(200) }).strict() }).strict();
-const NeonBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ projectId: z.string().trim().min(1).max(200) }).strict() }).strict();
+const NeonBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ projectId: z.string().trim().min(1).max(200), databaseName: z.string().min(1).max(63).regex(/^[a-z_][a-z0-9_]*$/u) }).strict() }).strict();
 const StripeBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ accountId: z.string().trim().min(1).max(200), mode: z.enum(['test', 'live']) }).strict() }).strict();
 
 const IntegrationInputSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('github'), organizationId: idSchema('org'), projectId: z.null(), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ installationId: z.string().min(1) }).strict(), state: z.string().min(1) }).strict(),
   z.object({ provider: z.literal('supabase'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectRef: z.string().min(1) }).strict() }).strict(),
-  z.object({ provider: z.literal('neon'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectId: z.string().min(1) }).strict() }).strict(),
+  z.object({ provider: z.literal('neon'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectId: z.string().min(1), databaseName: z.string().min(1).max(63).regex(/^[a-z_][a-z0-9_]*$/u) }).strict() }).strict(),
   z.object({ provider: z.literal('stripe'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict() }).strict(),
 ]);
 export type IntegrationInput = z.infer<typeof IntegrationInputSchema>;
