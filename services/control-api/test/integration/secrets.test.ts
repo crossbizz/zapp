@@ -344,6 +344,7 @@ describe.skipIf(!hasDatabase)('the secrets vault, on PostgreSQL', () => {
         audit: {
           record: () => Promise.reject(new Error('audit_events insert failed')),
           recordDetached: () => Promise.resolve(),
+          recordDetachedOnce: () => Promise.resolve(),
         },
       },
       tenant: { tenantDb: createTenantDbFactory(database.db) },

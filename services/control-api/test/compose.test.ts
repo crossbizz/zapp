@@ -130,6 +130,10 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['PATCH', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/contract'],
   ['POST', '/v1/projects/:projectId/scan'],
+  ['GET', '/v1/workspaces/:workspaceId/dev-server/logs'],
+  ['POST', '/v1/workspaces/:workspaceId/dev-server/restart'],
+  ['GET', '/v1/workspaces/:workspaceId/preview/events'],
+  ['POST', '/v1/workspaces/:workspaceId/preview/screenshot'],
   // CP-7's vault (PRD §32.5), including the internal decrypt — deployed with a
   // deny-all verifier until CP-8, which is a route that admits nobody rather
   // than a route that does not exist.

@@ -11,6 +11,7 @@ import {
 import { auditEvents, type Executor } from '@zapp/db';
 import type { FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 /**
@@ -118,6 +119,8 @@ export interface AuditSink {
    * nobody holds expires unused, which is the harmless direction.
    */
   recordDetached(event: AuditRecord): Promise<void>;
+  /** Idempotent detached delivery for a retryable cross-service completion. */
+  recordDetachedOnce(key: string, event: AuditRecord): Promise<void>;
 }
 
 export interface InMemoryAuditSink extends AuditSink {
@@ -132,6 +135,7 @@ export interface InMemoryAuditSink extends AuditSink {
  */
 export function createInMemoryAuditSink(): InMemoryAuditSink {
   const events: AuditRecord[] = [];
+  const detachedKeys = new Set<string>();
 
   function append(event: AuditRecord): Promise<void> {
     return new Promise((resolve) => {
@@ -148,6 +152,14 @@ export function createInMemoryAuditSink(): InMemoryAuditSink {
     recordDetached(event) {
       return append(event);
     },
+    recordDetachedOnce(key, event) {
+      if (detachedKeys.has(key)) return Promise.resolve();
+      detachedKeys.add(key);
+      return append(event).catch((error: unknown) => {
+        detachedKeys.delete(key);
+        throw error;
+      });
+    },
   };
 }
 
@@ -159,10 +171,15 @@ export function createInMemoryAuditSink(): InMemoryAuditSink {
  * no delete here — a correction is another row, never an edit.
  */
 export function createDbAuditSink(db: Executor): AuditSink {
-  async function insert(tx: Executor, event: AuditRecord): Promise<void> {
+  async function insert(
+    tx: Executor,
+    event: AuditRecord,
+    id = newId('aud'),
+    once = false,
+  ): Promise<void> {
     const parsed = AuditRecordSchema.parse(event);
-    await tx.insert(auditEvents).values({
-      id: newId('aud'),
+    const write = tx.insert(auditEvents).values({
+      id,
       organizationId: parsed.organizationId,
       actorType: parsed.actorType,
       actorId: parsed.actorId,
@@ -172,6 +189,11 @@ export function createDbAuditSink(db: Executor): AuditSink {
       metadataJson: parsed.metadata,
       occurredAt: parsed.occurredAt,
     });
+    if (once) {
+      await write.onConflictDoNothing({ target: auditEvents.id });
+    } else {
+      await write;
+    }
   }
 
   return {
@@ -187,7 +209,28 @@ export function createDbAuditSink(db: Executor): AuditSink {
     async recordDetached(event) {
       await insert(db, event);
     },
+    async recordDetachedOnce(key, event) {
+      await insert(db, event, stableAuditId(key), true);
+    },
   };
+}
+
+function stableAuditId(key: string): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const bytes = createHash('sha256').update(`audit:${key}`).digest();
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && output.length < 26) {
+      bits -= 5;
+      output += alphabet[(value >>> bits) & 31] ?? '';
+    }
+    if (output.length === 26) break;
+  }
+  return idSchema('aud').parse(`aud_${output}`);
 }
 
 /** What a route passes; everything else is filled in from the request. */
@@ -213,6 +256,8 @@ declare module 'fastify' {
      * that does not touch PostgreSQL — see {@link AuditSink.recordDetached}.
      */
     auditDetached(entry: AuditEntry): Promise<void>;
+    /** Retry-safe detached audit using one deterministic row id. */
+    auditDetachedOnce(key: string, entry: AuditEntry, occurredAt: Date): Promise<void>;
     /**
      * The same, for a request authenticated as a service rather than as a person
      * (`src/internal/service-auth.ts`).
@@ -240,7 +285,7 @@ export const auditLog = fp<AuditLogOptions>(
   (app, options, done) => {
     const { sink, now } = options;
 
-    function toRecord(actor: AuditActor, entry: AuditEntry): AuditRecord {
+    function toRecord(actor: AuditActor, entry: AuditEntry, occurredAt = now()): AuditRecord {
       const parsed = AuditEntrySchema.parse(entry);
       return AuditRecordSchema.parse({
         organizationId: parsed.organizationId,
@@ -250,7 +295,7 @@ export const auditLog = fp<AuditLogOptions>(
         targetType: parsed.target.type,
         targetId: parsed.target.id,
         metadata: parsed.metadata ?? {},
-        occurredAt: now(),
+        occurredAt,
       });
     }
 
@@ -288,6 +333,19 @@ export const auditLog = fp<AuditLogOptions>(
       'auditDetached',
       function auditDetached(this: FastifyRequest, entry: AuditEntry): Promise<void> {
         return sink.recordDetached(toRecord(userActor(this), entry));
+      },
+    );
+
+    app.decorateRequest(
+      'auditDetachedOnce',
+      function auditDetachedOnce(
+        this: FastifyRequest,
+        key: string,
+        entry: AuditEntry,
+        occurredAt: Date,
+      ): Promise<void> {
+        const event = toRecord(userActor(this), entry, occurredAt);
+        return sink.recordDetachedOnce(key, event);
       },
     );
 

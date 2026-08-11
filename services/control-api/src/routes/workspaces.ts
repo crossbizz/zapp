@@ -35,9 +35,11 @@ const CreateBody = z
   })
   .strict();
 const CheckpointBody = z.object({ kind: CheckpointKindSchema }).strict();
-type Workspace = Omit<SandboxWorkspace, 'resourceProfile'> & { readonly resourceProfile: string };
+export type Workspace = Omit<SandboxWorkspace, 'resourceProfile'> & {
+  readonly resourceProfile: string;
+};
 
-function toSandboxWorkspace(workspace: Workspace): SandboxWorkspace {
+export function toSandboxWorkspace(workspace: Workspace): SandboxWorkspace {
   return WorkspacePortSchema.parse({
     id: workspace.id,
     organizationId: workspace.organizationId,

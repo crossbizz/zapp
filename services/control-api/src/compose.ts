@@ -38,6 +38,8 @@ import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
+import { createBuilderPreviewSandboxClient } from './sandbox/client.js';
+import { createS3BuilderPreviewScreenshotStore } from './routes/builder-preview.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -101,6 +103,16 @@ export interface ServiceRuntime {
 
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
+  const previewRuntime =
+    runtime.preview === undefined
+      ? undefined
+      : {
+          config: runtime.preview,
+          proxy: createSandboxPreviewProxy({
+            baseUrl: runtime.preview.sandboxServiceUrl,
+            serviceTokens: runtime.serviceTokens,
+          }),
+        };
   /**
    * One denylist for both credential kinds.
    *
@@ -154,6 +166,18 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       }),
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
+      ...(previewRuntime === undefined
+        ? {}
+        : {
+            builderPreviewSandbox: createBuilderPreviewSandboxClient({
+              baseUrl: previewRuntime.config.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            builderPreviewProxy: previewRuntime.proxy,
+            builderPreviewScreenshotStore: createS3BuilderPreviewScreenshotStore(
+              runtime.artifactStorage,
+            ),
+          }),
     },
     secrets: {
       masterKey: runtime.masterKey,
@@ -190,7 +214,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
     },
-    ...(runtime.preview === undefined
+    ...(previewRuntime === undefined
       ? {}
       : {
           preview: {
@@ -201,14 +225,11 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
             revocations: createRedisPreviewRevocationSource(
               runtime.previewRedis ?? (() => { throw new Error('preview Redis subscriber missing'); })(),
             ),
-            proxy: createSandboxPreviewProxy({
-              baseUrl: runtime.preview.sandboxServiceUrl,
-              serviceTokens: runtime.serviceTokens,
-            }),
-            signingKey: runtime.preview.signingKey,
-            keyVersion: runtime.preview.keyVersion,
+            proxy: previewRuntime.proxy,
+            signingKey: previewRuntime.config.signingKey,
+            keyVersion: previewRuntime.config.keyVersion,
             appBaseUrl: new URL(runtime.auth.config.appBaseUrl),
-            previewBaseDomain: runtime.preview.previewBaseDomain,
+            previewBaseDomain: previewRuntime.config.previewBaseDomain,
           },
         }),
   });

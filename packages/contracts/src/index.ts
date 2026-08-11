@@ -46,6 +46,17 @@ export {
   type PackageManager,
 } from './execution-contract.js';
 export {
+  BuilderPreviewDevServerResponseSchema,
+  BuilderPreviewEventSchema,
+  BuilderPreviewLogEntrySchema,
+  BuilderPreviewLogsQuerySchema,
+  BuilderPreviewLogsResponseSchema,
+  type BuilderPreviewDevServerResponse,
+  type BuilderPreviewEvent,
+  type BuilderPreviewLogsQuery,
+  type BuilderPreviewLogsResponse,
+} from './builder-preview.js';
+export {
   RetryPolicySchema,
   TOOL_GROUPS,
   TOOL_NAMES,

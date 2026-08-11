@@ -1370,6 +1370,92 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/workspaces/{workspaceId}/dev-server/logs": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/dev-server/restart": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/preview/events": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "text/event-stream"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/preview/screenshot": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "image/png"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/workspaces/{workspaceId}/preview/shares": {
     "post": {
       "security": [

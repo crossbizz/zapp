@@ -1,4 +1,10 @@
-import { CheckpointKindSchema, WorkspaceStatusSchema, idSchema } from '@zapp/contracts';
+import {
+  BuilderPreviewLogsQuerySchema,
+  CheckpointKindSchema,
+  ExecutionContractSchema,
+  WorkspaceStatusSchema,
+  idSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import { OperationKeySchema } from '../orchestrator/port.js';
@@ -80,9 +86,31 @@ export interface SandboxServicePort {
   terminateWorkspace(input: z.infer<typeof TerminateWorkspaceInputSchema>): Promise<unknown>;
 }
 
+export const ReadBuilderPreviewLogsInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    after: BuilderPreviewLogsQuerySchema.shape.after,
+    limit: BuilderPreviewLogsQuerySchema.shape.limit,
+  })
+  .strict();
+
+export const RestartBuilderPreviewInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    contract: ExecutionContractSchema,
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+
+/** Narrow bridge used only by the authenticated public builder-preview routes. */
+export interface BuilderPreviewSandboxPort {
+  readDevServerLogs(input: z.infer<typeof ReadBuilderPreviewLogsInputSchema>): Promise<unknown>;
+  restartDevServer(input: z.infer<typeof RestartBuilderPreviewInputSchema>): Promise<unknown>;
+}
+
 export class SandboxServiceError extends Error {
-  constructor() {
-    super('sandbox service unavailable');
+  constructor(options?: ErrorOptions) {
+    super('sandbox service unavailable', options);
     this.name = 'SandboxServiceError';
   }
 }
@@ -94,4 +122,9 @@ export function createUnavailableSandboxService(): SandboxServicePort {
     checkpointWorkspace: unavailable,
     terminateWorkspace: unavailable,
   };
+}
+
+export function createUnavailableBuilderPreviewSandbox(): BuilderPreviewSandboxPort {
+  const unavailable = (): Promise<never> => Promise.reject(new SandboxServiceError());
+  return { readDevServerLogs: unavailable, restartDevServer: unavailable };
 }

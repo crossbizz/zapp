@@ -216,12 +216,20 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 
 #### CP-21 execution expansion (2026-08-10)
 
-- [ ] **RED — tenant-scoped logs and server-authoritative restart:** add route tests proving log cursor forwarding, cross-tenant 404, restart contract lookup/validation, stable idempotent forwarding, and typed missing-contract refusal. Run the focused suite and confirm failure because the public routes and sandbox port methods do not exist.
-- [ ] **GREEN — logs/restart boundary:** add shared Zod contracts, extend `SandboxServicePort`, implement the service-authenticated HTTP client, register the two public routes, and wire the shipping client in composition. Rerun the focused suite to green.
-- [ ] **RED — capture SSE and screenshot:** add tests proving an authenticated user receives the exact no-body capture records, downstream abort cancels the upstream request, cross-tenant reads never open the proxy, screenshot status/body are preserved including 501, and no provider/service credential reaches the response. Run and confirm the missing routes fail.
-- [ ] **GREEN — capture proxy:** register the cancellable SSE and screenshot routes on the existing `PreviewProxyPort`; preserve upstream content type/status and strip hop-by-hop/provider headers. Rerun the focused suite to green.
-- [ ] **RED/GREEN — generated SDK:** extend the API-client contract tests for all four OpenAPI operations and a real-stream `subscribePreviewEvents` helper that closes and reports malformed records. Regenerate, implement the helper, and run the client suite.
-- [ ] **Verify/review/ship:** run control-api and api-client tests plus lint/typecheck/build; run at most two Critical/Important review rounds (exit: zero Critical/Important); check CP-21 in `tasks/todo.md`, append one execution-log line, commit `feat(control-api): public builder preview bridge (ADR-0028)`, push `main`, and confirm GitHub CI/Security green. No provider run is required.
+- [x] **RED — tenant-scoped logs and server-authoritative restart:** add route tests proving log cursor forwarding, cross-tenant 404, restart contract lookup/validation, stable idempotent forwarding, and typed missing-contract refusal. Run the focused suite and confirm failure because the public routes and sandbox port methods do not exist.
+- [x] **GREEN — logs/restart boundary:** add shared Zod contracts, extend `SandboxServicePort`, implement the service-authenticated HTTP client, register the two public routes, and wire the shipping client in composition. Rerun the focused suite to green.
+- [x] **RED — capture SSE and screenshot:** add tests proving an authenticated user receives the exact no-body capture records, downstream abort cancels the upstream request, cross-tenant reads never open the proxy, screenshot status/body are preserved including 501, and no provider/service credential reaches the response. Run and confirm the missing routes fail.
+- [x] **GREEN — capture proxy:** register the cancellable SSE and screenshot routes on the existing `PreviewProxyPort`; preserve upstream content type/status and strip hop-by-hop/provider headers. Rerun the focused suite to green.
+- [x] **RED/GREEN — generated SDK:** extend the API-client contract tests for all four OpenAPI operations and a real-stream `subscribePreviewEvents` helper that closes and reports malformed records. Regenerate, implement the helper, and run the client suite.
+- [x] **Verify/review/ship:** run control-api and api-client tests plus lint/typecheck/build; run at most two Critical/Important review rounds (exit: zero Critical/Important); check CP-21 in `tasks/todo.md`, append one execution-log line, commit `feat(control-api): public builder preview bridge (ADR-0028)`, push `main`, and confirm GitHub CI/Security green. No provider run is required.
+
+#### CP-21-FIX-1 — durable screenshot operation reservation
+
+**Files:** Modify: `services/control-api/src/routes/builder-preview.ts`, `services/control-api/src/plugins/audit.ts`, `services/control-api/test/builder-preview.test.ts`, `services/control-api/test/sandbox-preview-client.test.ts`, `services/control-api/test/integration/audit.test.ts`, and existing `AuditSink` test doubles
+
+- [x] **RED/evidence:** retain CP-21 round 2's finding that writing screenshot bytes only after capture leaves an ambiguous crash window. Add a route regression where the proxy request fails after it starts, then a retry with the same public idempotency key must not invoke capture again.
+- [x] **GREEN:** reserve the tenant-prefixed artifact-store operation key atomically before capture. A completed reservation replays the original PNG; a pending/ambiguous reservation fails closed without a second capture; only an explicit upstream non-success releases the reservation. Bound stored and replayed PNGs at 10 MiB, preserve structural 501/503 responses, and retry the deterministic exactly-once completion-audit row from durable replay.
+- [x] **Verify/review/ship:** run focused and package gates and at most two fresh Critical/Important review rounds (exit zero), then close CP-21 and CP-21-FIX-1 together without any provider call.
 
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
@@ -303,3 +311,5 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-10 M1-GATE-10 done — Accept-negotiation integration probes now await bounded SSE body cancellation before connection reuse, closing the full-gate cancellation race that intermittently returned HTTP 500.
 - 2026-08-10 M1-GATE-13 done — Accept-negotiation probes now await the matching server-side subscription close after bounded client cancellation, preventing a later probe from reusing a connection while PostgreSQL replay cleanup is still active; focused 2/2, full integration 257/257, package 489/489, lint/typecheck/build green, and review PASS.
 - 2026-08-10 CP-20 done — Added typed conversation events, idempotent continuation signalling, tenant-scoped R2 image attachments with run-scoped artifact events, a 10-image/8-MiB-per-image contract, and regenerated SDK support; no model-provider call required.
+- 2026-08-10 CP-21 done — Added the tenant-scoped public logs/restart/capture/screenshot bridge and generated SDK; capped review re-scoped ambiguous screenshot replay into CP-21-FIX-1, and no provider run was required.
+- 2026-08-10 CP-21-FIX-1 done — Fenced screenshot capture with a durable conditional artifact-store reservation, bounded replay reads, retry-safe completion audits, final round-2 PASS, and no provider call.

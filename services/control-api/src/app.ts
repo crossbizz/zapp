@@ -44,7 +44,12 @@ import { registerOpenApi } from './openapi.js';
 import type { EventStreamDependencies } from './events/sse.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
-import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
+import {
+  createUnavailableBuilderPreviewSandbox,
+  createUnavailableSandboxService,
+  type BuilderPreviewSandboxPort,
+  type SandboxServicePort,
+} from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { registerInternalEventRoutes } from './internal/events.js';
 import { registerInternalModelCompletionRoutes } from './internal/model-completions.js';
@@ -92,6 +97,12 @@ import type {
   LocalAgentSessionRepository,
 } from './local-agent/port.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
+import {
+  createUnavailableBuilderPreviewScreenshotStore,
+  createUnavailableBuilderPreviewProxy,
+  registerBuilderPreviewRoutes,
+  type BuilderPreviewScreenshotStore,
+} from './routes/builder-preview.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import { registerSpecificationRoutes } from './routes/specifications.js';
 import {
@@ -168,6 +179,14 @@ export interface TenantDeps {
   /** VF-3's Temporal workspace activity client. Missing deployments fail closed. */
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  /** CP-21 authenticated bridge to the sandbox dev-server surface. */
+  readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
+  /** CP-21 capture/screenshot projection through the internal preview transport. */
+  readonly builderPreviewProxy?: PreviewRoutesDeps['proxy'];
+  /** CP-21 operation-keyed raw screenshot replay storage. */
+  readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
+  /** Test seam for periodic preview stream authorization checks. */
+  readonly builderPreviewRecheckIntervalMs?: number;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
@@ -548,6 +567,30 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
+          });
+          registerBuilderPreviewRoutes(app, {
+            sandbox:
+              tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),
+            proxy: tenant.builderPreviewProxy ?? createUnavailableBuilderPreviewProxy(),
+            screenshots:
+              tenant.builderPreviewScreenshotStore ??
+              createUnavailableBuilderPreviewScreenshotStore(),
+            publicOrigin: new URL(auth.config.appBaseUrl),
+            now,
+            revalidateAuthorization: async (context) => {
+              if (context.expiresAt.getTime() <= now().getTime()) return false;
+              if (await denylist.isDenied(context.jti, sessionFamilyKey(context.sessionId))) {
+                return false;
+              }
+              const membership = await orgs.organizations.membership(
+                context.organizationId,
+                context.userId,
+              );
+              return membership?.status === 'active';
+            },
+            ...(tenant.builderPreviewRecheckIntervalMs === undefined
+              ? {}
+              : { recheckIntervalMs: tenant.builderPreviewRecheckIntervalMs }),
           });
           if (deps.localAgent !== undefined) {
             registerLocalAgentRoutes(app, { ...deps.localAgent, now });

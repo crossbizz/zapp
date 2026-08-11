@@ -21,11 +21,15 @@ import {
 import type { GitServicePort } from '../../src/git/port.js';
 import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
-import type { SandboxServicePort } from '../../src/sandbox/port.js';
+import type {
+  BuilderPreviewSandboxPort,
+  SandboxServicePort,
+} from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
+import type { BuilderPreviewScreenshotStore } from '../../src/routes/builder-preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
 import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
@@ -237,6 +241,10 @@ export interface HarnessOptions {
   readonly orchestrator?: OrchestratorPort;
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
+  readonly builderPreviewProxy?: PreviewRoutesDeps['proxy'];
+  readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
+  readonly builderPreviewRecheckIntervalMs?: number;
   readonly releasePort?: ReleasePort;
   readonly integrationPort?: IntegrationPort;
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
@@ -307,6 +315,18 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { attachmentStorage: options.attachmentStorage }),
             capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+            ...(options.builderPreviewSandbox === undefined
+              ? {}
+              : { builderPreviewSandbox: options.builderPreviewSandbox }),
+            ...(options.builderPreviewProxy === undefined
+              ? {}
+              : { builderPreviewProxy: options.builderPreviewProxy }),
+            ...(options.builderPreviewScreenshotStore === undefined
+              ? {}
+              : { builderPreviewScreenshotStore: options.builderPreviewScreenshotStore }),
+            ...(options.builderPreviewRecheckIntervalMs === undefined
+              ? {}
+              : { builderPreviewRecheckIntervalMs: options.builderPreviewRecheckIntervalMs }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
             ...(options.integrationPort === undefined
               ? {}

@@ -41,7 +41,15 @@ or preview bearer.
    WS-10 contract and never include request or response bodies.
 4. `POST /v1/workspaces/:workspaceId/preview/screenshot` is idempotency-keyed and proxies the
    WS-10 screenshot trigger. A base image's structural `501` remains visible and is never
-   rewritten as success.
+   rewritten as success. Successful PNG bytes (bounded at WS-10's 10 MiB ceiling) are cached
+   under the derived operation key in the tenant-prefixed artifact store, so a retry returns the
+   original bytes without taking a second screenshot. The store atomically creates a pending
+   operation marker before capture: a retry after an ambiguous crash fails closed on that marker
+   instead of recapturing, while only an explicit upstream non-success releases it. Large binaries
+   do not enter the generic Redis idempotency-response cache. Completed PNG reads enforce the same
+   10 MiB limit while streaming, before allocation. The completion audit uses a deterministic audit
+   row id and is retried on a completed replay, so an audit-store failure cannot turn a durable
+   capture into a false rejection or duplicate its terminal row.
 5. The regenerated SDK adds the ordinary log/restart/screenshot operations plus
    `subscribePreviewEvents(workspaceId, handlers)`, matching the cancellation/error behavior of
    `subscribeRunEvents` without sharing cursors between the two streams.
@@ -59,4 +67,3 @@ element-selection messages; it is not a substitute for the public capture stream
   live logs, and capture records without parsing chat text.
 - WEB-11 reuses the same log operation; file/diff/test surfaces require their own contract and
   are deliberately outside this ADR.
-

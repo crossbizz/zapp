@@ -72,6 +72,10 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
             await realAudit.recordDetached(event);
             if (auditFails) throw new Error('forced CP-13 audit failure');
           },
+          async recordDetachedOnce(key, event) {
+            await realAudit.recordDetachedOnce(key, event);
+            if (auditFails) throw new Error('forced CP-13 audit failure');
+          },
         },
       },
       tenant: { tenantDb: createTenantDbFactory(database.db) },

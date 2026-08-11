@@ -26,6 +26,12 @@ const apps: AppInstance[] = [];
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
 
 interface OpenApiOperation {
+  parameters?: {
+    in?: string;
+    name?: string;
+    required?: boolean;
+    schema?: Record<string, unknown>;
+  }[];
   requestBody?: {
     required?: boolean;
     content?: Record<string, { schema?: Record<string, unknown> }>;
@@ -298,6 +304,41 @@ describe('generated API types', () => {
       });
       expect(responses?.['302']?.content).toBeUndefined();
       expect(responses?.['200']).toBeUndefined();
+    }
+  });
+
+  it('documents the complete public builder-preview bridge', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const workspace = '/v1/workspaces/{workspaceId}';
+
+    expect(paths[`${workspace}/dev-server/logs`]?.['get']?.responses?.['200']?.content).toHaveProperty(
+      'application/json',
+    );
+    expect(paths[`${workspace}/dev-server/restart`]?.['post']?.responses?.['200']?.content).toHaveProperty(
+      'application/json',
+    );
+    expect(paths[`${workspace}/preview/events`]?.['get']?.responses?.['200']?.content).toHaveProperty(
+      'text/event-stream',
+    );
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['200']?.content).toEqual({
+      'image/png': { schema: { format: 'binary', type: 'string' } },
+    });
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']).toBeDefined();
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']?.content).toBeUndefined();
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']).toBeDefined();
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']?.content).toBeUndefined();
+
+    for (const path of [
+      `${workspace}/dev-server/restart`,
+      `${workspace}/preview/screenshot`,
+    ]) {
+      expect(
+        paths[path]?.['post']?.parameters?.find(
+          (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',
+        ),
+      ).toMatchObject({ required: true });
     }
   });
 

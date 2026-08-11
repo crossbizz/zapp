@@ -105,6 +105,44 @@ async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<bool
 }
 
 describe('createZappClient', () => {
+  it('returns screenshot bytes from the ordinary generated operation and preserves 501', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const fetch = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(
+        new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 501 }));
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'preview-token',
+      fetch,
+    });
+    const options = {
+      method: 'POST' as const,
+      path: { workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+      headers: { 'idempotency-key': 'preview-screenshot-client-01' },
+    };
+
+    const screenshot = await client.request(
+      '/v1/workspaces/{workspaceId}/preview/screenshot',
+      options,
+    );
+    expect(screenshot).toMatchObject({ status: 200, contentType: 'image/png' });
+    expect(
+      new Uint8Array(await new Response(screenshot.body).arrayBuffer()),
+    ).toEqual(png);
+    await expect(
+      client.request('/v1/workspaces/{workspaceId}/preview/screenshot', {
+        ...options,
+        headers: { 'idempotency-key': 'preview-screenshot-client-02' },
+      }),
+    ).rejects.toMatchObject({ name: 'ZappApiError', status: 501 });
+  });
+
   it('streams desktop local-agent completions through the generated public operation', async () => {
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');
@@ -1732,5 +1770,86 @@ describe('subscribeRunEvents', () => {
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(fetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('subscribePreviewEvents', () => {
+  it('delivers a validated capture record from the generated workspace stream', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const capture = {
+      type: 'network',
+      payload: {
+        durationMs: 12,
+        method: 'GET',
+        status: 500,
+        transport: 'fetch',
+        url: 'https://preview.zapp.test/api/fail',
+      },
+    } as const;
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(stream([`data: ${JSON.stringify(capture)}\n\n`]), {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'preview-token',
+      fetch,
+    });
+    const delivered: unknown[] = [];
+    const subscription = client.subscribePreviewEvents(
+      'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+      {
+        onEvent(event) {
+          delivered.push(event);
+          subscription.close();
+        },
+      },
+    );
+    await subscription.closed;
+
+    expect(delivered).toEqual([capture]);
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      'https://api.zapp.test/v1/workspaces/ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC/preview/events',
+    );
+    const headers = new Headers(init?.headers);
+    expect(headers.get('accept')).toBe('text/event-stream');
+    expect(headers.get('authorization')).toBe('Bearer preview-token');
+    expect(headers.get('last-event-id')).toBeNull();
+  });
+
+  it('reports a malformed capture once and closes without reconnecting', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const errors: Error[] = [];
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(stream(['data: {"type":"network","payload":{"url":"secret body"}}\n\n']), {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 't',
+      fetch,
+    });
+    const subscription = client.subscribePreviewEvents('ws_1', {
+      onEvent() {
+        throw new Error('malformed capture must not be delivered');
+      },
+      onError(error) {
+        errors.push(error);
+      },
+    });
+    await subscription.closed;
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toMatch(/malformed SSE event/i);
+    expect(String(errors[0])).not.toContain('secret body');
   });
 });
