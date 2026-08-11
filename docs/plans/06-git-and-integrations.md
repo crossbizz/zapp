@@ -196,6 +196,15 @@ be built:
 - [x] Failing tests: connect stores credential ref only (no plaintext in `integration_connections.configuration_json` — asserted); schema read returns tables for fixture project; typegen artifact produced.
 - [x] Commit: `feat(integrations): supabase connect/provision/schema/types`
 
+### Task INT-5-FIX-1 [M4]: Deterministic GitHub import retry clock
+
+**Files:** Modify: `test/integration/github-import-retry.test.ts`
+**Effort:** XS
+
+- [x] Binding behavior: the durable GitHub import retry integration test uses one injected clock for route-side outbox enqueue and publisher eligibility, so wall-clock passage cannot make a freshly enqueued row appear to be scheduled in the future.
+- [x] Failing test: the focused PostgreSQL retry test reproduces the authoritative CI failure after wall time passes its previous fixed publisher instant, then passes with the shared injected clock.
+- [x] Commit: `test(integrations): make github import retry clock deterministic`
+
 ### Task INT-6 [M4]: Supabase migrations + RLS
 
 **Files:** Create: `src/integrations/supabase/migrations.ts`, `templates/supabase/rls/*.sql.hbs`
@@ -263,3 +272,4 @@ be built:
 - 2026-08-11 INT-3 done — bidirectional direct-push/PR sync, durable idempotent head/state recording, branch-scoped stale-base events, and conflict tasks shipped with a structurally force-free Git port and real local-reflog proof; the single capped review timed out, so bounded local review fixed cross-branch invalidation and unconfigured `manual_push` retry poisoning before exit; focused 5/5, control-api build/lint/typecheck, root lint/typecheck, and Semgrep passed; live GitHub smoke skipped because the named GitHub App credentials are unset.
 - 2026-08-11 INT-4 done — zapp-created projects now export through a deterministic provider operation, structurally force-free full-history push, exact default-head verification, and tenant/installation-scoped atomic peer-ref + sync-policy persistence with linked 409 replay; temporary memory and PostgreSQL TDD contracts passed alongside control-api build/lint/typecheck, Prettier, and Semgrep; no binding-file deviation or blocker, and live GitHub export was skipped because the named GitHub App credentials are unset.
 - 2026-08-11 INT-5 done — Supabase connect/provision/schema/typegen and agent-tool bindings now vault the management token, isolate preview/production project secrets, and keep migrations behind INT-6; one capped review corrected the current Management API provisioning payload, PostgreSQL/local suites passed, no blockers or plan deviations, and the live Supabase test skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
+- 2026-08-11 INT-5-FIX-1 done — The exact authoritative CI failure reproduced after wall time crossed the retry test's fixed publisher instant; injecting one clock into the app and publisher made the PostgreSQL retry proof deterministic, focused and package checks passed, and one capped review found no Critical/Major issue.
