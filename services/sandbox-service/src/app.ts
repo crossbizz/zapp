@@ -12,6 +12,7 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import type { Database } from '@zapp/db';
 
 import {
   createGitTokenClient,
@@ -39,6 +40,19 @@ import {
   SandboxQuotaExceededError,
   type RunawayComputeGovernor,
 } from './lifecycle/governor.js';
+import {
+  createCostRecorder,
+  type CostRecorderDependencies,
+  type SandboxPricing,
+} from './cost/recorder.js';
+import {
+  createControlPlaneUsageLedgerClient,
+  type ControlPlaneUsageLedgerClientOptions,
+} from './cost/client.js';
+import {
+  createDatabaseSnapshotMeasurementStore,
+  createProjectStorageMeasurementService,
+} from './storage/measurements.js';
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -86,6 +100,27 @@ interface BuildAppCommonOptions {
   readonly previewFailurePollIntervalMs?: number;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
+  readonly storageMeasurements?: {
+    measureProjectBytes(input: {
+      readonly organizationId: string;
+      readonly projectId: string;
+    }): Promise<unknown>;
+  };
+  readonly storageMetering?: { readonly database: Database };
+  readonly usageMetering?: {
+    readonly pricing: SandboxPricing;
+    readonly nowMs?: () => number;
+    readonly scheduler?: CostRecorderDependencies['scheduler'];
+  } & (
+    | {
+        readonly ledger: CostRecorderDependencies['ledger'];
+        readonly controlPlane?: never;
+      }
+    | {
+        readonly ledger?: never;
+        readonly controlPlane: ControlPlaneUsageLedgerClientOptions;
+      }
+  );
 }
 
 export type BuildAppOptions = BuildAppCommonOptions &
@@ -118,6 +153,40 @@ export function buildApp(options: BuildAppOptions) {
     });
   const events =
     options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
+  const storageMeasurements =
+    options.storageMeasurements ??
+    (options.storageMetering === undefined
+      ? undefined
+      : createProjectStorageMeasurementService({
+          snapshots: createDatabaseSnapshotMeasurementStore(options.storageMetering.database),
+          volumes: {
+            measureProjectVolumeBytes(input) {
+              if (options.provider.measureProjectVolumeBytes === undefined) {
+                throw new Error('workspace provider cannot measure project volume bytes');
+              }
+              return options.provider.measureProjectVolumeBytes(input);
+            },
+          },
+          now,
+        }));
+  const rawCostRecorder =
+    options.usageMetering === undefined
+      ? undefined
+      : createCostRecorder({
+          nowMs: options.usageMetering.nowMs ?? Date.now,
+          metrics: { sample: (providerWorkspaceId) => options.provider.metrics(providerWorkspaceId) },
+          ledger:
+            options.usageMetering.ledger ??
+            createControlPlaneUsageLedgerClient(options.usageMetering.controlPlane),
+          scheduler:
+            options.usageMetering.scheduler ??
+            {
+              setInterval: (callback, intervalMs) => setInterval(() => void callback(), intervalMs),
+              clearInterval: (handle) => {
+                clearInterval(handle as ReturnType<typeof setInterval>);
+              },
+            },
+        });
   const app = Fastify({
     logger: options.logger ?? false,
     requestIdHeader: false,
@@ -219,6 +288,17 @@ export function buildApp(options: BuildAppOptions) {
       ? {}
       : { previewFailurePollIntervalMs: options.previewFailurePollIntervalMs }),
     now,
+    ...(storageMeasurements === undefined
+      ? {}
+      : { storageMeasurements }),
+    ...(rawCostRecorder === undefined || options.usageMetering === undefined
+      ? {}
+      : {
+          costRecorder: {
+            start: (input: object) =>
+              rawCostRecorder.start({ ...input, pricing: options.usageMetering?.pricing }),
+          },
+        }),
   });
   const previewTransport =
     options.previewTransport ??

@@ -56,10 +56,11 @@ Master plan §Global Constraints, plus:
 ### Task OPS-2 [M2]: Metering collectors completion
 
 **Files:** Create: `services/control-api/src/usage/collectors/{storage,git}.ts`; verify gateway/sandbox emitters
+**ADR:** ADR-0030 (persisted logical snapshot bytes + read-only temporary-sandbox volume probe).
 **Effort:** M
 
-- [ ] Binding behavior (PRD §30.1 full category coverage): storage cron (daily): R2 prefix sizes per project → `artifact_storage`; snapshot/volume sizes via sandbox-service → `storage_gib_hours`; deploy-provider usage recorded per deployment (build seconds where measurable); reconciliation job (three-way): Redis run counters vs ledger sums vs Flexprice aggregates (per-category API query) — drift > 1% → alert + heal (ledger is arbiter); **every provider cost category maps to a ledger category and a Flexprice metered feature** — coverage test enumerates PRD §30.1 list against emitter registry and bootstrap output.
-- [ ] Commit: `feat(usage): full metering coverage + three-way reconciliation`
+- [x] Binding behavior (PRD §30.1 full category coverage): storage cron (daily): R2 prefix sizes per project → `artifact_storage`; snapshot/volume sizes via sandbox-service → `storage_gib_hours`; deploy-provider usage recorded per deployment (build seconds where measurable); reconciliation job (three-way): Redis run counters vs ledger sums vs Flexprice aggregates (per-category API query) — drift > 1% → alert + heal (ledger is arbiter); **every provider cost category maps to a ledger category and a Flexprice metered feature** — coverage test enumerates PRD §30.1 list against emitter registry and bootstrap output.
+- [x] Commit: `feat(usage): full metering coverage + three-way reconciliation`
 
 ### Task OPS-3 [M2]: Budgets, quotas, plan limits
 
@@ -210,6 +211,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-2 done — Full metering coverage, durable three-way reconciliation, and production call paths completed under approved ADR-0030; no remaining blockers or deviations.
 - 2026-08-11 OPS-12 CI repair follow-up done — Replaced ANSI-sensitive human-reporter matching with Vitest's JSON result contract for the 54-case tenant gate after exact-head Security proved the matrix passed but the wrapper could not parse its colored summary.
 - 2026-08-11 OPS-1B-FIX-1 done — Replaced correction row locking with a transaction-scoped advisory lock keyed by the immutable target, preserving SELECT+INSERT-only application grants and concurrent over-correction serialization; no blockers or deviations.
 - 2026-08-11 OPS-1B done — Append-only keyed ledger, exact SQS-to-Flexprice event shape, summaries, pricing, and bootstrap acceptance verified with LocalStack; `dev-up` still reports its unrelated missing `zapp-notifications` queue.

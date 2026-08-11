@@ -37,6 +37,8 @@ export {
   subscriptions,
   usageLedger,
   usageOutbox,
+  sandboxSnapshotMeasurements,
+  usageReconciliationCorrections,
   type AccountingLeaderLease,
   type ModelCompletionJournal,
   type NewSubscription,
@@ -45,6 +47,8 @@ export {
   type RunCreditCeilingAdjustment,
   type Subscription,
   type UsageOutboxEntry,
+  type SandboxSnapshotMeasurement,
+  type UsageReconciliationCorrection,
   type UsageCategory,
   type UsageLedgerEntry,
 } from './schema/billing.js';

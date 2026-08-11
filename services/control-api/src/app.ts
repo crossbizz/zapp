@@ -56,6 +56,7 @@ import { registerInternalModelCompletionRoutes } from './internal/model-completi
 import { registerInternalUsageRoutes } from './internal/usage.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import type { UsageLedgerRepository } from './usage/ledger.js';
+import type { DeploymentUsagePort } from './usage/collectors/git.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -204,6 +205,7 @@ export interface TenantDeps {
   readonly fork?: ForkActivity;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
+  readonly deploymentUsage?: DeploymentUsagePort;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
@@ -647,6 +649,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           }
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
+            now,
+            ...(tenant.deploymentUsage === undefined
+              ? {}
+              : { deploymentUsage: tenant.deploymentUsage }),
             permissionContextFor: async (organizationId) =>
               (await orgs.organizations.getSettings(organizationId)) ?? {},
           });

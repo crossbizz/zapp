@@ -7,7 +7,10 @@ import {
   type BuilderPreviewS3Command,
   type BuilderPreviewS3CommandSender,
 } from '../src/routes/builder-preview.js';
-import { createBuilderPreviewSandboxClient } from '../src/sandbox/client.js';
+import {
+  createBuilderPreviewSandboxClient,
+  createSandboxStorageMeasurementClient,
+} from '../src/sandbox/client.js';
 import type { SandboxWorkspace } from '../src/sandbox/port.js';
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
@@ -89,6 +92,32 @@ async function* byteStream(chunks: readonly Buffer[]): AsyncGenerator<Uint8Array
 }
 
 describe('builder preview sandbox client', () => {
+  it('reads project storage through the authenticated sandbox-service boundary', async () => {
+    const requests: Array<{ input: string; init: RequestInit }> = [];
+    const client = createSandboxStorageMeasurementClient({
+      baseUrl: 'http://sandbox.internal/',
+      serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+      fetch: (input, init) => {
+        requests.push({ input, init });
+        return Promise.resolve(Response.json({ snapshotBytes: '13', volumeBytes: '17' }));
+      },
+    });
+
+    await expect(
+      client.measureProjectBytes({
+        organizationId: workspace.organizationId,
+        projectId: workspace.projectId,
+      }),
+    ).resolves.toEqual({ snapshotBytes: '13', volumeBytes: '17' });
+    expect(requests[0]?.input).toBe(
+      `http://sandbox.internal/internal/projects/${workspace.projectId}/storage-measurement`,
+    );
+    const headers = new Headers(requests[0]?.init.headers);
+    expect(headers.get('x-zapp-service-token')).toMatch(/^ey/u);
+    expect(headers.get('x-zapp-organization-id')).toBe(workspace.organizationId);
+    expect(headers.get('x-zapp-project-id')).toBe(workspace.projectId);
+  });
+
   it('authenticates and scopes the bounded log request', async () => {
     const requests: Array<{ input: string; init: RequestInit }> = [];
     const client = createBuilderPreviewSandboxClient({

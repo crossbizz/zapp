@@ -56,6 +56,28 @@ const production = vi.hoisted(() => {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const usageReconciliationSource = {
+    scopes: { kind: 'usage-reconciliation-scopes' },
+    ledger: { kind: 'usage-reconciliation-ledger' },
+  };
+  const usageRunCounter = { kind: 'usage-run-counter' };
+  const flexpriceUsageAggregate = { kind: 'flexprice-usage-aggregate' };
+  const threeWayUsageReconciler = { kind: 'three-way-usage-reconciler' };
+  const usageReconciliationLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const usageCounter = { kind: 'usage-ledger-counter' };
+  const usageDelivery = { kind: 'usage-delivery' };
+  const usageCorrections = { kind: 'usage-corrections' };
+  const usageCoordinator = { kind: 'usage-coordinator' };
+  const coordinatedReconciler = { kind: 'coordinated-reconciler' };
+  const storageLedger = { kind: 'storage-ledger' };
+  const dailyStorageCollector = { collect: vi.fn(() => Promise.resolve({ projects: 0, recorded: 0 })) };
+  const dailyStorageLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
   const preview = {
     signingKey: Buffer.alloc(32, 0x44),
     keyVersion: 1,
@@ -115,6 +137,19 @@ const production = vi.hoisted(() => {
     flexprice,
     accountingReconciler,
     accountingReconcilerLifecycle,
+    usageReconciliationSource,
+    usageRunCounter,
+    flexpriceUsageAggregate,
+    threeWayUsageReconciler,
+    usageReconciliationLifecycle,
+    usageCounter,
+    usageDelivery,
+    usageCorrections,
+    usageCoordinator,
+    coordinatedReconciler,
+    storageLedger,
+    dailyStorageCollector,
+    dailyStorageLifecycle,
     preview,
     artifactStorage,
     github,
@@ -164,9 +199,26 @@ const production = vi.hoisted(() => {
     createUsageEventConsumerLifecycle: vi.fn(() => usageConsumerLifecycle),
     createUsageOutboxPublisher: vi.fn(() => usageOutboxPublisher),
     createUsageOutboxPublisherLifecycle: vi.fn(() => usagePublisherLifecycle),
+    createRedisUsageLedgerCounter: vi.fn(() => usageCounter),
+    createDatabaseUsageOutboxDeliveryPort: vi.fn(() => usageDelivery),
     createAccountingReconciler: vi.fn(() => accountingReconciler),
     createAccountingReconcilerLifecycle: vi.fn(() => accountingReconcilerLifecycle),
     createRedisCreditMirror: vi.fn(() => ({ kind: 'credit-mirror' })),
+    createDatabaseUsageReconciliationSource: vi.fn(() => usageReconciliationSource),
+    createRedisUsageRunCounter: vi.fn(() => usageRunCounter),
+    createFlexpriceUsageAggregateClient: vi.fn(() => flexpriceUsageAggregate),
+    createThreeWayUsageReconciler: vi.fn(() => threeWayUsageReconciler),
+    createUsageReconciliationLifecycle: vi.fn(() => usageReconciliationLifecycle),
+    createDatabaseUsageCorrectionJournal: vi.fn(() => usageCorrections),
+    createDatabaseUsageReconciliationCoordinator: vi.fn(() => usageCoordinator),
+    createCoordinatedUsageReconciliationJob: vi.fn(() => coordinatedReconciler),
+    createUsageLedgerRepository: vi.fn(() => storageLedger),
+    createDailyStorageCollector: vi.fn(() => dailyStorageCollector),
+    createDailyStorageCollectorLifecycle: vi.fn(() => dailyStorageLifecycle),
+    createDatabaseDailyStorageClaim: vi.fn(() => ({ kind: 'storage-claim' })),
+    createDatabaseMeteredProjectPort: vi.fn(() => ({ kind: 'metered-projects' })),
+    createR2ArtifactStorageMeasurement: vi.fn(() => ({ kind: 'r2-measurement' })),
+    createSandboxStorageMeasurementClient: vi.fn(() => ({ kind: 'sandbox-measurement' })),
     createGitHubProvider: vi.fn(() => githubProvider),
     createDbGitHubWebhookStore: vi.fn(() => ({ kind: 'github-webhook-store' })),
     createSqsGitHubWebhookQueue: vi.fn(() => githubWebhookQueue),
@@ -296,17 +348,41 @@ vi.mock('../src/server-bootstrap.js', () => ({
   bootstrapControlApiServer: production.bootstrapControlApiServer,
 }));
 vi.mock('../src/usage/outbox.js', () => ({
+  createDatabaseUsageOutboxDeliveryPort: production.createDatabaseUsageOutboxDeliveryPort,
   createFlexpriceIngestClient: production.createFlexpriceIngestClient,
   createSqsUsageQueue: production.createSqsUsageQueue,
   createUsageEventConsumer: production.createUsageEventConsumer,
   createUsageEventConsumerLifecycle: production.createUsageEventConsumerLifecycle,
   createUsageOutboxPublisher: production.createUsageOutboxPublisher,
   createUsageOutboxPublisherLifecycle: production.createUsageOutboxPublisherLifecycle,
+  createRedisUsageLedgerCounter: production.createRedisUsageLedgerCounter,
 }));
 vi.mock('../src/usage/reconciliation.js', () => ({
   createAccountingReconciler: production.createAccountingReconciler,
   createAccountingReconcilerLifecycle: production.createAccountingReconcilerLifecycle,
+  createDatabaseUsageReconciliationSource: production.createDatabaseUsageReconciliationSource,
+  createFlexpriceUsageAggregateClient: production.createFlexpriceUsageAggregateClient,
   createRedisCreditMirror: production.createRedisCreditMirror,
+  createRedisUsageRunCounter: production.createRedisUsageRunCounter,
+  createThreeWayUsageReconciler: production.createThreeWayUsageReconciler,
+  createUsageReconciliationLifecycle: production.createUsageReconciliationLifecycle,
+  createDatabaseUsageCorrectionJournal: production.createDatabaseUsageCorrectionJournal,
+  createDatabaseUsageReconciliationCoordinator:
+    production.createDatabaseUsageReconciliationCoordinator,
+  createCoordinatedUsageReconciliationJob: production.createCoordinatedUsageReconciliationJob,
+}));
+vi.mock('../src/usage/ledger.js', () => ({
+  createUsageLedgerRepository: production.createUsageLedgerRepository,
+}));
+vi.mock('../src/usage/collectors/storage.js', () => ({
+  createDailyStorageCollector: production.createDailyStorageCollector,
+  createDailyStorageCollectorLifecycle: production.createDailyStorageCollectorLifecycle,
+  createDatabaseDailyStorageClaim: production.createDatabaseDailyStorageClaim,
+  createDatabaseMeteredProjectPort: production.createDatabaseMeteredProjectPort,
+  createR2ArtifactStorageMeasurement: production.createR2ArtifactStorageMeasurement,
+}));
+vi.mock('../src/sandbox/client.js', () => ({
+  createSandboxStorageMeasurementClient: production.createSandboxStorageMeasurementClient,
 }));
 
 describe('control-api production entrypoint', () => {
@@ -371,22 +447,49 @@ describe('control-api production entrypoint', () => {
     expect(bootstrapInput?.eventPublisherLifecycle).toBe(production.eventPublisherLifecycle);
     expect(bootstrapInput?.usageOutboxLifecycle?.start).toBeTypeOf('function');
     expect(bootstrapInput?.usageOutboxLifecycle?.close).toBeTypeOf('function');
-    expect(production.createFlexpriceIngestClient).toHaveBeenCalledOnce();
-    expect(production.createUsageEventConsumer).toHaveBeenCalledWith(production.flexprice);
+    expect(production.createFlexpriceIngestClient).toHaveBeenCalledTimes(2);
+    expect(production.createUsageEventConsumer).toHaveBeenCalledWith(
+      production.flexprice,
+      production.usageDelivery,
+    );
     expect(production.createUsageEventConsumerLifecycle).toHaveBeenCalledWith(
       expect.objectContaining({
         queue: production.usageQueue,
         consumer: production.usageConsumer,
       }),
     );
+    expect(production.createDatabaseUsageReconciliationSource).toHaveBeenCalledWith(
+      production.database.db,
+    );
+    expect(production.createRedisUsageRunCounter).toHaveBeenCalledWith(production.redis);
+    expect(production.createFlexpriceUsageAggregateClient).toHaveBeenCalledOnce();
+    expect(production.createThreeWayUsageReconciler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: production.usageReconciliationSource.scopes,
+        ledger: production.usageReconciliationSource.ledger,
+        redis: production.usageRunCounter,
+        flexprice: production.flexpriceUsageAggregate,
+        corrections: production.usageCorrections,
+      }),
+    );
+    expect(production.createUsageReconciliationLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ reconciler: production.coordinatedReconciler }),
+    );
+    expect(production.createDailyStorageCollectorLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ collector: production.dailyStorageCollector }),
+    );
 
     await bootstrapInput?.usageOutboxLifecycle?.start();
     expect(production.accountingReconcilerLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.dailyStorageLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.usageReconciliationLifecycle.start).toHaveBeenCalledOnce();
     expect(production.usagePublisherLifecycle.start).toHaveBeenCalledOnce();
     expect(production.usageConsumerLifecycle.start).toHaveBeenCalledOnce();
     await bootstrapInput?.usageOutboxLifecycle?.close();
     expect(production.usageConsumerLifecycle.close).toHaveBeenCalledOnce();
     expect(production.usagePublisherLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.usageReconciliationLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.dailyStorageLifecycle.close).toHaveBeenCalledOnce();
     expect(production.accountingReconcilerLifecycle.close).toHaveBeenCalledOnce();
     expect(production.usageQueue.close).toHaveBeenCalledOnce();
 

@@ -31,6 +31,8 @@ import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
 import {
   createFlexpriceIngestClient,
+  createDatabaseUsageOutboxDeliveryPort,
+  createRedisUsageLedgerCounter,
   createSqsUsageQueue,
   createUsageEventConsumer,
   createUsageEventConsumerLifecycle,
@@ -40,7 +42,15 @@ import {
 import {
   createAccountingReconciler,
   createAccountingReconcilerLifecycle,
+  createDatabaseUsageReconciliationSource,
+  createDatabaseUsageCorrectionJournal,
+  createDatabaseUsageReconciliationCoordinator,
+  createCoordinatedUsageReconciliationJob,
+  createFlexpriceUsageAggregateClient,
   createRedisCreditMirror,
+  createRedisUsageRunCounter,
+  createThreeWayUsageReconciler,
+  createUsageReconciliationLifecycle,
 } from './usage/reconciliation.js';
 import {
   createGitHubWebhookPublisher,
@@ -59,6 +69,15 @@ import {
 import { createDbGitHubImportWorkerStore } from './integrations/github/import-store.js';
 import { createTenantDbFactory } from './tenant/db.js';
 import { createTemporalCapabilityScanPort } from './orchestrator/capability-scan.js';
+import { createSandboxStorageMeasurementClient } from './sandbox/client.js';
+import { createUsageLedgerRepository } from './usage/ledger.js';
+import {
+  createDailyStorageCollector,
+  createDailyStorageCollectorLifecycle,
+  createDatabaseDailyStorageClaim,
+  createDatabaseMeteredProjectPort,
+  createR2ArtifactStorageMeasurement,
+} from './usage/collectors/storage.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -181,10 +200,32 @@ const eventPublisherLifecycle = createEventPublisherLifecycle({
   redis,
 });
 const usageQueue = createSqsUsageQueue(usageQueueConfig);
+const usageCounter = createRedisUsageLedgerCounter(redis);
+const storageLedger = createUsageLedgerRepository({ database: database.db });
+const dailyStorageLifecycle = createDailyStorageCollectorLifecycle({
+  collector: createDailyStorageCollector({
+    projects: createDatabaseMeteredProjectPort(database.db),
+    artifactStorage: createR2ArtifactStorageMeasurement(artifactStorage),
+    sandboxStorage: createSandboxStorageMeasurementClient({
+      baseUrl: preview.sandboxServiceUrl,
+      serviceTokens,
+    }),
+    claims: createDatabaseDailyStorageClaim({
+      database: database.db,
+      owner: `control-api-${randomUUID()}`,
+    }),
+    ledger: storageLedger,
+    pricing,
+  }),
+  onError: (error) => {
+    app.log.error({ err: error }, 'daily storage metering failed');
+  },
+});
 const usagePublisherLifecycle = createUsageOutboxPublisherLifecycle({
   publisher: createUsageOutboxPublisher({
     database: database.db,
     queue: usageQueue,
+    counter: usageCounter,
     onError: (error) => {
       app.log.error({ err: error }, 'usage outbox publish failed');
     },
@@ -200,7 +241,10 @@ const usageConsumerLifecycle =
     ? undefined
     : createUsageEventConsumerLifecycle({
         queue: usageQueue,
-        consumer: createUsageEventConsumer(createFlexpriceIngestClient(flexpriceConfig)),
+        consumer: createUsageEventConsumer(
+          createFlexpriceIngestClient(flexpriceConfig),
+          createDatabaseUsageOutboxDeliveryPort(database.db),
+        ),
         batchSize: 10,
         waitTimeSeconds: 10,
         visibilityTimeoutSeconds: 30,
@@ -221,13 +265,56 @@ const accountingReconcilerLifecycle = createAccountingReconcilerLifecycle({
     app.log.error({ err: error }, 'run credit reconciliation failed');
   },
 });
+const usageReconciliationLifecycle =
+  flexpriceConfig === undefined
+    ? undefined
+    : (() => {
+        const source = createDatabaseUsageReconciliationSource(database.db);
+        const ingest = createFlexpriceIngestClient(flexpriceConfig);
+        const reconciler = createThreeWayUsageReconciler({
+          scopes: source.scopes,
+          ledger: source.ledger,
+          redis: createRedisUsageRunCounter(redis),
+          flexprice: createFlexpriceUsageAggregateClient(flexpriceConfig),
+          corrections: createDatabaseUsageCorrectionJournal({
+            database: database.db,
+            ingest,
+          }),
+          alerts: {
+            driftDetected(input) {
+              app.log.error({ usageDrift: input }, 'usage reconciliation drift detected');
+              return Promise.resolve();
+            },
+            driftHealed(input) {
+              app.log.info({ usageDrift: input }, 'usage reconciliation drift healed');
+              return Promise.resolve();
+            },
+          },
+        });
+        return createUsageReconciliationLifecycle({
+          reconciler: createCoordinatedUsageReconciliationJob({
+            coordinator: createDatabaseUsageReconciliationCoordinator({
+              database: database.db,
+              owner: `control-api-${randomUUID()}`,
+            }),
+            reconciler,
+          }),
+          onError: (error) => {
+            app.log.error({ err: error }, 'three-way usage reconciliation failed');
+          },
+        });
+      })();
 const usageOutboxLifecycle = {
   async start() {
     await accountingReconcilerLifecycle.start();
+    await dailyStorageLifecycle.start();
     await usagePublisherLifecycle.start();
     await usageConsumerLifecycle?.start();
+    await usageReconciliationLifecycle?.start();
   },
   async close() {
+    await usageReconciliationLifecycle?.close();
+    await dailyStorageLifecycle.close();
     await usageConsumerLifecycle?.close();
     await usagePublisherLifecycle.close();
     await accountingReconcilerLifecycle.close();

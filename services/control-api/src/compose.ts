@@ -37,6 +37,7 @@ import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
 import { createUsageLedgerRepository } from './usage/ledger.js';
+import { createDeploymentUsageCollector } from './usage/collectors/git.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
@@ -127,6 +128,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
    * by hex ids and `sid:`, service tokens by `svc:` (`serviceTokenKey`).
    */
   const denylist = createRedisTokenDenylist(redis);
+  const usageLedger = createUsageLedgerRepository({ database });
 
   return buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -151,6 +153,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       tenantDb: createTenantDbFactory(database),
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,
+      deploymentUsage: createDeploymentUsageCollector({
+        ledger: usageLedger,
+        pricing: runtime.pricing,
+      }),
       ...(runtime.eventWakeups === undefined
         ? {}
         : { eventStream: { wakeups: runtime.eventWakeups } }),
@@ -212,7 +218,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       database,
       mirror: createRedisCreditMirror(redis),
     }),
-    usageLedger: createUsageLedgerRepository({ database }),
+    usageLedger,
     localAgent: {
       sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
       gateway: createModelGatewayLocalAgentClient({

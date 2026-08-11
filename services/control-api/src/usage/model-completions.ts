@@ -32,6 +32,12 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { loadPricingConfig, priceTokenUsage, worstCaseReservation } from './pricing.js';
 import type { CreditMirror } from './reconciliation.js';
 
+export const MODEL_COMPLETION_USAGE_CATEGORIES = [
+  'model_input_tokens',
+  'model_output_tokens',
+  'model_cached_tokens',
+] as const;
+
 export class CompletionConflictError extends Error {
   public constructor() {
     super('completion identity conflicts with the durable journal');
@@ -241,10 +247,20 @@ export function createModelCompletionRepository(
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
           });
           const parts = [
-            ['input', 'model_input_tokens', 'input_tokens', priced.input],
-            ['output', 'model_output_tokens', 'output_tokens', priced.output],
-            ['cache-read', 'model_cached_tokens', 'cache_read_input_tokens', priced.cacheRead],
-            ['cache-write', 'model_cached_tokens', 'cache_write_input_tokens', priced.cacheWrite],
+            ['input', MODEL_COMPLETION_USAGE_CATEGORIES[0], 'input_tokens', priced.input],
+            ['output', MODEL_COMPLETION_USAGE_CATEGORIES[1], 'output_tokens', priced.output],
+            [
+              'cache-read',
+              MODEL_COMPLETION_USAGE_CATEGORIES[2],
+              'cache_read_input_tokens',
+              priced.cacheRead,
+            ],
+            [
+              'cache-write',
+              MODEL_COMPLETION_USAGE_CATEGORIES[2],
+              'cache_write_input_tokens',
+              priced.cacheWrite,
+            ],
           ] as const;
           for (const [kind, category, unit, part] of parts) {
             const ledgerRowId = deterministicId('usage', input.completionId, attemptIndex, kind);

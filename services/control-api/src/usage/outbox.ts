@@ -1,5 +1,5 @@
 import { idSchema } from '@zapp/contracts';
-import { usageOutbox, type Database } from '@zapp/db';
+import { usageLedger, usageOutbox, type Database, type UsageCategory } from '@zapp/db';
 import {
   DeleteMessageCommand,
   GetQueueUrlCommand,
@@ -11,6 +11,7 @@ import { and, asc, eq, lte } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { UsageQueueEnv } from '../env.js';
+import type { RedisCommands } from '../redis/client.js';
 
 export const FlexpriceUsageEventSchema = z
   .object({
@@ -26,6 +27,10 @@ export const FlexpriceUsageEventSchema = z
         quantity: z.number().finite(),
         unit: z.string().min(1),
         provider: z.string().min(1).nullable(),
+        build_seconds: z
+          .string()
+          .regex(/^\d+(?:\.\d{1,6})?$/u)
+          .optional(),
       })
       .strict(),
   })
@@ -123,6 +128,47 @@ export interface UsageOutboxPublisherOptions {
   readonly queue: UsageQueuePublisherPort;
   readonly now?: () => Date;
   readonly onError?: (error: Error) => void;
+  readonly counter?: UsageLedgerCounterPort;
+}
+
+export interface UsageLedgerCounterPort {
+  apply(input: {
+    readonly ledgerRowId: string;
+    readonly projectId: string | null;
+    readonly runId: string | null;
+    readonly taskId: string | null;
+    readonly category: UsageCategory;
+    readonly quantity: string;
+  }): Promise<void>;
+}
+
+const APPLY_RUN_COUNTER = `
+local inserted = redis.call('SET', KEYS[1], '1', 'PX', ARGV[2], 'NX')
+if inserted then
+  local total = redis.call('INCRBYFLOAT', KEYS[2], ARGV[1])
+  redis.call('PEXPIRE', KEYS[2], ARGV[2])
+  return total
+end
+return redis.call('GET', KEYS[2])
+`;
+
+export function createRedisUsageLedgerCounter(
+  redis: RedisCommands,
+  ttlMs = 90 * 86_400_000,
+): UsageLedgerCounterPort {
+  return {
+    async apply(input) {
+      if (input.runId === null) return;
+      await redis.eval(
+        APPLY_RUN_COUNTER,
+        [
+          `usage-ledger:${input.ledgerRowId}:run-counter`,
+          usageCounterKey(input, input.category),
+        ],
+        [input.quantity, Math.max(1, Math.ceil(ttlMs))],
+      );
+    },
+  };
 }
 
 export function createUsageOutboxPublisher(options: UsageOutboxPublisherOptions) {
@@ -143,6 +189,28 @@ export function createUsageOutboxPublisher(options: UsageOutboxPublisherOptions)
         for (const row of rows) {
           try {
             const event = FlexpriceUsageEventSchema.parse(row.eventJson);
+            if (options.counter !== undefined) {
+              const [ledgerRow] = await tx
+                .select({
+                  id: usageLedger.id,
+                  projectId: usageLedger.projectId,
+                  runId: usageLedger.runId,
+                  taskId: usageLedger.taskId,
+                  category: usageLedger.category,
+                  quantity: usageLedger.quantity,
+                })
+                .from(usageLedger)
+                .where(eq(usageLedger.id, row.ledgerRowId));
+              if (ledgerRow === undefined) throw new Error('usage outbox ledger row is missing');
+              await options.counter.apply({
+                ledgerRowId: ledgerRow.id,
+                projectId: ledgerRow.projectId,
+                runId: ledgerRow.runId,
+                taskId: ledgerRow.taskId,
+                category: ledgerRow.category,
+                quantity: ledgerRow.quantity,
+              });
+            }
             await options.queue.send(
               JSON.stringify(UsageQueueMessageSchema.parse({ outboxId: row.id, event })),
             );
@@ -172,6 +240,14 @@ export function createUsageOutboxPublisher(options: UsageOutboxPublisherOptions)
       });
     },
   };
+}
+
+function usageCounterKey(
+  scope: { readonly projectId: string | null; readonly runId: string | null; readonly taskId: string | null },
+  category: UsageCategory,
+): string {
+  if (scope.runId === null) throw new Error('run usage counter requires run attribution');
+  return `run:${scope.runId}:project:${scope.projectId ?? 'none'}:task:${scope.taskId ?? 'none'}:usage:${category}`;
 }
 
 interface UsageOutboxBatchPublisher {
@@ -250,6 +326,34 @@ export interface FlexpriceIngestPort {
   ingest(event: FlexpriceUsageEvent): Promise<void>;
 }
 
+export interface UsageOutboxDeliveryPort {
+  markDelivered(outboxId: string): Promise<void>;
+}
+
+export function createDatabaseUsageOutboxDeliveryPort(
+  database: Database,
+  now: () => Date = () => new Date(),
+): UsageOutboxDeliveryPort {
+  return {
+    async markDelivered(outboxId) {
+      const [delivered] = await database
+        .update(usageOutbox)
+        .set({ status: 'delivered', deliveredAt: now() })
+        .where(and(eq(usageOutbox.id, outboxId), eq(usageOutbox.status, 'published')))
+        .returning({ id: usageOutbox.id });
+      if (delivered === undefined) {
+        const [existing] = await database
+          .select({ status: usageOutbox.status })
+          .from(usageOutbox)
+          .where(eq(usageOutbox.id, outboxId));
+        if (existing?.status !== 'delivered') {
+          throw new Error('usage outbox delivery does not reference a published row');
+        }
+      }
+    },
+  };
+}
+
 export function createFlexpriceIngestClient(options: {
   readonly baseUrl: string;
   readonly apiKey: string;
@@ -275,11 +379,15 @@ export function createFlexpriceIngestClient(options: {
   };
 }
 
-export function createUsageEventConsumer(flexprice: FlexpriceIngestPort) {
+export function createUsageEventConsumer(
+  flexprice: FlexpriceIngestPort,
+  delivery?: UsageOutboxDeliveryPort,
+) {
   return {
     async consume(body: string): Promise<void> {
       const message = UsageQueueMessageSchema.parse(JSON.parse(body) as unknown);
       await flexprice.ingest(message.event);
+      await delivery?.markDelivered(message.outboxId);
     },
   };
 }

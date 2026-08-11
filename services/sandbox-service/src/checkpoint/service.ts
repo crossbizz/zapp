@@ -39,6 +39,7 @@ const ArtifactRefSchema = z
 const SnapshotRefSchema = z
   .object({
     providerSnapshotId: z.string().min(1),
+    logicalBytes: z.string().regex(/^\d+$/u),
     expiresAt: z.string().datetime(),
   })
   .strict();
@@ -138,7 +139,7 @@ export interface CheckpointServiceDependencies {
       projectId: string;
       branchId: string;
       ttlMs: number;
-    }): Promise<{ providerSnapshotId: string }>;
+    }): Promise<{ providerSnapshotId: string; logicalBytes: string }>;
     restore(input: {
       providerSnapshotId: string;
       targetWorkspaceId: string;
@@ -146,6 +147,15 @@ export interface CheckpointServiceDependencies {
       projectId: string;
       branchId: string;
     }): Promise<boolean>;
+  };
+  snapshotMeasurements: {
+    record(input: {
+      readonly providerSnapshotId: string;
+      readonly organizationId: string;
+      readonly projectId: string;
+      readonly logicalBytes: string;
+      readonly expiresAt: string;
+    }): Promise<void>;
   };
   records: {
     findByOperationKey(input: {
@@ -347,6 +357,15 @@ export function createCheckpointService(dependencies: CheckpointServiceDependenc
           });
         } catch {
           snapshot = null;
+        }
+        if (snapshot !== null) {
+          await dependencies.snapshotMeasurements.record({
+            providerSnapshotId: snapshot.providerSnapshotId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            logicalBytes: snapshot.logicalBytes,
+            expiresAt: snapshot.expiresAt,
+          });
         }
       }
       const record = CheckpointRecordSchema.parse({

@@ -51,6 +51,7 @@ const MetricsResponseSchema = z
 const StartCostRecordingSchema = z
   .object({
     workspaceId: idSchema('ws'),
+    providerWorkspaceId: z.string().min(1).optional(),
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
     runId: idSchema('run'),
@@ -61,10 +62,12 @@ const StartCostRecordingSchema = z
   })
   .strict();
 
-const UsageCategorySchema = z.enum([
+export const SANDBOX_USAGE_CATEGORIES = [
   'sandbox_cpu_seconds',
   'sandbox_mem_gib_seconds',
-]);
+] as const;
+
+const UsageCategorySchema = z.enum(SANDBOX_USAGE_CATEGORIES);
 
 export const UsageLedgerRowSchema = z
   .object({
@@ -114,7 +117,7 @@ export function createCostRecorder(dependencies: CostRecorderDependencies) {
       const input = StartCostRecordingSchema.parse(inputValue);
       const profile = getResourceProfile(input.profile);
       const baseline = MetricsResponseSchema.parse(
-        await dependencies.metrics.sample(input.workspaceId),
+        await dependencies.metrics.sample(input.providerWorkspaceId ?? input.workspaceId),
       );
 
       let previousAtMs = dependencies.nowMs();
@@ -128,7 +131,7 @@ export function createCostRecorder(dependencies: CostRecorderDependencies) {
 
       const sample = async () => {
         const current = MetricsResponseSchema.parse(
-          await dependencies.metrics.sample(input.workspaceId),
+          await dependencies.metrics.sample(input.providerWorkspaceId ?? input.workspaceId),
         );
         const currentAtMs = dependencies.nowMs();
         const durationSeconds = Math.max(0, currentAtMs - previousAtMs) / 1000;

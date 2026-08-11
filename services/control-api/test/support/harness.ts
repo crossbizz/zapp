@@ -29,6 +29,7 @@ import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
 import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
 import type { UsageLedgerRepository } from '../../src/usage/ledger.js';
+import type { DeploymentUsagePort } from '../../src/usage/collectors/git.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
@@ -245,6 +246,7 @@ export interface HarnessOptions {
   readonly builderPreviewRecheckIntervalMs?: number;
   readonly fork?: ForkActivity;
   readonly releasePort?: ReleasePort;
+  readonly deploymentUsage?: DeploymentUsagePort;
   readonly integrationPort?: IntegrationPort;
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   /**
@@ -329,6 +331,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { builderPreviewRecheckIntervalMs: options.builderPreviewRecheckIntervalMs }),
             ...(options.fork === undefined ? {} : { fork: options.fork }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
+            ...(options.deploymentUsage === undefined
+              ? {}
+              : { deploymentUsage: options.deploymentUsage }),
             ...(options.integrationPort === undefined
               ? {}
               : { integrationPort: options.integrationPort }),

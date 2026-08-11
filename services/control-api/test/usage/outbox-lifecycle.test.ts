@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createFlexpriceIngestClient,
+  createRedisUsageLedgerCounter,
   createUsageEventConsumer,
   createUsageEventConsumerLifecycle,
   createUsageOutboxPublisherLifecycle,
@@ -169,6 +170,7 @@ describe('OPS-1A production usage outbox lifecycle', () => {
     const failedEvent = { ...event, event_id: 'usage_event_failed' };
     const failedBody = JSON.stringify({ outboxId: 'outbox_2', event: failedEvent });
     const deleted: string[] = [];
+    const delivered: string[] = [];
     const failures: Error[] = [];
     const scheduled: (() => void)[] = [];
     const lifecycle = createUsageEventConsumerLifecycle({
@@ -183,12 +185,20 @@ describe('OPS-1A production usage outbox lifecycle', () => {
           return Promise.resolve();
         },
       },
-      consumer: createUsageEventConsumer({
-        ingest: (received) =>
-          received.event_id === failedEvent.event_id
-            ? Promise.reject(new Error('Flexprice unavailable'))
-            : Promise.resolve(),
-      }),
+      consumer: createUsageEventConsumer(
+        {
+          ingest: (received) =>
+            received.event_id === failedEvent.event_id
+              ? Promise.reject(new Error('Flexprice unavailable'))
+              : Promise.resolve(),
+        },
+        {
+          markDelivered(outboxId) {
+            delivered.push(outboxId);
+            return Promise.resolve();
+          },
+        },
+      ),
       batchSize: 10,
       waitTimeSeconds: 10,
       visibilityTimeoutSeconds: 30,
@@ -209,8 +219,50 @@ describe('OPS-1A production usage outbox lifecycle', () => {
 
     await lifecycle.start();
     expect(deleted).toEqual(['receipt-good']);
+    expect(delivered).toEqual(['outbox_1']);
     expect(failures.map((failure) => failure.message)).toEqual(['Flexprice unavailable']);
     expect(scheduled).toHaveLength(1);
     await lifecycle.close();
+  });
+
+  it('increments a run category once per committed ledger row with one atomic Redis script', async () => {
+    const calls: { keys: readonly string[]; args: readonly (string | number)[]; script: string }[] = [];
+    const values = new Map<string, number>();
+    const counter = createRedisUsageLedgerCounter({
+      get: () => Promise.resolve(null),
+      set: () => Promise.resolve(),
+      setIfAbsent: () => Promise.resolve(false),
+      exists: () => Promise.resolve(false),
+      delete: () => Promise.resolve(),
+      eval(script, keys, args) {
+        calls.push({ script, keys, args });
+        const marker = keys[0] ?? '';
+        if (values.has(marker)) return Promise.resolve(values.get(keys[1] ?? '') ?? 0);
+        values.set(marker, 1);
+        const totalKey = keys[1] ?? '';
+        values.set(totalKey, (values.get(totalKey) ?? 0) + Number(args[0]));
+        return Promise.resolve(values.get(totalKey));
+      },
+    });
+
+    const input = {
+      ledgerRowId: 'usage_01KZKACDW6WB86DS296R83J2BD',
+      projectId: event.properties.project_id,
+      runId: event.properties.run_id,
+      taskId: event.properties.task_id,
+      category: 'model_input_tokens' as const,
+      quantity: '2.500000',
+    };
+    await counter.apply(input);
+    await counter.apply(input);
+
+    const totalKey = `run:${event.properties.run_id}:project:${event.properties.project_id}:task:none:usage:model_input_tokens`;
+    expect(values.get(totalKey)).toBe(2.5);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.keys).toEqual([
+      `usage-ledger:${input.ledgerRowId}:run-counter`,
+      totalKey,
+    ]);
+    expect(calls[0]?.script).toContain("redis.call('SET', KEYS[1], '1', 'PX', ARGV[2], 'NX')");
   });
 });

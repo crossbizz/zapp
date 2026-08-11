@@ -3,14 +3,20 @@ import { fileURLToPath } from 'node:url';
 
 import { newId } from '@zapp/contracts';
 import { createDb, type Db } from '@zapp/db';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createUsageEventConsumer,
   createUsageEventConsumerLifecycle,
   createUsageOutboxPublisher,
+  createDatabaseUsageOutboxDeliveryPort,
 } from '../../src/usage/outbox.js';
 import { createUsageLedgerRepository, type UsageEntry } from '../../src/usage/ledger.js';
+import {
+  createDatabaseUsageCorrectionJournal,
+  createDatabaseUsageReconciliationSource,
+} from '../../src/usage/reconciliation.js';
+import { createDatabaseDailyStorageClaim } from '../../src/usage/collectors/storage.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 const APPEND_ONLY_GRANT_MIGRATION = fileURLToPath(
@@ -381,12 +387,17 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
           return Promise.resolve();
         },
       },
-      consumer: createUsageEventConsumer({
-        ingest: (event) => {
-          expect(event.event_id).toBe(recorded.ledgerRowId);
-          return available ? Promise.resolve() : Promise.reject(new Error('Flexprice unavailable'));
+      consumer: createUsageEventConsumer(
+        {
+          ingest: (event) => {
+            expect(event.event_id).toBe(recorded.ledgerRowId);
+            return available
+              ? Promise.resolve()
+              : Promise.reject(new Error('Flexprice unavailable'));
+          },
         },
-      }),
+        createDatabaseUsageOutboxDeliveryPort(database.db),
+      ),
       batchSize: 1,
       waitTimeSeconds: 0,
       visibilityTimeoutSeconds: 1,
@@ -404,8 +415,14 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
     expect(deleted).toEqual([]);
     available = true;
     scheduled[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(deleted).toEqual(['receipt-1']);
+    await vi.waitFor(() => {
+      expect(deleted).toEqual(['receipt-1']);
+    });
+    const [outbox] = await database.sql<{ status: string; delivered_at: string | null }[]>`
+      select status, delivered_at from usage_outbox where ledger_row_id = ${recorded.ledgerRowId}
+    `;
+    expect(outbox?.status).toBe('delivered');
+    expect(outbox?.delivered_at).not.toBeNull();
     await lifecycle.close();
   });
 
@@ -443,5 +460,106 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
     await expect(
       ledger.recordUsage(entry({ category: 'invented_category' } as unknown as UsageEntry)),
     ).rejects.toThrow('category');
+  });
+
+  it('durably journals one idempotent Flexprice correction before delivery', async () => {
+    const events: unknown[] = [];
+    const journal = createDatabaseUsageCorrectionJournal({
+      database: database.db,
+      now: () => new Date('2026-08-12T01:00:00.000Z'),
+      ingest: {
+        ingest(event) {
+          events.push(event);
+          return Promise.resolve();
+        },
+      },
+    });
+    const correction = {
+      organizationId,
+      projectId: null,
+      runId: null,
+      taskId: null,
+      category: 'artifact_storage' as const,
+      from: '2026-08-10T00:00:00.000Z',
+      to: '2026-08-11T00:00:00.000Z',
+      targetQuantity: '2.000000',
+      deltaQuantity: '0.500000',
+    };
+
+    await journal.correct(correction);
+    await journal.correct(correction);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event_name: 'artifact_storage',
+      external_customer_id: organizationId,
+      timestamp: '2026-08-10T23:59:59.999Z',
+      properties: { project_id: null, run_id: null, task_id: null, quantity: 0.5 },
+    });
+    const [stored] = await database.sql<{ rows: string; status: string; attempts: number }[]>`
+      select count(*)::text as rows, min(status) as status, max(attempts)::integer as attempts
+      from usage_reconciliation_corrections
+      where organization_id = ${organizationId}
+    `;
+    expect(stored).toEqual({ rows: '1', status: 'delivered', attempts: 1 });
+  });
+
+  it('claims a daily storage bucket once across replicas and persists completion', async () => {
+    const now = () => new Date('2026-08-12T01:00:00.000Z');
+    const first = createDatabaseDailyStorageClaim({
+      database: database.db,
+      owner: 'replica-first',
+      now,
+    });
+    const second = createDatabaseDailyStorageClaim({
+      database: database.db,
+      owner: 'replica-second',
+      now,
+    });
+    const bucket = {
+      from: '2026-08-10T00:00:00.000Z',
+      to: '2026-08-11T00:00:00.000Z',
+    };
+
+    await expect(first.claim(bucket)).resolves.toBe('acquired');
+    await expect(second.claim(bucket)).resolves.toBe('busy');
+    await first.complete(bucket);
+    await expect(second.claim(bucket)).resolves.toBe('completed');
+  });
+
+  it('derives completed and runless nullable scopes from the closed ledger window', async () => {
+    const ledger = createUsageLedgerRepository({ database: database.db });
+    await ledger.recordUsage(
+      entry({
+        operationKey: 'runless-artifact-storage',
+        projectId: null,
+        runId: null,
+        taskId: null,
+        category: 'artifact_storage',
+        provider: 'r2',
+        quantity: '2.000000',
+        unit: 'gib',
+        costUsd: '0.000020',
+        creditsCharged: '0.0020',
+      }),
+    );
+    const source = createDatabaseUsageReconciliationSource(database.db);
+    const window = {
+      from: '2026-08-11T00:00:00.000Z',
+      to: '2026-08-12T00:00:00.000Z',
+    };
+
+    await expect(source.scopes.list(window)).resolves.toContainEqual({
+      organizationId,
+      projectId: null,
+      runId: null,
+      taskId: null,
+    });
+    await expect(
+      source.ledger.readTotal(
+        { organizationId, projectId: null, runId: null, taskId: null, ...window },
+        'artifact_storage',
+      ),
+    ).resolves.toBe('2.000000');
   });
 });

@@ -17,6 +17,7 @@ import type {
   ReleaseRow,
   RollbackReleaseMutationInput,
 } from '../src/routes/releases.js';
+import type { DeploymentUsagePort } from '../src/usage/collectors/git.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
@@ -195,6 +196,29 @@ async function wire(): Promise<Wired> {
   return { built, data, owner, organizationId, projectId: body.project.id, environmentId: body.environments.find((entry) => entry.type === 'production')?.id ?? '', releases, as };
 }
 
+async function wireWithDeploymentUsage(
+  deploymentUsage: DeploymentUsagePort,
+): Promise<Wired> {
+  const data = new InMemoryTenantData();
+  const releases = new RecordingReleasePort();
+  const built = buildHarness({ tenantDb: data.factory, releasePort: releases, deploymentUsage });
+  harnesses.push(built);
+  const owner = await signIn(built, OWNER);
+  const organization = await built.app.inject({
+    method: 'POST', url: '/v1/organizations', headers: owner.headers, payload: { name: 'Release Factory' },
+  });
+  const organizationId = organization.json<{ organization: { id: string } }>().organization.id;
+  const as = (session: TestSession): Record<string, string> => ({ ...session.headers, [ORGANIZATION_HEADER]: organizationId });
+  const project = await built.app.inject({
+    method: 'POST', url: '/v1/projects', headers: as(owner), payload: { name: 'Release Target' },
+  });
+  const body = project.json<{ project: { id: string }; environments: { id: string; type: string }[] }>();
+  const environmentId = body.environments.find((entry) => entry.type === 'production')?.id ?? '';
+  const environment = data.environments.find((entry) => entry.id === environmentId);
+  if (environment !== undefined) Object.assign(environment, { deploymentProvider: 'fly' });
+  return { built, data, owner, organizationId, projectId: body.project.id, environmentId, releases, as };
+}
+
 async function join(wired: Wired, identity: AuthIdentity, role: 'builder' | 'viewer'): Promise<TestSession> {
   const invited = await wired.built.app.inject({
     method: 'POST', url: `/v1/organizations/${wired.organizationId}/invites`, headers: wired.owner.headers,
@@ -349,6 +373,50 @@ describe('release route shells', () => {
       });
       expect(event.metadata.operationKey).toBe(releaseCalls[index]?.operationKey);
     }
+  });
+
+  it('meters successful deployment and rollback completion through the production route seam', async () => {
+    const records: unknown[] = [];
+    const wired = await wireWithDeploymentUsage({
+      record(input) {
+        records.push(input);
+        return Promise.resolve();
+      },
+    });
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-create'),
+      payload: candidateBody(wired),
+    });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const deployed = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/deploy`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-deploy'),
+      payload: { deploymentType: 'first_deploy' },
+    });
+    const rolledBack = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/rollback`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-rollback'),
+      payload: { reason: 'Restore the prior healthy deployment.' },
+    });
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        organizationId: wired.organizationId,
+        projectId: wired.projectId,
+        deploymentId: deployed.json<{ deploymentId: string }>().deploymentId,
+        provider: 'fly',
+      }),
+      expect.objectContaining({
+        organizationId: wired.organizationId,
+        projectId: wired.projectId,
+        deploymentId: rolledBack.json<{ deploymentId: string }>().deploymentId,
+        provider: 'fly',
+      }),
+    ]);
   });
 
   it('allows Builder create/read but reads persisted organization settings before deployment', async () => {

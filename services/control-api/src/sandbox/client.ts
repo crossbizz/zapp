@@ -1,8 +1,12 @@
 import {
   BuilderPreviewDevServerResponseSchema,
   BuilderPreviewLogsResponseSchema,
+  idSchema,
 } from '@zapp/contracts';
 import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
+import { z } from 'zod';
+
+import type { SandboxStorageMeasurementPort } from '../usage/collectors/storage.js';
 
 import {
   ReadBuilderPreviewLogsInputSchema,
@@ -13,10 +17,52 @@ import {
 
 const REQUEST_DEADLINE_MS = 10_000;
 
+const StorageProjectSchema = z
+  .object({ organizationId: idSchema('org'), projectId: idSchema('proj') })
+  .strict();
+const StorageMeasurementSchema = z
+  .object({
+    snapshotBytes: z.string().regex(/^\d+$/u),
+    volumeBytes: z.string().regex(/^\d+$/u),
+  })
+  .strict();
+
 export interface BuilderPreviewSandboxClientOptions {
   readonly baseUrl: string;
   readonly serviceTokens: ServiceTokenConfig;
   readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
+}
+
+export function createSandboxStorageMeasurementClient(
+  options: BuilderPreviewSandboxClientOptions,
+): SandboxStorageMeasurementPort {
+  const baseUrl = options.baseUrl.replace(/\/+$/u, '');
+  const signer = createServiceTokenSigner(options.serviceTokens);
+  const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
+  return {
+    async measureProjectBytes(rawProject) {
+      const project = StorageProjectSchema.parse(rawProject);
+      const { token } = await signer.signServiceToken({
+        service: 'control-api',
+        aud: 'sandbox-service',
+      });
+      const response = await request(
+        doFetch,
+        `${baseUrl}/internal/projects/${project.projectId}/storage-measurement`,
+        {
+          method: 'GET',
+          headers: {
+            accept: 'application/json',
+            'x-zapp-service-token': token,
+            'x-zapp-organization-id': project.organizationId,
+            'x-zapp-project-id': project.projectId,
+          },
+          signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+        },
+      );
+      return StorageMeasurementSchema.parse(await readableJson(response));
+    },
+  };
 }
 
 /** Service-authenticated bridge; no sandbox credential or private URL reaches a browser. */

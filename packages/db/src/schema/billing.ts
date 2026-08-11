@@ -106,7 +106,8 @@ export const usageLedger = pgTable(
 );
 
 const COMPLETION_STATES = ['claimed', 'completed'] as const;
-const OUTBOX_STATES = ['pending', 'published'] as const;
+const OUTBOX_STATES = ['pending', 'published', 'delivered'] as const;
+const CORRECTION_STATES = ['pending', 'delivered'] as const;
 
 /**
  * ADR-0025's one authoritative accounting row per run. Reservations and usage
@@ -210,11 +211,76 @@ export const usageOutbox = pgTable(
     nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('usage_outbox_ledger_row_idx').on(t.ledgerRowId),
     index('usage_outbox_pending_idx').on(t.status, t.nextAttemptAt),
     check('usage_outbox_status_check', oneOf('status', OUTBOX_STATES)),
+  ],
+);
+
+/** ADR-0030 logical snapshot bytes captured at the structural creation seam. */
+export const sandboxSnapshotMeasurements = pgTable(
+  'sandbox_snapshot_measurements',
+  {
+    providerSnapshotId: text('provider_snapshot_id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    projectId: text('project_id').notNull(),
+    logicalBytes: numeric('logical_bytes').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    measuredAt: timestamp('measured_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('sandbox_snapshot_measurements_project_expiry_idx').on(
+      t.organizationId,
+      t.projectId,
+      t.expiresAt,
+    ),
+    projectTenantForeignKey(
+      'sandbox_snapshot_measurements',
+      t.projectId,
+      t.organizationId,
+    ),
+  ],
+);
+
+/** Durable, idempotent Flexprice healing journal for a stable closed window. */
+export const usageReconciliationCorrections = pgTable(
+  'usage_reconciliation_corrections',
+  {
+    id: text('id').primaryKey(),
+    operationKey: text('operation_key').notNull(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    projectId: text('project_id'),
+    runId: text('run_id'),
+    taskId: text('task_id'),
+    category: text('category', { enum: USAGE_CATEGORIES }).notNull(),
+    windowFrom: timestamp('window_from', { withTimezone: true }).notNull(),
+    windowTo: timestamp('window_to', { withTimezone: true }).notNull(),
+    targetQuantity: numeric('target_quantity').notNull(),
+    deltaQuantity: numeric('delta_quantity').notNull(),
+    eventJson: jsonb('event_json').notNull(),
+    status: text('status', { enum: CORRECTION_STATES }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('usage_reconciliation_corrections_operation_idx').on(t.operationKey),
+    index('usage_reconciliation_corrections_pending_idx').on(t.status, t.createdAt),
+    check(
+      'usage_reconciliation_corrections_category_check',
+      oneOf('category', USAGE_CATEGORIES),
+    ),
+    check(
+      'usage_reconciliation_corrections_status_check',
+      oneOf('status', CORRECTION_STATES),
+    ),
   ],
 );
 
@@ -234,4 +300,6 @@ export type RunCreditAccount = typeof runCreditAccounts.$inferSelect;
 export type ModelCompletionJournal = typeof modelCompletionJournal.$inferSelect;
 export type RunCreditCeilingAdjustment = typeof runCreditCeilingAdjustments.$inferSelect;
 export type UsageOutboxEntry = typeof usageOutbox.$inferSelect;
+export type SandboxSnapshotMeasurement = typeof sandboxSnapshotMeasurements.$inferSelect;
+export type UsageReconciliationCorrection = typeof usageReconciliationCorrections.$inferSelect;
 export type AccountingLeaderLease = typeof accountingLeaderLeases.$inferSelect;

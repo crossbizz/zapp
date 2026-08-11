@@ -25,6 +25,8 @@ import {
   runCreditAccounts,
   runCreditCeilingAdjustments,
   usageOutbox,
+  sandboxSnapshotMeasurements,
+  usageReconciliationCorrections,
   accountingLeaderLeases,
   runEventCounters,
   secretMetadata,
@@ -190,6 +192,8 @@ describe('billing tables', () => {
         modelCompletionJournal,
         runCreditCeilingAdjustments,
         usageOutbox,
+        sandboxSnapshotMeasurements,
+        usageReconciliationCorrections,
         accountingLeaderLeases,
       ].map(tableName),
     ).toEqual([
@@ -197,6 +201,8 @@ describe('billing tables', () => {
       'model_completion_journal',
       'run_credit_ceiling_adjustments',
       'usage_outbox',
+      'sandbox_snapshot_measurements',
+      'usage_reconciliation_corrections',
       'accounting_leader_leases',
     ]);
 
@@ -246,6 +252,33 @@ describe('billing tables', () => {
       'next_attempt_at',
       'created_at',
       'published_at',
+      'delivered_at',
+    ]);
+    expect(columnNames(sandboxSnapshotMeasurements)).toEqual([
+      'provider_snapshot_id',
+      'organization_id',
+      'project_id',
+      'logical_bytes',
+      'expires_at',
+      'measured_at',
+    ]);
+    expect(columnNames(usageReconciliationCorrections)).toEqual([
+      'id',
+      'operation_key',
+      'organization_id',
+      'project_id',
+      'run_id',
+      'task_id',
+      'category',
+      'window_from',
+      'window_to',
+      'target_quantity',
+      'delta_quantity',
+      'event_json',
+      'status',
+      'attempts',
+      'created_at',
+      'delivered_at',
     ]);
     expect(columnNames(accountingLeaderLeases)).toEqual([
       'name',

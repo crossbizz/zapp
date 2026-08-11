@@ -8,6 +8,7 @@ import { actorOf } from '../plugins/auth.js';
 import type { AuditHook } from '../plugins/audit.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import type { PermissionContext } from '../policy/permissions.js';
+import type { DeploymentUsagePort } from '../usage/collectors/git.js';
 import { ReleaseSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
 
@@ -157,6 +158,8 @@ export interface ReleasePort {
 export interface ReleaseRoutesDeps {
   readonly port: ReleasePort;
   readonly permissionContextFor: (organizationId: string) => Promise<PermissionContext>;
+  readonly deploymentUsage?: DeploymentUsagePort;
+  readonly now: () => Date;
 }
 
 export function createUnavailableReleasePort(): ReleasePort {
@@ -291,7 +294,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
     if (request.body.deploymentType === 'replace_deployment' && request.body.dataDisposition === undefined) throw dataDispositionRequired();
     const operationKey = operationOf(request);
-    return await portResult(
+    const result = await portResult(
       () =>
         deps.port.deploy({
           ...DeployInputSchema.parse({
@@ -317,6 +320,8 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
         }),
       DeploymentResultSchema,
     );
+    await meterDeployment(deps, ctx, row, result);
+    return result;
   });
 
   app.post('/v1/releases/:releaseId/rollback', {
@@ -327,7 +332,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
     const operationKey = operationOf(request);
-    return await portResult(
+    const result = await portResult(
       () =>
         deps.port.rollback({
           ...RollbackInputSchema.parse({
@@ -349,6 +354,8 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
         }),
       DeploymentResultSchema,
     );
+    await meterDeployment(deps, ctx, row, result);
+    return result;
   });
 
   app.get('/v1/releases/:releaseId/evidence', {
@@ -359,6 +366,29 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
     authorize(ctx, 'view_project');
     return { evidence: await evidenceFor(deps.port, row) };
+  });
+}
+
+async function meterDeployment(
+  deps: ReleaseRoutesDeps,
+  ctx: ReturnType<typeof tenantOf>,
+  release: z.infer<typeof ReleaseRowSchema>,
+  result: z.infer<typeof DeploymentResultSchema>,
+): Promise<void> {
+  if (deps.deploymentUsage === undefined) return;
+  const environment = await ctx.db.environments.getForProject(
+    release.projectId,
+    release.environmentId,
+  );
+  if (environment?.deploymentProvider === null || environment === undefined) return;
+  await deps.deploymentUsage.record({
+    organizationId: ctx.organizationId,
+    projectId: release.projectId,
+    runId: null,
+    taskId: null,
+    deploymentId: result.deploymentId,
+    provider: environment.deploymentProvider,
+    occurredAt: deps.now().toISOString(),
   });
 }
 

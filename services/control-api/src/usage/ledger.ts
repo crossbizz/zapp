@@ -11,7 +11,13 @@ const DecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,6})?$/u);
 const CreditDecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,4})?$/u);
 
 const UsageMetadataSchema = z
-  .object({ correction_of: z.string().trim().min(1).optional() })
+  .object({
+    correction_of: z.string().trim().min(1).optional(),
+    build_seconds: z
+      .string()
+      .regex(/^\d+(?:\.\d{1,6})?$/u)
+      .optional(),
+  })
   .strict();
 
 export const UsageEntrySchema = z
@@ -98,6 +104,10 @@ export class UsageCorrectionError extends Error {
 
 export interface UsageLedgerRepository {
   recordUsage(entry: UsageEntry): Promise<RecordedUsage>;
+  findByOperationKey?(
+    organizationId: string,
+    operationKey: string,
+  ): Promise<RecordedUsage | undefined>;
   getUsageSummary(organizationId: string, window: UsageWindow): Promise<UsageSummary>;
 }
 
@@ -215,6 +225,7 @@ export function createUsageLedgerRepository(options: {
             nextAttemptAt: instant,
             createdAt: instant,
             publishedAt: null,
+            deliveredAt: null,
           });
           return { ledgerRowId, row: inserted, event };
         }
@@ -244,6 +255,33 @@ export function createUsageLedgerRepository(options: {
           event: FlexpriceUsageEventSchema.parse(outbox.eventJson),
         };
       });
+    },
+
+    async findByOperationKey(rawOrganizationId, rawOperationKey) {
+      const organizationId = idSchema('org').parse(rawOrganizationId);
+      const operationKey = z.string().trim().min(1).max(200).parse(rawOperationKey);
+      const [row] = await options.database
+        .select()
+        .from(usageLedger)
+        .where(
+          and(
+            eq(usageLedger.organizationId, organizationId),
+            eq(usageLedger.operationKey, operationKey),
+          ),
+        )
+        .limit(1);
+      if (row === undefined) return undefined;
+      const [outbox] = await options.database
+        .select({ eventJson: usageOutbox.eventJson })
+        .from(usageOutbox)
+        .where(eq(usageOutbox.ledgerRowId, row.id))
+        .limit(1);
+      if (outbox === undefined) throw new Error('immutable usage ledger row has no outbox event');
+      return {
+        ledgerRowId: row.id,
+        row,
+        event: FlexpriceUsageEventSchema.parse(outbox.eventJson),
+      };
     },
 
     async getUsageSummary(rawOrganizationId, rawWindow) {
@@ -301,6 +339,9 @@ function flexpriceEvent(entry: UsageEntry, ledgerRowId: string): FlexpriceUsageE
       quantity: Number(entry.quantity),
       unit: entry.unit,
       provider: entry.provider,
+      ...(entry.metadata.build_seconds === undefined
+        ? {}
+        : { build_seconds: entry.metadata.build_seconds }),
     },
   });
 }

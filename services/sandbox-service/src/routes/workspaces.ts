@@ -36,6 +36,7 @@ import {
   type ModalWorkspaceAttachment,
 } from '../provider/modal.js';
 import { BranchLockedResponseSchema } from '../provider/volumes.js';
+import type { ActiveCostRecording } from '../cost/recorder.js';
 import {
   assertSandboxEnvironment,
   createSecretStreamRedactor,
@@ -165,6 +166,10 @@ export interface WorkspaceLifecycleProvider {
 }
 
 export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
+  measureProjectVolumeBytes?(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+  }): Promise<string>;
   resolvePreviewTunnel?(providerWorkspaceId: string): Promise<URL>;
   exec(input: ExecInput, idempotencyKey?: string): Promise<z.infer<typeof ExecResultSchema>>;
   execStream(
@@ -223,6 +228,13 @@ const WorkspaceScopeHeadersSchema = z
   })
   .strict();
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
+const ProjectParamsSchema = z.object({ projectId: idSchema('proj') }).strict();
+const StorageMeasurementSchema = z
+  .object({
+    snapshotBytes: z.string().regex(/^\d+$/u),
+    volumeBytes: z.string().regex(/^\d+$/u),
+  })
+  .strict();
 const TerminateBodySchema = z.object({ operationKey: OperationKeySchema }).strict();
 const AttachBodySchema = TerminateBodySchema;
 const OrganizationParamsSchema = z.object({ organizationId: idSchema('org') }).strict();
@@ -460,6 +472,24 @@ export function registerWorkspaceRoutes(
     readonly previewMonitorStandbyPollIntervalMs?: number;
     readonly previewFailurePollIntervalMs?: number;
     readonly now: () => Date;
+    readonly storageMeasurements?: {
+      measureProjectBytes(input: {
+        readonly organizationId: string;
+        readonly projectId: string;
+      }): Promise<unknown>;
+    };
+    readonly costRecorder?: {
+      start(input: {
+        readonly workspaceId: string;
+        readonly providerWorkspaceId: string;
+        readonly organizationId: string;
+        readonly projectId: string;
+        readonly runId: string;
+        readonly taskId: string;
+        readonly operationKey: string;
+        readonly profile: string;
+      }): Promise<ActiveCostRecording>;
+    };
   },
 ): void {
   const failureMonitors = new Map<
@@ -467,6 +497,7 @@ export function registerWorkspaceRoutes(
     { readonly controller: AbortController; readonly leaseToken: string }
   >();
   const failureMonitorClaims = new Set<string>();
+  const activeCostRecordings = new Map<string, ActiveCostRecording>();
   const acquisitionController = new AbortController();
   let acquisitionLoop: Promise<void> | undefined;
   const lifecycle = { closing: false };
@@ -715,6 +746,33 @@ export function registerWorkspaceRoutes(
       }),
     );
   });
+  if (deps.storageMeasurements !== undefined) {
+    app.get(
+      '/internal/projects/:projectId/storage-measurement',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          response: { 200: StorageMeasurementSchema },
+        },
+      },
+      async (request: FastifyRequest) => {
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        return StorageMeasurementSchema.parse(
+          await deps.storageMeasurements?.measureProjectBytes({
+            organizationId: scope.organizationId,
+            projectId,
+          }),
+        );
+      },
+    );
+  }
   app.post(
     '/internal/workspaces',
     {
@@ -872,6 +930,21 @@ export function registerWorkspaceRoutes(
           operationKey: body.operationKey,
         });
         const ready = await deps.rows.transition(claim.row.id, 'ready');
+        if (deps.costRecorder !== undefined) {
+          activeCostRecordings.set(
+            ready.id,
+            await deps.costRecorder.start({
+              workspaceId: ready.id,
+              providerWorkspaceId: handle.providerWorkspaceId,
+              organizationId: ready.organizationId,
+              projectId: ready.projectId,
+              runId: body.runId,
+              taskId: body.taskId,
+              operationKey: body.operationKey,
+              profile: ready.resourceProfile,
+            }),
+          );
+        }
         return await reply.status(201).send({ workspace: ready });
       } catch (error) {
         await deps.provider.terminateWorkspace(providerWorkspaceId);
@@ -1106,6 +1179,11 @@ export function registerWorkspaceRoutes(
         return { workspace: row };
       }
       if (row.providerWorkspaceId !== null) {
+        const recording = activeCostRecordings.get(row.id);
+        if (recording !== undefined) {
+          await recording.terminate();
+          activeCostRecordings.delete(row.id);
+        }
         await deps.provider.terminateWorkspace(row.providerWorkspaceId);
         if ((await deps.provider.getStatus(row.providerWorkspaceId)) !== 'terminated') {
           throw Object.assign(new Error('Workspace provider termination was not confirmed.'), {

@@ -10,6 +10,7 @@ import {
   CreateWorkspaceInputSchema,
   ExecutionContractSchema,
   ExecInputSchema,
+  idSchema,
   RESOURCE_PROFILES,
   ResourceProfileSchema,
   WorkspaceHandleSchema,
@@ -41,6 +42,7 @@ import {
 import {
   BranchLockedError,
   createProjectVolumePlan,
+  projectVolumeName,
   type ProjectVolumePlan,
 } from './volumes.js';
 
@@ -940,6 +942,14 @@ export interface AgentHttpStream {
 export interface ModalWorkspaceSdkPort {
   createWorkspace(input: ModalWorkspaceCreateOptions): Promise<ModalWorkspaceSandbox>;
   getWorkspace(providerWorkspaceId: string): Promise<ModalWorkspaceSandbox | undefined>;
+  measureProjectVolumeBytes(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly environment: ModalEnvironment;
+    readonly appName: 'zapp-workspaces';
+    readonly digest: string;
+    readonly volumeName: string;
+  }): Promise<string>;
   close(): void;
 }
 
@@ -1447,6 +1457,42 @@ function createModalWorkspaceSdk(
         throw error;
       }
     },
+    async measureProjectVolumeBytes(input) {
+      const app = await client.apps.fromName(input.appName, {
+        environment: input.environment,
+        createIfMissing: true,
+      });
+      const image = await client.images.fromId(input.digest);
+      const volume = await client.volumes.fromName(input.volumeName, {
+        environment: input.environment,
+        createIfMissing: true,
+      });
+      const sandbox = await client.sandboxes.create(app, image, {
+        command: ['/bin/sh', '-lc', 'sleep 300'],
+        volumes: { '/measure': volume.withMountOptions({ readOnly: true }) },
+        cpu: 0.125,
+        memoryMiB: 128,
+        timeoutMs: 300_000,
+      });
+      try {
+        const process = await sandbox.exec(['/usr/bin/du', '-sb', '/measure'], {
+          mode: 'text',
+          timeoutMs: 120_000,
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          process.stdout.readText(),
+          process.stderr.readText(),
+          process.wait(),
+        ]);
+        if (exitCode !== 0) {
+          throw new Error(`Modal volume measurement failed: ${stderr.trim()}`);
+        }
+        const bytes = stdout.trim().split(/\s+/u)[0];
+        return z.string().regex(/^\d+$/u).parse(bytes);
+      } finally {
+        await sandbox.terminate({ wait: true });
+      }
+    },
     close() {
       client.close();
     },
@@ -1528,6 +1574,28 @@ export class ModalSandboxProvider {
     return purpose === 'verifier'
       ? this.images['forge-web-test'].publishedName
       : this.images['forge-node-base'].publishedName;
+  }
+
+  async measureProjectVolumeBytes(rawScope: {
+    readonly organizationId: string;
+    readonly projectId: string;
+  }): Promise<string> {
+    const scope = z
+      .object({ organizationId: idSchema('org'), projectId: idSchema('proj') })
+      .strict()
+      .parse(rawScope);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      return await sdk.measureProjectVolumeBytes({
+        ...scope,
+        environment: this.modalEnvironment,
+        appName: this.images['forge-node-base'].appName,
+        digest: this.images['forge-node-base'].digest,
+        volumeName: projectVolumeName(scope.projectId),
+      });
+    } finally {
+      sdk.close();
+    }
   }
 
   async createWorkspace(

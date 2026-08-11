@@ -85,6 +85,14 @@ const NON_PRD_TABLES = new Map([
     'github_import_outbox',
     'the transactional one-stage-per-delivery SQS outbox required by plan 06 INT-2 and ADR-0028',
   ],
+  [
+    'sandbox_snapshot_measurements',
+    'the durable logical-byte inventory captured at snapshot creation because Modal 0.9.0 exposes no authoritative snapshot size API, required by ADR-0030 and plan 10 OPS-2',
+  ],
+  [
+    'usage_reconciliation_corrections',
+    'the idempotent durable Flexprice correction journal required by plan 10 OPS-2 so reconciliation retries cannot double-adjust vendor aggregates',
+  ],
 ]);
 
 /**

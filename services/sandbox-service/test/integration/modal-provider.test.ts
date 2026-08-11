@@ -492,6 +492,9 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   present = false;
   createError: Error | undefined;
   private createBarrier: Promise<void> = Promise.resolve();
+  readonly volumeMeasurements: Array<
+    Parameters<ModalWorkspaceSdkPort['measureProjectVolumeBytes']>[0]
+  > = [];
 
   holdCreation(): () => void {
     let release = (): void => undefined;
@@ -517,6 +520,13 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
         ? this.sandbox
         : undefined,
     );
+  }
+
+  measureProjectVolumeBytes(
+    input: Parameters<ModalWorkspaceSdkPort['measureProjectVolumeBytes']>[0],
+  ): Promise<string> {
+    this.volumeMeasurements.push(input);
+    return Promise.resolve('17');
   }
 
   close(): void {
@@ -742,6 +752,34 @@ describe('attach reattach recovery and ownership', () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('measures the project volume through the provider-owned temporary sandbox seam', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+
+    await expect(
+      provider.measureProjectVolumeBytes({
+        organizationId: IDS.organizationId,
+        projectId: IDS.projectId,
+      }),
+    ).resolves.toBe('17');
+    expect(sdk.volumeMeasurements).toEqual([
+      {
+        organizationId: IDS.organizationId,
+        projectId: IDS.projectId,
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: IMAGE_LOCK.environments.dev.images['forge-node-base'].digest,
+        volumeName: `vol-proj_${IDS.projectId}`,
+      },
+    ]);
+    expect(sdk.closeCalls).toBe(1);
   });
 
   it('reattaches from persisted provider identity after a fresh provider instance and preserves exec/file access', async () => {
@@ -1450,6 +1488,130 @@ describe('create status terminate and idempotency', () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('serves persisted snapshot plus probed volume bytes through the internal project boundary', async () => {
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => new FakeModalWorkspaceSdk(),
+    });
+    const app = buildTestApp({
+      provider,
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      storageMeasurements: {
+        measureProjectBytes(input) {
+          expect(input).toEqual({
+            organizationId: IDS.organizationId,
+            projectId: IDS.projectId,
+          });
+          return Promise.resolve({ snapshotBytes: '13', volumeBytes: '17' });
+        },
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/storage-measurement`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ snapshotBytes: '13', volumeBytes: '17' });
+  });
+
+  it('records CPU and memory usage through the real recorder on workspace create and terminate', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const ledgerRows: Array<{ category: string; quantity: string }> = [];
+    let clock = NOW.getTime();
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering: {
+        pricing: {
+          cpuSecondUsd: 0.00001,
+          memoryGibSecondUsd: 0.00001,
+          creditsPerUsd: 100,
+        },
+        controlPlane: {
+          baseUrl: 'https://control.zapp.test',
+          serviceTokens: { secret: 'u'.repeat(32) },
+          fetch(_input, init) {
+            if (typeof init.body !== 'string') throw new Error('usage request body was not JSON');
+            ledgerRows.push(JSON.parse(init.body) as { category: string; quantity: string });
+            return Promise.resolve(
+              new Response(JSON.stringify({ ledgerRowId: 'usage_recorded', event: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }),
+            );
+          },
+        },
+        nowMs: () => clock,
+        scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+      },
+      now: () => new Date(clock),
+    });
+    apps.push(app);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+    const payload = {
+      workspace: requestedRow(),
+      branchName: 'main',
+      runId: IDS.runId,
+      taskId: IDS.taskId,
+      purpose: 'builder' as const,
+      env: {},
+      networkProfile: 'dependency_install' as const,
+      operationKey: OPERATION_KEY,
+    };
+
+    expect(
+      (await app.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(201);
+    clock += 1_000;
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
+          headers,
+          payload: { operationKey: OPERATION_KEY },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(ledgerRows.map(({ category }) => category).sort()).toEqual([
+      'sandbox_cpu_seconds',
+      'sandbox_mem_gib_seconds',
+    ]);
+    expect(ledgerRows.every(({ quantity }) => Number(quantity) > 0)).toBe(true);
   });
 
   it('enforces the runaway compute governor across create, replay, terminate, and app lifetime', async () => {
