@@ -12,6 +12,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     projects: [
+      {
+        test: {
+          name: 'security',
+          include: ['test/security/**/*.test.ts'],
+        },
+      },
       'packages/*/vitest.config.ts',
       'services/*/vitest.config.ts',
       'infra/*/vitest.config.ts',
