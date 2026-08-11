@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "playwright test",
+    "test": "tsx --test test/next-dev-output.test.ts && playwright test",
     "test:e2e": "../../node_modules/.bin/turbo run test --filter=@zapp/web"
   },
   "dependencies": {

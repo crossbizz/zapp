@@ -149,6 +149,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-7-FIX-1 Bounded preview lifecycle closure
 - [x] WEB-7-FIX-2 Structured preview Fix evidence
 - [x] WEB-8 Element selection attachments
+- [x] WEB-COLD-FIX-1 Isolate E2E Next build output
 - [ ] WEB-9 Mission Control drawer
 - [ ] WEB-10 Interview/spec/plan approval cards
 - [ ] WEB-11 Code/Logs/Tests surfaces

@@ -15,6 +15,8 @@ import {
 } from '../../../../services/control-api/test/support/harness.js';
 import { FakeAuthPort } from '../../../../services/control-api/test/support/fake-auth-port.js';
 
+import { resetNextDevOutput } from './next-dev-output.js';
+
 const appPort = 3100;
 const apiPort = 4100;
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
@@ -223,6 +225,7 @@ built.app.get('/__stytch', async (request, reply) => {
   return await reply.redirect(callback.toString(), 302);
 });
 
+await resetNextDevOutput();
 await built.app.listen({ host: '127.0.0.1', port: apiPort });
 
 const next = spawn('pnpm', ['exec', 'next', 'dev', '--port', String(appPort)], {
