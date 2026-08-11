@@ -44,6 +44,15 @@ Master plan §Global Constraints, plus:
 - [x] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
 - [x] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
 
+#### Task OPS-1B-FIX-1 [M2]: Application-role correction serialization
+
+**Files:** Modify: `services/control-api/src/usage/ledger.ts`, `services/control-api/test/integration/usage-ledger.test.ts`
+**Depends on:** OPS-1B. **Binding behavior:** correction serialization must preserve the append-only application-role boundary: `recordUsage` runs with `SELECT` + `INSERT` and no `UPDATE` on `usage_ledger`, takes a transaction-scoped PostgreSQL advisory lock structurally keyed by the correction target, then resolves the positive original through a plain tenant-scoped `SELECT`. It must never grant `UPDATE`, mutate, or row-lock the original, while retaining stable retry identity and aggregate concurrent over-correction rejection.
+
+- [x] RED/GREEN: a temporary unprivileged application role using the shipped append-only grants reproduces SQLSTATE `42501` for the current correction path, then records a valid correction after advisory-lock serialization; the concurrent over-correction proof remains green.
+- [x] Review: at most two rounds; exit = zero Critical/Important correctness or security findings.
+- [x] Commit: `fix(usage): serialize corrections under append-only role`
+
 ### Task OPS-2 [M2]: Metering collectors completion
 
 **Files:** Create: `services/control-api/src/usage/collectors/{storage,git}.ts`; verify gateway/sandbox emitters
@@ -201,6 +210,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-1B-FIX-1 done — Replaced correction row locking with a transaction-scoped advisory lock keyed by the immutable target, preserving SELECT+INSERT-only application grants and concurrent over-correction serialization; no blockers or deviations.
 - 2026-08-11 OPS-1B done — Append-only keyed ledger, exact SQS-to-Flexprice event shape, summaries, pricing, and bootstrap acceptance verified with LocalStack; `dev-up` still reports its unrelated missing `zapp-notifications` queue.
 - 2026-08-09 OPS-1A done — Durable claim/commit accounting, exact reservations, Postgres-led Redis healing, and SQS-to-Flexprice delivery verified; at the two-review cap, three round-two correctness findings were closed by deterministic RED/GREEN without a third review, the cold gate's real early-abort DB test received the same bounded 15 s process budget as its load-bearing pool assertion, and clean CI repairs release the preview coordinator after aborted CDP cleanup, atomically publish complete native workspace helpers, bound transient normal-filesystem removal retries in the cgroup test double, probe append-only ledger TRUNCATE guards through the new outbox FK with CASCADE, launch the real Chrome primitive-capture test directly instead of through a redundant browser-server reconnect, and extend configurable application-role revocation plus real append-only integration coverage to the approval-backed ceiling-adjustment ledger.
 - 2026-08-04: DEPLOYMENT NOTE (from CP-5 fix): rate-limit proxy trust defaults to NONE. Any deploy behind an edge proxy MUST set `proxy.trustedHops` (or trustedProxies) in config/rate-limits.json in the same change, or ip-scoped classes bucket by the ingress. The plugin warns at boot naming the field; setting both fields refuses to boot. Owner: OPS deploy runbook.

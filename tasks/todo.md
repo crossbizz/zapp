@@ -151,6 +151,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] WEB-11 Code/Logs/Tests surfaces
 - [ ] WEB-17 Template gallery + detail with demo preview & Remix
 - [x] OPS-1B Flexprice bootstrap + usage summaries + complete metering acceptance
+- [x] OPS-1B-FIX-1 Application-role correction serialization
 - [ ] OPS-2 Metering coverage + three-way reconciliation
 - [ ] OPS-3 Plan quotas + budget enforcement
 - [x] MAC-4 Platform auth + Keychain

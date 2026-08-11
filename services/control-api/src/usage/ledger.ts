@@ -116,6 +116,9 @@ export function createUsageLedgerRepository(options: {
         const instant = now();
         const correctionOf = entry.metadata.correction_of;
         if (correctionOf !== undefined) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`usage-correction:${correctionOf}`}, 0))`,
+          );
           const [original] = await tx
             .select()
             .from(usageLedger)
@@ -125,7 +128,6 @@ export function createUsageLedgerRepository(options: {
                 eq(usageLedger.organizationId, entry.organizationId),
               ),
             )
-            .for('update')
             .limit(1);
           const originalMetadata = UsageMetadataSchema.safeParse(original?.metadata);
           if (

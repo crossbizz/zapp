@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { newId } from '@zapp/contracts';
+import { createDb, type Db } from '@zapp/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +12,10 @@ import {
 } from '../../src/usage/outbox.js';
 import { createUsageLedgerRepository, type UsageEntry } from '../../src/usage/ledger.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
+
+const APPEND_ONLY_GRANT_MIGRATION = fileURLToPath(
+  new URL('../../../../packages/db/drizzle/0004_append_only_truncate_and_app_role.sql', import.meta.url),
+);
 
 describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
   let database: TestDatabase;
@@ -90,6 +98,79 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
         (select count(*)::text from usage_outbox where organization_id = ${organizationId}) as events
     `;
     expect(stored).toEqual({ rows: '1', events: '1' });
+  });
+
+  it('records a correction with the shipped append-only application-role privileges', async () => {
+    const original = await createUsageLedgerRepository({ database: database.db }).recordUsage(
+      entry(),
+    );
+    const role = `zapp_usage_app_${String(process.pid)}_${String(Date.now())}`;
+    const password = `test_${newId('evt')}`;
+    const databaseName = decodeURIComponent(new URL(database.url).pathname.slice(1));
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(databaseName)) {
+      throw new Error('integration database name is not a safe PostgreSQL identifier');
+    }
+    let applicationDatabase: Db | undefined;
+    let roleCreated = false;
+
+    try {
+      await database.sql.unsafe(`create role ${role} login password '${password}'`);
+      roleCreated = true;
+      await database.sql.unsafe(`grant connect on database "${databaseName}" to ${role}`);
+      await database.sql.unsafe(`grant usage on schema public to ${role}`);
+      await database.sql.unsafe(
+        `grant select, insert, update, delete, truncate on usage_ledger, audit_events to ${role}`,
+      );
+      await database.sql.unsafe(`grant select, insert on usage_outbox to ${role}`);
+      const statements = readFileSync(APPEND_ONLY_GRANT_MIGRATION, 'utf8')
+        .split('--> statement-breakpoint')
+        .map((statement) => statement.trim())
+        .filter((statement) => statement !== '');
+      await database.sql.begin(async (tx) => {
+        await tx.unsafe(`set local zapp.app_role = '${role}'`);
+        for (const statement of statements) await tx.unsafe(statement);
+      });
+      const [privileges] = await database.sql<
+        { canInsert: boolean; canSelect: boolean; canUpdate: boolean }[]
+      >`
+        select
+          has_table_privilege(${role}, 'usage_ledger', 'INSERT') as "canInsert",
+          has_table_privilege(${role}, 'usage_ledger', 'SELECT') as "canSelect",
+          has_table_privilege(${role}, 'usage_ledger', 'UPDATE') as "canUpdate"
+      `;
+      expect(privileges).toEqual({ canInsert: true, canSelect: true, canUpdate: false });
+
+      const applicationUrl = new URL(database.url);
+      applicationUrl.username = role;
+      applicationUrl.password = password;
+      applicationDatabase = createDb(applicationUrl.toString());
+      const correction = await createUsageLedgerRepository({
+        database: applicationDatabase.db,
+      }).recordUsage(
+        entry({
+          operationKey: 'application-role-correction',
+          projectId: original.row.projectId,
+          runId: original.row.runId,
+          taskId: original.row.taskId,
+          quantity: '-3.000000',
+          costUsd: '-0.000030',
+          creditsCharged: '-0.0030',
+          metadata: { correction_of: original.ledgerRowId },
+        }),
+      );
+
+      expect(correction.event.properties.quantity).toBe(-3);
+      const [after] = await database.sql<{ canUpdate: boolean }[]>`
+        select has_table_privilege(${role}, 'usage_ledger', 'UPDATE') as "canUpdate"
+      `;
+      expect(after).toEqual({ canUpdate: false });
+    } finally {
+      await applicationDatabase?.close();
+      if (roleCreated) {
+        await database.sql.unsafe(`drop owned by ${role}`);
+        await database.sql.unsafe(`drop role ${role}`);
+      }
+    }
   });
 
   it('allows proportional partial corrections up to the original and preserves retry identity', async () => {
