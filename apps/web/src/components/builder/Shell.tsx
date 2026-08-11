@@ -17,6 +17,7 @@ import {
 import { createControlPlaneClient } from '../../lib/api';
 import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { organizationStorageKey, resolveOrganization } from '../../lib/session';
+import { Thread } from '../conversation/Thread';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import { TopBar } from './TopBar';
 
@@ -109,21 +110,6 @@ function BuilderStyles(): ReactElement {
         display: flex;
         align-items: center;
         gap: 0.625rem;
-      }
-
-      .zapp-builder-first-message {
-        max-width: 90%;
-        align-self: flex-end;
-        margin: 1.5rem;
-        border-radius: var(--zapp-radius-panel);
-        padding: 0.875rem 1rem;
-        color: var(--zapp-text-primary);
-        background: var(--zapp-surface-subtle);
-      }
-
-      .zapp-builder-first-message p {
-        margin: 0;
-        white-space: pre-wrap;
       }
 
       .zapp-builder-project-identity {
@@ -406,6 +392,7 @@ function MissionControlEmpty(): ReactElement {
 
 export function Shell({ projectId }: ShellProps): ReactElement {
   const [activePane, setActivePane] = useState<BuilderPane>('conversation');
+  const [allowedModels, setAllowedModels] = useState<readonly string[]>([]);
   const [desktopSplit, setDesktopSplit] = useState(false);
   const [effectiveConversationWidth, setEffectiveConversationWidth] =
     useState(defaultConversationWidth);
@@ -418,6 +405,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [missionControlOpen, setMissionControlOpen] = useState(false);
+  const [organizationId, setOrganizationId] = useState<string>();
   const [failedPreferenceKeys, setFailedPreferenceKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -463,6 +451,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       setInvalidOrganizationOverride(false);
       setLoadFailed(false);
       setFirstPrompt(undefined);
+      setOrganizationId(undefined);
       setProject(undefined);
       try {
         const me = await createControlPlaneClient().getMe();
@@ -492,7 +481,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
         setEffectiveConversationWidth(restoredWidth);
         setMissionControlOpen(localStorage.getItem(missionControlKey(projectId)) === 'true');
         setInvalidOrganizationOverride(selected.invalidOverride);
+        setAllowedModels(selected.membership.allowedModels);
         setFirstPrompt(readFirstPrompt(projectId));
+        setOrganizationId(organizationId);
         setProject(loadedProject);
       } catch (error) {
         if (error instanceof ZappApiError && error.status === 401) {
@@ -627,6 +618,11 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     setFocusPreviewRequest((value) => value + 1);
   };
 
+  const openCommit = (): void => {
+    setActivePane('surface');
+    setSurfaceTab('code');
+  };
+
   const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -666,7 +662,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     );
   }
 
-  if (project === undefined) {
+  if (project === undefined || organizationId === undefined) {
     return (
       <>
         <BuilderStyles />
@@ -747,16 +743,14 @@ export function Shell({ projectId }: ShellProps): ReactElement {
               data-mobile-active={activePane === 'conversation' ? 'true' : 'false'}
               id="conversation-pane"
             >
-              {firstPrompt === undefined ? (
-                <EmptyState
-                  description="Start a run to begin building with the agent."
-                  title="No conversation yet"
-                />
-              ) : (
-                <article aria-label="You" className="zapp-builder-first-message">
-                  <p>{firstPrompt}</p>
-                </article>
-              )}
+              <Thread
+                allowedModels={allowedModels}
+                branches={project.branches}
+                {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
+                onOpenCommit={openCommit}
+                organizationId={organizationId}
+                projectId={projectId}
+              />
             </section>
             <div
               aria-controls="conversation-pane surface-pane"

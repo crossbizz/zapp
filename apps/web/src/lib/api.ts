@@ -1,4 +1,9 @@
-import { createZappClient, type FetchImplementation, type paths } from '@zapp/api-client';
+import {
+  createZappClient,
+  type FetchImplementation,
+  type SubscribeRunEventsOptions,
+  type paths,
+} from '@zapp/api-client';
 
 const csrfCookieName = 'zapp_csrf';
 const csrfHeaderName = 'x-zapp-csrf';
@@ -9,6 +14,8 @@ export type CreateProjectInput =
 export type CreateRunInput =
   paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
 export type ListProjectsQuery = NonNullable<paths['/v1/projects']['get']['parameters']['query']>;
+export type CreateRunMessageInput =
+  paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -48,10 +55,15 @@ const browserFetch: FetchImplementation = async (input, init) => {
  * are selected by the generated client from each public OpenAPI operation.
  */
 export function createControlPlaneClient(organizationId?: string) {
+  const scopedFetch: FetchImplementation = async (input, init) => {
+    const scopedHeaders = new Headers(init.headers);
+    if (organizationId !== undefined) scopedHeaders.set('x-organization-id', organizationId);
+    return await browserFetch(input, { ...init, headers: scopedHeaders });
+  };
   const client = createZappClient({
     baseUrl: controlPlaneUrl(),
     getToken: () => '',
-    fetch: browserFetch,
+    fetch: scopedFetch,
   });
   const organizationHeaders =
     organizationId === undefined ? undefined : { 'x-organization-id': organizationId };
@@ -95,6 +107,38 @@ export function createControlPlaneClient(organizationId?: string) {
         headers: headers(true, true, idempotencyKey),
         body,
       }),
+    listRuns: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/runs', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    sendRunMessage: (runId: string, body: CreateRunMessageInput, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/messages', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+        body,
+      }),
+    uploadAttachment: (projectId: string, file: File, idempotencyKey?: string) => {
+      const body = new FormData();
+      body.append('file', file, file.name);
+      return client.request('/v1/projects/{projectId}/attachments', {
+        method: 'POST',
+        path: { projectId },
+        headers: headers(true, true, idempotencyKey),
+        body,
+      });
+    },
+    cancelRun: (runId: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/cancel', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    subscribeRunEvents: (runId: string, options: SubscribeRunEventsOptions) =>
+      client.subscribeRunEvents(runId, options),
     logout: () =>
       client.request('/v1/auth/logout', {
         method: 'POST',
