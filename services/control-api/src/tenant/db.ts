@@ -78,6 +78,7 @@ import {
   NO_SYNC,
   type SourceType,
 } from './vocabulary.js';
+import type { ProjectDashboardSummarySource } from './view.js';
 
 const PrototypeAssumptionsPayloadSchema = z
   .object({
@@ -250,6 +251,11 @@ export interface TenantProjectRepository extends Omit<ProjectRepository, 'list'>
   list(request: ProjectListRequest): Promise<StorePage<Project>>;
   create(input: NewProjectInput): Promise<CreatedProject>;
   update(input: UpdateProjectInput): Promise<UpdatedProject>;
+}
+
+/** Batch dashboard projection. `undefined` keeps a mixed tenant batch opaque. */
+export interface TenantProjectSummaryRepository {
+  forProjects(projectIds: readonly string[]): Promise<ProjectDashboardSummarySource[] | undefined>;
 }
 
 export interface TenantRepositoryRepository {
@@ -649,6 +655,7 @@ export interface TenantAuditEventRepository {
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
 export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
+  readonly projectSummaries: TenantProjectSummaryRepository;
   readonly runs: TenantRunRepository;
   readonly workspaces: TenantWorkspaceRepository;
   readonly repositories: TenantRepositoryRepository;
@@ -721,6 +728,103 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
     return {
       ...base,
+
+      projectSummaries: {
+        async forProjects(projectIds) {
+          const requested = sql.join(projectIds.map((projectId) => sql`${projectId}`), sql`, `);
+          const rows = await db.execute<{
+            readonly projectId: string;
+            readonly found: boolean;
+            readonly lastActivityAt: Date | null;
+            readonly previewOccurredAt: Date | null;
+            readonly previewPayload: unknown;
+            readonly releaseId: string | null;
+            readonly releaseStatus: string | null;
+            readonly releaseCreatedAt: Date | null;
+            readonly deploymentStatus: string | null;
+            readonly deploymentOccurredAt: Date | null;
+          }>(sql`
+            with requested(project_id, ordinal) as (
+              select * from unnest(array[${requested}]::text[]) with ordinality
+            )
+            select
+              requested.project_id as "projectId",
+              projects.id is not null as "found",
+              activity.occurred_at as "lastActivityAt",
+              preview.occurred_at as "previewOccurredAt",
+              preview.payload_json as "previewPayload",
+              release.id as "releaseId",
+              release.status as "releaseStatus",
+              release.created_at as "releaseCreatedAt",
+              deployment.status as "deploymentStatus",
+              coalesce(deployment.completed_at, deployment.started_at) as "deploymentOccurredAt"
+            from requested
+            left join projects
+              on projects.organization_id = ${orgId}
+              and projects.id = requested.project_id
+            left join lateral (
+              select occurred_at
+              from agent_events
+              where organization_id = ${orgId}
+                and project_id = projects.id
+                and visibility = 'user'
+              order by occurred_at desc
+              limit 1
+            ) activity on true
+            left join lateral (
+              select occurred_at, payload_json
+              from agent_events
+              where organization_id = ${orgId}
+                and project_id = projects.id
+                and visibility = 'user'
+                and type in ('preview.starting', 'preview.ready', 'preview.failed')
+                and jsonb_typeof(payload_json) = 'object'
+                and payload_json - 'status' = '{}'::jsonb
+                and payload_json ->> 'status' in ('not_started', 'starting', 'ready', 'failed')
+              order by occurred_at desc
+              limit 1
+            ) preview on true
+            left join lateral (
+              select releases.id, releases.status, releases.created_at
+              from releases
+              inner join environments
+                on environments.id = releases.environment_id
+                and environments.organization_id = ${orgId}
+                and environments.type = 'production'
+              where releases.organization_id = ${orgId}
+                and releases.project_id = projects.id
+              order by releases.created_at desc
+              limit 1
+            ) release on true
+            left join lateral (
+              select deployments.status, deployments.started_at, deployments.completed_at
+              from deployments
+              where deployments.organization_id = ${orgId}
+                and deployments.release_id = release.id
+              order by deployments.started_at desc
+              limit 1
+            ) deployment on true
+            order by requested.ordinal
+          `);
+          if (rows.some((row) => !row.found)) return undefined;
+          return rows.map((row) => ({
+            projectId: row.projectId,
+            lastActivityAt: row.lastActivityAt,
+            preview:
+              row.previewOccurredAt === null
+                ? null
+                : { occurredAt: row.previewOccurredAt, payload: row.previewPayload },
+            release:
+              row.releaseId === null || row.releaseStatus === null || row.releaseCreatedAt === null
+                ? null
+                : { id: row.releaseId, status: row.releaseStatus, createdAt: row.releaseCreatedAt },
+            deployment:
+              row.deploymentStatus === null || row.deploymentOccurredAt === null
+                ? null
+                : { status: row.deploymentStatus, occurredAt: row.deploymentOccurredAt },
+          }));
+        },
+      },
 
       events: {
         ...base.events,

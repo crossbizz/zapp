@@ -141,6 +141,13 @@
       "when": 1786365956462,
       "tag": "0019_gifted_lockjaw",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786421168569,
+      "tag": "0020_bright_chamber",
+      "breakpoints": true
     }
   ]
 }

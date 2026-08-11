@@ -4550,6 +4550,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    projectId: string[];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            summaries: {
+                                deployReadiness: {
+                                    findings: {
+                                        /** @enum {string} */
+                                        action: "fix_and_recheck" | "review" | "waive";
+                                        detail: string;
+                                        id: string;
+                                        /** @enum {string} */
+                                        severity: "blocker" | "warning";
+                                        title: string;
+                                    }[];
+                                    releaseId: string;
+                                    /** @enum {string} */
+                                    state: "ready" | "warnings" | "blocked";
+                                } | null;
+                                /** Format: date-time */
+                                lastActivityAt: string | null;
+                                preview: {
+                                    /** Format: date-time */
+                                    occurredAt: string;
+                                    /** @enum {string} */
+                                    status: "not_started" | "starting" | "ready" | "failed";
+                                } | null;
+                                production: {
+                                    /** Format: date-time */
+                                    occurredAt: string | null;
+                                    releaseId: string | null;
+                                    /** @enum {string} */
+                                    status: "not_deployed" | "deploying" | "healthy" | "failed";
+                                };
+                                projectId: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/releases/{releaseId}": {
         parameters: {
             query?: never;

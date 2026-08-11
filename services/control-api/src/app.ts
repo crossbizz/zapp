@@ -72,6 +72,7 @@ import {
 import { registerAuditRoutes } from './routes/audit.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import { registerProjectSummaryRoutes } from './routes/project-summaries.js';
 import {
   registerPreviewRoutes,
   rewritePreviewOriginUrl,
@@ -506,6 +507,11 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // never ship.
         if (tenant !== undefined) {
           registerAuditRoutes(app, { organizations: orgs.organizations });
+          // Static paths must be enrolled before `/v1/projects/:projectId`, or
+          // Fastify treats `summaries` as a malformed project id.
+          registerProjectSummaryRoutes(app, {
+            releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
+          });
           registerProjectRoutes(app, {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),

@@ -9,11 +9,13 @@ import type {
   Artifact,
   AuditEvent,
   Branch,
+  Deployment,
   Environment,
   Project,
   ProjectContract,
   PreviewShareRow,
   Repository,
+  Release,
   RunCreditAccount,
   RunCreditCeilingAdjustment,
   SecretMetadata,
@@ -82,6 +84,8 @@ export class InMemoryTenantData {
   readonly repositories: Repository[] = [];
   readonly branches: Branch[] = [];
   readonly environments: Environment[] = [];
+  readonly releases: Release[] = [];
+  readonly deployments: Deployment[] = [];
   readonly contracts: ProjectContract[] = [];
   readonly specifications: Specification[] = [];
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
@@ -149,6 +153,18 @@ export class InMemoryTenantData {
  */
 function mine<T extends { organizationId: string }>(organizationId: string, rows: T[]): T[] {
   return rows.filter((row) => row.organizationId === organizationId);
+}
+
+function isValidPreviewPayload(payload: unknown): payload is { readonly status: string } {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false;
+  const entries = Object.entries(payload);
+  const entry = entries[0];
+  return (
+    entries.length === 1 &&
+    entry !== undefined &&
+    entry[0] === 'status' &&
+    ['not_started', 'starting', 'ready', 'failed'].includes(entry[1] as string)
+  );
 }
 
 /** The in-memory counterpart to CP-10's tenant-project row lock. */
@@ -371,6 +387,66 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         await input.audit(NO_TRANSACTION, updated);
         data.projects.splice(data.projects.indexOf(existing), 1, updated);
         return updated;
+      },
+    },
+
+    projectSummaries: {
+      forProjects(projectIds) {
+        const tenantProjects = projectIds.map((projectId) =>
+          mine(orgId, data.projects).find((project) => project.id === projectId),
+        );
+        if (tenantProjects.some((project) => project === undefined)) return Promise.resolve(undefined);
+        return Promise.resolve(
+          tenantProjects.map((project) => {
+            if (project === undefined) throw new Error('tenant project disappeared');
+            const visible = mine(orgId, data.events)
+              .filter((event) => event.projectId === project.id && event.visibility === 'user')
+              .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime());
+            const preview = visible.find(
+              (event) =>
+                ['preview.starting', 'preview.ready', 'preview.failed'].includes(event.type) &&
+                isValidPreviewPayload(event.payloadJson),
+            );
+            const productionEnvironment = mine(orgId, data.environments).find(
+              (environment) => environment.projectId === project.id && environment.type === 'production',
+            );
+            const release =
+              productionEnvironment === undefined
+                ? undefined
+                : mine(orgId, data.releases)
+                    .filter(
+                      (candidate) =>
+                        candidate.projectId === project.id &&
+                        candidate.environmentId === productionEnvironment.id,
+                    )
+                    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
+            const deployment =
+              release === undefined
+                ? undefined
+                : mine(orgId, data.deployments)
+                    .filter((candidate) => candidate.releaseId === release.id)
+                    .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())[0];
+            return {
+              projectId: project.id,
+              lastActivityAt: visible[0]?.occurredAt ?? null,
+              preview:
+                preview === undefined
+                  ? null
+                  : { occurredAt: preview.occurredAt, payload: preview.payloadJson },
+              release:
+                release === undefined
+                  ? null
+                  : { id: release.id, status: release.status, createdAt: release.createdAt },
+              deployment:
+                deployment === undefined
+                  ? null
+                  : {
+                      status: deployment.status,
+                      occurredAt: deployment.completedAt ?? deployment.startedAt,
+                    },
+            };
+          }),
+        );
       },
     },
 

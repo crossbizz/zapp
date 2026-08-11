@@ -51,6 +51,90 @@ export const ProjectSchema = z.object({
   archivedAt: z.string().datetime().nullable(),
 });
 
+/** ADR-0028's public, durable dashboard card contract. */
+const PreviewPayloadSchema = z.object({
+  status: z.enum(['not_started', 'starting', 'ready', 'failed']),
+}).strict();
+
+export const ProjectDashboardPreviewSchema = z.object({
+  status: PreviewPayloadSchema.shape.status,
+  occurredAt: z.string().datetime(),
+}).strict();
+
+export const ProjectDashboardProductionSchema = z.object({
+  status: z.enum(['not_deployed', 'deploying', 'healthy', 'failed']),
+  occurredAt: z.string().datetime().nullable(),
+  releaseId: z.string().nullable(),
+}).strict();
+
+export const ReadinessFindingSchema = z.object({
+  id: z.string().min(1),
+  severity: z.enum(['blocker', 'warning']),
+  title: z.string().min(1),
+  detail: z.string().min(1),
+  action: z.enum(['fix_and_recheck', 'review', 'waive']),
+}).strict();
+
+export const ProjectDashboardDeployReadinessSchema = z.object({
+  releaseId: z.string(),
+  state: z.enum(['ready', 'warnings', 'blocked']),
+  findings: z.array(ReadinessFindingSchema),
+}).strict();
+
+export const ProjectDashboardSummarySchema = z.object({
+  projectId: z.string(),
+  lastActivityAt: z.string().datetime().nullable(),
+  preview: ProjectDashboardPreviewSchema.nullable(),
+  production: ProjectDashboardProductionSchema,
+  deployReadiness: ProjectDashboardDeployReadinessSchema.nullable(),
+}).strict();
+
+export const ProjectDashboardSummariesResponseSchema = z.object({
+  summaries: z.array(ProjectDashboardSummarySchema),
+}).strict();
+
+export type ProjectDashboardSummary = z.infer<typeof ProjectDashboardSummarySchema>;
+export type ProjectDashboardSummariesResponse = z.infer<
+  typeof ProjectDashboardSummariesResponseSchema
+>;
+
+export interface ProjectDashboardSummarySource {
+  readonly projectId: string;
+  readonly lastActivityAt: Date | null;
+  readonly preview: { readonly occurredAt: Date; readonly payload: unknown } | null;
+  readonly release: { readonly id: string; readonly status: string; readonly createdAt: Date } | null;
+  readonly deployment: { readonly status: string; readonly occurredAt: Date } | null;
+}
+
+export function toProjectDashboardSummary(
+  source: ProjectDashboardSummarySource,
+  deployReadiness: z.infer<typeof ProjectDashboardDeployReadinessSchema> | null,
+): ProjectDashboardSummary {
+  const parsedPreview = source.preview === null ? undefined : PreviewPayloadSchema.safeParse(source.preview.payload);
+  const preview =
+    parsedPreview?.success === true && source.preview !== null
+      ? { status: parsedPreview.data.status, occurredAt: source.preview.occurredAt.toISOString() }
+      : null;
+  const release = source.release;
+  const deployment = source.deployment;
+  const productionStatus =
+    deployment?.status === 'healthy' ? 'healthy' :
+    deployment?.status === 'failed' ? 'failed' :
+    release?.status === 'deploying' ? 'deploying' : 'not_deployed';
+
+  return ProjectDashboardSummarySchema.parse({
+    projectId: source.projectId,
+    lastActivityAt: source.lastActivityAt?.toISOString() ?? null,
+    preview,
+    production: {
+      status: productionStatus,
+      occurredAt: deployment?.occurredAt.toISOString() ?? release?.createdAt.toISOString() ?? null,
+      releaseId: release?.id ?? null,
+    },
+    deployReadiness,
+  });
+}
+
 /**
  * The repository a project's code lives in (PRD §19.1). `internalRepoRef` is the
  * `owner/name` of the internal Forgejo repository and is safe to show: it is

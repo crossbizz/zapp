@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 
 import {
   activityIdempotency,
@@ -202,7 +203,10 @@ describe('agent_events', () => {
   });
 
   it('scopes, binds replay relations, and time-bounds the tenant read (master plan §5.2)', () => {
-    expect(indexNames(agentEvents)).toEqual(['agent_events_org_occurred_at_idx']);
+    expect(indexNames(agentEvents)).toEqual([
+      'agent_events_org_occurred_at_idx',
+      'agent_events_org_project_occurred_at_idx',
+    ]);
     expect(foreignKeys(agentEvents)).toEqual([
       'organization_id -> organizations.id',
       'run_id -> agent_runs.id',
@@ -211,6 +215,21 @@ describe('agent_events', () => {
       'task_id -> agent_tasks.id',
       'project_id, organization_id -> projects.id, organization_id',
     ]);
+  });
+
+  it('orders dashboard event lookups by newest event within each tenant project', () => {
+    const index = getTableConfig(agentEvents).indexes.find(
+      (candidate) => candidate.config.name === 'agent_events_org_project_occurred_at_idx',
+    );
+    const columns = index?.config.columns.map((column) => {
+      const indexed = column as unknown as {
+        readonly name: string;
+        readonly indexConfig: { readonly order: 'asc' | 'desc' };
+      };
+      return `${indexed.name} ${indexed.indexConfig.order.toUpperCase()}`;
+    });
+
+    expect(columns).toEqual(['organization_id ASC', 'project_id ASC', 'occurred_at DESC']);
   });
 
   it('caps the payload at 64 KiB and the visibility at the PRD §14.4 set', () => {

@@ -168,6 +168,11 @@ export const agentEvents = pgTable(
     // Master plan §5.2: the tenant-scoped, time-bounded read, and what lets the
     // planner prune partitions instead of scanning every month.
     index('agent_events_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+    index('agent_events_org_project_occurred_at_idx').on(
+      t.organizationId,
+      t.projectId,
+      t.occurredAt.desc(),
+    ),
     projectTenantForeignKey('agent_events', t.projectId, t.organizationId),
   ],
 );

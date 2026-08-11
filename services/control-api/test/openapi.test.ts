@@ -91,6 +91,7 @@ describe('GET /v1/openapi.json', () => {
     );
     expect(Object.keys(document.paths)).toEqual(expect.arrayContaining([
       '/v1/projects',
+      '/v1/projects/summaries',
       '/v1/organizations/{orgId}/audit-events',
       '/v1/organizations/{orgId}/settings',
       '/v1/workspaces/{workspaceId}/preview/shares',
@@ -107,7 +108,7 @@ describe('GET /v1/openapi.json', () => {
       '/v1/projects/{projectId}/attachments',
       '/v1/attachments/{attachmentId}',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(62);
+    expect(Object.keys(document.paths)).toHaveLength(63);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 
