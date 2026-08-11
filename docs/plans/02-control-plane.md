@@ -208,6 +208,18 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 - [x] Failing tests first: duplicate idempotent message POST → single `message.user` event and sequence; message to a completed run → 409 `run_not_active`; cross-tenant runId → 404; attachment round-trip incl. 413 over size cap and content-type allowlist; SSE replay returns `message.*` in sequence order; OpenAPI snapshot diff is additive only (breaking-change detector green).
 - [x] Commit: `feat(control-api): public conversation continuation + attachments (ADR-0027)`
 
+### Task CP-21 [M1 pull-forward]: Project dashboard summary read model
+
+**Files:** Create: `services/control-api/src/routes/project-summaries.ts`, `services/control-api/test/project-summaries.test.ts`; Modify: `services/control-api/src/app.ts`, `services/control-api/src/tenant/db.ts`, `services/control-api/src/tenant/view.ts`, `services/control-api/test/support/tenant-db.ts`, `services/control-api/test/support/harness.ts`, `packages/db/src/schema/execution.ts`, `packages/db/test/schema-execution.test.ts`, next generated `packages/db/drizzle/0020_*.sql` and matching `packages/db/drizzle/meta/*`, generated `packages/api-client/openapi.json`, `packages/api-client/src/generated.ts`, `packages/api-client/src/generated-operations.ts`, `services/control-api/test/openapi.test.ts`, `docs/plans/02-control-plane.md`, `tasks/todo.md`
+**Interfaces produced:** `GET /v1/projects/summaries?projectId=<proj>&projectId=<proj>` returns `200 { summaries: ProjectDashboardSummary[] }` for 1–100 IDs in request order; strict `ProjectDashboardSummarySchema` and `ProjectDashboardSummariesResponseSchema` with schema-inferred types; `TenantProjectSummaryRepository.forProjects(projectIds)` returns tenant rows in input order or `undefined` when any ID is outside the tenant; generated SDK GET operation with repeated `projectId` query values. The route authorizes `view_project`; last activity is the latest user-visible event (never `createdAt`), malformed preview state is absent, production state is read only from persisted release/deployment state, and unavailable `ReleasePort.getReadiness({ organizationId, releaseId })` yields null readiness rather than invented readiness.
+**Effort:** M
+
+- [ ] Failing route tests first: request-order summaries; mixed local/foreign IDs return one 404 with no partial result; no user-visible events yield null activity; latest valid preview event and production state are returned; readiness is only injected from the release port.
+- [ ] Implement strict Zod schemas and route projection; register the static route before project parameter routes.
+- [ ] Add `(organization_id, project_id, occurred_at DESC)` to `agent_events`, generate the migration, and use one bounded tenant query rather than an event query per card.
+- [ ] Generate SDK and verify focused route, OpenAPI, API-client, schema, lint, and typecheck suites.
+- [ ] Commit: `feat(control-api): public project dashboard summaries`
+
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
 **Files:** Create: `src/jobs/retention.ts`, `src/jobs/deletion.ts`, `test/integration/deletion.test.ts`

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Forgejo 9 (Fly.io + volume), simple-git/isomorphic-git (service-side ops), Octokit + GitHub App JWT, Supabase Management API, Neon API, Stripe SDK.
 
-**Milestone:** GIT-1..4 (M0–M1), INT-1..9 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore).
+**Milestone:** GIT-1..4 (M0–M1), INT-1..2 (M1 pull-forward), INT-3..9 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore).
 
 ## Global Constraints
 
@@ -152,22 +152,22 @@ be built:
 - [x] Verify: backup of seeded repo → delete repo → restore → clone matches original head.
 - [x] Commit: `feat(git-service): nightly bundle backups + tested restore path`
 
-### Task INT-1 [M4]: GitHub App + webhooks
+### Task INT-1 [M1 pull-forward]: GitHub App installation, discovery, and verified webhooks
 
-**Files:** Create: `services/control-api/src/integrations/github/{app,webhooks,install}.ts`, `infra/terraform/github-app.tf` (manifest), `test/github-webhooks.test.ts`
+**Files:** Create: `services/control-api/src/integrations/github/{schemas,ports,app,install,webhooks,store,queue}.ts`, `services/control-api/test/github-install.test.ts`, `services/control-api/test/github-webhooks.test.ts`, `services/control-api/test/integration/github-live.test.ts`, `infra/terraform/github-app.tf`; Modify: `services/control-api/src/{app,compose,server,server-bootstrap,env}.ts`, `services/control-api/src/tenant/{db,view}.ts`, `services/control-api/src/redis/client.ts` only if its existing `eval` surface needs no new command, `services/control-api/test/support/{harness,tenant-db}.ts`, `services/control-api/test/{compose,env,server-bootstrap,openapi}.test.ts`, `services/control-api/package.json`, `packages/db/src/schema/security.ts`, `packages/db/test/{schema-security,prd-schema-conformance}.test.ts`, next generated `packages/db/drizzle/0021_*.sql` and matching meta, `infra/docker/localstack/init-aws.sh`, `infra/docker/docker-compose.dev.yml`, `scripts/dev-up.sh`, `.env.example`, `pnpm-lock.yaml`, generated `packages/api-client/{openapi.json,src/generated.ts,src/generated-operations.ts}`, `docs/plans/06-git-and-integrations.md`, `tasks/todo.md`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §19.2): GitHub App (permissions: contents rw, pull_requests rw, checks read, metadata; events: push, pull_request, installation) install at org/user level → `POST /v1/integrations/github/install` completes handshake, stores installation id in `integration_connections`; webhook receiver verifies signature, enqueues `github.push` etc. to SQS queue `zapp-github-webhooks` (DLQ-backed; LocalStack locally; processed by INT-3); repo selection API lists installation repos.
-- [ ] Failing tests: signature verification (invalid → 401); installation persisted; push event enqueued exactly once (delivery id dedupe).
+- [ ] Binding interfaces (PRD §19.2): `POST /v1/integrations/github/install/authorize` returns `{ url }`; the existing `POST /v1/integrations/github/install` completes the handshake and returns safe `IntegrationConnectionSchema` metadata; repository and branch GET routes use the opaque-cursor contracts in ADR-0028; `POST /v1/webhooks/github` verifies raw-body HMAC-SHA-256 before parse, deduplicates delivery IDs, and durably enqueues supported `push`, `pull_request`, and `installation` events to DLQ-backed `zapp-github-webhooks`. Unknown event types are successful no-ops; invalid signatures return 401 without enqueue. `GitHubProviderPort` uses `@octokit/rest` 20.1.2 and existing `jose` JWT signing. Authorization state is actor/organization-bound, random, Redis-stored for 600,000 ms, and atomically consumed; installation, repository, and branch reads are tenant-scoped 404s before any provider call.
+- [ ] Failing tests: authorization state expiry/replay/mismatch; repository and branch pagination and foreign installation 404; invalid signature 401/no enqueue; supported delivery one-time outbox enqueue; duplicate delivery no second row; unknown type no row; publisher crash/replay settlement; lifecycle drain. LocalStack creates `zapp-github-webhooks` and `zapp-github-imports` plus DLQs idempotently; live GitHub tests skip visibly without M4 credentials.
 - [ ] Commit: `feat(integrations): github app install + verified webhooks`
 
-### Task INT-2 [M4]: GitHub import
+### Task INT-2 [M1 pull-forward]: Durable GitHub import and internal mirror
 
-**Files:** Create: `src/integrations/github/import.ts`, `test/integration/import.test.ts`
+**Files:** Create: `services/control-api/src/integrations/github/{import,import-store,import-queue}.ts`, `services/control-api/test/github-import.test.ts`, `services/control-api/test/github-import-queue.test.ts`, `services/control-api/test/integration/github-import-live.test.ts`, `services/git-service/src/import/{mirror,git}.ts`, `services/git-service/test/import-mirror.test.ts`, `services/git-service/test/integration/import-mirror.test.ts`; Modify: `services/control-api/src/{app,compose,server,server-bootstrap,env}.ts`, `services/control-api/src/tenant/db.ts`, `services/control-api/test/support/{harness,tenant-db}.ts`, `services/git-service/src/{app,routes,compose}.ts`, `services/control-api/src/git/{port,client}.ts`, `services/control-api/test/git-client.test.ts`, `packages/db/src/schema/security.ts`, `packages/db/test/{schema-security,prd-schema-conformance}.test.ts`, next generated `packages/db/drizzle/0022_*.sql` and matching meta, generated `packages/api-client/{openapi.json,src/generated.ts,src/generated-operations.ts}`, `docs/plans/06-git-and-integrations.md`, `tasks/todo.md`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §10.2): `POST /v1/projects/:id/import/github` `{ installationId, repo, branch }` → project record (source_type `github_import`) → workspace clone via installation token → push mirror to internal Git (all refs of selected branch lineage) → `repositories.external_repo_ref` set, sync_policy default `manual_push` → capability scan (VF-3) auto-triggered → support-level report to conversation.
-- [ ] Failing integration test (against a seeded fixture repo on a test org): import → internal repo head == GitHub head; scan row exists; re-import same repo → 409 `already_imported`.
+- [ ] Binding interfaces: keyed `POST /v1/projects/:projectId/import/github` returns 202 queued status and `GET /v1/projects/:projectId/import/github` returns the strict ADR-0028 enum `queued|mirroring|scan_pending|scan_accepted|failed`; `github_imports` has one row per project and `github_import_outbox` provides durable stage delivery; service-authenticated `POST /internal/git/repositories/:organizationId/:projectId/import` accepts source credentials only at this internal boundary and never logs them; idempotent mirror result is `{ externalRepoRef, branch, headCommitSha }`. POST validates same-tenant project/install, requires `sourceType === 'github_import'`, creates the import/outbox transactionally for `zapp-github-imports`, replays the same operation key, and returns 409 for a distinct key. The one-stage-per-delivery worker resumes persisted state, mirrors without force overwrite, persists `manual_push` plus ref/head, then hands off keyed VF-3 capability scan to `scan_accepted`; retryable failures remain pending and exhausted delivery produces stable `failed` state.
+- [ ] Failing tests: 202 durable acceptance, exact idempotency/409, foreign project or installation 404, source-type and permission checks, GET progress and redaction; branch lineage/head equality, equal-head retry/refusal of differing target/no force or token leakage; queued→mirroring→scan_pending→scan_accepted with redelivery, retry, DLQ settlement, and shutdown draining.
 - [ ] Commit: `feat(integrations): github repository import with internal mirror`
 
 ### Task INT-3 [M4]: Sync engine
