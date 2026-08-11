@@ -109,43 +109,43 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/runtime/local.ts`, `test/local-runtime.spec.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §21.3 local mode): implement `WorkspaceRuntime` (WS-1 interface, `kind: "local"`) in the Electron main process: exec via node-pty/execa rooted at project dir (same path-guard util), fs ops, git via bundled git, dev-server supervisor with port detection; agent runs execute **locally**: a desktop-hosted session loop (AR-6 packaged for local: model calls still via platform model-gateway over HTTPS — Global Constraint 2 holds; tools bound to local runtime); run state persisted to local SQLite so app restart resumes conversation (no P0 guarantee of durable autonomous execution offline — Autonomous mode requires cloud, enforced: mode picker disables it in local mode with "Move to cloud" hint, PRD §21.3).
-- [ ] Failing tests: WS-1 conformance suite (shared test kit from WS-1 runs against local adapter — path escape, timeout, truncation); local chat edit round-trip commits to local git.
-- [ ] Commit: `feat(desktop): local WorkspaceRuntime + local agent sessions`
+- [x] Binding behavior (PRD §21.3 local mode): implement `WorkspaceRuntime` (WS-1 interface, `kind: "local"`) in the Electron main process: exec via node-pty/execa rooted at project dir (same path-guard util), fs ops, git via bundled git, dev-server supervisor with port detection; agent runs execute **locally**: a desktop-hosted session loop (AR-6 packaged for local: model calls still via platform model-gateway over HTTPS — Global Constraint 2 holds; tools bound to local runtime); run state persisted to local SQLite so app restart resumes conversation (no P0 guarantee of durable autonomous execution offline — Autonomous mode requires cloud, enforced: mode picker disables it in local mode with "Move to cloud" hint, PRD §21.3).
+- [x] Failing tests: WS-1 conformance suite (shared test kit from WS-1 runs against local adapter — path escape, timeout, truncation); local chat edit round-trip commits to local git.
+- [x] Commit: `feat(desktop): local WorkspaceRuntime + local agent sessions`
 
 ### Task MAC-6-FIX-1 [M2]: Structural local-agent containment + terminal recovery
 
 **Files:** Modify: `apps/desktop/src/zapp/runtime/{local.ts,local-session.ts,local-agent-handler.ts}`, their existing specs, `tasks/todo.md`, this plan
 **Effort:** M
 
-- [ ] RED: prove an unknown secret in `.env`, Git metadata, or another untracked/ignored file cannot reach a model request or SQLite transcript; prove no model-facing tool can dispatch repository-controlled Git hooks, filters, merge drivers, or arbitrary host commands.
-- [ ] RED: prove a failed, cancelled, or budget-exhausted durable turn can accept the next keyed user message, reconcile any owned partial mutation, refresh the per-message budget, and produce a fresh completion/commit.
-- [ ] GREEN: expose only tracked or agent-owned files through a `.git`-denying model runtime; remove every model-facing Git mutator; build/apply exact agent commits through configuration-independent Git plumbing with the recorded-base CAS and unrelated index/worktree preservation.
-- [ ] GREEN: durably linearize each new user-message continuation from every terminal state, preserving monotonic completion identity and exact per-turn commit reporting.
-- [ ] Verify: focused containment/recovery tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
-- [ ] Commit: `fix(desktop): contain and recover local agent turns`
+- [x] RED: prove an unknown secret in `.env`, Git metadata, or another untracked/ignored file cannot reach a model request or SQLite transcript; prove no model-facing tool can dispatch repository-controlled Git hooks, filters, merge drivers, or arbitrary host commands.
+- [x] RED: prove a failed, cancelled, or budget-exhausted durable turn can accept the next keyed user message, reconcile any owned partial mutation, refresh the per-message budget, and produce a fresh completion/commit.
+- [x] GREEN: expose only tracked or agent-owned files through a `.git`-denying model runtime; remove every model-facing Git mutator; build/apply exact agent commits through configuration-independent Git plumbing with the recorded-base CAS and unrelated index/worktree preservation.
+- [x] GREEN: durably linearize each new user-message continuation from every terminal state, preserving monotonic completion identity and exact per-turn commit reporting.
+- [x] Verify: focused containment/recovery tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [x] Commit: `fix(desktop): contain and recover local agent turns`
 
 ### Task MAC-6-FIX-2 [M2]: Durable local turn results + mutation recovery
 
 **Files:** Modify: `apps/desktop/src/zapp/runtime/{local.ts,local-session.ts,local-agent-handler.ts}`, their existing specs, `apps/desktop/src/db/schema.ts`, `apps/desktop/drizzle/*`, `tasks/todo.md`, this plan
 **Effort:** M
 
-- [ ] RED: prove a crash after the transcript commit but before the assistant-message update replays the exact keyed terminal status, summary, and per-operation commit without another gateway call.
-- [ ] RED: prove a cancelled/budget terminal with an unresolved filesystem-tool lease cannot start the next turn or accept a late unmanifested mutation; prove agent-owned untracked paths survive handler/runtime recreation.
-- [ ] GREEN: persist a strict keyed operation receipt from pre-provider base commit count through terminal commit reconciliation; hydrate the model runtime's durable owned-path set; settle or fail closed on unknown mutation outcomes before continuation.
-- [ ] Verify: focused recovery/containment tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
-- [ ] Commit: `fix(desktop): durably reconcile local agent turns`
+- [x] RED: prove a crash after the transcript commit but before the assistant-message update replays the exact keyed terminal status, summary, and per-operation commit without another gateway call.
+- [x] RED: prove a cancelled/budget terminal with an unresolved filesystem-tool lease cannot start the next turn or accept a late unmanifested mutation; prove agent-owned untracked paths survive handler/runtime recreation.
+- [x] GREEN: persist a strict keyed operation receipt from pre-provider base commit count through terminal commit reconciliation; hydrate the model runtime's durable owned-path set; settle or fail closed on unknown mutation outcomes before continuation.
+- [x] Verify: focused recovery/containment tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [x] Commit: `fix(desktop): durably reconcile local agent turns`
 
 ### Task MAC-6-FIX-3 [M2]: Single-writer local operation finalization
 
 **Files:** Modify: `apps/desktop/src/zapp/runtime/local-session.ts`, its existing spec, `tasks/todo.md`, this plan
 **Effort:** S
 
-- [ ] RED: pause operation A after its terminal transcript and before its receipt completes; prove distinct operation B cannot start, mutate the Git ref, or replace A's exact terminal result.
-- [ ] GREEN: hold one process-lifetime writer for each `(runId, taskId)` through session execution, commit reconciliation, and receipt completion; a crash releases the writer while the pending receipt remains recoverable by the same operation key.
-- [ ] GREEN: make receipt completion idempotently return an already-completed exact receipt before comparing caller-derived recovery data.
-- [ ] Verify: focused concurrent finalization/replay tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
-- [ ] Commit: `fix(desktop): serialize local agent finalization`
+- [x] RED: pause operation A after its terminal transcript and before its receipt completes; prove distinct operation B cannot start, mutate the Git ref, or replace A's exact terminal result.
+- [x] GREEN: hold one process-lifetime writer for each `(runId, taskId)` through session execution, commit reconciliation, and receipt completion; a crash releases the writer while the pending receipt remains recoverable by the same operation key.
+- [x] GREEN: make receipt completion idempotently return an already-completed exact receipt before comparing caller-derived recovery data.
+- [x] Verify: focused concurrent finalization/replay tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
+- [x] Commit: `fix(desktop): serialize local agent finalization`
 
 ### Task MAC-7 [M4]: Docker runtime adapter
 
@@ -226,3 +226,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-6-FIX-1 BLOCKED — Containment, config-independent exact commits, terminal continuation, and truthful partial-commit reporting are focused-green (20/20), but the capped final review found missing keyed-result crash recovery, unresolved mutation-lease fencing, and durable owned-path hydration; provider acceptance was not consumed and MAC-6-FIX-2 owns the bounded closure.
 - 2026-08-10 MAC-6-FIX-2 BLOCKED — Exact keyed receipts, nonterminal unknown-outcome fencing, and exact durable owned-path add/remove recovery are focused-green (22/22), but the capped final review found terminal Git/receipt finalization can still overlap a distinct operation; provider acceptance was not consumed and MAC-6-FIX-3 owns the single-writer closure.
 - 2026-08-10 MAC-6-FIX-3 BLOCKED — Single-writer terminal finalization and authoritative receipt replay are locally green (25/25) with final review PASS, but the sole real Anthropic acceptance returned HTTP 401 `invalid x-api-key`; the task remains unchecked pending a valid provider credential.
+- 2026-08-10 MAC-6 done — Closed the local WorkspaceRuntime/session join after the single final real-provider gate succeeded through the production OpenAI adapter (`gpt-5-mini`, 17 input/62 output tokens); desktop 25/25, PostgreSQL accounting 1/1, model-gateway 83/83, architecture 184/184, and affected static checks passed.
+- 2026-08-10 MAC-6-FIX-1 done — The completed containment and terminal-continuation implementation passed the shared final MAC-6 verification and OpenAI provider gate; no additional provider call was made.
+- 2026-08-10 MAC-6-FIX-2 done — The durable receipt, mutation fencing, and owned-path recovery implementation passed the shared final MAC-6 verification and OpenAI provider gate; no additional provider call was made.
+- 2026-08-10 MAC-6-FIX-3 done — The single-writer finalization implementation passed 25/25 focused tests, final review remained PASS, and the one replacement real-provider acceptance completed through OpenAI without repeating the failed Anthropic call.
