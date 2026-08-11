@@ -1,6 +1,7 @@
 import {
   createZappClient,
   type FetchImplementation,
+  type SubscribePreviewEventsOptions,
   type SubscribeRunEventsOptions,
   type paths,
 } from '@zapp/api-client';
@@ -80,6 +81,12 @@ export function createControlPlaneClient(organizationId?: string) {
       : {}),
     ...(keyed ? { [idempotencyHeaderName]: idempotencyKey ?? crypto.randomUUID() } : {}),
   });
+  const requiredKeyHeaders = (
+    idempotencyKey?: string,
+  ): Record<string, string> & { readonly 'idempotency-key': string } => ({
+    ...headers(true, false),
+    'idempotency-key': idempotencyKey ?? crypto.randomUUID(),
+  });
 
   return {
     getMe: () =>
@@ -97,14 +104,14 @@ export function createControlPlaneClient(organizationId?: string) {
     createProject: (body: CreateProjectInput, idempotencyKey?: string) =>
       client.request('/v1/projects', {
         method: 'POST',
-        headers: headers(true, true, idempotencyKey),
+        headers: requiredKeyHeaders(idempotencyKey),
         body,
       }),
     createRun: (projectId: string, body: CreateRunInput, idempotencyKey?: string) =>
       client.request('/v1/projects/{projectId}/runs', {
         method: 'POST',
         path: { projectId },
-        headers: headers(true, true, idempotencyKey),
+        headers: requiredKeyHeaders(idempotencyKey),
         body,
       }),
     listRuns: (projectId: string, signal?: AbortSignal) =>
@@ -137,8 +144,47 @@ export function createControlPlaneClient(organizationId?: string) {
         path: { runId },
         headers: headers(true, true, idempotencyKey),
       }),
+    readDevServerLogs: (workspaceId: string, after = 0, signal?: AbortSignal) =>
+      client.request('/v1/workspaces/{workspaceId}/dev-server/logs', {
+        method: 'GET',
+        path: { workspaceId },
+        headers: headers(),
+        query: { after, limit: 100 },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    restartDevServer: (workspaceId: string, idempotencyKey?: string) =>
+      client.request('/v1/workspaces/{workspaceId}/dev-server/restart', {
+        method: 'POST',
+        path: { workspaceId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
+    startWorkspace: (workspaceId: string, idempotencyKey?: string) =>
+      client.request('/v1/workspaces/{workspaceId}/start', {
+        method: 'POST',
+        path: { workspaceId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    createPreviewShare: (
+      workspaceId: string,
+      policy: 'anyone_with_link' | 'org',
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/workspaces/{workspaceId}/preview/shares', {
+        method: 'POST',
+        path: { workspaceId },
+        headers: headers(true, true, idempotencyKey),
+        body: { expiresInSeconds: 8 * 60 * 60, policy },
+      }),
+    capturePreviewScreenshot: (workspaceId: string, idempotencyKey?: string) =>
+      client.request('/v1/workspaces/{workspaceId}/preview/screenshot', {
+        method: 'POST',
+        path: { workspaceId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
     subscribeRunEvents: (runId: string, options: SubscribeRunEventsOptions) =>
       client.subscribeRunEvents(runId, options),
+    subscribePreviewEvents: (workspaceId: string, options: SubscribePreviewEventsOptions) =>
+      client.subscribePreviewEvents(workspaceId, options),
     logout: () =>
       client.request('/v1/auth/logout', {
         method: 'POST',
@@ -160,3 +206,6 @@ export function createControlPlaneClient(organizationId?: string) {
 }
 
 export type MeResponse = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['getMe']>>;
+export type BuilderRun = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>
+>['items'][number];

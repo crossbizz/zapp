@@ -141,7 +141,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-15-FIX-2 Preview-proxy smoke readiness
 - [x] CP-21 Public builder preview bridge (ADR-0028)
 - [x] CP-21-FIX-1 Durable screenshot operation reservation
-- [ ] WEB-7 Preview panel + states + capture drawer
+- [x] WEB-7 Preview panel + states + capture drawer
+- [x] WEB-7-FIX-1 Bounded preview lifecycle closure
 - [ ] WEB-8 Element selection attachments
 - [ ] WEB-9 Mission Control drawer
 - [ ] WEB-10 Interview/spec/plan approval cards

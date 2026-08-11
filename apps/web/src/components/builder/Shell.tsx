@@ -14,10 +14,11 @@ import {
   type ReactElement,
 } from 'react';
 
-import { createControlPlaneClient } from '../../lib/api';
+import { createControlPlaneClient, type BuilderRun } from '../../lib/api';
 import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { organizationStorageKey, resolveOrganization } from '../../lib/session';
 import { Thread } from '../conversation/Thread';
+import type { ConversationImageInput } from '../conversation/Composer';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import { TopBar } from './TopBar';
 
@@ -392,6 +393,7 @@ function MissionControlEmpty(): ReactElement {
 
 export function Shell({ projectId }: ShellProps): ReactElement {
   const [activePane, setActivePane] = useState<BuilderPane>('conversation');
+  const [activeRun, setActiveRun] = useState<BuilderRun>();
   const [allowedModels, setAllowedModels] = useState<readonly string[]>([]);
   const [desktopSplit, setDesktopSplit] = useState(false);
   const [effectiveConversationWidth, setEffectiveConversationWidth] =
@@ -410,6 +412,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     () => new Set(),
   );
   const [project, setProject] = useState<ProjectResponse>();
+  const [previewAttachments, setPreviewAttachments] = useState<readonly ConversationImageInput[]>(
+    [],
+  );
   const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>('preview');
   const preferredConversationWidthRef = useRef(defaultConversationWidth);
   const activeResizePointerIdRef = useRef<number | null>(null);
@@ -744,10 +749,13 @@ export function Shell({ projectId }: ShellProps): ReactElement {
               id="conversation-pane"
             >
               <Thread
+                {...(activeRun === undefined ? {} : { adoptedRun: activeRun })}
                 allowedModels={allowedModels}
                 branches={project.branches}
+                incomingImages={previewAttachments}
                 {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
                 onOpenCommit={openCommit}
+                onRunChange={setActiveRun}
                 organizationId={organizationId}
                 projectId={projectId}
               />
@@ -776,7 +784,33 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             >
               <SurfaceTabs
                 focusPreviewRequest={focusPreviewRequest}
+                onAttachPreviewCapture={(file, capture) => {
+                  const id = crypto.randomUUID();
+                  return new Promise<boolean>((resolve) => {
+                    setPreviewAttachments((current) => [
+                      ...current,
+                      {
+                        capture,
+                        file,
+                        id,
+                        onConsumed(accepted) {
+                          setPreviewAttachments((pending) =>
+                            pending.filter((candidate) => candidate.id !== id),
+                          );
+                          if (accepted) {
+                            setActivePane('conversation');
+                          }
+                          resolve(accepted);
+                        },
+                      },
+                    ]);
+                  });
+                }}
+                onRunCreated={setActiveRun}
                 onValueChange={setSurfaceTab}
+                organizationId={organizationId}
+                projectId={projectId}
+                {...(activeRun === undefined ? {} : { runId: activeRun.id })}
                 value={surfaceTab}
               />
             </section>

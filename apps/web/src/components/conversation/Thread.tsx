@@ -5,23 +5,28 @@ import { EmptyState } from '@zapp/ui';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
 import { useRunEvents } from '../../hooks/useRunEvents';
-import { createControlPlaneClient, type CreateRunMessageInput } from '../../lib/api';
-import { Composer, type ConversationSubmission } from './Composer';
+import {
+  createControlPlaneClient,
+  type BuilderRun,
+  type CreateRunMessageInput,
+} from '../../lib/api';
+import { Composer, type ConversationImageInput, type ConversationSubmission } from './Composer';
 import { MessageBubble } from './MessageBubble';
 import { ProgressCard } from './ProgressCard';
 import { ToolActivityLine, type ToolActivity } from './ToolActivityLine';
 
 const activeRunStatuses = new Set(['paused', 'queued', 'running', 'waiting_for_approval']);
 
-type RunList = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>>;
-type Run = RunList['items'][number];
 type Attachment = NonNullable<CreateRunMessageInput['attachments']>[number];
 
 interface ThreadProps {
+  readonly adoptedRun?: BuilderRun;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
+  readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
   readonly onOpenCommit: (commitSha: string) => void;
+  readonly onRunChange: (run: BuilderRun | undefined) => void;
   readonly organizationId: string;
   readonly projectId: string;
 }
@@ -410,14 +415,17 @@ function ThreadStyles(): ReactElement {
 }
 
 export function Thread({
+  adoptedRun,
   allowedModels,
   branches,
+  incomingImages = [],
   initialPrompt,
   onOpenCommit,
+  onRunChange,
   organizationId,
   projectId,
 }: ThreadProps): ReactElement {
-  const [currentRun, setCurrentRun] = useState<Run>();
+  const [currentRun, setCurrentRun] = useState<BuilderRun>();
   const [loading, setLoading] = useState(true);
   const [operationError, setOperationError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -439,7 +447,10 @@ export function Thread({
     createControlPlaneClient(organizationId)
       .listRuns(projectId, controller.signal)
       .then((response) => {
-        setCurrentRun(response.items[0]);
+        if (controller.signal.aborted) return;
+        const run = response.items[0];
+        setCurrentRun(run);
+        onRunChange(run);
         setOperationError(undefined);
       })
       .catch(() => {
@@ -453,7 +464,12 @@ export function Thread({
     return () => {
       controller.abort();
     };
-  }, [organizationId, projectId]);
+  }, [onRunChange, organizationId, projectId]);
+
+  useEffect(() => {
+    if (adoptedRun === undefined || adoptedRun.id === currentRun?.id) return;
+    setCurrentRun(adoptedRun);
+  }, [adoptedRun, currentRun?.id]);
 
   const pendingSend = (submission: ConversationSubmission): PendingSend => {
     const fingerprint = submissionFingerprint(submission);
@@ -524,6 +540,7 @@ export function Thread({
       );
     }
     setCurrentRun(created.run);
+    onRunChange(created.run);
   };
 
   const send = async (submission: ConversationSubmission): Promise<boolean> => {
@@ -653,6 +670,7 @@ export function Thread({
         active={active}
         allowedModels={allowedModels}
         branches={branches}
+        incomingImages={incomingImages}
         onStop={stop}
         onSubmit={send}
         projectId={projectId}

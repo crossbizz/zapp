@@ -116,9 +116,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Depends on:** CP-21 / ADR-0028 public logs, restart, capture SSE, and screenshot SDK operations.
 **Effort:** L
 
-- [ ] Binding behavior: iframe on the same-origin zapp authenticated preview URL (WS-12/ADR-0023; no Modal URL or provider token reaches the client); toolbar matches the benchmark pattern: centered device-size toggles (desktop/tablet/mobile widths), top-right open-in-new-tab + refresh, URL path bar (route-change events update it), share (WS-12 share records UI), env badge "Preview"; states (PRD §26A.1): starting (skeleton + boot log tail), sleeping (wake CTA → workspace start), stale (banner "Preview is behind latest changes — Restart"), disconnected (retry), failed (ErrorState with actions incl. "Fix automatically" → Fix run with boot log attached); console/network drawer fed by proxy capture events (`/__zapp/events` relayed via preview status events): error rows carry "Attach to chat" button.
-- [ ] e2e (fixture proxy): state transitions render; console error attaches to composer as structured attachment.
-- [ ] Commit: `feat(web): live preview panel with states + capture drawer`
+- [x] Binding behavior: iframe on the same-origin zapp authenticated preview URL (WS-12/ADR-0023; no Modal URL or provider token reaches the client); toolbar matches the benchmark pattern: centered device-size toggles (desktop/tablet/mobile widths), top-right open-in-new-tab + refresh, URL path bar (route-change events update it), share (WS-12 share records UI), env badge "Preview"; states (PRD §26A.1): starting (skeleton + boot log tail), sleeping (wake CTA → workspace start), stale (banner "Preview is behind latest changes — Restart"), disconnected (retry), failed (ErrorState with actions incl. "Fix automatically" → Fix run with boot log attached); console/network drawer fed by proxy capture events (`/__zapp/events` relayed via preview status events): error rows carry "Attach to chat" button.
+- [x] e2e (fixture proxy): state transitions render; console error attaches to composer as structured attachment.
+- [x] Commit: `feat(web): live preview panel with states + capture drawer`
+
+#### WEB-7-FIX-1 — bounded preview lifecycle closure
+
+**Files:** Modify: `src/components/preview/{PreviewFrame,ConsoleDrawer}.tsx`, `src/components/builder/{Shell,SurfaceTabs}.tsx`, `src/components/conversation/{Thread,Composer}.tsx`, `src/lib/api.ts`, `e2e/preview-panel.spec.ts`, `packages/ui/src/components/overlays.tsx`, and API-client exports required by those files.
+
+- [x] **RED/evidence:** retain WEB-7 final review's correctness findings and extend the fixture test for in-page org-share renewal, live failed-state boot-log capture, and explicit composer-capacity rejection.
+- [x] **GREEN:** renew authenticated shares before expiry; keep screenshot keys until the response body is consumed; abort/fence stale workspace reads and mutation completions while clearing workspace-scoped keys; refresh the last log cursor on failure; and acknowledge composer acceptance before reporting a capture as attached.
+- [x] **Verify/review/ship:** run focused and full web gates plus API-client gates; run at most two fresh Critical/Important review rounds (exit zero); then close WEB-7 and WEB-7-FIX-1 together with no provider call.
 
 ### Task WEB-8 [M2]: Element selection + rich attachments
 
@@ -237,3 +245,5 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-08 M1-CI-playwright done — restored and installed the lockfile-pinned Chromium before the CI Turbo test DAG; exact ordering regression, actionlint, UI lint/typecheck, and focused tests passed with no provider runs.
 - 2026-08-08 WEB-6 unblocked by ADR-0027 — the missing public conversation contract (typed `message.*` events, required tool `userSummary`, `POST /v1/runs/:runId/messages` continuation, attachment upload) is now defined and assigned: CP-20 (plan 02) and AR-22 (plan 04) precede WEB-6 in the tracker. WEB-6 executes against the regenerated SDK once both land; assistant streaming deltas remain M2.
 - 2026-08-10 WEB-6 done — shipped the public-SDK event-sourced conversation, keyed continuation/new-run retry handling, persisted run controls, live progress, cancellation, and image paste/upload capped at 10; two review rounds closed with 74/74 web tests plus repository lint/typecheck green.
+- 2026-08-10 WEB-7 done — shipped the public-SDK live preview, lifecycle states, bounded cursor logs, expiring share renewal, capture drawer, keyed recovery actions, and structured screenshot-to-composer handoff; final review residuals were re-scoped to WEB-7-FIX-1 and no provider call was required.
+- 2026-08-10 WEB-7-FIX-1 done — fenced workspace transitions and concurrent actions, retained screenshot keys through body consumption, refreshed terminal failure logs, acknowledged composer capacity, and passed two fresh review rounds with no provider call.

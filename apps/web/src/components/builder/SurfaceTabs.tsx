@@ -1,13 +1,22 @@
 'use client';
 
+import type { BuilderPreviewEvent } from '@zapp/api-client';
 import { EmptyState, Tabs } from '@zapp/ui';
 import { useEffect, useRef, type ReactElement } from 'react';
+
+import type { BuilderRun } from '../../lib/api';
+import { PreviewFrame } from '../preview/PreviewFrame';
 
 export type SurfaceTab = 'preview' | 'code' | 'logs' | 'tests';
 
 interface SurfaceTabsProps {
   readonly focusPreviewRequest: number;
+  readonly onAttachPreviewCapture: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
+  readonly onRunCreated: (run: BuilderRun) => void;
   readonly onValueChange: (value: SurfaceTab) => void;
+  readonly organizationId: string;
+  readonly projectId: string;
+  readonly runId?: string;
   readonly value: SurfaceTab;
 }
 
@@ -15,7 +24,12 @@ const tabValues = new Set<SurfaceTab>(['preview', 'code', 'logs', 'tests']);
 
 export function SurfaceTabs({
   focusPreviewRequest,
+  onAttachPreviewCapture,
+  onRunCreated,
   onValueChange,
+  organizationId,
+  projectId,
+  runId,
   value,
 }: SurfaceTabsProps): ReactElement {
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -35,9 +49,12 @@ export function SurfaceTabs({
         items={[
           {
             content: (
-              <EmptyState
-                description="No preview has been created for this project."
-                title="Preview unavailable"
+              <PreviewFrame
+                onAttachToChat={onAttachPreviewCapture}
+                onRunCreated={onRunCreated}
+                organizationId={organizationId}
+                projectId={projectId}
+                {...(runId === undefined ? {} : { runId })}
               />
             ),
             label: 'Preview',
