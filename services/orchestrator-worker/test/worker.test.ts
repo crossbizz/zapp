@@ -14,7 +14,11 @@ import {
   type ProductionRunActivities,
   type RunActivities,
 } from '../src/worker.js';
-import { ACTIVITY_RETRY_POLICY, RunWorkflowInputSchema } from '../src/workflows/run.js';
+import {
+  ACTIVITY_RETRY_POLICY,
+  buildWorkflow,
+  RunWorkflowInputSchema,
+} from '../src/workflows/run.js';
 
 const unusedStore: ActivityIdempotencyStore = {
   claim: () => Promise.resolve({ status: 'acquired' }),
@@ -177,6 +181,7 @@ describe('AR-9 worker queue and activity policy', () => {
     await orchestrator.startRun(input);
 
     expect(start).toHaveBeenCalledOnce();
+    expect(start.mock.calls[0]?.[0]).toBe(buildWorkflow);
     expect(start.mock.calls[0]?.[1]).toMatchObject({ taskQueue: TASK_QUEUES.agentRuns });
   });
 });

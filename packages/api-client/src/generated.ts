@@ -3472,8 +3472,41 @@ export interface paths {
                         budget?: {
                             maxCredits: number;
                         };
+                        fixRequest: {
+                            evidence: ({
+                                artifactId: string;
+                                /** @enum {string} */
+                                kind: "preview_console" | "preview_network" | "failed_check" | "user_report";
+                                summary: string;
+                            } | {
+                                /** @enum {string} */
+                                kind: "grafana_faro" | "grafana_loki";
+                                summary: string;
+                                /** Format: uri */
+                                url: string;
+                            })[];
+                            relevantCommitSha: string;
+                            reproductionRef: string;
+                            /** @enum {string} */
+                            source: "error_report" | "failed_check" | "user_bug";
+                            summary: string;
+                        };
                         /** @enum {string} */
-                        mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
+                        mode: "fix";
+                        model?: string;
+                        prompt: string;
+                    } | {
+                        /**
+                         * @default web
+                         * @enum {string}
+                         */
+                        appType?: "web" | "mobile";
+                        branchId?: string;
+                        budget?: {
+                            maxCredits: number;
+                        };
+                        /** @enum {string} */
+                        mode: "ask" | "prototype" | "build" | "autonomous";
                         model?: string;
                         prompt: string;
                     };

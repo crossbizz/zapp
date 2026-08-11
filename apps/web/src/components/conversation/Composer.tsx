@@ -23,11 +23,10 @@ const modes = [
   { description: 'Get guidance without changing code.', label: 'Ask', value: 'ask' },
   { description: 'Explore with a lightweight first pass.', label: 'Prototype', value: 'prototype' },
   { description: 'Build a production-oriented change.', label: 'Build', value: 'build' },
-  { description: 'Repair a specific problem.', label: 'Fix', value: 'fix' },
   { description: 'Run the full workflow.', label: 'Autonomous', value: 'autonomous' },
 ] as const;
 
-export type ConversationMode = 'auto' | CreateRunInput['mode'];
+export type ConversationMode = 'auto' | Exclude<CreateRunInput['mode'], 'fix'>;
 
 export interface ConversationSubmission {
   readonly branchId?: string;

@@ -4,6 +4,7 @@ import {
   AppTypeSchema,
   AttachmentRefSchema,
   CreditDecimalSchema,
+  FixRequestSchema,
   MessageUserPayloadSchema,
   idSchema,
   ModelIdentifierSchema,
@@ -38,16 +39,22 @@ const ProjectParams = z.object({ projectId: idSchema('proj') });
 const RunBudgetSchema = z
   .object({ maxCredits: z.number().int().positive().max(1_000_000) })
   .strict();
-const CreateRunBody = z
-  .object({
-    mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']),
+const CreateRunBodyShape = {
     prompt: z.string().trim().min(1).max(20_000),
     branchId: idSchema('br').optional(),
     budget: RunBudgetSchema.optional(),
     appType: AppTypeSchema.default('web'),
     model: ModelIdentifierSchema.optional(),
-  })
-  .strict();
+} as const;
+const CreateRunBody = z.discriminatedUnion('mode', [
+  z.object({ ...CreateRunBodyShape, mode: z.literal('fix'), fixRequest: FixRequestSchema }).strict(),
+  z
+    .object({
+      ...CreateRunBodyShape,
+      mode: z.enum(['ask', 'prototype', 'build', 'autonomous']),
+    })
+    .strict(),
+]);
 const RedirectRunBody = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
 const ContinueRunBody = z
   .object({
@@ -233,6 +240,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             prompt: request.body.prompt,
             budget: RunBudgetSchema.parse(run.budgetJson),
             operationKey,
+            ...(request.body.mode === 'fix' ? { fixRequest: request.body.fixRequest } : {}),
           }),
         );
         z.void().parse(started);

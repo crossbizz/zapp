@@ -35,8 +35,12 @@ export {
 export {
   APP_TYPES,
   AppTypeSchema,
+  FixEvidenceSchema,
+  FixRequestSchema,
   ModelIdentifierSchema,
   type AppType,
+  type FixEvidence,
+  type FixRequest,
   type ModelIdentifier,
 } from './run-intent.js';
 export {
