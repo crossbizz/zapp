@@ -191,7 +191,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 - [x] INT-3 Sync engine (stale-base, conflicts)
 - [x] INT-4 GitHub export
-- [ ] INT-5 Supabase connect/provision/schema/types
+- [x] INT-5 Supabase connect/provision/schema/types
 - [ ] INT-6 Supabase migrations + RLS gen/tests
 - [ ] INT-7 Neon branch workflows
 - [ ] INT-8 Generated-app Stripe adapter

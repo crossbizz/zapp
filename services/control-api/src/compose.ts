@@ -40,7 +40,14 @@ import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
 import { createGitHubProvider } from './integrations/github/app.js';
-import { createRedisGitHubAuthorizationStateStore, createDbGitHubWebhookStore } from './integrations/github/store.js';
+import { createGitHubIntegrationPort } from './integrations/github/install.js';
+import {
+  createRedisGitHubAuthorizationStateStore,
+  createDbGitHubWebhookStore,
+} from './integrations/github/store.js';
+import { createSupabaseIntegrationPort } from './integrations/supabase/connect.js';
+import { createSupabaseManagementClient } from './integrations/supabase/provision.js';
+import type { IntegrationPort } from './routes/integrations.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -114,6 +121,43 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
    * by hex ids and `sid:`, service tokens by `svc:` (`serviceTokenKey`).
    */
   const denylist = createRedisTokenDenylist(redis);
+  const tenantDb = createTenantDbFactory(database);
+  const githubStateStore =
+    runtime.github === undefined ? undefined : createRedisGitHubAuthorizationStateStore(redis);
+  const githubProvider =
+    runtime.github === undefined
+      ? undefined
+      : createGitHubProvider({
+          appId: runtime.github.appId,
+          clientId: runtime.github.clientId,
+          clientSecret: runtime.github.clientSecret,
+          privateKey: runtime.github.privateKey,
+          ...(runtime.github.apiBaseUrl === undefined
+            ? {}
+            : { baseUrl: runtime.github.apiBaseUrl }),
+        });
+  const githubIntegration =
+    githubStateStore === undefined || githubProvider === undefined
+      ? undefined
+      : createGitHubIntegrationPort({
+          tenantDb,
+          provider: githubProvider,
+          stateStore: githubStateStore,
+        });
+  const supabaseIntegration = createSupabaseIntegrationPort({
+    database,
+    masterKey: runtime.masterKey,
+    management: createSupabaseManagementClient(),
+  });
+  const integrationPort: IntegrationPort = {
+    connect: (request) => {
+      if (request.provider === 'supabase') return supabaseIntegration.connect(request);
+      if (request.provider === 'github' && githubIntegration !== undefined) {
+        return githubIntegration.connect(request);
+      }
+      return Promise.reject(new Error('integration service unavailable'));
+    },
+  };
 
   return buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -135,7 +179,8 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // tenant plugin is unregistered and every tenant-scoped route is simply
     // absent.
     tenant: {
-      tenantDb: createTenantDbFactory(database),
+      tenantDb,
+      integrationPort,
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,
       ...(runtime.eventWakeups === undefined
@@ -194,21 +239,15 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
     },
-    ...(runtime.github === undefined
+    ...(runtime.github === undefined ||
+    githubStateStore === undefined ||
+    githubProvider === undefined
       ? {}
       : {
           github: {
             appSlug: runtime.github.appSlug,
-            stateStore: createRedisGitHubAuthorizationStateStore(redis),
-            provider: createGitHubProvider({
-              appId: runtime.github.appId,
-              clientId: runtime.github.clientId,
-              clientSecret: runtime.github.clientSecret,
-              privateKey: runtime.github.privateKey,
-              ...(runtime.github.apiBaseUrl === undefined
-                ? {}
-                : { baseUrl: runtime.github.apiBaseUrl }),
-            }),
+            stateStore: githubStateStore,
+            provider: githubProvider,
           },
           githubWebhook: {
             secret: runtime.github.webhookSecret,
