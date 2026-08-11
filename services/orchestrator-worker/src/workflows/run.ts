@@ -5,9 +5,11 @@ import {
   continueAsNew,
   defineQuery,
   defineSignal,
+  executeChild,
   isCancellation,
   proxyActivities,
   setHandler,
+  workflowInfo,
   type RetryPolicy,
 } from '@temporalio/workflow';
 import {
@@ -15,12 +17,27 @@ import {
   MessageUserPayloadSchema,
 } from '@zapp/contracts/events';
 import { TOOL_GROUPS, TOOL_NAMES, type ToolName } from '@zapp/contracts/tools';
+import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
 import type { ApprovalActivities } from '../activities/approvals.js';
 import type { SessionActivities } from '../activities/session.js';
+import type { VerifyPhaseActivities } from '../activities/verify-phase.js';
 import type { WorkspaceActivities } from '../activities/workspace.js';
+import {
+  ApprovePlanInputSchema,
+  ApprovePlanResultSchema,
+  AutonomousApprovalResolutionSchema,
+  autonomousPlanApprovalSignal,
+  ProducePlanInputSchema,
+  ProducePlanResultSchema,
+  ResolveIntegrationHeadInputSchema,
+  ResolveIntegrationHeadResultSchema,
+  TransitionPhaseTasksInputSchema,
+  type AutonomousActivities,
+} from './autonomous.js';
+import { runTaskBatchWorkflow, TaskWorkflowResultSchema } from './task.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
 export {
@@ -29,7 +46,9 @@ export {
   autonomousSpecificationApprovalSignal,
 } from './autonomous.js';
 
-const workflowIdSchema = (prefix: 'run' | 'org' | 'proj' | 'br' | 'art'): z.ZodString =>
+const workflowIdSchema = (
+  prefix: 'run' | 'org' | 'proj' | 'br' | 'art' | 'phase' | 'task' | 'vr',
+): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
 
 export const RunWorkflowInputSchema = z
@@ -57,9 +76,193 @@ export const RunWorkflowInputSchema = z
   .strict();
 export type RunWorkflowInput = z.infer<typeof RunWorkflowInputSchema>;
 
+export const BuildModePlanSchema = PlanSchema.superRefine((plan, context) => {
+  if (plan.phases.length !== 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'build_plan_requires_exactly_one_phase',
+      path: ['phases'],
+    });
+  }
+  if (plan.tasks.length > 5) {
+    context.addIssue({
+      code: z.ZodIssueCode.too_big,
+      type: 'array',
+      maximum: 5,
+      inclusive: true,
+      message: 'build_plan_exceeds_five_tasks',
+      path: ['tasks'],
+    });
+  }
+  const phase = plan.phases[0];
+  if (phase === undefined) return;
+  if (!workflowIdSchema('phase').safeParse(phase.id).success) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'build_phase_id_invalid',
+      path: ['phases', 0, 'id'],
+    });
+  }
+  const criteria = new Set(phase.acceptanceCriteria);
+  const taskIndexes = new Map(plan.tasks.map((task, index) => [task.id, index]));
+  for (const [index, task] of plan.tasks.entries()) {
+    if (!workflowIdSchema('task').safeParse(task.id).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'build_task_id_invalid',
+        path: ['tasks', index, 'id'],
+      });
+    }
+    if (task.phaseId !== phase.id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'build_task_must_belong_to_the_single_phase',
+        path: ['tasks', index, 'phaseId'],
+      });
+    }
+    for (const [criterionIndex, criterionId] of task.acceptanceCriteriaIds.entries()) {
+      if (!/^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/u.test(criterionId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'build_task_acceptance_criterion_id_invalid',
+          path: ['tasks', index, 'acceptanceCriteriaIds', criterionIndex],
+        });
+      }
+      if (!criteria.has(criterionId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'build_task_acceptance_criterion_missing_from_phase',
+          path: ['tasks', index, 'acceptanceCriteriaIds', criterionIndex],
+        });
+      }
+    }
+    for (const [dependencyIndex, dependencyId] of task.dependsOn.entries()) {
+      const resolvedIndex = taskIndexes.get(dependencyId);
+      if (resolvedIndex !== undefined && resolvedIndex >= index) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'build_tasks_must_be_topologically_ordered',
+          path: ['tasks', index, 'dependsOn', dependencyIndex],
+        });
+      }
+    }
+  }
+});
+export type BuildModePlan = z.infer<typeof BuildModePlanSchema>;
+
+const BuildModeApprovalConfigSchema = z
+  .object({
+    maxAutoApprovedDiffFiles: z.number().int().nonnegative().max(10_000),
+    maxAutoApprovedRisk: z.enum(['low', 'medium', 'high']),
+  })
+  .strict();
+export type BuildModeApprovalConfig = z.infer<typeof BuildModeApprovalConfigSchema>;
+
+export const BUILD_MODE_APPROVAL_CONFIG: BuildModeApprovalConfig = {
+  maxAutoApprovedDiffFiles: 8,
+  maxAutoApprovedRisk: 'low',
+};
+
+const RISK_RANK = { low: 0, medium: 1, high: 2 } as const;
+
+export const BuildModeApprovalAssessmentSchema = z
+  .object({
+    source: z.literal('policy_engine'),
+    diffFiles: z.number().int().nonnegative().max(100_000),
+    risk: z.enum(['low', 'medium', 'high']),
+  })
+  .strict();
+export type BuildModeApprovalAssessment = z.infer<
+  typeof BuildModeApprovalAssessmentSchema
+>;
+
+const AssessBuildPlanApprovalInputSchema = z
+  .object({
+    runId: workflowIdSchema('run'),
+    organizationId: workflowIdSchema('org'),
+    projectId: workflowIdSchema('proj'),
+    planArtifactId: workflowIdSchema('art'),
+    config: BuildModeApprovalConfigSchema,
+    idempotencyKey: z.string().min(1).max(512),
+  })
+  .strict();
+
+export function shouldAutoApproveBuildPlan(
+  assessmentValue: unknown,
+  configValue: unknown,
+): boolean {
+  const assessment = BuildModeApprovalAssessmentSchema.parse(assessmentValue);
+  const config = BuildModeApprovalConfigSchema.parse(configValue);
+  return (
+    assessment.diffFiles <= config.maxAutoApprovedDiffFiles &&
+    RISK_RANK[assessment.risk] <= RISK_RANK[config.maxAutoApprovedRisk]
+  );
+}
+
+export interface BuildModeActivities
+  extends Pick<
+    AutonomousActivities,
+    'producePlan' | 'approvePlan' | 'resolveIntegrationHead' | 'transitionPhaseTasks'
+  > {
+  /**
+   * Loads the immutable plan artifact and derives diff size and risk in the
+   * code-owned policy layer. It must fail closed when trusted classification
+   * is unavailable; model-authored plan metadata is not approval authority.
+   */
+  assessBuildPlanApproval(
+    input: z.infer<typeof AssessBuildPlanApprovalInputSchema>,
+  ): Promise<BuildModeApprovalAssessment>;
+}
+
+const BuildPlanContinuationSchema = z
+  .object({
+    phase: z.literal('build_plan'),
+    workspaceId: z.string().min(1).max(512),
+  })
+  .strict();
+const BuildExecuteContinuationSchema = z
+  .object({
+    phase: z.literal('build_execute'),
+    workspaceId: z.string().min(1).max(512),
+    planArtifactId: workflowIdSchema('art'),
+    plan: BuildModePlanSchema,
+  })
+  .strict();
+const BuildVerifyContinuationSchema = z
+  .object({
+    phase: z.literal('build_verify'),
+    workspaceId: z.string().min(1).max(512),
+    planArtifactId: workflowIdSchema('art'),
+    plan: BuildModePlanSchema,
+    commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+    taskCommits: z
+      .array(
+        z
+          .object({
+            taskId: workflowIdSchema('task'),
+            commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(5),
+  })
+  .strict();
+const BuildPhaseVerificationResultSchema = z
+  .object({
+    verificationResultId: workflowIdSchema('vr'),
+    decision: z.enum(['approved', 'rejected', 'needs_human']),
+    criteriaResults: z.array(z.unknown()).min(1).max(1_000),
+    risks: z.array(z.unknown()).max(1_000),
+  })
+  .strict();
+
 const RunWorkflowContinuationSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('session'), workspaceId: z.string().min(1).max(512) }).strict(),
   z.object({ phase: z.literal('commit'), workspaceId: z.string().min(1).max(512) }).strict(),
+  BuildPlanContinuationSchema,
+  BuildExecuteContinuationSchema,
+  BuildVerifyContinuationSchema,
 ]);
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 const RunControlSignalSchema = z
@@ -89,12 +292,32 @@ const RunControlContinuationSchema = z
   })
   .strict();
 const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
+  buildModeVersion: z.literal('lightweight-v1').optional(),
   continuation: RunWorkflowContinuationSchema.optional(),
   budgetAttempt: z.number().int().nonnegative().max(100).optional(),
   sessionStep: z.number().int().nonnegative().max(10_000).optional(),
   lastEmittedAssistantTurn: z.number().int().nonnegative().max(10_000).optional(),
   control: RunControlContinuationSchema.optional(),
-}).strict();
+})
+  .strict()
+  .superRefine((state, context) => {
+    const lightweightBuild = state.buildModeVersion === 'lightweight-v1';
+    const buildContinuation = state.continuation?.phase.startsWith('build_') ?? false;
+    if (lightweightBuild && state.mode !== 'build') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'build_workflow_requires_build_mode',
+        path: ['mode'],
+      });
+    }
+    if (lightweightBuild !== buildContinuation && state.continuation !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'run_mode_continuation_mismatch',
+        path: ['continuation', 'phase'],
+      });
+    }
+  });
 
 export const RunWorkflowResultSchema = z.discriminatedUnion('status', [
   z
@@ -141,6 +364,17 @@ const assistantContent = proxyActivities<{
 });
 const approvals = proxyActivities<ApprovalActivities>({
   startToCloseTimeout: '2 minutes',
+  retry: ACTIVITY_RETRY_POLICY,
+});
+const buildActivities = proxyActivities<BuildModeActivities>({
+  startToCloseTimeout: '30 minutes',
+  heartbeatTimeout: '30 seconds',
+  retry: ACTIVITY_RETRY_POLICY,
+});
+const buildVerificationActivities = proxyActivities<VerifyPhaseActivities>({
+  taskQueue: 'verification',
+  startToCloseTimeout: '30 minutes',
+  heartbeatTimeout: '30 seconds',
   retry: ACTIVITY_RETRY_POLICY,
 });
 const CONTROL_ACTIVITY_RETRY_POLICY: RetryPolicy = {
@@ -218,6 +452,22 @@ const PROTOTYPE_MODE_INSTRUCTIONS =
   'Optimize for a working preview. Start the dev server, run the preview smoke test, and label every mock or incomplete integration. Finish with exactly one strict JSON object and no other text: {"summary":"<user-facing summary>","mocks":[{"name":"<mock name>","reason":"<why it is mocked>"}]}.';
 const DEFAULT_MODE_INSTRUCTIONS = 'Follow the run mode and complete the requested verified work.';
 
+function buildTaskPrompt(
+  input: RunWorkflowInput,
+  planArtifactId: string,
+  task: PlanTask,
+): string {
+  return [
+    `Build request: ${input.prompt}`,
+    `Approved lightweight plan: ${planArtifactId}`,
+    `Task: ${task.title}`,
+    `Acceptance criteria: ${task.acceptanceCriteriaIds.join(', ')}`,
+    `Expected files: ${task.expectedFiles.join(', ') || 'discover from the repository'}`,
+    `Required tests: ${task.requiredTests.join(', ') || 'project-required VF gate set'}`,
+    'Make only this task\'s change. Finish with a commit; verification runs independently afterward.',
+  ].join('\n');
+}
+
 export interface RunModeGuardrails {
   readonly allowedTools: readonly ToolName[];
   readonly modeInstructions: string;
@@ -271,12 +521,16 @@ function event(
   type: PendingAgentEvent['type'],
   suffix: string,
   payload: Record<string, unknown>,
+  scope: { readonly phaseId?: string; readonly taskId?: string; readonly agentId?: string } = {},
 ): PendingAgentEvent {
   return {
     eventKey: `${input.runId}:task-m1:${suffix}`,
     runId: input.runId,
     organizationId: input.organizationId,
     projectId: input.projectId,
+    ...(scope.phaseId === undefined ? {} : { phaseId: scope.phaseId }),
+    ...(scope.taskId === undefined ? {} : { taskId: scope.taskId }),
+    ...(scope.agentId === undefined ? {} : { agentId: scope.agentId }),
     occurredAt: new Date().toISOString(),
     type,
     visibility: 'user',
@@ -364,9 +618,15 @@ async function emitAssistantMessage(
   });
 }
 
-export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
-  const input = RunWorkflowStateSchema.parse(inputValue);
+async function executeRunWorkflow(
+  input: z.infer<typeof RunWorkflowStateSchema>,
+): Promise<RunWorkflowResult> {
+  const lightweightBuild = input.buildModeVersion === 'lightweight-v1';
   const budgetResolutions = new Map<string, z.infer<typeof BudgetApprovalResolutionSchema>>();
+  const buildPlanResolutions = new Map<
+    string,
+    z.infer<typeof AutonomousApprovalResolutionSchema>
+  >();
   const seenOperationKeys = new Set(input.control?.seenOperationKeys ?? []);
   let pauseRequested = input.control?.pauseRequested ?? false;
   let pauseOperationKey = input.control?.pauseOperationKey ?? null;
@@ -384,9 +644,11 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
       ? 'pause_requested'
       : 'running';
   let currentPhase: RunControlStatus['phase'] =
-    input.continuation?.phase === 'commit'
+    input.continuation?.phase === 'commit' || input.continuation?.phase === 'build_verify'
       ? 'commit'
-      : input.continuation?.phase === 'session'
+      : input.continuation?.phase === 'session' ||
+          input.continuation?.phase === 'build_plan' ||
+          input.continuation?.phase === 'build_execute'
         ? 'session'
         : 'preparing';
   let currentWorkspaceId = input.continuation?.workspaceId ?? null;
@@ -420,6 +682,17 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
   setHandler(budgetApprovalResolvedSignal, (value) => {
     const resolution = BudgetApprovalResolutionSchema.parse(value);
     budgetResolutions.set(resolution.approvalId, resolution);
+  });
+  setHandler(autonomousPlanApprovalSignal, (value) => {
+    const resolution = AutonomousApprovalResolutionSchema.parse(value);
+    if (resolution.runId !== input.runId) {
+      throw ApplicationFailure.nonRetryable(
+        'Build plan approval does not match the workflow run',
+        'build_plan_approval_run_mismatch',
+      );
+    }
+    if (!rememberOperation(resolution.operationKey)) return;
+    buildPlanResolutions.set(resolution.artifactId, resolution);
   });
   setHandler(pauseRunSignal, (value) => {
     const signal = acceptControlSignal(value);
@@ -623,19 +896,21 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
         status: 'running',
         idempotencyKey: operationKey(input, 'status-running'),
       });
-      await events.emitEvents({
-        events: [
-          event(input, 'run.started', 'run-started', {
-            mode: input.mode,
-            appType: input.appType,
-            model: input.model,
-            ...(estimate === undefined
-              ? {}
-              : {
-                  estimatedCredits: estimate.estimatedCredits,
-                  maxCredits: input.budget?.maxCredits,
-                }),
-          }),
+      const startingEvents: PendingAgentEvent[] = [
+        event(input, 'run.started', 'run-started', {
+          mode: input.mode,
+          appType: input.appType,
+          model: input.model,
+          ...(estimate === undefined
+            ? {}
+            : {
+                estimatedCredits: estimate.estimatedCredits,
+                maxCredits: input.budget?.maxCredits,
+              }),
+        }),
+      ];
+      if (!lightweightBuild) {
+        startingEvents.push(
           event(input, 'phase.created', 'phase-created', {
             phase: 'm1-chat',
             name: 'Conversation',
@@ -643,19 +918,22 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
           event(input, 'phase.started', 'phase-started', {
             phase: 'm1-chat',
           }),
-          event(
-            input,
-            'message.user',
-            'message-user-initial',
-            MessageUserPayloadSchema.parse({
-              messageId: opaqueConversationId('msg', input, 1),
-              content: input.prompt,
-              attachments: [],
-              source: 'api',
-            }),
-          ),
-        ],
-      });
+        );
+      }
+      startingEvents.push(
+        event(
+          input,
+          'message.user',
+          'message-user-initial',
+          MessageUserPayloadSchema.parse({
+            messageId: opaqueConversationId('msg', input, 1),
+            content: input.prompt,
+            attachments: [],
+            source: 'api',
+          }),
+        ),
+      );
+      await events.emitEvents({ events: startingEvents });
 
       const ensured = await workspace.ensureWorkspace({
         runId: input.runId,
@@ -679,12 +957,497 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     if (controlResult !== undefined) return controlResult;
     return continueAsNew<typeof runWorkflow>({
       ...input,
-      continuation: { phase: 'session', workspaceId },
+      continuation:
+        lightweightBuild
+          ? { phase: 'build_plan', workspaceId }
+          : { phase: 'session', workspaceId },
       budgetAttempt,
       sessionStep,
       lastEmittedAssistantTurn,
       control: controlContinuation(),
     });
+  }
+
+  if (input.continuation.phase === 'build_plan') {
+    const { workspaceId } = input.continuation;
+    currentPhase = 'session';
+    const prePlanControlResult = await honorControlBoundary(workspaceId, 'session');
+    if (prePlanControlResult !== undefined) return prePlanControlResult;
+    try {
+      const planScope = new CancellationScope();
+      activeScope = planScope;
+      let produced: z.infer<typeof ProducePlanResultSchema>;
+      try {
+        produced = ProducePlanResultSchema.parse(
+          await planScope.run(
+            async () =>
+              await buildActivities.producePlan(
+                ProducePlanInputSchema.parse({
+                  runId: input.runId,
+                  organizationId: input.organizationId,
+                  projectId: input.projectId,
+                  specificationVersionId: `run-intent:${input.runId}`,
+                  prompt: input.prompt,
+                  idempotencyKey: operationKey(input, 'build-plan-produce'),
+                }),
+              ),
+          ),
+        );
+      } catch (error: unknown) {
+        if (cancelRequested && isCancellation(error)) {
+          return await CancellationScope.nonCancellable(
+            async () => await completeCancellation(workspaceId),
+          );
+        }
+        throw error;
+      } finally {
+        activeScope = undefined;
+      }
+      const plan = BuildModePlanSchema.parse(produced.plan);
+      const phase = plan.phases[0];
+      if (phase === undefined) throw new Error('build_plan_phase_missing');
+      const allocatedCredits = plan.tasks.reduce(
+        (sum, task) => sum + Math.max(1, task.estimate.credits),
+        0,
+      );
+      const availableCredits = Math.min(
+        plan.budget.credits,
+        input.budget?.maxCredits ?? plan.budget.credits,
+      );
+      if (allocatedCredits > availableCredits) {
+        throw ApplicationFailure.nonRetryable(
+          'Build plan task budgets exceed the available run budget',
+          'build_plan_budget_exceeded',
+        );
+      }
+      const assessmentScope = new CancellationScope();
+      activeScope = assessmentScope;
+      let assessment: BuildModeApprovalAssessment;
+      try {
+        assessment = BuildModeApprovalAssessmentSchema.parse(
+          await assessmentScope.run(
+            async () =>
+              await buildActivities.assessBuildPlanApproval(
+                AssessBuildPlanApprovalInputSchema.parse({
+                  runId: input.runId,
+                  organizationId: input.organizationId,
+                  projectId: input.projectId,
+                  planArtifactId: produced.planArtifactId,
+                  config: BUILD_MODE_APPROVAL_CONFIG,
+                  idempotencyKey: operationKey(input, 'build-plan-assess-approval'),
+                }),
+              ),
+          ),
+        );
+      } catch (error: unknown) {
+        if (cancelRequested && isCancellation(error)) {
+          return await CancellationScope.nonCancellable(
+            async () => await completeCancellation(workspaceId),
+          );
+        }
+        throw error;
+      } finally {
+        activeScope = undefined;
+      }
+      const autoApproved = shouldAutoApproveBuildPlan(
+        assessment,
+        BUILD_MODE_APPROVAL_CONFIG,
+      );
+      await events.emitEvents({
+        events: [
+          event(input, 'phase.created', 'build-phase-created', {
+            phaseId: phase.id,
+            name: phase.title,
+          }, { phaseId: phase.id }),
+          event(
+            input,
+            'phase.started',
+            'build-phase-started',
+            { phaseId: phase.id },
+            { phaseId: phase.id },
+          ),
+          event(input, 'artifact.created', 'build-plan-created', {
+            artifactId: produced.planArtifactId,
+            artifactType: 'implementation_plan',
+            phaseCount: 1,
+            taskCount: plan.tasks.length,
+            plannedDiffFiles: assessment.diffFiles,
+            risk: assessment.risk,
+            approvalAssessmentSource: assessment.source,
+          }),
+        ],
+      });
+
+      let approvalOperationKey = input.operationKey;
+      if (!autoApproved) {
+        currentStatus = 'waiting_for_approval';
+        await events.transitionRunStatus({
+          runId: input.runId,
+          status: 'waiting_for_approval',
+          idempotencyKey: operationKey(input, 'status-waiting-build-plan'),
+        });
+        await events.emitEvents({
+          events: [
+            event(input, 'approval.requested', 'build-plan-approval-requested', {
+              gate: 'build_plan',
+              artifactId: produced.planArtifactId,
+              plannedDiffFiles: assessment.diffFiles,
+              risk: assessment.risk,
+              approvalAssessmentSource: assessment.source,
+              threshold: BUILD_MODE_APPROVAL_CONFIG,
+            }),
+          ],
+        });
+        await condition(
+          () => buildPlanResolutions.has(produced.planArtifactId) || cancelRequested,
+        );
+        if (cancelRequested) return await completeCancellation(workspaceId);
+        const resolution = buildPlanResolutions.get(produced.planArtifactId);
+        if (resolution === undefined) throw new Error('build_plan_approval_disappeared');
+        await events.emitEvents({
+          events: [
+            event(input, 'approval.resolved', 'build-plan-approval-resolved', {
+              gate: 'build_plan',
+              artifactId: produced.planArtifactId,
+              decision: resolution.decision,
+              resolution: 'human',
+            }),
+          ],
+        });
+        if (resolution.decision === 'rejected') {
+          currentStatus = 'cancelled';
+          currentPhase = 'terminal';
+          await events.transitionRunStatus({
+            runId: input.runId,
+            status: 'cancelled',
+            idempotencyKey: operationKey(input, 'status-build-plan-rejected'),
+          });
+          await events.emitEvents({
+            events: [
+              event(input, 'run.cancelled', 'build-plan-rejected', {
+                reason: 'build_plan_rejected',
+                artifactId: produced.planArtifactId,
+              }),
+            ],
+          });
+          return RunWorkflowResultSchema.parse({
+            status: 'cancelled',
+            checkpointRef: `plan:${produced.planArtifactId}`,
+          });
+        }
+        approvalOperationKey = resolution.operationKey;
+        currentStatus = 'running';
+        await events.transitionRunStatus({
+          runId: input.runId,
+          status: 'running',
+          idempotencyKey: operationKey(input, 'status-build-plan-approved'),
+        });
+      } else {
+        await events.emitEvents({
+          events: [
+            event(input, 'approval.resolved', 'build-plan-auto-approved', {
+              gate: 'build_plan',
+              artifactId: produced.planArtifactId,
+              decision: 'approved',
+              resolution: 'policy_auto',
+              threshold: BUILD_MODE_APPROVAL_CONFIG,
+            }),
+          ],
+        });
+      }
+
+      const approvalScope = new CancellationScope();
+      activeScope = approvalScope;
+      let approved: z.infer<typeof ApprovePlanResultSchema>;
+      try {
+        approved = ApprovePlanResultSchema.parse(
+          await approvalScope.run(
+            async () =>
+              await buildActivities.approvePlan(
+                ApprovePlanInputSchema.parse({
+                  runId: input.runId,
+                  organizationId: input.organizationId,
+                  projectId: input.projectId,
+                  planArtifactId: produced.planArtifactId,
+                  approvalOperationKey,
+                  idempotencyKey: operationKey(input, 'build-plan-approve'),
+                }),
+              ),
+          ),
+        );
+      } catch (error: unknown) {
+        if (cancelRequested && isCancellation(error)) {
+          return await CancellationScope.nonCancellable(
+            async () => await completeCancellation(workspaceId),
+          );
+        }
+        throw error;
+      } finally {
+        activeScope = undefined;
+      }
+      if (approved.planArtifactId !== produced.planArtifactId) {
+        throw ApplicationFailure.nonRetryable(
+          'Build plan approval identity mismatch',
+          'build_plan_approval_identity_mismatch',
+        );
+      }
+      const postPlanControlResult = await honorControlBoundary(workspaceId, 'session');
+      if (postPlanControlResult !== undefined) return postPlanControlResult;
+      return await continueAsNew<typeof runWorkflow>({
+        ...input,
+        continuation: {
+          phase: 'build_execute',
+          workspaceId,
+          planArtifactId: approved.planArtifactId,
+          plan,
+        },
+        budgetAttempt,
+        sessionStep,
+        lastEmittedAssistantTurn,
+        control: controlContinuation(),
+      });
+    } catch (error: unknown) {
+      currentStatus = 'failed';
+      currentPhase = 'terminal';
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      });
+      throw error;
+    }
+  }
+
+  if (input.continuation.phase === 'build_execute') {
+    const { workspaceId, planArtifactId, plan } = input.continuation;
+    currentPhase = 'session';
+    const preExecuteControlResult = await honorControlBoundary(workspaceId, 'session');
+    if (preExecuteControlResult !== undefined) return preExecuteControlResult;
+    const phase = plan.phases[0];
+    if (phase === undefined) throw new Error('build_plan_phase_missing');
+    try {
+      await events.emitEvents({
+        events: plan.tasks.map((task) =>
+          event(input, 'task.created', `build-task-${task.id}-created`, {
+            phaseId: phase.id,
+            taskId: task.id,
+            title: task.title,
+            acceptanceCriteriaIds: task.acceptanceCriteriaIds,
+          }, { phaseId: phase.id, taskId: task.id }),
+        ),
+      });
+      const taskScope = new CancellationScope();
+      activeScope = taskScope;
+      let results: z.infer<typeof TaskWorkflowResultSchema>[];
+      try {
+        results = z.array(TaskWorkflowResultSchema).parse(
+          await taskScope.run(
+            async () =>
+              await executeChild(runTaskBatchWorkflow, {
+                workflowId: `build:${input.runId}:${planArtifactId}`,
+                args: [
+                  {
+                    runId: input.runId,
+                    maxConcurrency: 1,
+                    tasks: plan.tasks.map((task) => ({
+                      runId: input.runId,
+                      organizationId: input.organizationId,
+                      projectId: input.projectId,
+                      taskId: task.id,
+                      mode: 'build' as const,
+                      model: input.model,
+                      prompt: buildTaskPrompt(input, planArtifactId, task),
+                      budget: { maxCredits: Math.max(1, task.estimate.credits) },
+                    })),
+                  },
+                ],
+              }),
+          ),
+        );
+      } catch (error: unknown) {
+        if (cancelRequested && isCancellation(error)) {
+          return await CancellationScope.nonCancellable(
+            async () => await completeCancellation(workspaceId),
+          );
+        }
+        throw error;
+      } finally {
+        activeScope = undefined;
+      }
+      const blocked = results.find(({ status }) => status === 'blocked');
+      if (blocked !== undefined) {
+        await buildActivities.transitionPhaseTasks(
+          TransitionPhaseTasksInputSchema.parse({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            phaseId: phase.id,
+            taskIds: plan.tasks.map(({ id }) => id),
+            status: 'failed',
+            idempotencyKey: operationKey(input, 'build-tasks-blocked'),
+          }),
+        );
+        throw ApplicationFailure.nonRetryable(
+          `Build task blocked by merge conflict: ${blocked.taskId}`,
+          'build_task_blocked',
+        );
+      }
+      const completedTaskIds = results.map(({ taskId }) => taskId);
+      const head = ResolveIntegrationHeadResultSchema.parse(
+        await buildActivities.resolveIntegrationHead(
+          ResolveIntegrationHeadInputSchema.parse({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            phaseId: phase.id,
+            integrationBranch: `run/${input.runId}`,
+            completedTaskIds,
+            idempotencyKey: operationKey(input, 'build-integration-head'),
+          }),
+        ),
+      );
+      const postExecuteControlResult = await honorControlBoundary(workspaceId, 'commit');
+      if (postExecuteControlResult !== undefined) return postExecuteControlResult;
+      return await continueAsNew<typeof runWorkflow>({
+        ...input,
+        continuation: {
+          phase: 'build_verify',
+          workspaceId,
+          planArtifactId,
+          plan,
+          commitSha: head.commitSha,
+          taskCommits: results.map(({ taskId, commitSha }) => ({ taskId, commitSha })),
+        },
+        budgetAttempt,
+        sessionStep,
+        lastEmittedAssistantTurn,
+        control: controlContinuation(),
+      });
+    } catch (error: unknown) {
+      currentStatus = 'failed';
+      currentPhase = 'terminal';
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      });
+      throw error;
+    }
+  }
+
+  if (input.continuation.phase === 'build_verify') {
+    const { workspaceId, plan, commitSha, taskCommits } = input.continuation;
+    currentPhase = 'commit';
+    const phase = plan.phases[0];
+    if (phase === undefined) throw new Error('build_plan_phase_missing');
+    const taskIds = plan.tasks.map(({ id }) => id);
+    const taskCommitById = new Map(taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]));
+    if (
+      taskCommitById.size !== taskCommits.length ||
+      taskIds.some((taskId) => taskCommitById.get(taskId) === undefined) ||
+      taskCommitById.size !== taskIds.length
+    ) {
+      throw ApplicationFailure.nonRetryable(
+        'Build verification continuation does not match the approved task set',
+        'build_task_commit_provenance_mismatch',
+      );
+    }
+    const preVerifyControlResult = await honorControlBoundary(workspaceId, 'commit');
+    if (preVerifyControlResult !== undefined) return preVerifyControlResult;
+    try {
+      const verificationScope = new CancellationScope();
+      activeScope = verificationScope;
+      let verification: z.infer<typeof BuildPhaseVerificationResultSchema>;
+      try {
+        verification = BuildPhaseVerificationResultSchema.parse(
+          await verificationScope.run(
+            async () =>
+              await buildVerificationActivities.verifyPhase(input.runId, phase.id, commitSha),
+          ),
+        );
+      } catch (error: unknown) {
+        if (cancelRequested && isCancellation(error)) {
+          return await CancellationScope.nonCancellable(
+            async () => await completeCancellation(workspaceId),
+          );
+        }
+        throw error;
+      } finally {
+        activeScope = undefined;
+      }
+      await events.emitEvents({
+        events: [
+          event(input, 'verification.completed', 'build-verification-completed', {
+            phaseId: phase.id,
+            commitSha,
+            verificationResultId: verification.verificationResultId,
+            decision: verification.decision,
+          }, { phaseId: phase.id }),
+        ],
+      });
+      if (verification.decision !== 'approved') {
+        await buildActivities.transitionPhaseTasks(
+          TransitionPhaseTasksInputSchema.parse({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            phaseId: phase.id,
+            taskIds,
+            status: 'failed',
+            idempotencyKey: operationKey(input, 'build-tasks-verification-failed'),
+          }),
+        );
+        throw ApplicationFailure.nonRetryable(
+          `Build verification did not approve the commit: ${verification.decision}`,
+          'build_verification_not_approved',
+        );
+      }
+      await buildActivities.transitionPhaseTasks(
+        TransitionPhaseTasksInputSchema.parse({
+          runId: input.runId,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          phaseId: phase.id,
+          taskIds,
+          status: 'passed',
+          idempotencyKey: operationKey(input, 'build-tasks-passed'),
+        }),
+      );
+      await events.emitEvents({
+        events: [
+          ...plan.tasks.map((task) =>
+            event(input, 'task.completed', `build-task-${task.id}-completed`, {
+              phaseId: phase.id,
+              taskId: task.id,
+              commitSha: taskCommitById.get(task.id),
+              verificationResultId: verification.verificationResultId,
+            }, { phaseId: phase.id, taskId: task.id }),
+          ),
+          event(input, 'phase.completed', 'build-phase-completed', {
+            phaseId: phase.id,
+            commitSha,
+          }, { phaseId: phase.id }),
+          event(input, 'run.completed', 'run-completed', { status: 'completed', commitSha }),
+        ],
+      });
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'completed',
+        idempotencyKey: operationKey(input, 'status-completed'),
+      });
+      currentStatus = 'completed';
+      currentPhase = 'terminal';
+      return RunWorkflowResultSchema.parse({ status: 'completed', commitSha });
+    } catch (error: unknown) {
+      currentStatus = 'failed';
+      currentPhase = 'terminal';
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      });
+      throw error;
+    }
   }
 
   if (input.continuation.phase === 'session') {
@@ -1062,6 +1825,67 @@ export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResul
     });
     throw error;
   }
+}
+
+function rejectExternallyStartedContinuation(): never {
+  throw ApplicationFailure.nonRetryable(
+    'Workflow continuation state requires Temporal continue-as-new provenance',
+    'workflow_continuation_provenance_required',
+  );
+}
+
+/** Entry point for Ask, Prototype, and the legacy single-session modes. */
+export async function runWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
+  const input = RunWorkflowStateSchema.parse(inputValue);
+  if (
+    input.continuation !== undefined &&
+    workflowInfo().continuedFromExecutionRunId === undefined
+  ) {
+    rejectExternallyStartedContinuation();
+  }
+  if (input.buildModeVersion !== undefined) {
+    throw ApplicationFailure.nonRetryable(
+      'Lightweight Build state requires the dedicated Build workflow',
+      'build_workflow_entrypoint_required',
+    );
+  }
+  return await executeRunWorkflow(input);
+}
+
+/** Production Build entry point with provenance-protected internal continuations. */
+export async function buildWorkflow(inputValue: unknown): Promise<RunWorkflowResult> {
+  const continuedFromExecutionRunId = workflowInfo().continuedFromExecutionRunId;
+  if (continuedFromExecutionRunId === undefined) {
+    const possibleContinuation = RunWorkflowStateSchema.safeParse(inputValue);
+    if (
+      possibleContinuation.success &&
+      possibleContinuation.data.continuation !== undefined
+    ) {
+      rejectExternallyStartedContinuation();
+    }
+    const input = RunWorkflowInputSchema.parse(inputValue);
+    if (input.mode !== 'build') {
+      throw ApplicationFailure.nonRetryable(
+        'Build workflow requires Build mode',
+        'build_workflow_mode_required',
+      );
+    }
+    return await executeRunWorkflow({ ...input, buildModeVersion: 'lightweight-v1' });
+  }
+
+  const input = RunWorkflowStateSchema.parse(inputValue);
+  if (
+    input.mode !== 'build' ||
+    input.buildModeVersion !== 'lightweight-v1' ||
+    input.continuation === undefined ||
+    !input.continuation.phase.startsWith('build_')
+  ) {
+    throw ApplicationFailure.nonRetryable(
+      'Build continuation state does not match the dedicated Build workflow',
+      'build_workflow_continuation_invalid',
+    );
+  }
+  return await executeRunWorkflow(input);
 }
 
 export { runTaskBatchWorkflow, taskWorkflow } from './task.js';

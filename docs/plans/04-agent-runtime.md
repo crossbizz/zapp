@@ -303,8 +303,8 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 **Files:** Modify: `src/workflows/run.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §11.3): lightweight plan (1 phase, ≤ 5 tasks) auto-approved under a config diff-size/risk threshold, else approval gate; AC mapping required (every task → ≥1 AC); per-task commits; project-required checks (VF gate set for support level) before `passed`.
-- [ ] Commit: `feat(orchestrator): build mode with lightweight planning`
+- [x] Binding behavior (PRD §11.3): lightweight plan (1 phase, ≤ 5 tasks) auto-approved under a config diff-size/risk threshold, else approval gate; AC mapping required (every task → ≥1 AC); per-task commits; project-required checks (VF gate set for support level) before `passed`.
+- [x] Commit: `feat(orchestrator): build mode with lightweight planning`
 
 ### Task AR-19 [M3]: Fix mode
 
@@ -411,3 +411,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-10-FIX-2 done — Made CP-13 enforce stable acknowledgement deadlines and atomically close run status, event, audit, notification, and operation replay; control-api passed 485/485 unit plus 232 passed/25 visible integration skips, and final review passed in round 2.
 - 2026-08-10 AR-16 done — Added the shared strict PRD specification schema, consequential max-three-question interview state machine with explicit delegated assumptions, generated-SDK CP-10 create/approval integration, and transactional If-Match content fencing; the single capped review found three Important wire-compatibility, idempotency-key, and concurrent-approval gaps and all were fixed. Package scaffolding, CP-10 schema replacement, generated SDK artifacts, and approval repository/test wiring extended the terse create-only file list with no interface deviation; the clean monorepo gate reached 87/90 before three unrelated load-sensitive tests failed, and all three passed immediately in focused isolation.
 - 2026-08-10 AR-17 done — Added production-routed autonomous interview/spec/plan approvals, phase-scoped AR-12 execution, bounded credits and repair, verified task transitions, lifecycle controls, durable continuation checkpoints, and scope-validated final evidence; the single capped review findings were resolved in one remediation pass, and production registration required the documented file-list joins with no interface deviation.
+- 2026-08-10 AR-18 done — Added the production-routed lightweight Build workflow with code-owned policy assessment, exact approval gating, AC-mapped per-task commits, independent VF approval, and provenance-protected continuations; production routing and existing mode/worker tests were required file-list joins, and the single capped review's two P1 findings were resolved in one remediation pass.

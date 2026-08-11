@@ -29,6 +29,7 @@ import {
 } from './workflows/autonomous.js';
 import {
   budgetApprovalResolvedSignal,
+  buildWorkflow,
   cancelRunSignal,
   messageRunSignal,
   pauseRunSignal,
@@ -36,6 +37,7 @@ import {
   resumeRunSignal,
   runWorkflow,
   RunWorkflowInputSchema,
+  type BuildModeActivities,
 } from './workflows/run.js';
 
 export type RunActivities =
@@ -46,7 +48,8 @@ export type RunActivities =
 export type ProductionRunActivities =
   & RunActivities
   & TaskWorkflowActivities
-  & AutonomousActivities;
+  & AutonomousActivities
+  & BuildModeActivities;
 export type ProductionVerificationActivities =
   & CapabilityScanActivities
   & VerifyPhaseActivities
@@ -203,6 +206,7 @@ export interface TemporalOrchestrator {
 function createTemporalOrchestratorForQueue(
   client: Pick<Client, 'workflow'>,
   taskQueue: string,
+  useDedicatedBuildWorkflow: boolean,
 ): TemporalOrchestrator {
   return {
     async startRun(inputValue) {
@@ -222,6 +226,12 @@ function createTemporalOrchestratorForQueue(
           taskQueue,
           workflowId: input.workflowId,
           args: [autonomousInput],
+        });
+      } else if (input.mode === 'build' && useDedicatedBuildWorkflow) {
+        await client.workflow.start(buildWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
         });
       } else {
         await client.workflow.start(runWorkflow, {
@@ -308,7 +318,7 @@ function createTemporalOrchestratorForQueue(
 export function createTemporalOrchestrator(options: {
   readonly client: Pick<Client, 'workflow'>;
 }): TemporalOrchestrator {
-  return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns);
+  return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns, true);
 }
 
 export function createTestTemporalOrchestrator(options: {
@@ -318,5 +328,5 @@ export function createTestTemporalOrchestrator(options: {
   if (TaskQueueSchema.safeParse(options.taskQueue).success) {
     throw new TypeError('A test Temporal orchestrator must not target a production queue');
   }
-  return createTemporalOrchestratorForQueue(options.client, options.taskQueue);
+  return createTemporalOrchestratorForQueue(options.client, options.taskQueue, false);
 }

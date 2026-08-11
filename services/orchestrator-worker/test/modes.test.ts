@@ -1,11 +1,23 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { Worker } from '@temporalio/worker';
 import { TOOL_GROUPS } from '@zapp/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
-import { runWorkflow, type RunWorkflowInput } from '../src/workflows/run.js';
+import {
+  BUILD_MODE_APPROVAL_CONFIG,
+  BuildModePlanSchema,
+  buildWorkflow,
+  runWorkflow,
+  shouldAutoApproveBuildPlan,
+  type RunWorkflowInput,
+} from '../src/workflows/run.js';
+import { autonomousPlanApprovalSignal } from '../src/workflows/autonomous.js';
 
-const id = (prefix: 'run' | 'org' | 'proj' | 'br', suffix = '0'): string =>
+const id = (
+  prefix: 'run' | 'org' | 'proj' | 'br' | 'phase' | 'task' | 'art' | 'vr',
+  suffix = '0',
+): string =>
   `${prefix}_01J0000000000000000000000${suffix}`;
 
 function input(mode: RunWorkflowInput['mode']): RunWorkflowInput {
@@ -226,4 +238,378 @@ describe('AR-15 Ask and Prototype modes', () => {
     expect(commits).toBe(0);
     expect(statuses.at(-1)).toBe('failed');
   }, 30_000);
+});
+
+function buildInput(suffix: string): RunWorkflowInput {
+  const runId = id('run', suffix);
+  return {
+    runId,
+    workflowId: runId,
+    organizationId: id('org', suffix),
+    projectId: id('proj', suffix),
+    branchId: id('br', suffix),
+    mode: 'build',
+    appType: 'web',
+    model: null,
+    prompt: 'Add an organization-scoped activity feed with tests.',
+    budget: { maxCredits: 40 },
+    operationKey: `op_${suffix.repeat(64)}`,
+  };
+}
+
+function lightweightPlan(options: {
+  readonly suffix: string;
+  readonly riskLevel: 'low' | 'medium' | 'high';
+  readonly expectedFiles?: readonly string[];
+  readonly taskCount?: number;
+}) {
+  const phaseId = id('phase', options.suffix);
+  const taskCount = options.taskCount ?? 2;
+  const criteria = Array.from({ length: taskCount }, (_, index) => `AC-${String(index + 1)}`);
+  return {
+    phases: [
+      {
+        id: phaseId,
+        sequence: 1,
+        title: 'Build requested change',
+        acceptanceCriteria: criteria,
+        approvalAfter: false,
+      },
+    ],
+    tasks: Array.from({ length: taskCount }, (_, index) => ({
+      id: id('task', String((Number(options.suffix) + index) % 10)),
+      phaseId,
+      title: `Build task ${String(index + 1)}`,
+      dependsOn: index === 0 ? [] : [id('task', options.suffix)],
+      riskLevel: options.riskLevel,
+      requiredTools: ['read_file', 'write_file'],
+      expectedFiles: [...(options.expectedFiles ?? [`src/task-${String(index + 1)}.ts`])],
+      acceptanceCriteriaIds: [criteria[index]],
+      requiredTests: [`test/task-${String(index + 1)}.test.ts`],
+      estimate: { credits: 10, wallClockMinutes: 15 },
+    })),
+    budget: { credits: 20, wallClockHours: 1 },
+  };
+}
+
+describe('AR-18 Build mode', () => {
+  let environment: TestWorkflowEnvironment | undefined;
+
+  afterEach(async () => {
+    await environment?.teardown();
+    environment = undefined;
+  });
+
+  it('rejects plans outside one phase or five tasks and auto-approves only bounded low-risk work', () => {
+    BuildModePlanSchema.parse(lightweightPlan({ suffix: '4', riskLevel: 'low' }));
+    expect(
+      shouldAutoApproveBuildPlan(
+        { source: 'policy_engine', diffFiles: 2, risk: 'low' },
+        BUILD_MODE_APPROVAL_CONFIG,
+      ),
+    ).toBe(true);
+    expect(
+      shouldAutoApproveBuildPlan(
+        { source: 'policy_engine', diffFiles: 2, risk: 'high' },
+        BUILD_MODE_APPROVAL_CONFIG,
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoApproveBuildPlan(
+        { source: 'policy_engine', diffFiles: 9, risk: 'low' },
+        BUILD_MODE_APPROVAL_CONFIG,
+      ),
+    ).toBe(false);
+    expect(
+      BuildModePlanSchema.safeParse(
+        lightweightPlan({ suffix: '6', riskLevel: 'low', taskCount: 6 }),
+      ).success,
+    ).toBe(false);
+    const unmapped = lightweightPlan({ suffix: '6', riskLevel: 'low' });
+    const firstTask = unmapped.tasks[0];
+    if (firstTask === undefined) throw new Error('fixture task missing');
+    firstTask.acceptanceCriteriaIds = ['AC-404'];
+    expect(BuildModePlanSchema.safeParse(unmapped).success).toBe(false);
+  });
+
+  it('rejects caller-supplied Build continuations before any activity can run', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar18-build-provenance-${Date.now().toString(36)}`;
+    const workflowInput = buildInput('9');
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {},
+    });
+
+    await expect(
+      worker.runUntil(async () =>
+        await environment?.client.workflow.execute(buildWorkflow, {
+          taskQueue,
+          workflowId: workflowInput.workflowId,
+          args: [
+            {
+              ...workflowInput,
+              buildModeVersion: 'lightweight-v1',
+              continuation: { phase: 'build_plan', workspaceId: 'caller-workspace' },
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow('Workflow execution failed');
+  }, 30_000);
+
+  it('auto-approves a small plan, commits every mapped task, and passes only after VF approval', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar18-build-auto-${Date.now().toString(36)}`;
+    const workflowInput = buildInput('4');
+    const plan = lightweightPlan({ suffix: '4', riskLevel: 'low' });
+    const planArtifactId = id('art', '4');
+    const integrationCommit = 'f'.repeat(40);
+    const timeline: string[] = [];
+    const taskPrompts: string[] = [];
+    const taskTransitions: Array<{ status: string; taskIds: string[] }> = [];
+    let legacyCommits = 0;
+
+    const mainWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        transitionRunStatus: ({ status }: { status: string }) => {
+          timeline.push(`run:${status}`);
+          return Promise.resolve();
+        },
+        emitEvents: ({ events }: { events: Array<{ type: string }> }) => {
+          timeline.push(...events.map(({ type }) => `event:${type}`));
+          return Promise.resolve();
+        },
+        storeAssistantContent: () => Promise.reject(new Error('not expected')),
+        ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-build-auto' }),
+        runBuilderSession: () => Promise.reject(new Error('legacy builder session not expected')),
+        commitAndPush: () => {
+          legacyCommits += 1;
+          return Promise.resolve({ commitSha: '0'.repeat(40), diffstat: [] });
+        },
+        estimateRunCost: () => Promise.resolve({ estimatedCredits: '20.0000' }),
+        requestBudgetIncrease: () => Promise.reject(new Error('not expected')),
+        checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'checkpoint-build-auto' }),
+        producePlan: ({ specificationVersionId }: { specificationVersionId: string }) => {
+          timeline.push(`plan:${specificationVersionId}`);
+          return Promise.resolve({ planArtifactId, plan });
+        },
+        assessBuildPlanApproval: () =>
+          Promise.resolve({ source: 'policy_engine' as const, diffFiles: 2, risk: 'low' as const }),
+        approvePlan: ({ approvalOperationKey }: { approvalOperationKey: string }) => {
+          timeline.push(`approved:${approvalOperationKey}`);
+          return Promise.resolve({ planArtifactId, status: 'approved' as const });
+        },
+        resolveIntegrationHead: () => Promise.resolve({ commitSha: integrationCommit }),
+        transitionPhaseTasks: ({ status, taskIds }: { status: string; taskIds: string[] }) => {
+          taskTransitions.push({ status, taskIds });
+          return Promise.resolve();
+        },
+        recordBaseCommit: () => Promise.resolve({ baseCommitSha: '1'.repeat(40) }),
+        createTaskWorkspace: ({ taskId }: { taskId: string }) =>
+          Promise.resolve({ workspaceId: `workspace-${taskId}`, workspacePath: `/tmp/${taskId}` }),
+        transitionTaskState: ({ taskId, status }: { taskId: string; status: string }) => {
+          timeline.push(`task:${taskId}:${status}`);
+          return Promise.resolve();
+        },
+        runTaskBuilderSession: ({ prompt }: { prompt: string }) => {
+          taskPrompts.push(prompt);
+          return Promise.resolve({ status: 'completed' as const });
+        },
+        commitAndPushTask: ({ taskId }: { taskId: string }) => {
+          timeline.push(`commit:${taskId}`);
+          return Promise.resolve({ commitSha: taskId.endsWith('4') ? '4'.repeat(40) : '5'.repeat(40) });
+        },
+        mergeTask: () => Promise.resolve({ outcome: 'merged' as const }),
+        createConflictTask: () => Promise.reject(new Error('not expected')),
+        emitTaskBlocked: () => Promise.reject(new Error('not expected')),
+      },
+    });
+    const verificationWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'verification',
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        verifyPhase: (_runId: string, _phaseId: string, commitSha: string) => {
+          timeline.push(`verify:${commitSha}`);
+          return Promise.resolve({
+            verificationResultId: id('vr', '4'),
+            decision: 'approved' as const,
+            criteriaResults: [
+              {
+                criterionId: 'AC-1',
+                specificationVersion: 1,
+                taskIds: [id('task', '4')],
+                testCaseIds: ['test-case-1'],
+                result: 'passed' as const,
+                evidenceArtifactIds: ['evidence-1'],
+                verifierComments: [],
+              },
+              {
+                criterionId: 'AC-2',
+                specificationVersion: 1,
+                taskIds: [id('task', '5')],
+                testCaseIds: ['test-case-2'],
+                result: 'passed' as const,
+                evidenceArtifactIds: ['evidence-2'],
+                verifierComments: [],
+              },
+            ],
+            risks: [],
+          });
+        },
+      },
+    });
+    const verificationRun = verificationWorker.run();
+
+    try {
+      await mainWorker.runUntil(async () => {
+        await expect(
+          environment?.client.workflow.execute(buildWorkflow, {
+            taskQueue,
+            workflowId: workflowInput.workflowId,
+            args: [workflowInput],
+          }),
+        ).resolves.toEqual({ status: 'completed', commitSha: integrationCommit });
+      });
+    } finally {
+      verificationWorker.shutdown();
+      await verificationRun;
+    }
+
+    expect(legacyCommits).toBe(0);
+    expect(taskPrompts).toHaveLength(2);
+    expect(taskPrompts[0]).toContain('Acceptance criteria: AC-1');
+    expect(taskPrompts[1]).toContain('Acceptance criteria: AC-2');
+    expect(timeline.filter((entry) => entry.startsWith('commit:'))).toHaveLength(2);
+    expect(timeline.indexOf(`verify:${integrationCommit}`)).toBeGreaterThan(
+      timeline.indexOf(`commit:${id('task', '5')}`),
+    );
+    expect(taskTransitions).toContainEqual({
+      status: 'passed',
+      taskIds: [id('task', '4'), id('task', '5')],
+    });
+  }, 40_000);
+
+  it('waits for exact approval when risk exceeds the configured auto-approval boundary', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar18-build-approval-${Date.now().toString(36)}`;
+    const workflowInput = buildInput('7');
+    const plan = lightweightPlan({ suffix: '7', riskLevel: 'low', taskCount: 1 });
+    const planArtifactId = id('art', '7');
+    let resolveApprovalRequested: (() => void) | undefined;
+    const approvalRequested = new Promise<void>((resolve) => {
+      resolveApprovalRequested = resolve;
+    });
+    let taskSessions = 0;
+
+    const mainWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        transitionRunStatus: () => Promise.resolve(),
+        emitEvents: ({ events }: { events: Array<{ type: string; payload: Record<string, unknown> }> }) => {
+          if (
+            events.some(
+              ({ type, payload }) =>
+                type === 'approval.requested' && payload['gate'] === 'build_plan',
+            )
+          ) {
+            resolveApprovalRequested?.();
+          }
+          return Promise.resolve();
+        },
+        storeAssistantContent: () => Promise.reject(new Error('not expected')),
+        ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-build-approval' }),
+        runBuilderSession: () => Promise.reject(new Error('not expected')),
+        commitAndPush: () => Promise.reject(new Error('not expected')),
+        estimateRunCost: () => Promise.resolve({ estimatedCredits: '10.0000' }),
+        requestBudgetIncrease: () => Promise.reject(new Error('not expected')),
+        checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'checkpoint-build-approval' }),
+        producePlan: () => Promise.resolve({ planArtifactId, plan }),
+        assessBuildPlanApproval: () =>
+          Promise.resolve({ source: 'policy_engine' as const, diffFiles: 1, risk: 'high' as const }),
+        approvePlan: () => Promise.resolve({ planArtifactId, status: 'approved' as const }),
+        resolveIntegrationHead: () => Promise.resolve({ commitSha: '8'.repeat(40) }),
+        transitionPhaseTasks: () => Promise.resolve(),
+        recordBaseCommit: () => Promise.resolve({ baseCommitSha: '1'.repeat(40) }),
+        createTaskWorkspace: () =>
+          Promise.resolve({ workspaceId: 'workspace-task-approval', workspacePath: '/tmp/task' }),
+        transitionTaskState: () => Promise.resolve(),
+        runTaskBuilderSession: () => {
+          taskSessions += 1;
+          return Promise.resolve({ status: 'completed' as const });
+        },
+        commitAndPushTask: () => Promise.resolve({ commitSha: '7'.repeat(40) }),
+        mergeTask: () => Promise.resolve({ outcome: 'merged' as const }),
+        createConflictTask: () => Promise.reject(new Error('not expected')),
+        emitTaskBlocked: () => Promise.reject(new Error('not expected')),
+      },
+    });
+    const verificationWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'verification',
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        verifyPhase: () =>
+          Promise.resolve({
+            verificationResultId: id('vr', '7'),
+            decision: 'approved' as const,
+            criteriaResults: [
+              {
+                criterionId: 'AC-1',
+                specificationVersion: 1,
+                taskIds: [id('task', '7')],
+                testCaseIds: ['test-case-1'],
+                result: 'passed' as const,
+                evidenceArtifactIds: ['evidence-1'],
+                verifierComments: [],
+              },
+            ],
+            risks: [],
+          }),
+      },
+    });
+    const verificationRun = verificationWorker.run();
+
+    try {
+      await mainWorker.runUntil(async () => {
+        const handle = await environment?.client.workflow.start(buildWorkflow, {
+          taskQueue,
+          workflowId: workflowInput.workflowId,
+          args: [workflowInput],
+        });
+        await approvalRequested;
+        expect(taskSessions).toBe(0);
+        await handle?.signal(autonomousPlanApprovalSignal, {
+          runId: workflowInput.runId,
+          artifactId: id('art', '8'),
+          decision: 'approved',
+          operationKey: `op_${'8'.repeat(64)}`,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(taskSessions).toBe(0);
+        await handle?.signal(autonomousPlanApprovalSignal, {
+          runId: workflowInput.runId,
+          artifactId: planArtifactId,
+          decision: 'approved',
+          operationKey: `op_${'7'.repeat(64)}`,
+        });
+        await expect(handle?.result()).resolves.toEqual({
+          status: 'completed',
+          commitSha: '8'.repeat(40),
+        });
+      });
+    } finally {
+      verificationWorker.shutdown();
+      await verificationRun;
+    }
+    expect(taskSessions).toBe(1);
+  }, 40_000);
 });
