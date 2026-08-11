@@ -207,7 +207,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-8 Success contract + release annotations
 - [x] DEP-9 Rollback with DB-compatibility gating
 - [x] DEP-10 Custom domains + SSL
-- [ ] DEP-11 Synthetic checks
+- [x] DEP-11 Synthetic checks
 - [ ] DEP-12 E2E release lifecycle + fork-to-repair
 - [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [ ] WEB-15 Production health + guarded rollback UI
