@@ -695,6 +695,156 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/forks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @default false */
+                        copyDeploymentConfig?: boolean;
+                        name: string;
+                        sourceOrganizationId: string;
+                        sourceProjectId: string;
+                        /** @enum {string} */
+                        target: "project";
+                    } | {
+                        fromSha: string;
+                        name: string;
+                        projectId: string;
+                        sourceOrganizationId: string;
+                        /** @enum {string} */
+                        target: "branch";
+                    } | {
+                        /** @default null */
+                        destinationBranchId?: string | null;
+                        destinationProjectId: string;
+                        sourceOrganizationId: string;
+                        sourceRunId: string;
+                        /** @enum {string} */
+                        target: "conversation";
+                    } | {
+                        checkpointRef: string;
+                        /** @default null */
+                        destinationBranchId?: string | null;
+                        destinationProjectId: string;
+                        sourceOrganizationId: string;
+                        sourceRunId: string;
+                        /** @enum {string} */
+                        target: "run_checkpoint";
+                    } | {
+                        releaseId: string;
+                        sourceOrganizationId: string;
+                        /** @default false */
+                        startFixRun?: boolean;
+                        /** @enum {string} */
+                        target: "release_repair";
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            fork: {
+                                branchId: string;
+                                deploymentConfigCopied: boolean;
+                                projectId: string;
+                                secretSetupChecklist: string[];
+                                sourceProjectId: string;
+                                /** @enum {string} */
+                                target: "project";
+                            } | {
+                                branchId: string;
+                                headCommitSha: string;
+                                projectId: string;
+                                /** @enum {string} */
+                                target: "branch";
+                            } | {
+                                contextArtifactId: string;
+                                runId: string;
+                                sourceRunId: string;
+                                /** @enum {string} */
+                                target: "conversation";
+                            } | {
+                                checkpointRef: string;
+                                contextArtifactId: string;
+                                runId: string;
+                                sourceRunId: string;
+                                /** @enum {string} */
+                                target: "run_checkpoint";
+                                workspaceId: string;
+                            } | {
+                                branchId: string;
+                                fixRunId: string | null;
+                                releaseId: string;
+                                /** @enum {string} */
+                                target: "release_repair";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/integrations/github/install": {
         parameters: {
             query?: never;
