@@ -19,6 +19,7 @@ import type {
   Specification,
   Workspace,
 } from '@zapp/db';
+import { SpecificationSchema as SpecificationContentSchema } from '@zapp/specification-engine';
 import { z } from 'zod';
 
 /**
@@ -108,40 +109,7 @@ export const ProjectContractSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-/**
- * Temporary CP-10 local schema for PRD §12.2. AR-16 owns the shared schema;
- * this remains strict until that replacement is available.
- */
-const SpecificationTextSchema = z.string().trim().min(1).max(20_000);
-const SpecificationTextListSchema = z.array(SpecificationTextSchema).min(1).max(200);
-const AcceptanceCriterionSchema = z
-  .object({
-    id: z.string().regex(/^AC-[1-9][0-9]*$/, 'Acceptance criterion ids must be AC-n.'),
-    text: SpecificationTextSchema,
-    priority: z.enum(['critical', 'high', 'medium', 'low']),
-    criticalFlow: z.boolean(),
-  })
-  .strict();
-
-export const SpecificationContentSchema = z
-  .object({
-    problem: SpecificationTextSchema,
-    targetUsers: SpecificationTextListSchema,
-    goals: SpecificationTextListSchema,
-    nonGoals: SpecificationTextListSchema,
-    journeys: SpecificationTextListSchema,
-    pagesRoutes: SpecificationTextListSchema,
-    rolesPermissions: SpecificationTextListSchema,
-    dataModel: SpecificationTextListSchema,
-    integrations: SpecificationTextListSchema,
-    functionalRequirements: SpecificationTextListSchema,
-    nonfunctionalRequirements: SpecificationTextListSchema,
-    acceptanceCriteria: z.array(AcceptanceCriterionSchema).min(1).max(200),
-    assumptions: SpecificationTextListSchema,
-    risks: SpecificationTextListSchema,
-    definitionOfDone: SpecificationTextListSchema,
-  })
-  .strict();
+export { SpecificationContentSchema };
 
 export const SpecificationSchema = z.object({
   id: z.string(),

@@ -732,6 +732,22 @@ importers:
         specifier: ^3.2.7
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.23.5)(yaml@2.9.0)
 
+  packages/specification-engine:
+    dependencies:
+      '@zapp/api-client':
+        specifier: workspace:*
+        version: link:../api-client
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(@vitest/ui@3.2.7)(happy-dom@17.6.3)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.23.5)(yaml@2.9.0)
+
   packages/ui:
     dependencies:
       '@radix-ui/react-dialog':
@@ -991,6 +1007,9 @@ importers:
       '@zapp/sandbox-service':
         specifier: workspace:*
         version: link:../sandbox-service
+      '@zapp/specification-engine':
+        specifier: workspace:*
+        version: link:../../packages/specification-engine
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.3)(better-sqlite3@12.11.1)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)

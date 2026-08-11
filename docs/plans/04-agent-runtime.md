@@ -277,8 +277,8 @@ behavior is in scope.
 **Interfaces produced (binding):** `SpecificationSchema` per PRD §12.2 (problem, targetUsers, goals, nonGoals, journeys, pagesRoutes, rolesPermissions, dataModel, integrations, functionalRequirements, nonfunctionalRequirements, acceptanceCriteria[] `{ id: "AC-n", text, priority, criticalFlow: boolean }`, assumptions, risks, definitionOfDone); interview policy: question selection scored by consequence (arch/scope/risk/AC impact), asks ≤ 3 grouped questions per turn, offers concrete options with tradeoffs, records delegated decisions as assumptions, stops when spec executable (all critical categories resolved or assumed) — PRD §12.1 categories enumerated in code.
 **Effort:** L
 
-- [ ] Failing tests: schema round-trip; interview state machine stops after all categories resolved (scripted fake user); assumption recorded when user says "you decide"; spec version approval via CP-10 integration.
-- [ ] Commit: `feat(specification-engine): consequential-question interview + versioned spec artifact`
+- [x] Failing tests: schema round-trip; interview state machine stops after all categories resolved (scripted fake user); assumption recorded when user says "you decide"; spec version approval via CP-10 integration.
+- [x] Commit: `feat(specification-engine): consequential-question interview + versioned spec artifact`
 
 ### Task AR-17 [M3]: Autonomous mode workflow
 
@@ -398,3 +398,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-10 done — Added durable pause/resume/cancel/redirect signals at real session-tool boundaries, truthful reconnect status, cancellation-before-checkpoint ordering, and stable operation-key replay; orchestrator-worker passed 189/189.
 - 2026-08-09 AR-10-FIX-1 done — Bounded no-retry control activities below five seconds, flushed acknowledgements immediately, and exposed the live budget-approval wait; the remaining receiver-side late-commit gap was re-scoped into FIX-2.
 - 2026-08-09 AR-10-FIX-2 done — Made CP-13 enforce stable acknowledgement deadlines and atomically close run status, event, audit, notification, and operation replay; control-api passed 485/485 unit plus 232 passed/25 visible integration skips, and final review passed in round 2.
+- 2026-08-10 AR-16 done — Added the shared strict PRD specification schema, consequential max-three-question interview state machine with explicit delegated assumptions, generated-SDK CP-10 create/approval integration, and transactional If-Match content fencing; the single capped review found three Important wire-compatibility, idempotency-key, and concurrent-approval gaps and all were fixed. Package scaffolding, CP-10 schema replacement, generated SDK artifacts, and approval repository/test wiring extended the terse create-only file list with no interface deviation; the clean monorepo gate reached 87/90 before three unrelated load-sensitive tests failed, and all three passed immediately in focused isolation.

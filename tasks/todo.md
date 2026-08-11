@@ -172,7 +172,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-14 Anti-slop detectors
 - [x] VF-15 Evidence manifest + report renderer
 - [x] VF-16 Dependency + migration gates
-- [ ] AR-16 specification-engine (interview + spec)
+- [x] AR-16 specification-engine (interview + spec)
 - [ ] AR-17 Autonomous mode workflow
 - [ ] AR-18 Build mode
 - [ ] AR-19 Fix mode (reproduce-first)

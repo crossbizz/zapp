@@ -1,4 +1,5 @@
 import { ApiErrorSchema } from '@zapp/contracts';
+import { specificationContentEtag } from '@zapp/specification-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
@@ -481,6 +482,49 @@ describe('specification routes', () => {
         .filter((event) => event.targetId === specification.id)
         .map((event) => event.action),
     ).toEqual(['specification.created', 'specification.updated', 'specification.approved']);
+  });
+
+  it('refuses approval when the locked draft no longer matches If-Match', async () => {
+    const wired = await wire();
+    const created = await createSpecification(wired, 'spec-precondition-create-01');
+    expect(created.statusCode, created.body).toBe(201);
+    const specification = created.json<SpecificationResponse>().specification;
+    const changedContent = { ...CONTENT, goals: ['A concurrent edit changed this draft.'] };
+    const patched = await wired.built.app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(specification.version)}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'spec-precondition-patch-01' },
+      payload: changedContent,
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+
+    const staleApproval = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(specification.version)}/approve`,
+      headers: {
+        ...wired.as(wired.owner),
+        'idempotency-key': 'spec-precondition-approve-01',
+        'if-match': specificationContentEtag(CONTENT),
+      },
+    });
+    expect(staleApproval.statusCode, staleApproval.body).toBe(409);
+    expect(errorOf(staleApproval)).toBe('specification_content_changed');
+    expect(wired.data.specifications[0]).toMatchObject({
+      status: 'draft',
+      contentJson: changedContent,
+    });
+
+    const currentApproval = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/specifications/${String(specification.version)}/approve`,
+      headers: {
+        ...wired.as(wired.owner),
+        'idempotency-key': 'spec-precondition-approve-02',
+        'if-match': specificationContentEtag(changedContent),
+      },
+    });
+    expect(currentApproval.statusCode, currentApproval.body).toBe(200);
+    expect(currentApproval.json<SpecificationResponse>().specification.status).toBe('approved');
   });
 
   it('applies edit_code to mutations, view_project to reads, and resolves foreign resources before authorization', async () => {

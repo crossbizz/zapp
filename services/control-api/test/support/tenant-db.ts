@@ -1,4 +1,5 @@
 import { newId } from '@zapp/contracts';
+import { specificationContentEtag } from '@zapp/specification-engine';
 import type {
   AgentEventRow,
   AgentPhase,
@@ -437,12 +438,19 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           return updated;
         });
       },
-      async approve(input: ApproveSpecificationInput): Promise<Specification | undefined> {
+      async approve(input: ApproveSpecificationInput) {
         return await withSpecificationLock(data, `${orgId}:${input.projectId}:${String(input.version)}`, async () => {
           const existing = mine(orgId, data.specifications).find(
             (row) => row.projectId === input.projectId && row.version === input.version,
           );
-          if (existing === undefined || existing.status === 'approved') return existing;
+          if (existing === undefined) return undefined;
+          if (
+            input.expectedContentEtag !== undefined &&
+            specificationContentEtag(existing.contentJson) !== input.expectedContentEtag
+          ) {
+            return 'content_changed' as const;
+          }
+          if (existing.status === 'approved') return existing;
           const approved: Specification = {
             ...existing,
             status: 'approved',

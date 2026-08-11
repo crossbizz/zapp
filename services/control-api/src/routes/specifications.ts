@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { idSchema } from '@zapp/contracts';
+import { SpecificationContentEtagSchema } from '@zapp/specification-engine';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -17,6 +18,9 @@ const ProjectParams = z.object({ projectId: idSchema('proj') });
 const SpecificationParams = ProjectParams.extend({
   version: z.coerce.number().int().positive(),
 });
+const SpecificationApprovalHeaders = z
+  .object({ 'if-match': SpecificationContentEtagSchema.optional() })
+  .passthrough();
 
 export interface SpecificationRoutesDeps {
   readonly now: () => Date;
@@ -61,7 +65,11 @@ export function registerSpecificationRoutes(app: AppInstance, deps: Specificatio
     '/v1/projects/:projectId/specifications/:version',
     {
       preHandler: [app.requireSession, app.requireTenant],
-      schema: { params: SpecificationParams, response: { 200: SpecificationResponseSchema } },
+      schema: {
+        params: SpecificationParams,
+        headers: SpecificationApprovalHeaders,
+        response: { 200: SpecificationResponseSchema },
+      },
     },
     async (request) => {
       const ctx = tenantOf(request);
@@ -132,6 +140,9 @@ export function registerSpecificationRoutes(app: AppInstance, deps: Specificatio
         approvedBy: actorOf(request),
         approvedAt: deps.now(),
         operationKey,
+        ...(request.headers['if-match'] === undefined
+          ? {}
+          : { expectedContentEtag: request.headers['if-match'] }),
         audit: async (tx, row) => {
           await request.audit(tx, {
             organizationId: ctx.organizationId,
@@ -142,6 +153,7 @@ export function registerSpecificationRoutes(app: AppInstance, deps: Specificatio
         },
       });
       if (approved === undefined) throw specificationNotFound();
+      if (approved === 'content_changed') throw specificationContentChanged();
       return { specification: toSpecification(approved) };
     },
   );
@@ -184,4 +196,12 @@ function specificationNotFound(): ApiError {
 
 function specificationImmutable(): ApiError {
   return new ApiError('specification_immutable', 409, 'Approved specifications cannot be changed.');
+}
+
+function specificationContentChanged(): ApiError {
+  return new ApiError(
+    'specification_content_changed',
+    409,
+    'The specification changed before approval. Refresh it and approve the current version.',
+  );
 }

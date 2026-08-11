@@ -4114,7 +4114,9 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    "if-match"?: string;
+                };
                 path: {
                     projectId: string;
                     version: number;

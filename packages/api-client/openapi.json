@@ -4593,6 +4593,15 @@
             "in": "path",
             "name": "version",
             "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "in": "header",
+            "name": "if-match",
+            "required": false
           }
         ],
         "security": [

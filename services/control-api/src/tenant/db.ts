@@ -57,6 +57,7 @@ import {
   type Workspace,
   type VerificationResult,
 } from '@zapp/db';
+import { specificationContentEtag } from '@zapp/specification-engine';
 import {
   CapabilityScanArtifactMetadataSchema,
   type CapabilityScanResult,
@@ -343,10 +344,12 @@ export interface ApproveSpecificationInput {
   readonly approvedBy: string;
   readonly approvedAt: Date;
   readonly operationKey: string;
+  readonly expectedContentEtag?: string;
   readonly audit: AuditHook<Specification>;
 }
 
 export type UpdatedSpecification = Specification | 'immutable' | undefined;
+export type ApprovedSpecification = Specification | 'content_changed' | undefined;
 
 /** All specification writes lock their tenant project before reading the next version. */
 export interface TenantSpecificationRepository {
@@ -355,7 +358,7 @@ export interface TenantSpecificationRepository {
   getForProject(projectId: string, specificationId: string): Promise<Specification | undefined>;
   create(input: NewSpecificationInput): Promise<Specification>;
   update(input: UpdateSpecificationInput): Promise<UpdatedSpecification>;
-  approve(input: ApproveSpecificationInput): Promise<Specification | undefined>;
+  approve(input: ApproveSpecificationInput): Promise<ApprovedSpecification>;
 }
 
 /** The one run write CP-9 owns: persist then start its durable workflow atomically. */
@@ -1410,6 +1413,12 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               )
               .returning();
             if (locked === undefined) return undefined;
+            if (
+              input.expectedContentEtag !== undefined &&
+              specificationContentEtag(locked.contentJson) !== input.expectedContentEtag
+            ) {
+              return 'content_changed';
+            }
             if (locked.status === 'approved') return locked;
             const [approved] = await tx
               .update(specifications)
