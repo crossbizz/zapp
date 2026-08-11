@@ -78,6 +78,9 @@ describe('OPS-12 permanent local sandbox-abuse gate', () => {
       'utf8',
     );
     expect(workflow).toContain('security-suite:');
+    expect(workflow).toContain(
+      'pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/sandbox-service --filter=@zapp/orchestrator-worker --filter=@zapp/control-api',
+    );
     expect(workflow).toContain('pnpm exec vitest run test/security --no-file-parallelism');
   });
 });
