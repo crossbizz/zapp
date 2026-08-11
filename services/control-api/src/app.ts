@@ -222,6 +222,7 @@ export interface TenantDeps {
 export interface LocalAgentDeps {
   readonly sessions: LocalAgentSessionRepository;
   readonly gateway: LocalAgentCompletionGateway;
+  readonly creditBalance?: CreditBalanceGate;
 }
 
 /**

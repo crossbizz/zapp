@@ -262,6 +262,7 @@ function seedCompletedRunForCommit(
     temporalWorkflowId: newId('run'),
     startedBy: wired.owner.userId,
     budgetJson: null,
+    planMaxCredits: '1000.0000',
     startedAt: new Date('2026-08-09T18:00:00.000Z'),
     completedAt: new Date('2026-08-09T18:01:00.000Z'),
   };

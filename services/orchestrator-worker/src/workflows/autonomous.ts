@@ -9,10 +9,17 @@ import {
   workflowInfo,
   type RetryPolicy,
 } from '@temporalio/workflow';
+import { AutonomousWorkflowStartInputSchema } from '@zapp/contracts/temporal-run';
 import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
+import type { ApprovalActivities } from '../activities/approvals.js';
+import {
+  BudgetApprovalResolutionSchema,
+  budgetApprovalResolvedSignal,
+  immutableRunCeiling,
+} from './budget-approval.js';
 import {
   runTaskBatchWorkflow,
   TaskWorkflowResultSchema,
@@ -105,6 +112,9 @@ const AutonomousControlStateSchema = z
     pauseRequested: z.boolean(),
     resumeRequested: z.boolean(),
     cancelRequested: z.boolean(),
+    creditBalanceExhausted: z.boolean().default(false),
+    creditBalanceOperationKey: OperationKeySchema.nullable().default(null),
+    creditApprovalResolution: BudgetApprovalResolutionSchema.nullable().default(null),
     pendingRedirects: z.array(AutonomousRedirectSchema).max(100),
   })
   .strict();
@@ -115,6 +125,9 @@ const EMPTY_CONTROL_STATE: AutonomousControlState = {
   pauseRequested: false,
   resumeRequested: false,
   cancelRequested: false,
+  creditBalanceExhausted: false,
+  creditBalanceOperationKey: null,
+  creditApprovalResolution: null,
   pendingRedirects: [],
 };
 
@@ -167,27 +180,9 @@ export const AutonomousContinuationSchema = z
   });
 export type AutonomousContinuation = z.infer<typeof AutonomousContinuationSchema>;
 
-export const AutonomousWorkflowInputSchema = z
-  .object({
-    workflowId: z.string().min(1).max(255),
-    runId: idSchema('run'),
-    organizationId: idSchema('org'),
-    projectId: idSchema('proj'),
-    prompt: z.string().trim().min(1).max(20_000),
-    model: z
-      .string()
-      .min(1)
-      .max(160)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u)
-      .nullable(),
-    budget: z
-      .object({ maxCredits: z.number().int().positive().max(1_000_000) })
-      .strict()
-      .nullable(),
-    maxConcurrency: z.number().int().positive().max(100),
-    continuation: AutonomousContinuationSchema.optional(),
-  })
-  .strict();
+export const AutonomousWorkflowInputSchema = AutonomousWorkflowStartInputSchema.extend({
+  continuation: AutonomousContinuationSchema.optional(),
+}).strict();
 export type AutonomousWorkflowInput = z.infer<typeof AutonomousWorkflowInputSchema>;
 
 export const AutonomousApprovalResolutionSchema = z
@@ -210,6 +205,9 @@ export const autonomousPauseSignal = defineSignal<[unknown]>('pause');
 export const autonomousResumeSignal = defineSignal<[unknown]>('resume');
 export const autonomousCancelSignal = defineSignal<[unknown]>('cancel');
 export const autonomousRedirectSignal = defineSignal<[unknown]>('redirect');
+export const autonomousCreditBalanceExhaustedSignal = defineSignal<[unknown]>(
+  'creditBalanceExhausted',
+);
 
 const AutonomousControlSignalSchema = z
   .object({ runId: idSchema('run'), operationKey: OperationKeySchema })
@@ -493,6 +491,10 @@ const eventActivities = proxyActivities<EventActivities>({
   startToCloseTimeout: '30 seconds',
   retry: ACTIVITY_RETRY_POLICY,
 });
+const approvalActivities = proxyActivities<ApprovalActivities>({
+  startToCloseTimeout: '2 minutes',
+  retry: ACTIVITY_RETRY_POLICY,
+});
 
 function activityKey(input: AutonomousWorkflowInput, step: string): string {
   return `${input.runId}:autonomous:${step}`;
@@ -557,6 +559,86 @@ async function honorControlBoundary(
       checkpointRef: `run:${input.runId}:cancelled`,
     });
   }
+  if (control.creditBalanceExhausted) {
+    const operationKey = OperationKeySchema.parse(control.creditBalanceOperationKey);
+    const immutableCeiling = immutableRunCeiling(input);
+    const requested = await approvalActivities.requestBudgetIncrease({
+      runId: input.runId,
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      workspaceId: null,
+      currentCeiling: immutableCeiling,
+      absoluteCeiling: immutableCeiling,
+      reason: 'organization_credit_exhausted',
+      idempotencyKey: activityKey(input, `organization-credit:${operationKey.slice(-12)}`),
+    });
+    await eventActivities.transitionRunStatus({
+      runId: input.runId,
+      status: 'waiting_for_approval',
+      idempotencyKey: activityKey(input, `status-organization-credit:${operationKey.slice(-12)}`),
+    });
+    await emit(
+      input,
+      event(input, 'approval.requested', `organization-credit:${operationKey.slice(-12)}`, {
+        approvalId: requested.approvalId,
+        type: 'budget_increase',
+        reason: 'organization_credit_exhausted',
+        absoluteCeiling: requested.absoluteCeiling,
+      }),
+    );
+    await condition(
+      () =>
+        control.cancelRequested ||
+        control.creditApprovalResolution?.approvalId === requested.approvalId,
+    );
+    if (control.cancelRequested) {
+      return await honorControlBoundary(input, control, `${boundary}:credit-cancel`);
+    }
+    const resolution = control.creditApprovalResolution;
+    if (
+      resolution === null ||
+      resolution.approvalId !== requested.approvalId ||
+      resolution.reason !== 'organization_credit_exhausted'
+    ) throw new Error('autonomous organization credit resolution does not match the request');
+    await emit(
+      input,
+      event(input, 'approval.resolved', `organization-credit-resolution:${operationKey.slice(-12)}`, {
+        approvalId: requested.approvalId,
+        decision: resolution.decision,
+        reason: resolution.reason,
+      }),
+    );
+    if (resolution.decision === 'rejected') {
+      const rejectedCheckpoint = `run:${input.runId}:organization-credit`;
+      await eventActivities.transitionRunStatus({
+        runId: input.runId,
+        status: 'cancelled',
+        idempotencyKey: activityKey(input, `status-organization-credit-rejected:${operationKey.slice(-12)}`),
+      });
+      await emit(
+        input,
+        event(input, 'run.cancelled', `organization-credit-rejected:${operationKey.slice(-12)}`, {
+          reason: 'organization_credit_exhausted',
+          checkpointRef: rejectedCheckpoint,
+        }),
+      );
+      return AutonomousWorkflowResultSchema.parse({
+        status: 'cancelled',
+        checkpointRef: rejectedCheckpoint,
+      });
+    }
+    if (resolution.absoluteCeiling !== immutableCeiling) {
+      throw new Error('autonomous organization credit approval changed the immutable ceiling');
+    }
+    control.creditBalanceExhausted = false;
+    control.creditBalanceOperationKey = null;
+    control.creditApprovalResolution = null;
+    await eventActivities.transitionRunStatus({
+      runId: input.runId,
+      status: 'running',
+      idempotencyKey: activityKey(input, `status-organization-credit-approved:${operationKey.slice(-12)}`),
+    });
+  }
   if (control.pendingRedirects.length > 0) return undefined;
   if (!control.pauseRequested) return undefined;
   await eventActivities.transitionRunStatus({
@@ -619,6 +701,7 @@ async function awaitApprovalResolution(
       () =>
         matchingResolution(resolutions, input.runId, artifactId) !== undefined ||
         control.pauseRequested ||
+        control.creditBalanceExhausted ||
         control.cancelRequested,
     );
   }
@@ -1196,6 +1279,13 @@ async function executePhase(
     wave += 1;
   }
 
+  const postTaskCredit = await honorControlBoundary(
+    input,
+    control,
+    `${phase.id}:post-tasks`,
+  );
+  if (postTaskCredit !== undefined) return postTaskCredit;
+
   const head = ResolveIntegrationHeadResultSchema.parse(
     await autonomousActivities.resolveIntegrationHead(
       ResolveIntegrationHeadInputSchema.parse({
@@ -1427,6 +1517,17 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
     if (!rememberOperation(signal.operationKey) || control.cancelRequested) return;
     control.pauseRequested = true;
   });
+  setHandler(autonomousCreditBalanceExhaustedSignal, (value) => {
+    const signal = AutonomousControlSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('credit signal does not match workflow');
+    if (!rememberOperation(signal.operationKey) || control.cancelRequested) return;
+    if (control.creditBalanceExhausted) return;
+    control.creditBalanceExhausted = true;
+    control.creditBalanceOperationKey = signal.operationKey;
+  });
+  setHandler(budgetApprovalResolvedSignal, (value) => {
+    control.creditApprovalResolution = BudgetApprovalResolutionSchema.parse(value);
+  });
   setHandler(autonomousResumeSignal, (value) => {
     const signal = AutonomousControlSignalSchema.parse(value);
     if (signal.runId !== input.runId) throw new Error('run resume does not match workflow');
@@ -1466,6 +1567,8 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
       status: 'running',
       idempotencyKey: activityKey(input, `status-running:${String(input.continuation?.nextPhaseIndex ?? 0)}`),
     });
+    const initialControl = await honorControlBoundary(input, control, 'initial');
+    if (initialControl !== undefined) return initialControl;
     if (input.continuation !== undefined) {
       return await executePhase(input, input.continuation, planResolutions);
     }

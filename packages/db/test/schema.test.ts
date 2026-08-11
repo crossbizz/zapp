@@ -28,6 +28,7 @@ import {
   sandboxSnapshotMeasurements,
   usageReconciliationCorrections,
   accountingLeaderLeases,
+  creditExhaustionEpisodes,
   runEventCounters,
   secretMetadata,
   specifications,
@@ -195,6 +196,7 @@ describe('billing tables', () => {
         sandboxSnapshotMeasurements,
         usageReconciliationCorrections,
         accountingLeaderLeases,
+        creditExhaustionEpisodes,
       ].map(tableName),
     ).toEqual([
       'run_credit_accounts',
@@ -204,6 +206,7 @@ describe('billing tables', () => {
       'sandbox_snapshot_measurements',
       'usage_reconciliation_corrections',
       'accounting_leader_leases',
+      'credit_exhaustion_episodes',
     ]);
 
     expect(columnNames(runCreditAccounts)).toEqual([

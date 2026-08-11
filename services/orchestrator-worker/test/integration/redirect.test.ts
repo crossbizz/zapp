@@ -355,6 +355,7 @@ describe('AR-20 redirect + plan change', () => {
       prompt: 'Build the product.',
       model: null,
       budget: { maxCredits: 20 },
+      planMaxCredits: 1000,
       maxConcurrency: 1,
     };
     const handle = await environment.client.workflow.start(autonomousWorkflow, {

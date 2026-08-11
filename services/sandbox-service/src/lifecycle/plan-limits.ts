@@ -7,7 +7,7 @@ import { idSchema, PlanLimitsConfigSchema, type PlanLimitsConfig } from '@zapp/c
 export function createSandboxPlanLimitsAdapter(options: {
   readonly plans: PlanLimitsConfig;
   readonly organizations: {
-    findById(organizationId: string): Promise<{ readonly plan: keyof PlanLimitsConfig } | undefined>;
+    findById(organizationId: string): Promise<{ readonly plan: string } | undefined>;
   };
 }): { readonly getOrganizationLimits: (organizationId: string) => Promise<{ readonly concurrentSandboxes: number }> } {
   const plans = PlanLimitsConfigSchema.parse(options.plans);
@@ -15,7 +15,8 @@ export function createSandboxPlanLimitsAdapter(options: {
     async getOrganizationLimits(organizationId) {
       const organization = await options.organizations.findById(idSchema('org').parse(organizationId));
       if (organization === undefined) throw new Error('organization plan is unavailable');
-      return { concurrentSandboxes: plans[organization.plan].concurrentSandboxes };
+      const plan = PlanLimitsConfigSchema.keyof().parse(organization.plan);
+      return { concurrentSandboxes: plans[plan].concurrentSandboxes };
     },
   };
 }

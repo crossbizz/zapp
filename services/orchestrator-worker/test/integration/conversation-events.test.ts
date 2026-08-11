@@ -29,6 +29,7 @@ function workflowInput(runId: string): RunWorkflowInput {
     model: 'anthropic/claude-sonnet-4',
     prompt: 'Build the first screen.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: operationKey('a'),
   };
 }
@@ -83,12 +84,13 @@ describe('AR-22 public conversation events', () => {
       orchestrator.signalRun({
         runId: id('run'),
         workflowId: id('run'),
+        mode: 'build',
         signal: 'message',
         message,
         operationKey: operationKey('b'),
       }),
     ).resolves.toEqual({ applied: true });
-    expect(signal).toHaveBeenCalledWith(messageRunSignal, {
+    expect(signal).toHaveBeenCalledWith('message', {
       runId: id('run'),
       message,
       operationKey: operationKey('b'),

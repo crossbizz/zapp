@@ -1,9 +1,11 @@
 import { APP_TYPES, RunModeSchema, TaskStateSchema } from '@zapp/contracts';
+import { sql } from 'drizzle-orm';
 import {
   check,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -107,12 +109,19 @@ export const agentRuns = pgTable(
       .references(() => users.id),
     /** Token/credit ceiling for this run; null falls back to the organization's default (PRD §31). */
     budgetJson: jsonb('budget_json'),
+    /** Immutable organization-plan ceiling resolved when this run intent is first admitted. */
+    planMaxCredits: numeric('plan_max_credits', { precision: 20, scale: 4 })
+      .notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
   (t) => [
     check('agent_runs_mode_check', oneOf('mode', RUN_MODES)),
     check('agent_runs_app_type_check', oneOf('app_type', APP_TYPES)),
+    check(
+      'agent_runs_plan_max_credits_check',
+      sql`${t.planMaxCredits} >= 1 and ${t.planMaxCredits} <= 1000000 and trunc(${t.planMaxCredits}) = ${t.planMaxCredits}`,
+    ),
     // Mission Control reads a project's runs newest-first; the organization
     // index serves the cross-project dashboard and every tenant-scoped read.
     index('agent_runs_project_started_at_idx').on(t.projectId, t.startedAt),

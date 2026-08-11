@@ -1,6 +1,17 @@
-import type { Client } from '@temporalio/client';
+import {
+  WorkflowExecutionAlreadyStartedError,
+  WorkflowNotFoundError,
+  type Client,
+} from '@temporalio/client';
+import { projectTemporalRunSignal, projectTemporalRunStart } from '@zapp/contracts';
 
-import { OrchestratorError, SignalRunInputSchema, StartRunInputSchema, type OrchestratorPort } from './port.js';
+import {
+  DispatchNotStartedError,
+  OrchestratorError,
+  SignalRunInputSchema,
+  StartRunInputSchema,
+  type OrchestratorPort,
+} from './port.js';
 
 const AGENT_RUN_TASK_QUEUE = 'agent-runs';
 
@@ -11,61 +22,42 @@ export function createTemporalRunOrchestrator(options: {
   return {
     async startRun(rawInput) {
       const input = StartRunInputSchema.parse(rawInput);
-      const workflowType =
-        input.mode === 'autonomous'
-          ? 'autonomousWorkflow'
-          : input.mode === 'fix' || input.mode === 'build'
-            ? 'buildWorkflow'
-            : 'runWorkflow';
+      const projected = projectTemporalRunStart(input);
       try {
-        await options.client.workflow.start(workflowType, {
+        await options.client.workflow.start(projected.workflowType, {
           taskQueue: AGENT_RUN_TASK_QUEUE,
           workflowId: input.workflowId,
-          args: [input],
+          args: [projected.input],
         });
       } catch (error) {
-        throw new OrchestratorError(error instanceof Error ? error.message : 'Temporal start failed');
+        if (
+          error instanceof WorkflowExecutionAlreadyStartedError &&
+          error.workflowId === input.workflowId &&
+          error.workflowType === projected.workflowType
+        ) return;
+        try {
+          const description = await options.client.workflow.getHandle(input.workflowId).describe();
+          if (description.type === projected.workflowType) return;
+          throw new OrchestratorError('Temporal workflow identity does not match the durable intent');
+        } catch (describeError) {
+          if (describeError instanceof WorkflowNotFoundError) throw new DispatchNotStartedError();
+          if (describeError instanceof OrchestratorError) throw describeError;
+          throw new OrchestratorError(
+            describeError instanceof Error
+              ? describeError.message
+              : error instanceof Error
+                ? error.message
+                : 'Temporal start reconciliation failed',
+          );
+        }
       }
     },
     async signalRun(rawInput) {
       const input = SignalRunInputSchema.parse(rawInput);
-      const signalName =
-        input.signal === 'credit_balance_exhausted'
-          ? 'creditBalanceExhausted'
-          : input.signal === 'budget_approval'
-            ? 'budgetApprovalResolved'
-            : input.signal === 'pause'
-              ? 'pauseRun'
-              : input.signal === 'resume'
-                ? 'resumeRun'
-                : input.signal === 'cancel'
-                  ? 'cancelRun'
-                  : input.signal === 'redirect'
-                    ? 'redirectRun'
-                    : 'messageRun';
+      const projected = projectTemporalRunSignal(input);
       try {
         const handle = options.client.workflow.getHandle(input.workflowId);
-        if (input.signal === 'budget_approval') {
-          await handle.signal(signalName, {
-            approvalId: input.approvalId,
-            decision: input.decision,
-            ...(input.decision === 'approved' ? { absoluteCeiling: input.absoluteCeiling } : {}),
-          });
-        } else if (input.signal === 'message') {
-          await handle.signal(signalName, {
-            runId: input.runId,
-            message: input.message,
-            operationKey: input.operationKey,
-          });
-        } else if (input.signal === 'redirect') {
-          await handle.signal(signalName, {
-            runId: input.runId,
-            instruction: input.prompt,
-            operationKey: input.operationKey,
-          });
-        } else {
-          await handle.signal(signalName, { runId: input.runId, operationKey: input.operationKey });
-        }
+        await handle.signal(projected.signalName, projected.payload);
         return { applied: true };
       } catch (error) {
         throw new OrchestratorError(error instanceof Error ? error.message : 'Temporal signal failed');

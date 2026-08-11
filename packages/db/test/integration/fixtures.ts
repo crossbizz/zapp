@@ -73,6 +73,7 @@ export async function seedTenant(
     requestFingerprint: `seed:${runId}`,
     status: 'running',
     startedBy: userId,
+    planMaxCredits: '1000.0000',
   });
 
   const eventIds: string[] = [];

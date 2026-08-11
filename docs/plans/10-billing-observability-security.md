@@ -87,6 +87,19 @@ Master plan §Global Constraints, plus:
 - [ ] Failing tests: each enforcement point table-driven per plan tier; balance-exhaustion mid-run pauses gracefully.
 - [ ] Commit: `feat(usage): plan quotas + budget enforcement`
 
+#### Task OPS-3-FIX-1 [M2]: Production enforcement closure
+
+**Files:** Modify OPS-3 shared contracts, generated API artifacts, control-api run/orchestration/usage composition and tests, orchestrator workflow inputs/signals/tests, sandbox-service production composition/tests, `packages/db` planning schema/migration/tests, this plan, and `tasks/todo.md`.
+**Depends on:** OPS-3. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: one shared strict mode-to-workflow dispatch contract covers all five modes, exact workflow inputs/signals, same-workflow replay, and the persisted immutable plan budget cap.
+- [x] RED/GREEN: failed dispatch releases active quota while stable-intent retry atomically re-admits; real Postgres proves distinct/same-key concurrency and plan changes cannot change an existing run's cap.
+- [x] RED/GREEN: credit exhaustion uses durable per-org episodes and bounded active workflow records, gates run/build, autonomous, Fix, and desktop-local at their next safe boundary, and a leased nonblocking bounded producer retries partial failure and joins on close.
+- [x] RED/GREEN: malformed/failed/hung Redis reservation reads fall back to bounded authoritative Postgres totals, and alert delivery never blocks admission.
+- [x] RED/GREEN: the sandbox package exports a deployable strict plan-governor assembly whose real workspace-create path rejects quota before the provider call; shared fixed-point plan maxima accept only integral credits from 1 through 1,000,000.
+- [x] Verify focused RED/GREEN, clean migration plus real Postgres/Redis concurrency/failure integrations, touched-package lint/typecheck/build/unit, architecture/provider boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): close plan enforcement production gaps`
+
 ### Task OPS-4 [M5]: Stripe platform billing
 
 **Files:** Create: `services/control-api/src/billing/{stripe,webhooks,portal}.ts`, `test/integration/billing.test.ts` (Stripe test mode)
@@ -227,6 +240,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-3-FIX-1 done — Closed shared Temporal dispatch, immutable plan caps, atomic dispatch retry, durable leased exhaustion delivery, bounded authoritative credit fallback, the desktop request boundary, and deployable sandbox enforcement; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3 done — Added strict deployable plan policy, local run/sandbox enforcement, Flexprice wallet cache/grace admission, deduplicated budget thresholds, and a durable next-task credit gate reusing AR-14; focused RED/GREEN and touched-package static/unit/build gates passed, and an isolated env-backed integration rerun completed after the publisher test passed in focused reproduction.
 - 2026-08-11 OPS-2-FIX-1 done — Closed durable metering, fenced storage, official Flexprice reconciliation, and snapshot-free checkpoint gaps; review fixes added readiness-safe bounded recovery, advisory-locked correction submission, and durable per-category delivery replay, while full verification also fixed the baseline GitHub retry clock fixture.
 - 2026-08-11 OPS-2 done — Full metering coverage, durable three-way reconciliation, and production call paths completed under approved ADR-0030; no remaining blockers or deviations.

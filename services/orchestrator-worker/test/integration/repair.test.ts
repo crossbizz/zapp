@@ -625,10 +625,10 @@ describe('VF-13 classified repair loop', () => {
       `;
       await database.sql`
         insert into agent_runs
-          (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by)
+          (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, plan_max_credits)
         values
           (${fixture.runId}, ${fixture.organizationId}, ${fixture.projectId}, 'build', 'web',
-           ${'d'.repeat(64)}, 'running', ${fixture.userId})
+           ${'d'.repeat(64)}, 'running', ${fixture.userId}, 1000)
       `;
       await database.sql`
         insert into agent_phases

@@ -35,6 +35,7 @@ function input(mode: RunWorkflowInput['mode']): RunWorkflowInput {
     model: null,
     prompt: mode === 'ask' ? 'Where is request validation implemented?' : 'Prototype checkout.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'b'.repeat(64)}`,
   };
 }
@@ -255,6 +256,7 @@ function buildInput(suffix: string): RunWorkflowInput {
     model: null,
     prompt: 'Add an organization-scoped activity feed with tests.',
     budget: { maxCredits: 40 },
+    planMaxCredits: 1000,
     operationKey: `op_${suffix.repeat(64)}`,
   };
 }

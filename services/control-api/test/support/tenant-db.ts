@@ -1107,6 +1107,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
             temporalWorkflowId: input.workflowId,
             startedBy: input.startedBy,
             budgetJson: input.budget,
+            planMaxCredits: input.planMaxCredits,
             startedAt: input.now,
             completedAt: null,
           };
@@ -1117,6 +1118,39 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           return { outcome: 'created', run } as const;
           },
         );
+      },
+      async readmitDispatch(input) {
+        return await withRunCreateLock(data, `${orgId}:dispatch-readmission`, async () => {
+          const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+          if (existing === undefined) return undefined;
+          if (existing.requestFingerprint !== input.requestFingerprint) {
+            return { outcome: 'conflict', run: existing } as const;
+          }
+          if (existing.status !== 'dispatch_failed') {
+            return { outcome: 'recovered', run: existing } as const;
+          }
+          if (
+            existing.mode === 'autonomous' &&
+            input.concurrentAutonomousLimit !== undefined &&
+            mine(orgId, data.runs).filter(
+              (row) =>
+                row.mode === 'autonomous' &&
+                ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+            ).length >= input.concurrentAutonomousLimit
+          ) throw new PlanLimitConcurrentRunsError();
+          const readmitted = { ...existing, status: 'queued' };
+          await input.audit(NO_TRANSACTION, readmitted);
+          data.runs.splice(data.runs.indexOf(existing), 1, readmitted);
+          return { outcome: 'recovered', run: readmitted } as const;
+        });
+      },
+      async markDispatchFailed(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+        if (existing === undefined || existing.status !== 'queued') return undefined;
+        const failed = { ...existing, status: 'dispatch_failed' };
+        await input.audit(NO_TRANSACTION, failed);
+        data.runs.splice(data.runs.indexOf(existing), 1, failed);
+        return failed;
       },
       async claimOperation(input) {
         const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);

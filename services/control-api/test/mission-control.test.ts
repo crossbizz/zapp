@@ -64,6 +64,7 @@ async function seedRun(): Promise<SeededRun> {
     temporalWorkflowId: newId('run'),
     startedBy: owner.userId,
     budgetJson: { maxCredits: 100 },
+    planMaxCredits: '1000.0000',
     startedAt: new Date('2026-08-09T18:00:00.000Z'),
     completedAt: null,
   };
@@ -497,6 +498,7 @@ describe('GET /v1/runs/:runId/mission-control', () => {
           "mode": "build",
           "model": "anthropic/claude-sonnet-5",
           "organizationId": "${seeded.organizationId}",
+          "planMaxCredits": "1000.0000",
           "projectId": "${seeded.projectId}",
           "startedAt": "2026-08-09T18:00:00.000Z",
           "startedBy": "${seeded.run.startedBy}",

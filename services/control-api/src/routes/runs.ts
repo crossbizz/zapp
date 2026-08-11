@@ -3,6 +3,7 @@ import { createHash, createHmac } from 'node:crypto';
 import {
   AppTypeSchema,
   AttachmentRefSchema,
+  BudgetApprovalReasonSchema,
   CreditDecimalSchema,
   FixRequestSchema,
   MessageUserPayloadSchema,
@@ -20,6 +21,7 @@ import {
 } from '../events/sse.js';
 import {
   OperationKeySchema,
+  DispatchNotStartedError,
   OrchestratorError,
   SignalRunInputSchema,
   SignalRunResultSchema,
@@ -87,7 +89,8 @@ const ApprovalRequestPayload = z
   .object({
     currentCeiling: CreditDecimalSchema,
     absoluteCeiling: CreditDecimalSchema,
-    workspaceId: z.string().min(1).max(512),
+    workspaceId: z.string().min(1).max(512).nullable(),
+    reason: BudgetApprovalReasonSchema,
   })
   .strict();
 const ResolvedBudgetApprovalResponse = z
@@ -231,6 +234,9 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           appType: request.body.appType,
           model: request.body.model ?? null,
           budget: resolvedBudget,
+          planMaxCredits: `${String(
+            limit === undefined ? Number(pricing.defaultRunCreditCeiling) : Number(limit.maxRunBudgetCredits),
+          )}.0000`,
           accounting: {
             baseCeiling: `${String(resolvedBudget.maxCredits)}.0000`,
             pricingVersion: pricing.version,
@@ -261,6 +267,31 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         }
         if (created.outcome === 'conflict') throw idempotencyConflict();
         run = created.run;
+      } else if (run.status === 'dispatch_failed') {
+        let readmitted;
+        try {
+          readmitted = await ctx.db.runs.readmitDispatch({
+            runId: run.id,
+            requestFingerprint,
+            ...(run.mode === 'autonomous' && limit !== undefined
+              ? { concurrentAutonomousLimit: limit.concurrentAutonomousRuns }
+              : {}),
+            audit: async (tx, row) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'run.dispatch_retried',
+                target: { type: 'run', id: row.id },
+                metadata: { operationKey, priorStatus: 'dispatch_failed' },
+              });
+            },
+          });
+        } catch (error) {
+          if (error instanceof PlanLimitConcurrentRunsError) throw planLimitConcurrentRuns();
+          throw error;
+        }
+        if (readmitted === undefined) throw runNotFound();
+        if (readmitted.outcome === 'conflict') throw idempotencyConflict();
+        run = readmitted.run;
       }
       try {
         const started = await deps.orchestrator.startRun(
@@ -275,15 +306,28 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             model: run.model,
             prompt: request.body.prompt,
             budget: RunBudgetSchema.parse(run.budgetJson),
-            ...(limit === undefined ? {} : { planMaxCredits: Number(limit.maxRunBudgetCredits) }),
+            planMaxCredits: Number(run.planMaxCredits),
             operationKey,
             ...(request.body.mode === 'fix' ? { fixRequest: request.body.fixRequest } : {}),
           }),
         );
         z.void().parse(started);
       } catch (error) {
-        if (error instanceof OrchestratorError || error instanceof z.ZodError)
-          throw workflowFailed();
+        if (error instanceof DispatchNotStartedError) {
+          await ctx.db.runs.markDispatchFailed({
+            runId: run.id,
+            audit: async (tx, row) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'run.dispatch_failed',
+                target: { type: 'run', id: row.id },
+                metadata: { operationKey, status: row.status },
+              });
+            },
+          });
+          throw dispatchNotStarted();
+        }
+        if (error instanceof OrchestratorError || error instanceof z.ZodError) throw workflowFailed();
         throw error;
       }
       return await reply.status(201).send({ run: toRun(run) });
@@ -333,6 +377,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
               SignalRunInputSchema.parse({
                 runId: claim.entity.id,
                 workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+                mode: claim.entity.mode,
                 signal: action,
                 ...(prompt === undefined ? {} : { prompt }),
                 operationKey,
@@ -478,6 +523,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             SignalRunInputSchema.parse({
               runId: run.id,
               workflowId: run.temporalWorkflowId ?? run.id,
+              mode: run.mode,
               signal: 'message',
               message,
               operationKey,
@@ -512,15 +558,21 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (run === undefined) throw runNotFound();
       authorize(ctx, 'start_run');
       const operationKey = operationOf(request);
-      if (request.body.decision === 'approved' && deps.planLimits !== undefined) {
-        const organization = await deps.organizations.findById(ctx.organizationId);
-        if (organization === undefined) throw runNotFound();
+      let pendingRequest: z.infer<typeof ApprovalRequestPayload> | undefined;
+      if (request.body.decision === 'approved') {
         const approval = await ctx.db.approvals.get(run.id, request.params.approvalId);
         if (approval === undefined || approval.type !== 'budget_increase') throw approvalNotFound();
-        const proposed = ApprovalRequestPayload.parse(approval.requestJson).absoluteCeiling;
-        if (Number(proposed) > Number(planLimitsFor(deps.planLimits, organization.plan).maxRunBudgetCredits)) {
+        pendingRequest = ApprovalRequestPayload.parse(approval.requestJson);
+        const proposed = pendingRequest.absoluteCeiling;
+        if (Number(proposed) > Number(run.planMaxCredits)) {
           throw planBudgetExceeded();
         }
+        const current = creditUnits(pendingRequest.currentCeiling);
+        const requested = creditUnits(proposed);
+        if (
+          (pendingRequest.reason === 'run_budget_exhausted' && requested <= current) ||
+          (pendingRequest.reason === 'organization_credit_exhausted' && requested !== current)
+        ) throw planBudgetExceeded();
       }
       const resolved = await ctx.db.approvals.resolve({
         runId: run.id,
@@ -549,7 +601,10 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       }
       if (resolved.outcome === 'conflict') throw approvalConflict();
       const approvalRequest = ApprovalRequestPayload.parse(resolved.approval.requestJson);
-      if (request.body.decision === 'approved') {
+      if (
+        request.body.decision === 'approved' &&
+        approvalRequest.reason === 'run_budget_exhausted'
+      ) {
         if (deps.modelCompletions === undefined) throw accountingUnavailable();
         await deps.modelCompletions.increaseCeiling({
           organizationId: ctx.organizationId,
@@ -565,9 +620,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           SignalRunInputSchema.parse({
             runId: run.id,
             workflowId: run.temporalWorkflowId ?? run.id,
+            mode: run.mode,
             signal: 'budget_approval',
             approvalId: resolved.approval.id,
             decision: request.body.decision,
+            reason: approvalRequest.reason,
             ...(request.body.decision === 'approved'
               ? { absoluteCeiling: approvalRequest.absoluteCeiling }
               : {}),
@@ -695,6 +752,18 @@ function workflowFailed(): ApiError {
     502,
     'The run workflow could not be started. Please try again.',
   );
+}
+function dispatchNotStarted(): ApiError {
+  return new ApiError(
+    'dispatch_not_started',
+    502,
+    'The run workflow was not started. Please try again.',
+  );
+}
+
+function creditUnits(value: string): bigint {
+  const [whole = '0', fraction = ''] = value.split('.');
+  return BigInt(whole) * 10_000n + BigInt(fraction.padEnd(4, '0'));
 }
 function pricingUnavailable(): ApiError {
   return new ApiError(

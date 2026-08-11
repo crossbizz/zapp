@@ -66,6 +66,10 @@ const NON_PRD_TABLES = new Map([
     'the database lease that makes active-run credit reconciliation single-leader and bounded as required by plan 10 OPS-1A',
   ],
   [
+    'credit_exhaustion_episodes',
+    'durable per-organization exhaustion operation identity and bounded delivery cursor required by plan 10 OPS-3-FIX-1',
+  ],
+  [
     'desktop_local_agent_sessions',
     'the tenant/user-scoped bridge from a desktop-local transcript to server-owned project, run, task, and accounting identities required by plan 09 MAC-6',
   ],
@@ -106,6 +110,10 @@ const NON_PRD_TABLES = new Map([
  * stamp.
  */
 const NON_PRD_COLUMNS = new Map([
+  [
+    'agent_runs.plan_max_credits',
+    'immutable resolved plan ceiling required by plan 10 OPS-3-FIX-1 so retries, continuation, and approvals cannot drift after a plan change',
+  ],
   [
     'users.external_id',
     'platform identity link (Stytch member id); PRD §23.1 predates the identity-provider decision (ADR-0001)',

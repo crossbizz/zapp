@@ -75,8 +75,8 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       await tx`insert into projects (id, organization_id, name, slug, source_type, support_level, created_by)
                values (${projectId}, ${organizationId}, 'Usage', ${projectId}, 'prompt', 'compatible', ${userId})`;
       await tx`insert into agent_runs
-               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json)
-               values (${runId}, ${organizationId}, ${projectId}, 'build', 'web', ${'f'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb)`;
+               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
+               values (${runId}, ${organizationId}, ${projectId}, 'build', 'web', ${'f'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
       await tx`insert into agent_phases
                (id, organization_id, run_id, sequence, title, status, acceptance_criteria_json)
                values (${phaseId}, ${organizationId}, ${runId}, 1, 'Build', 'running', '[]'::jsonb)`;
@@ -179,8 +179,8 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       await tx`insert into projects (id, organization_id, name, slug, source_type, support_level, created_by)
                values (${otherProjectId}, ${otherOrganizationId}, 'Other', ${otherProjectId}, 'prompt', 'compatible', ${userId})`;
       await tx`insert into agent_runs
-               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json)
-               values (${otherRunId}, ${otherOrganizationId}, ${otherProjectId}, 'build', 'web', ${'e'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb)`;
+               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
+               values (${otherRunId}, ${otherOrganizationId}, ${otherProjectId}, 'build', 'web', ${'e'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
       await tx`insert into agent_phases
                (id, organization_id, run_id, sequence, title, status, acceptance_criteria_json)
                values (${otherPhaseId}, ${otherOrganizationId}, ${otherRunId}, 1, 'Other', 'running', '[]'::jsonb)`;
@@ -387,11 +387,11 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       await database.sql`
         insert into agent_runs
           (id, organization_id, project_id, mode, app_type, request_fingerprint, status,
-           started_by, budget_json)
+           started_by, budget_json, plan_max_credits)
         values
           (${activeRunId}, ${organizationId}, ${projectId}, 'build', 'web',
            ${String(index + 1).repeat(64)}, 'running', ${userId},
-           ${JSON.stringify({ maxCredits: 10 })}::jsonb)
+           ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)
       `;
       await database.sql`
         insert into run_credit_accounts

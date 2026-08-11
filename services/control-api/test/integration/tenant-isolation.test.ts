@@ -16,7 +16,7 @@ import { buildApp, type AppInstance } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createDbUserStore } from '../../src/auth/users.js';
 import {
-  OrchestratorError,
+  DispatchNotStartedError,
   type StartRunInput,
 } from '../../src/orchestrator/port.js';
 import { createDbOrganizationStore, type OrganizationStore } from '../../src/orgs/store.js';
@@ -30,6 +30,7 @@ import {
 } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
 import { InMemoryTenantData } from '../support/tenant-db.js';
+import { createDatabaseCreditExhaustionStore } from '../../src/usage/reconciliation.js';
 import { TestServiceTokens } from '../support/service-tokens.js';
 import {
   TEST_AUTH_CONFIG,
@@ -81,6 +82,7 @@ const RUN_ACCOUNTING: NewRunInput['accounting'] = {
   pricingVersion: TEST_PRICING.version,
   pricingSnapshot: TEST_PRICING,
 };
+const RUN_PLAN_MAX_CREDITS = TEST_PRICING.defaultRunCreditCeiling;
 
 /**
  * The value each tenant's secret holds, prefixed with the tenant's slug so a
@@ -467,6 +469,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         requestFingerprint: `seed:${runId}`,
         status: 'running',
         startedBy: owner.userId,
+        planMaxCredits: '1000.0000',
       });
       runIds.push(runId);
 
@@ -538,7 +541,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             startCalls.push(input);
             if (failedStarts > 0) {
               failedStarts -= 1;
-              return Promise.reject(new OrchestratorError('temporary integration failure'));
+              return Promise.reject(new DispatchNotStartedError());
             }
             return Promise.resolve();
           },
@@ -679,6 +682,18 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
           payload,
         });
         expect(first.statusCode, first.body).toBe(502);
+        const [failedDispatch] = await database.sql<{
+          status: string;
+          plan_max_credits: string;
+        }[]>`
+          select status, plan_max_credits from agent_runs
+          where organization_id = ${a.organizationId}
+          order by started_at desc limit 1
+        `;
+        expect(failedDispatch).toEqual({
+          status: 'dispatch_failed',
+          plan_max_credits: '1000.0000',
+        });
 
         const canonicalBody =
           '{"appType":"mobile","mode":"build","model":"anthropic/claude-sonnet-5","prompt":"Recover PostgreSQL explicit intent"}';
@@ -727,6 +742,10 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
           run: { id: string; appType: string; model: string | null };
         }>().run;
         expect(recovered).toMatchObject({ appType: 'mobile', model });
+        const [readmitted] = await database.sql<{ status: string; plan_max_credits: string }[]>`
+          select status, plan_max_credits from agent_runs where id = ${recovered.id}
+        `;
+        expect(readmitted).toEqual({ status: 'queued', plan_max_credits: '1000.0000' });
 
         const rows = await database.sql<{
           id: string;
@@ -897,6 +916,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             model: null,
             budget: null,
             accounting: RUN_ACCOUNTING,
+            planMaxCredits: RUN_PLAN_MAX_CREDITS,
             startedBy: a.owner.userId,
             now: EVENT_TIME,
           },
@@ -948,6 +968,7 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             model: null,
             budget: null,
             accounting: RUN_ACCOUNTING,
+            planMaxCredits: RUN_PLAN_MAX_CREDITS,
             startedBy: a.owner.userId,
             now: EVENT_TIME,
           },
@@ -961,6 +982,53 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
         });
         expect(evidence.rows, backend.name).toEqual([{ id }]);
       }
+    });
+
+    it('leases exhaustion polling to one replica and persists episode recovery identity', async () => {
+      let currentTime = new Date('2026-08-11T12:00:00.000Z');
+      const now = () => new Date(currentTime);
+      const first = createDatabaseCreditExhaustionStore({
+        database: database.db,
+        owner: 'credit-producer-a',
+        now,
+        leaseMs: 100,
+      });
+      const second = createDatabaseCreditExhaustionStore({
+        database: database.db,
+        owner: 'credit-producer-b',
+        now,
+        leaseMs: 100,
+      });
+
+      const firstClaim = await first.claimOrganizations(10);
+      expect(firstClaim).toMatchObject({ acquired: true });
+      if (!firstClaim.acquired) throw new Error('first exhaustion lease was not acquired');
+      await expect(second.claimOrganizations(10)).resolves.toEqual({
+        acquired: false,
+        organizationIds: [],
+      });
+      const episode = await first.getOrOpenEpisode(firstClaim.leaseToken, a.organizationId);
+      await expect(first.getOrOpenEpisode(firstClaim.leaseToken, a.organizationId)).resolves.toEqual(episode);
+      const active = await first.listActiveRuns(firstClaim.leaseToken, a.organizationId, null, 100);
+      expect(active.length).toBeGreaterThan(0);
+      expect(active.every((run) => run.temporalWorkflowId.length > 0)).toBe(true);
+      await expect(first.listActiveRuns(firstClaim.leaseToken, a.organizationId, active.at(-1)?.runId ?? null, 100))
+        .resolves.toHaveLength(active.length);
+      await first.closeEpisode(firstClaim.leaseToken, a.organizationId);
+      const reexhausted = await first.getOrOpenEpisode(firstClaim.leaseToken, a.organizationId);
+      expect(reexhausted.operationKey).not.toBe(episode.operationKey);
+
+      currentTime = new Date(currentTime.getTime() + 101);
+      const takeover = await second.claimOrganizations(10);
+      expect(takeover).toMatchObject({ acquired: true });
+      if (!takeover.acquired) throw new Error('expired exhaustion lease was not acquired');
+      expect(takeover.leaseToken).not.toBe(firstClaim.leaseToken);
+      await expect(
+        first.advanceEpisode(firstClaim.leaseToken, reexhausted.operationKey, active[0]?.runId ?? ''),
+      ).rejects.toThrow('lease ownership was lost');
+      await expect(
+        second.listActiveRuns(takeover.leaseToken, a.organizationId, null, 1),
+      ).resolves.toHaveLength(1);
     });
   });
 

@@ -10,6 +10,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 import { oneOf } from './columns.js';
 import { organizations } from './identity.js';
@@ -294,6 +295,26 @@ export const accountingLeaderLeases = pgTable('accounting_leader_leases', {
   cursorRunId: text('cursor_run_id'),
 });
 
+/** One durable operation identity per organization credit-exhaustion episode. */
+export const creditExhaustionEpisodes = pgTable(
+  'credit_exhaustion_episodes',
+  {
+    operationKey: text('operation_key').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    exhaustedAt: timestamp('exhausted_at', { withTimezone: true }).notNull(),
+    recoveredAt: timestamp('recovered_at', { withTimezone: true }),
+    cursorRunId: text('cursor_run_id'),
+  },
+  (t) => [
+    uniqueIndex('credit_exhaustion_episodes_active_org_idx')
+      .on(t.organizationId)
+      .where(sql`${t.recoveredAt} is null`),
+    index('credit_exhaustion_episodes_org_time_idx').on(t.organizationId, t.exhaustedAt),
+  ],
+);
+
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
 export type UsageLedgerEntry = typeof usageLedger.$inferSelect;
@@ -305,3 +326,4 @@ export type UsageOutboxEntry = typeof usageOutbox.$inferSelect;
 export type SandboxSnapshotMeasurement = typeof sandboxSnapshotMeasurements.$inferSelect;
 export type UsageReconciliationCorrection = typeof usageReconciliationCorrections.$inferSelect;
 export type AccountingLeaderLease = typeof accountingLeaderLeases.$inferSelect;
+export type CreditExhaustionEpisode = typeof creditExhaustionEpisodes.$inferSelect;

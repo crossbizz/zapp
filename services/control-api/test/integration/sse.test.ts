@@ -319,6 +319,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       temporalWorkflowId: runId,
       startedBy: userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
 
     usersStore = new InMemoryUserStore();

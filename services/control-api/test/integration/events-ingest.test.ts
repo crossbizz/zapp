@@ -138,6 +138,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: runId,
       startedBy: userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
     await database.db.insert(agentPhases).values({
       id: phaseId,
@@ -797,6 +798,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: foreignRunId,
       startedBy: (await database.sql<{ id: string }[]>`select id from users limit 1`)[0]?.id ?? '',
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
 
     const cases = [
@@ -854,6 +856,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: otherRunId,
       startedBy: owner?.id ?? '',
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
     await database.db.insert(agentPhases).values({
       id: otherPhaseId,

@@ -422,6 +422,7 @@ describe('AR-8 M1 durable Temporal run', () => {
         model: null,
         prompt: 'Create a durable app.',
         budget: null,
+        planMaxCredits: 1000,
         operationKey: `op_${'a'.repeat(64)}`,
       });
       const handle = environment.client.workflow.getHandle<typeof runWorkflow>(runId);

@@ -15,6 +15,7 @@ import {
 } from '../local-agent/port.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
+import { CreditBalanceExhaustedError, type CreditBalanceGate } from '../usage/limits.js';
 
 const CreateLocalAgentSessionBody = z
   .object({
@@ -30,6 +31,7 @@ const LocalAgentSessionResponse = z
 export interface LocalAgentRoutesDeps {
   readonly sessions: LocalAgentSessionRepository;
   readonly gateway: LocalAgentCompletionGateway;
+  readonly creditBalance?: CreditBalanceGate;
   readonly now: () => Date;
 }
 
@@ -110,6 +112,18 @@ export function registerLocalAgentRoutes(app: AppInstance, deps: LocalAgentRoute
       });
       if (session === undefined) {
         throw new ApiError('local_agent_session_not_found', 404, 'That local session does not exist.');
+      }
+      try {
+        await deps.creditBalance?.requireRunAdmission(tenant.organizationId);
+      } catch (error) {
+        if (error instanceof CreditBalanceExhaustedError) {
+          throw new ApiError(
+            'credit_balance_exhausted',
+            402,
+            'Organization credits are exhausted.',
+          );
+        }
+        throw error;
       }
       const completion = CompleteRequestSchema.parse({
         ...request.body,

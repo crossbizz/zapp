@@ -1,5 +1,9 @@
 export { idSchema, newId, type IdPrefix } from './ids.js';
 export {
+  BudgetApprovalReasonSchema,
+  type BudgetApprovalReason,
+} from './budget-approval.js';
+export {
   IntegralCreditDecimalSchema,
   PlanLimitSchema,
   PlanLimitsConfigSchema,
@@ -56,6 +60,25 @@ export {
   type FixRequest,
   type ModelIdentifier,
 } from './run-intent.js';
+export {
+  AutonomousWorkflowStartInputSchema,
+  FixWorkflowStartInputSchema,
+  OperationKeySchema,
+  RunBudgetSchema,
+  RunWorkflowStartInputSchema,
+  SignalRunInputSchema,
+  SignalRunResultSchema,
+  StartRunInputSchema,
+  TEMPORAL_RUN_WORKFLOW_TYPES,
+  TemporalRunStartProjectionSchema,
+  WorkflowCreditCapSchema,
+  projectTemporalRunSignal,
+  projectTemporalRunStart,
+  type SignalRunInput,
+  type StartRunInput,
+  type TemporalRunSignalProjection,
+  type TemporalRunStartProjection,
+} from './temporal-run.js';
 export {
   ExecutionContractSchema,
   PackageManagerSchema,

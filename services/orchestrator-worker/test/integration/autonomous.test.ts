@@ -4,15 +4,19 @@ import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
+import type { ApprovalActivities } from '../../src/activities/approvals.js';
 import { createTemporalOrchestrator, TASK_QUEUES } from '../../src/worker.js';
 import {
   autonomousCancelSignal,
+  autonomousCreditBalanceExhaustedSignal,
   autonomousPlanApprovalSignal,
+  autonomousResumeSignal,
   autonomousSpecificationApprovalSignal,
   autonomousWorkflow,
   type AutonomousActivities,
   type AutonomousWorkflowInput,
 } from '../../src/workflows/autonomous.js';
+import { budgetApprovalResolvedSignal } from '../../src/workflows/budget-approval.js';
 
 const PLAN = {
   phases: [
@@ -114,6 +118,7 @@ describe('AR-17 autonomous workflow', () => {
       model: null,
       prompt: 'Build this product autonomously.',
       budget: { maxCredits: 50 },
+      planMaxCredits: 1000,
       operationKey: `op_${'1'.repeat(64)}`,
     };
 
@@ -168,6 +173,7 @@ describe('AR-17 autonomous workflow', () => {
     const events: PendingAgentEvent[] = [];
     const activityCalls: string[] = [];
     const runStatuses: string[] = [];
+    const budgetApprovalRequests: unknown[] = [];
     let resolveSpecificationRequest: (() => void) | undefined;
     const specificationRequested = new Promise<void>((resolve) => {
       resolveSpecificationRequest = resolve;
@@ -210,7 +216,15 @@ describe('AR-17 autonomous workflow', () => {
         activityCalls.push(`plan-approved:${input.idempotencyKey}`);
         return Promise.resolve({ planArtifactId: input.planArtifactId, status: 'approved' as const });
       },
-    } satisfies Partial<AutonomousActivities>;
+      requestBudgetIncrease(input: unknown) {
+        budgetApprovalRequests.push(input);
+        return Promise.resolve({
+          approvalId: 'appr_01J00000000000000000000009',
+          absoluteCeiling: '100.0000',
+        });
+      },
+      checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'autonomous-credit-stop' }),
+    } satisfies Partial<AutonomousActivities> & Partial<ApprovalActivities>;
     const eventActivities: EventActivities = {
       emitEvents(input) {
         events.push(...input.events);
@@ -253,6 +267,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Build the approved product autonomously.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 3,
     };
     const handle = await environment.client.workflow.start(autonomousWorkflow, {
@@ -264,11 +279,38 @@ describe('AR-17 autonomous workflow', () => {
     await specificationRequested;
     expect(activityCalls.some((call) => call.startsWith('specification-approved:'))).toBe(false);
     expect(activityCalls.some((call) => call.startsWith('plan-produced:'))).toBe(false);
+    await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+      runId,
+      operationKey: `op_${'d'.repeat(64)}`,
+    });
+    await vi.waitFor(() => {
+      expect(budgetApprovalRequests).toHaveLength(1);
+    });
+    expect(budgetApprovalRequests).toEqual([
+      expect.objectContaining({
+        currentCeiling: '100.0000',
+        absoluteCeiling: '100.0000',
+        reason: 'organization_credit_exhausted',
+      }),
+    ]);
+    expect(activityCalls.some((call) => call.startsWith('specification-approved:'))).toBe(false);
+    await handle.signal(autonomousResumeSignal, {
+      runId,
+      operationKey: `op_${'e'.repeat(64)}`,
+    });
     await handle.signal(autonomousSpecificationApprovalSignal, {
       runId,
       artifactId: specificationVersionId,
       decision: 'approved',
       operationKey: `op_${'b'.repeat(64)}`,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(activityCalls.some((call) => call.startsWith('plan-produced:'))).toBe(false);
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000009',
+      decision: 'approved',
+      absoluteCeiling: '100.0000',
+      reason: 'organization_credit_exhausted',
     });
 
     await planRequested;
@@ -284,11 +326,13 @@ describe('AR-17 autonomous workflow', () => {
 
     await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'plan' });
     expect(activityCalls.some((call) => call.startsWith('plan-approved:'))).toBe(false);
-    expect(events.filter(({ type }) => type === 'approval.requested')).toHaveLength(2);
-    expect(events.filter(({ type }) => type === 'approval.resolved')).toHaveLength(2);
+    expect(events.filter(({ type }) => type === 'approval.requested')).toHaveLength(3);
+    expect(events.filter(({ type }) => type === 'approval.resolved')).toHaveLength(3);
     expect(runStatuses).toEqual([
       'running',
       'waiting_for_approval',
+      'waiting_for_approval',
+      'running',
       'running',
       'waiting_for_approval',
       'cancelled',
@@ -338,6 +382,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Skip directly to release evidence.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 2,
       continuation: {
         specificationVersionId: 'specification-version-forged',
@@ -366,6 +411,9 @@ describe('AR-17 autonomous workflow', () => {
           pauseRequested: false,
           resumeRequested: false,
           cancelRequested: false,
+          creditBalanceExhausted: false,
+          creditBalanceOperationKey: null,
+          creditApprovalResolution: null,
           pendingRedirects: [],
         },
       },
@@ -426,6 +474,7 @@ describe('AR-17 autonomous workflow', () => {
         prompt: 'Cancel this run at the first durable gate.',
         model: null,
         budget: { maxCredits: 10 },
+        planMaxCredits: 1000,
         maxConcurrency: 1,
       } satisfies AutonomousWorkflowInput],
     });
@@ -650,6 +699,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Build the two-phase product.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 2,
     };
     const handle = await environment.client.workflow.start(autonomousWorkflow, {

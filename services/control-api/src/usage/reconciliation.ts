@@ -1,19 +1,21 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
-import { CreditStateSchema, idSchema, type CreditState } from '@zapp/contracts';
+import { CreditStateSchema, idSchema, type CreditState, type RunMode } from '@zapp/contracts';
 import {
   USAGE_CATEGORIES,
   accountingLeaderLeases,
   agentRuns,
+  creditExhaustionEpisodes,
   runCreditAccounts,
   runCreditCeilingAdjustments,
   usageLedger,
   usageOutbox,
   usageReconciliationCorrections,
   type Database,
+  type Executor,
   type UsageCategory,
 } from '@zapp/db';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { RedisCommands } from '../redis/client.js';
@@ -40,51 +42,464 @@ export function createRedisCreditMirror(redis: RedisCommands, ttlMs = 120_000): 
   };
 }
 
-/** Durable producer for the next-task credit gate; delivery failures are retried next poll. */
+export interface ActiveCreditRun {
+  readonly runId: string;
+  readonly temporalWorkflowId: string;
+  readonly mode: RunMode;
+}
+
+export interface CreditExhaustionStore {
+  claimOrganizations(limit: number): Promise<
+    | { readonly acquired: false; readonly organizationIds: readonly [] }
+    | {
+        readonly acquired: true;
+        readonly leaseToken: string;
+        readonly renewAfterMs: number;
+        readonly organizationIds: readonly string[];
+      }
+  >;
+  renewLease(leaseToken: string): Promise<boolean>;
+  releaseLease(leaseToken: string): Promise<void>;
+  getOrOpenEpisode(leaseToken: string, organizationId: string): Promise<{
+    readonly operationKey: string;
+    readonly cursorRunId: string | null;
+  }>;
+  closeEpisode(leaseToken: string, organizationId: string): Promise<void>;
+  listActiveRuns(
+    leaseToken: string,
+    organizationId: string,
+    cursorRunId: string | null,
+    limit: number,
+  ): Promise<readonly ActiveCreditRun[]>;
+  advanceEpisode(leaseToken: string, operationKey: string, cursorRunId: string): Promise<void>;
+}
+
+export interface CreditBalanceExhaustionProducer {
+  runOnce(signal?: AbortSignal): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Durable, leased producer for the next-task credit gate; partial delivery retries the batch. */
 export function createCreditBalanceExhaustionProducer(options: {
-  readonly organizations: { listActiveOrganizationIds(): Promise<readonly string[]> };
-  readonly activeRuns: { list(organizationId: string): Promise<readonly string[]> };
+  readonly store: CreditExhaustionStore;
   readonly creditBalance: CreditBalanceGate;
   readonly orchestrator: OrchestratorPort;
-}) {
+  readonly organizationBatchSize?: number;
+  readonly batchSize: number;
+  readonly signalConcurrency: number;
+  readonly signalTimeoutMs?: number;
+  readonly balanceTimeoutMs?: number;
+}): CreditBalanceExhaustionProducer {
+  const lateSignals = new Set<Promise<unknown>>();
+  const signalConcurrency = Math.max(1, Math.min(32, Math.floor(options.signalConcurrency)));
+  const signalTimeoutMs = options.signalTimeoutMs ?? 3_000;
   return {
-    async runOnce(): Promise<void> {
-      for (const organizationId of await options.organizations.listActiveOrganizationIds()) {
-        try {
-          await options.creditBalance.requireRunAdmission(organizationId);
-          continue;
-        } catch (error) {
-          if (!(error instanceof CreditBalanceExhaustedError)) continue;
+    async runOnce(signal = new AbortController().signal): Promise<void> {
+      const batchSize = Math.max(1, Math.min(100, Math.floor(options.batchSize)));
+      const organizationBatchSize = Math.max(
+        1,
+        Math.min(10, Math.floor(options.organizationBatchSize ?? 1)),
+      );
+      const claimed = await options.store.claimOrganizations(organizationBatchSize);
+      if (!claimed.acquired) return;
+      const leaseController = new AbortController();
+      const leaseEnded = (): boolean => leaseController.signal.aborted;
+      const abortFromCaller = (): void => {
+        leaseController.abort(signal.reason);
+      };
+      signal.addEventListener('abort', abortFromCaller, { once: true });
+      let leaseLost = false;
+      let stopped = false;
+      let renewalTimer: ReturnType<typeof setTimeout> | undefined;
+      let renewal: Promise<void> | undefined;
+      const scheduleRenewal = (): void => {
+        if (stopped || leaseLost) return;
+        renewalTimer = setTimeout(() => {
+          renewal = options.store.renewLease(claimed.leaseToken)
+            .then((renewed) => {
+              if (!renewed) {
+                leaseLost = true;
+                leaseController.abort(new Error('credit exhaustion lease ownership was lost'));
+              }
+            })
+            .catch(() => {
+              leaseLost = true;
+              leaseController.abort(new Error('credit exhaustion lease renewal failed'));
+            })
+            .finally(() => {
+              renewal = undefined;
+              scheduleRenewal();
+            });
+        }, claimed.renewAfterMs);
+      };
+      scheduleRenewal();
+      try {
+        for (const organizationId of claimed.organizationIds) {
+          if (leaseEnded()) return;
+          try {
+            await boundedSignal(
+              options.creditBalance.requireRunAdmission(organizationId),
+              options.balanceTimeoutMs ?? 3_000,
+              leaseController.signal,
+            );
+            if (leaseEnded()) return;
+            await options.store.closeEpisode(claimed.leaseToken, organizationId);
+            continue;
+          } catch (error) {
+            if (!(error instanceof CreditBalanceExhaustedError)) continue;
+          }
+          if (leaseEnded()) return;
+          const episode = await options.store.getOrOpenEpisode(
+            claimed.leaseToken,
+            organizationId,
+          );
+          const runs = await options.store.listActiveRuns(
+            claimed.leaseToken,
+            organizationId,
+            episode.cursorRunId,
+            batchSize,
+          );
+          await mapConcurrent(
+            runs,
+            signalConcurrency,
+            async (run) => {
+              if (leaseEnded()) throw leaseController.signal.reason;
+              if (lateSignals.size >= signalConcurrency) {
+                throw new Error('Temporal exhaustion signal capacity is occupied');
+              }
+              const delivery = options.orchestrator.signalRun({
+                runId: run.runId,
+                workflowId: run.temporalWorkflowId,
+                mode: run.mode,
+                signal: 'credit_balance_exhausted',
+                operationKey: episode.operationKey,
+              });
+              lateSignals.add(delivery);
+              void delivery.finally(() => lateSignals.delete(delivery)).catch(() => undefined);
+              return await boundedSignal(
+                delivery,
+                signalTimeoutMs,
+                leaseController.signal,
+              );
+            },
+          );
+          if (leaseEnded()) return;
+          const last = runs.at(-1);
+          if (last !== undefined) {
+            await options.store.advanceEpisode(
+              claimed.leaseToken,
+              episode.operationKey,
+              last.runId,
+            );
+          }
         }
-        const operationKey = `op_${createHash('sha256')
-          .update(`${organizationId}:credit-balance-exhausted`)
-          .digest('hex')}`;
-        await Promise.allSettled(
-          (await options.activeRuns.list(organizationId)).map(async (runId) =>
-            await options.orchestrator.signalRun({
-              runId,
-              workflowId: runId,
-              signal: 'credit_balance_exhausted',
-              operationKey,
-            }),
-          ),
-        );
+      } finally {
+        stopped = true;
+        if (renewalTimer !== undefined) clearTimeout(renewalTimer);
+        await renewal?.catch(() => undefined);
+        signal.removeEventListener('abort', abortFromCaller);
+        await options.store.releaseLease(claimed.leaseToken).catch(() => undefined);
       }
+    },
+    async close(): Promise<void> {
+      const pending = [...lateSignals];
+      if (pending.length === 0) return;
+      await boundedDrain(pending, signalTimeoutMs);
+      lateSignals.clear();
     },
   };
 }
 
-export function createDatabaseActiveRunOrganizationSource(database: Database): {
-  listActiveOrganizationIds(): Promise<readonly string[]>;
-} {
+async function boundedDrain(promises: readonly Promise<unknown>[], rawTimeoutMs: number): Promise<void> {
+  const timeoutMs = Math.max(1, Math.min(5_000, Math.floor(rawTimeoutMs)));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled(promises),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+}
+
+async function boundedSignal<T>(
+  promise: Promise<T>,
+  rawTimeoutMs: number,
+  signal: AbortSignal,
+): Promise<T> {
+  const timeoutMs = Math.max(1, Math.min(5_000, Math.floor(rawTimeoutMs)));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const boundary = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error('Temporal exhaustion signal timed out'));
+    }, timeoutMs);
+    onAbort = () => {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('exhaustion signal aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, boundary]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function mapConcurrent<T>(
+  values: readonly T[],
+  rawConcurrency: number,
+  action: (value: T) => Promise<unknown>,
+): Promise<PromiseSettledResult<unknown>[]> {
+  const results: PromiseSettledResult<unknown>[] = Array.from({ length: values.length });
+  const concurrency = Math.max(1, Math.min(32, Math.floor(rawConcurrency)));
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      const value = values[index];
+      if (value === undefined) continue;
+      try {
+        results[index] = { status: 'fulfilled', value: await action(value) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  }));
+  return results;
+}
+
+export function createDatabaseCreditExhaustionStore(options: {
+  readonly database: Database;
+  readonly owner: string;
+  readonly now?: () => Date;
+  readonly leaseMs?: number;
+}): CreditExhaustionStore {
+  const now = options.now ?? (() => new Date());
+  const leaseMs = options.leaseMs ?? 60_000;
+  const leaseName = 'credit-exhaustion-producer';
+  const assertLease = async (database: Executor, leaseToken: string): Promise<void> => {
+    const instant = now();
+    const [lease] = await database.select({
+      owner: accountingLeaderLeases.owner,
+      expiresAt: accountingLeaderLeases.expiresAt,
+    }).from(accountingLeaderLeases).where(
+      eq(accountingLeaderLeases.name, leaseName),
+    ).limit(1).for('update');
+    if (lease?.owner !== leaseToken || lease.expiresAt.getTime() <= instant.getTime()) {
+      throw new Error('credit exhaustion lease ownership was lost');
+    }
+  };
   return {
-    async listActiveOrganizationIds() {
-      const rows = await database
-        .select({ organizationId: agentRuns.organizationId })
-        .from(agentRuns)
-        .where(inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']))
-        .groupBy(agentRuns.organizationId);
-      return rows.map((row) => row.organizationId);
+    async claimOrganizations(rawLimit) {
+      const limit = Math.max(1, Math.min(100, Math.floor(rawLimit)));
+      return await options.database.transaction(async (tx) => {
+        const instant = now();
+        const leaseToken = `${options.owner}:${randomUUID()}`;
+        const [lease] = await tx.insert(accountingLeaderLeases).values({
+          name: leaseName,
+          owner: leaseToken,
+          expiresAt: new Date(instant.getTime() + leaseMs),
+        }).onConflictDoUpdate({
+          target: accountingLeaderLeases.name,
+          set: { owner: leaseToken, expiresAt: new Date(instant.getTime() + leaseMs) },
+          setWhere: sql`${accountingLeaderLeases.expiresAt} <= ${instant.toISOString()}::timestamptz`,
+        }).returning({ owner: accountingLeaderLeases.owner, cursorRunId: accountingLeaderLeases.cursorRunId });
+        if (lease?.owner !== leaseToken) return { acquired: false as const, organizationIds: [] };
+
+        const activeOrganizations = await tx.select({ organizationId: agentRuns.organizationId })
+          .from(agentRuns)
+          .where(and(
+            inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+            lease.cursorRunId === null ? undefined : gt(agentRuns.organizationId, lease.cursorRunId),
+          ))
+          .groupBy(agentRuns.organizationId)
+          .orderBy(asc(agentRuns.organizationId))
+          .limit(limit);
+        const openEpisodes = await tx.select({ organizationId: creditExhaustionEpisodes.organizationId })
+          .from(creditExhaustionEpisodes)
+          .where(and(
+            isNull(creditExhaustionEpisodes.recoveredAt),
+            lease.cursorRunId === null ? undefined : gt(creditExhaustionEpisodes.organizationId, lease.cursorRunId),
+          ))
+          .orderBy(asc(creditExhaustionEpisodes.organizationId))
+          .limit(limit);
+        const organizationIds = [...new Set([...activeOrganizations, ...openEpisodes]
+          .map((row) => row.organizationId))].sort().slice(0, limit);
+        const last = organizationIds.at(-1);
+        await tx.update(accountingLeaderLeases)
+          .set({ cursorRunId: last ?? null })
+          .where(and(
+            eq(accountingLeaderLeases.name, 'credit-exhaustion-producer'),
+            eq(accountingLeaderLeases.owner, leaseToken),
+            sql`${accountingLeaderLeases.expiresAt} > ${instant.toISOString()}::timestamptz`,
+          ));
+        return {
+          acquired: true as const,
+          leaseToken,
+          renewAfterMs: Math.max(1, Math.floor(leaseMs / 3)),
+          organizationIds,
+        };
+      });
+    },
+    async renewLease(leaseToken) {
+      const instant = now();
+      const [renewed] = await options.database.update(accountingLeaderLeases)
+        .set({ expiresAt: new Date(instant.getTime() + leaseMs) })
+        .where(and(
+          eq(accountingLeaderLeases.name, leaseName),
+          eq(accountingLeaderLeases.owner, leaseToken),
+          sql`${accountingLeaderLeases.expiresAt} > ${instant.toISOString()}::timestamptz`,
+        )).returning({ name: accountingLeaderLeases.name });
+      return renewed !== undefined;
+    },
+    async releaseLease(leaseToken) {
+      await options.database.update(accountingLeaderLeases)
+        .set({ expiresAt: now() })
+        .where(and(
+          eq(accountingLeaderLeases.name, leaseName),
+          eq(accountingLeaderLeases.owner, leaseToken),
+        ));
+    },
+    async getOrOpenEpisode(leaseToken, organizationId) {
+      return await options.database.transaction(async (tx) => {
+        await assertLease(tx, leaseToken);
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${organizationId}))`);
+        const [existing] = await tx.select({
+          operationKey: creditExhaustionEpisodes.operationKey,
+          cursorRunId: creditExhaustionEpisodes.cursorRunId,
+        }).from(creditExhaustionEpisodes).where(and(
+          eq(creditExhaustionEpisodes.organizationId, organizationId),
+          isNull(creditExhaustionEpisodes.recoveredAt),
+        )).limit(1);
+        if (existing !== undefined) return existing;
+        const operationKey = `op_${createHash('sha256')
+          .update(`${organizationId}:${randomUUID()}`)
+          .digest('hex')}`;
+        const [created] = await tx.insert(creditExhaustionEpisodes).values({
+          operationKey,
+          organizationId,
+          exhaustedAt: now(),
+        }).returning({
+          operationKey: creditExhaustionEpisodes.operationKey,
+          cursorRunId: creditExhaustionEpisodes.cursorRunId,
+        });
+        if (created === undefined) throw new Error('credit exhaustion episode insert returned no row');
+        return created;
+      });
+    },
+    async closeEpisode(leaseToken, organizationId) {
+      await options.database.transaction(async (tx) => {
+        await assertLease(tx, leaseToken);
+        await tx.update(creditExhaustionEpisodes)
+          .set({ recoveredAt: now() })
+          .where(and(
+            eq(creditExhaustionEpisodes.organizationId, organizationId),
+            isNull(creditExhaustionEpisodes.recoveredAt),
+          ));
+      });
+    },
+    async listActiveRuns(leaseToken, organizationId, cursorRunId, rawLimit) {
+      const limit = Math.max(1, Math.min(100, Math.floor(rawLimit)));
+      return await options.database.transaction(async (tx) => {
+      await assertLease(tx, leaseToken);
+      const afterCursor = await tx.select({
+        runId: agentRuns.id,
+        temporalWorkflowId: agentRuns.temporalWorkflowId,
+        mode: agentRuns.mode,
+      }).from(agentRuns).where(and(
+        eq(agentRuns.organizationId, organizationId),
+        inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+        isNotNull(agentRuns.temporalWorkflowId),
+        cursorRunId === null ? undefined : gt(agentRuns.id, cursorRunId),
+      )).orderBy(asc(agentRuns.id)).limit(limit);
+      const rows = [...afterCursor];
+      if (cursorRunId !== null && rows.length < limit) {
+        const wrapped = await tx.select({
+          runId: agentRuns.id,
+          temporalWorkflowId: agentRuns.temporalWorkflowId,
+          mode: agentRuns.mode,
+        }).from(agentRuns).where(and(
+          eq(agentRuns.organizationId, organizationId),
+          inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+          isNotNull(agentRuns.temporalWorkflowId),
+          lte(agentRuns.id, cursorRunId),
+        )).orderBy(asc(agentRuns.id)).limit(limit - rows.length);
+        rows.push(...wrapped);
+      }
+      return rows.map((row) => ({
+        runId: row.runId,
+        temporalWorkflowId: row.temporalWorkflowId as string,
+        mode: row.mode,
+      }));
+      });
+    },
+    async advanceEpisode(leaseToken, operationKey, cursorRunId) {
+      await options.database.transaction(async (tx) => {
+        await assertLease(tx, leaseToken);
+        await tx.update(creditExhaustionEpisodes)
+          .set({ cursorRunId })
+          .where(and(
+            eq(creditExhaustionEpisodes.operationKey, operationKey),
+            isNull(creditExhaustionEpisodes.recoveredAt),
+          ));
+      });
+    },
+  };
+}
+
+type CreditExhaustionTimer = number | object;
+
+export function createCreditBalanceExhaustionLifecycle(options: {
+  readonly producer: {
+    runOnce(signal: AbortSignal): Promise<void>;
+    close?(): Promise<void>;
+  };
+  readonly intervalMs: number;
+  readonly onError?: (error: Error) => void;
+  readonly timers?: {
+    setTimeout(callback: () => void, delayMs: number): CreditExhaustionTimer;
+    clearTimeout(handle: CreditExhaustionTimer): void;
+  };
+}) {
+  const timers = options.timers ?? {
+    setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimeout: (handle: CreditExhaustionTimer) => {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    },
+  };
+  const controller = new AbortController();
+  let timeout: CreditExhaustionTimer | undefined;
+  let active: Promise<void> | undefined;
+  let closed = false;
+  const poll = (): void => {
+    if (closed || active !== undefined) return;
+    active = options.producer.runOnce(controller.signal)
+      .catch((error: unknown) => {
+        try {
+          options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        } catch {
+          // Error reporting is isolated from producer lifecycle completion.
+        }
+      })
+      .finally(() => {
+        active = undefined;
+        if (!closed) timeout = timers.setTimeout(poll, options.intervalMs);
+      });
+  };
+  return {
+    start(): Promise<void> {
+      if (closed) return Promise.reject(new Error('credit exhaustion lifecycle is closed'));
+      poll();
+      return Promise.resolve();
+    },
+    async close(): Promise<void> {
+      closed = true;
+      controller.abort(new Error('credit exhaustion lifecycle closed'));
+      if (timeout !== undefined) timers.clearTimeout(timeout);
+      await active?.catch(() => undefined);
+      await options.producer.close?.().catch(() => undefined);
     },
   };
 }

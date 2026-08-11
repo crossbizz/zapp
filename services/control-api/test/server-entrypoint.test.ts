@@ -56,6 +56,10 @@ const production = vi.hoisted(() => {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const creditExhaustionLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
   const usageReconciliationSource = {
     scopes: { kind: 'usage-reconciliation-scopes' },
     ledger: { kind: 'usage-reconciliation-ledger' },
@@ -210,9 +214,8 @@ const production = vi.hoisted(() => {
     createThreeWayUsageReconciler: vi.fn(() => threeWayUsageReconciler),
     createUsageReconciliationLifecycle: vi.fn(() => usageReconciliationLifecycle),
     createCreditBalanceExhaustionProducer: vi.fn(() => ({ runOnce: vi.fn(() => Promise.resolve()) })),
-    createDatabaseActiveRunOrganizationSource: vi.fn(() => ({
-      listActiveOrganizationIds: vi.fn(() => Promise.resolve([])),
-    })),
+    createCreditBalanceExhaustionLifecycle: vi.fn(() => creditExhaustionLifecycle),
+    createDatabaseCreditExhaustionStore: vi.fn(() => ({ kind: 'credit-exhaustion-store' })),
     createDatabaseUsageCorrectionJournal: vi.fn(() => usageCorrections),
     createDatabaseUsageReconciliationCoordinator: vi.fn(() => usageCoordinator),
     createCoordinatedUsageReconciliationJob: vi.fn(() => coordinatedReconciler),
@@ -373,7 +376,8 @@ vi.mock('../src/usage/reconciliation.js', () => ({
   createThreeWayUsageReconciler: production.createThreeWayUsageReconciler,
   createUsageReconciliationLifecycle: production.createUsageReconciliationLifecycle,
   createCreditBalanceExhaustionProducer: production.createCreditBalanceExhaustionProducer,
-  createDatabaseActiveRunOrganizationSource: production.createDatabaseActiveRunOrganizationSource,
+  createCreditBalanceExhaustionLifecycle: production.createCreditBalanceExhaustionLifecycle,
+  createDatabaseCreditExhaustionStore: production.createDatabaseCreditExhaustionStore,
   createDatabaseUsageCorrectionJournal: production.createDatabaseUsageCorrectionJournal,
   createDatabaseUsageReconciliationCoordinator:
     production.createDatabaseUsageReconciliationCoordinator,

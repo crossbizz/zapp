@@ -6,6 +6,7 @@ import {
   agentRuns,
   agentTasks,
   desktopLocalAgentSessions,
+  organizations,
   projects,
   runCreditAccounts,
   type Database,
@@ -13,6 +14,7 @@ import {
 import { and, eq, sql } from 'drizzle-orm';
 
 import type { PricingConfig } from '../usage/pricing.js';
+import { planLimitsFor, type PlanLimitsConfig } from '../usage/limits.js';
 import {
   LocalAgentSessionSchema,
   type LocalAgentSession,
@@ -22,6 +24,7 @@ import {
 export interface LocalAgentSessionStoreOptions {
   readonly database: Database;
   readonly pricing: PricingConfig;
+  readonly plans?: PlanLimitsConfig;
 }
 
 function scopeOf(row: typeof desktopLocalAgentSessions.$inferSelect): LocalAgentSession {
@@ -77,6 +80,19 @@ export function createLocalAgentSessionRepository(
           .limit(1);
         if (existing !== undefined) return scopeOf(existing);
 
+        if (options.plans === undefined) {
+          throw new Error('plan limits are required for local agent accounting');
+        }
+        const [organization] = await tx
+          .select({ plan: organizations.plan })
+          .from(organizations)
+          .where(eq(organizations.id, input.organizationId))
+          .limit(1);
+        if (organization === undefined) {
+          throw new Error('organization plan is unavailable');
+        }
+        const planMaxCredits = planLimitsFor(options.plans, organization.plan).maxRunBudgetCredits;
+
         const projectId = newId('proj');
         const runId = newId('run');
         const phaseId = newId('phase');
@@ -110,7 +126,8 @@ export function createLocalAgentSessionRepository(
           specificationId: null,
           temporalWorkflowId: null,
           startedBy: input.userId,
-          budgetJson: { maxCredits: Number(pricing.defaultRunCreditCeiling) },
+          budgetJson: { maxCredits: Number(planMaxCredits) },
+          planMaxCredits,
           startedAt: input.now,
           completedAt: null,
         });
@@ -140,7 +157,7 @@ export function createLocalAgentSessionRepository(
         await tx.insert(runCreditAccounts).values({
           runId,
           organizationId: input.organizationId,
-          baseCeiling: pricing.defaultRunCreditCeiling,
+          baseCeiling: planMaxCredits,
           pricingVersion: pricing.version,
           pricingSnapshotJson: pricing,
           usedCredits: '0',

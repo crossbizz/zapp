@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { CreditDecimalSchema, RunModeSchema, idSchema } from '@zapp/contracts';
+import {
+  BudgetApprovalReasonSchema,
+  CreditDecimalSchema,
+  RunModeSchema,
+  idSchema,
+} from '@zapp/contracts';
 import { agentRuns, approvals, type Database } from '@zapp/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -28,12 +33,29 @@ export const RequestBudgetIncreaseInputSchema = z
     runId: idSchema('run'),
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
-    workspaceId: WorkspaceIdSchema,
+    workspaceId: WorkspaceIdSchema.nullable(),
     currentCeiling: CreditDecimalSchema,
     absoluteCeiling: CreditDecimalSchema,
+    reason: BudgetApprovalReasonSchema,
     idempotencyKey: IdempotencyKeySchema,
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    const current = creditUnits(input.currentCeiling);
+    const requested = creditUnits(input.absoluteCeiling);
+    const valid = input.reason === 'organization_credit_exhausted'
+      ? requested === current
+      : requested > current;
+    if (!valid) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: input.reason === 'organization_credit_exhausted'
+          ? 'organization credit approval must preserve the immutable ceiling'
+          : 'run budget approval must strictly increase the ceiling',
+        path: ['absoluteCeiling'],
+      });
+    }
+  });
 export const BudgetIncreaseRequestSchema = z
   .object({
     approvalId: idSchema('appr'),
@@ -125,6 +147,7 @@ export function createDatabaseApprovalActivities(options: {
         currentCeiling: input.currentCeiling,
         absoluteCeiling: input.absoluteCeiling,
         workspaceId: input.workspaceId,
+        reason: input.reason,
       };
       return await options.database.transaction(async (tx) => {
         const [run] = await tx
@@ -176,4 +199,9 @@ export function createDatabaseApprovalActivities(options: {
       });
     },
   });
+}
+
+function creditUnits(value: string): bigint {
+  const [whole = '0', fraction = ''] = value.split('.');
+  return BigInt(whole) * 10_000n + BigInt(fraction.padEnd(4, '0'));
 }

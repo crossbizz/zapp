@@ -2437,7 +2437,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -2499,7 +2499,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -3999,6 +3999,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -4128,6 +4129,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -5794,6 +5796,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -5976,6 +5979,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6324,6 +6328,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6628,6 +6633,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6725,6 +6731,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6816,6 +6823,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;

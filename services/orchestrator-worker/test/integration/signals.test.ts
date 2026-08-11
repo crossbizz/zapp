@@ -13,7 +13,6 @@ import {
 } from '../../src/worker.js';
 import {
   cancelRunSignal,
-  creditBalanceExhaustedSignal,
   getRunStatusQuery,
   pauseRunSignal,
   redirectRunSignal,
@@ -37,6 +36,7 @@ function workflowInput(runId: string): RunWorkflowInput {
     model: null,
     prompt: 'Complete the current builder turn.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
   };
 }
@@ -121,12 +121,13 @@ describe('AR-10 durable run control signals', () => {
       orchestrator.signalRun({
         runId: input.runId,
         workflowId: input.workflowId,
+        mode: 'build',
         signal: 'redirect',
         prompt: 'Keep the existing API and use the repository adapter.',
         operationKey: operationKey('1'),
       }),
     ).resolves.toEqual({ applied: true });
-    expect(signal).toHaveBeenCalledWith(redirectRunSignal, {
+    expect(signal).toHaveBeenCalledWith('redirect', {
       runId: input.runId,
       instruction: 'Keep the existing API and use the repository adapter.',
       operationKey: operationKey('1'),
@@ -144,11 +145,12 @@ describe('AR-10 durable run control signals', () => {
       orchestrator.signalRun({
         runId: input.runId,
         workflowId: input.workflowId,
+        mode: 'build',
         signal: 'credit_balance_exhausted',
         operationKey: operationKey('2'),
       }),
     ).resolves.toEqual({ applied: true });
-    expect(signal).toHaveBeenCalledWith(creditBalanceExhaustedSignal, {
+    expect(signal).toHaveBeenCalledWith('creditBalanceExhausted', {
       runId: input.runId,
       operationKey: operationKey('2'),
     });

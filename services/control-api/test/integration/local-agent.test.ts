@@ -4,8 +4,27 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createLocalAgentSessionRepository } from '../../src/local-agent/store.js';
 import { createDbAuditSink } from '../../src/plugins/audit.js';
+import { loadPlanLimitsConfig } from '../../src/usage/limits.js';
 import { TEST_PRICING } from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
+
+const TEST_PLANS = loadPlanLimitsConfig({
+  trial: {
+    concurrentAutonomousRuns: 1, concurrentSandboxes: 1, maxResourceProfile: 'small',
+    maxRunBudgetCredits: '10.0000', maxPreviewLifetimeHours: 1, artifactRetentionDays: 7,
+    monthlyCredits: '10.0000', seats: 1,
+  },
+  builder: {
+    concurrentAutonomousRuns: 3, concurrentSandboxes: 3, maxResourceProfile: 'standard',
+    maxRunBudgetCredits: '100.0000', maxPreviewLifetimeHours: 24, artifactRetentionDays: 30,
+    monthlyCredits: '100.0000', seats: 3,
+  },
+  studio: {
+    concurrentAutonomousRuns: 10, concurrentSandboxes: 10, maxResourceProfile: 'large',
+    maxRunBudgetCredits: '1000.0000', maxPreviewLifetimeHours: 168, artifactRetentionDays: 90,
+    monthlyCredits: '1000.0000', seats: 10,
+  },
+});
 
 describe.skipIf(!hasDatabase)('MAC-6 local-agent accounting scope', () => {
   let database: TestDatabase;
@@ -27,8 +46,8 @@ describe.skipIf(!hasDatabase)('MAC-6 local-agent accounting scope', () => {
     await database.sql.begin(async (tx) => {
       await tx`insert into users (id, email, display_name)
                values (${userId}, ${`${userId}@test.invalid`}, 'Desktop owner')`;
-      await tx`insert into organizations (id, name, slug)
-               values (${organizationId}, 'Desktop local', ${organizationId})`;
+      await tx`insert into organizations (id, name, slug, plan)
+               values (${organizationId}, 'Desktop local', ${organizationId}, 'trial')`;
     });
   });
 
@@ -36,6 +55,7 @@ describe.skipIf(!hasDatabase)('MAC-6 local-agent accounting scope', () => {
     const repository = createLocalAgentSessionRepository({
       database: database.db,
       pricing: TEST_PRICING,
+      plans: TEST_PLANS,
     });
     const audit = createDbAuditSink(database.db);
     const sessionId = '01912f8f-6cb0-7a52-9d3d-2b24f32062b0';
@@ -101,11 +121,14 @@ describe.skipIf(!hasDatabase)('MAC-6 local-agent accounting scope', () => {
       runId: string;
       taskId: string;
       baseCeiling: string;
+      planMaxCredits: string;
     }[]>`
       select session.project_id as "projectId", session.run_id as "runId",
-             session.task_id as "taskId", account.base_ceiling::text as "baseCeiling"
+             session.task_id as "taskId", account.base_ceiling::text as "baseCeiling",
+             run.plan_max_credits::text as "planMaxCredits"
         from desktop_local_agent_sessions session
         join run_credit_accounts account on account.run_id = session.run_id
+        join agent_runs run on run.id = session.run_id
        where session.organization_id = ${organizationId}
          and session.user_id = ${userId}
          and session.session_id = ${sessionId}
@@ -114,12 +137,51 @@ describe.skipIf(!hasDatabase)('MAC-6 local-agent accounting scope', () => {
       projectId: first.projectId,
       runId: first.runId,
       taskId: first.taskId,
-      baseCeiling: TEST_PRICING.defaultRunCreditCeiling,
+      baseCeiling: '10.0000',
+      planMaxCredits: '10.0000',
     });
     expect(
       await database.db
         .select({ id: auditEvents.id })
         .from(auditEvents),
     ).toHaveLength(1);
+  });
+
+  it('keeps a replay on its immutable trial cap and resolves a later session at builder cap', async () => {
+    const repository = createLocalAgentSessionRepository({
+      database: database.db,
+      pricing: TEST_PRICING,
+      plans: TEST_PLANS,
+    });
+    const now = new Date('2026-08-10T12:00:00.000Z');
+    const makeInput = (sessionId: string) => ({
+      sessionId,
+      organizationId,
+      userId,
+      localProjectName: 'Immutable desktop budget',
+      now,
+      audit: async () => {
+        await Promise.resolve();
+      },
+    });
+    const trial = await repository.ensure(makeInput('01912f8f-6cb0-7a52-9d3d-2b24f32062c0'));
+    await database.sql`update organizations set plan = 'builder' where id = ${organizationId}`;
+    const replay = await repository.ensure(makeInput('01912f8f-6cb0-7a52-9d3d-2b24f32062c0'));
+    const builder = await repository.ensure(makeInput('01912f8f-6cb0-7a52-9d3d-2b24f32062c1'));
+
+    expect(replay).toEqual(trial);
+    const caps = await database.sql<{ sessionId: string; planMax: string; baseCeiling: string }[]>`
+      select session.session_id as "sessionId", run.plan_max_credits::text as "planMax",
+             account.base_ceiling::text as "baseCeiling"
+        from desktop_local_agent_sessions session
+        join agent_runs run on run.id = session.run_id
+        join run_credit_accounts account on account.run_id = session.run_id
+       where session.organization_id = ${organizationId}
+       order by session.session_id
+    `;
+    expect(caps).toEqual([
+      { sessionId: trial.sessionId, planMax: '10.0000', baseCeiling: '10.0000' },
+      { sessionId: builder.sessionId, planMax: '100.0000', baseCeiling: '100.0000' },
+    ]);
   });
 });

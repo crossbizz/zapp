@@ -31,6 +31,7 @@ export {
 export {
   USAGE_CATEGORIES,
   accountingLeaderLeases,
+  creditExhaustionEpisodes,
   modelCompletionJournal,
   runCreditAccounts,
   runCreditCeilingAdjustments,
@@ -40,6 +41,7 @@ export {
   sandboxSnapshotMeasurements,
   usageReconciliationCorrections,
   type AccountingLeaderLease,
+  type CreditExhaustionEpisode,
   type ModelCompletionJournal,
   type NewSubscription,
   type NewUsageLedgerEntry,

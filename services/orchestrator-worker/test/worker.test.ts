@@ -1,5 +1,6 @@
 import { ApplicationFailure } from '@temporalio/activity';
 import { Worker } from '@temporalio/worker';
+import { projectTemporalRunStart } from '@zapp/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ActivityIdempotencyStore } from '../src/activities/idempotency.js';
@@ -19,6 +20,8 @@ import {
   buildWorkflow,
   RunWorkflowInputSchema,
 } from '../src/workflows/run.js';
+import { AutonomousWorkflowInputSchema } from '../src/workflows/autonomous.js';
+import { FixWorkflowInputSchema } from '../src/workflows/fix.js';
 
 const unusedStore: ActivityIdempotencyStore = {
   claim: () => Promise.resolve({ status: 'acquired' }),
@@ -175,6 +178,7 @@ describe('AR-9 worker queue and activity policy', () => {
       model: null,
       prompt: 'Build the app',
       budget: null,
+      planMaxCredits: 100,
       operationKey: `op_${'a'.repeat(64)}`,
     };
 
@@ -184,4 +188,46 @@ describe('AR-9 worker queue and activity policy', () => {
     expect(start.mock.calls[0]?.[0]).toBe(buildWorkflow);
     expect(start.mock.calls[0]?.[1]).toMatchObject({ taskQueue: TASK_QUEUES.agentRuns });
   });
+
+  it.each(['ask', 'prototype', 'build', 'fix', 'autonomous'] as const)(
+    'accepts the shared strict %s projection at the actual worker schema',
+    (mode) => {
+      const projected = projectTemporalRunStart({
+        runId: `run_${'0'.repeat(26)}`,
+        workflowId: 'run:test',
+        organizationId: `org_${'0'.repeat(26)}`,
+        projectId: `proj_${'0'.repeat(26)}`,
+        branchId: null,
+        mode,
+        appType: 'web',
+        model: null,
+        prompt: 'Build the app',
+        budget: { maxCredits: 10 },
+        planMaxCredits: 100,
+        operationKey: `op_${'a'.repeat(64)}`,
+        ...(mode === 'fix'
+          ? {
+              fixRequest: {
+                source: 'user_bug',
+                summary: 'Fix it',
+                relevantCommitSha: 'a'.repeat(40),
+                reproductionRef: 'test/fix.test.ts',
+                evidence: [{
+                  kind: 'user_report',
+                  artifactId: `art_${'0'.repeat(26)}`,
+                  summary: 'It is broken',
+                }],
+              },
+            }
+          : {}),
+      });
+      const schema =
+        projected.workflowType === 'autonomousWorkflow'
+          ? AutonomousWorkflowInputSchema
+          : projected.workflowType === 'fixWorkflow'
+            ? FixWorkflowInputSchema
+            : RunWorkflowInputSchema;
+      expect(schema.parse(projected.input)).toEqual(projected.input);
+    },
+  );
 });

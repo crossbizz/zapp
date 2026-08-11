@@ -5,7 +5,12 @@ import { CreditDecimalSchema } from './usage.js';
 
 /** Fixed-point credits are stored with four decimal places across usage accounting. */
 /** Run budgets are integer credits, so plan maxima must be exactly representable by CP-9. */
-export const IntegralCreditDecimalSchema = z.string().regex(/^\d+(?:\.0{1,4})?$/u);
+export const IntegralCreditDecimalSchema = z
+  .string()
+  .regex(/^[1-9]\d*(?:\.0{1,4})?$/u)
+  .refine((value) => BigInt(value.split('.')[0] ?? '0') <= 1_000_000n, {
+    message: 'run budget maximum must be between 1 and 1000000 integral credits',
+  });
 
 export const PlanLimitSchema = z
   .object({

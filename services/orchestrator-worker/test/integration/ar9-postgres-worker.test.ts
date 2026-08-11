@@ -66,6 +66,7 @@ function workflowInput(runId: string): RunWorkflowInput {
     model: null,
     prompt: 'Exercise the AR-9 production worker composition.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
   };
 }

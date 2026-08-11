@@ -10,6 +10,8 @@ import {
   type PlanLimit,
   type PlanLimitsConfig,
 } from '@zapp/contracts';
+import { agentRuns, runCreditAccounts, type Database } from '@zapp/db';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { RedisCommands } from '../redis/client.js';
@@ -179,12 +181,12 @@ export function createBudgetThresholdAlerts(options: {
             BUDGET_ALERT_TTL_MS,
           );
           if (claimed) {
-            await options.alerts.emit({
+            void options.alerts.emit({
               type: 'run_budget_threshold',
               organizationId,
               runId,
               threshold,
-            });
+            }).catch(() => undefined);
           }
         } catch {
           // Alert delivery must never make the accounting boundary unavailable.
@@ -214,8 +216,32 @@ export interface CreditBalanceGate {
   requireRunAdmission(organizationId: string): Promise<void>;
 }
 
+export interface ActiveReservationPort {
+  total(organizationId: string): Promise<string>;
+}
+
+export function createDatabaseActiveReservationSource(database: Database): ActiveReservationPort {
+  return {
+    async total(organizationId) {
+      const organization = idSchema('org').parse(organizationId);
+      const [row] = await database
+        .select({ total: sql<string>`coalesce(sum(${runCreditAccounts.reservedCredits}), 0)::text` })
+        .from(runCreditAccounts)
+        .innerJoin(agentRuns, eq(agentRuns.id, runCreditAccounts.runId))
+        .where(and(
+          eq(runCreditAccounts.organizationId, organization),
+          eq(agentRuns.organizationId, organization),
+          inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+        ));
+      return CreditDecimalSchema.parse(row?.total ?? '0');
+    },
+  };
+}
+
 const WALLET_CACHE_TTL_MS = 30_000;
 const WALLET_LAST_KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const MAX_REDIS_RESERVATION_READS = 100;
+const MAX_REDIS_RESERVATION_CONCURRENCY = 8;
 const WalletCacheSchema = z
   .object({ balance: CreditDecimalSchema, cachedAt: z.number().int().nonnegative() })
   .strict();
@@ -224,25 +250,55 @@ const WalletLastKnownSchema = z.object({ balance: CreditDecimalSchema }).strict(
 export function createCachedCreditBalanceGate(options: {
   readonly wallets: FlexpriceWalletPort;
   readonly redis: Pick<RedisCommands, 'get' | 'set'>;
-  readonly activeRuns: { list(organizationId: string): Promise<readonly string[]> };
+  readonly activeRuns: {
+    list(organizationId: string, limit: number): Promise<readonly string[]>;
+  };
+  readonly reservations?: ActiveReservationPort;
   readonly graceFloorCredits: string;
   readonly alerts: UsageOpsAlertPort;
   readonly now?: () => number;
+  readonly timeoutMs?: number;
 }): CreditBalanceGate {
   const graceFloorCredits = CreditDecimalSchema.parse(options.graceFloorCredits);
   const now = options.now ?? Date.now;
+  const timeoutMs = z.number().int().positive().max(30_000).parse(options.timeoutMs ?? 3_000);
   const freshKey = (organizationId: string): string => `organization:${organizationId}:wallet:credits:fresh`;
   const lastKnownKey = (organizationId: string): string => `organization:${organizationId}:wallet:credits:lkg`;
 
   async function reservedCredits(organizationId: string): Promise<string> {
-    let total = 0n;
-    for (const runId of await options.activeRuns.list(idSchema('org').parse(organizationId))) {
-      const raw = await options.redis.get(`run:${runId}:credits`);
-      if (raw === null) continue;
-      const state = CreditStateSchema.parse(JSON.parse(raw) as unknown);
-      total += creditUnits(state.reserved);
+    const organization = idSchema('org').parse(organizationId);
+    try {
+      return await within((async () => {
+        const runIds = await options.activeRuns.list(
+          organization,
+          MAX_REDIS_RESERVATION_READS + 1,
+        );
+        if (runIds.length > MAX_REDIS_RESERVATION_READS) {
+          throw new Error('active reservation cache read limit exceeded');
+        }
+        const reservations = await mapConcurrentStrict(
+          runIds,
+          MAX_REDIS_RESERVATION_CONCURRENCY,
+          async (runId) => {
+            const raw = await options.redis.get(`run:${runId}:credits`);
+            if (raw === null) throw new Error('active reservation cache miss');
+            const state = CreditStateSchema.parse(JSON.parse(raw) as unknown);
+            return creditUnits(state.reserved);
+          },
+        );
+        return formatCredits(reservations.reduce((total, reserved) => total + reserved, 0n));
+      })(), timeoutMs);
+    } catch {
+      if (options.reservations === undefined) return '0.0000';
+      try {
+        return CreditDecimalSchema.parse(
+          await within(options.reservations.total(organization), timeoutMs),
+        );
+      } catch {
+        // Unknown reservations fail closed without turning admission into a 500.
+        return CreditDecimalSchema.parse('1000000.0000');
+      }
     }
-    return formatCredits(total);
   }
 
   return {
@@ -251,7 +307,7 @@ export function createCachedCreditBalanceGate(options: {
       let walletBalance: string | undefined;
       let source: 'wallet' | 'cache' | 'grace' = 'wallet';
       try {
-        const cached = await options.redis.get(freshKey(organization));
+        const cached = await within(options.redis.get(freshKey(organization)), timeoutMs);
         if (cached !== null) {
           const fresh = WalletCacheSchema.parse(JSON.parse(cached) as unknown);
           if (now() - fresh.cachedAt <= WALLET_CACHE_TTL_MS) {
@@ -264,23 +320,31 @@ export function createCachedCreditBalanceGate(options: {
       }
       if (walletBalance === undefined) {
         try {
-          walletBalance = CreditDecimalSchema.parse(await options.wallets.getActivePrepaidBalance(organization));
+          walletBalance = CreditDecimalSchema.parse(
+            await within(options.wallets.getActivePrepaidBalance(organization), timeoutMs),
+          );
           source = 'wallet';
           await Promise.allSettled([
-            options.redis.set(
-              freshKey(organization),
-              JSON.stringify({ balance: walletBalance, cachedAt: now() }),
-              WALLET_CACHE_TTL_MS,
+            within(
+              options.redis.set(
+                freshKey(organization),
+                JSON.stringify({ balance: walletBalance, cachedAt: now() }),
+                WALLET_CACHE_TTL_MS,
+              ),
+              timeoutMs,
             ),
-            options.redis.set(
-              lastKnownKey(organization),
-              JSON.stringify({ balance: walletBalance }),
-              WALLET_LAST_KNOWN_TTL_MS,
+            within(
+              options.redis.set(
+                lastKnownKey(organization),
+                JSON.stringify({ balance: walletBalance }),
+                WALLET_LAST_KNOWN_TTL_MS,
+              ),
+              timeoutMs,
             ),
           ]);
         } catch {
           try {
-            const retained = await options.redis.get(lastKnownKey(organization));
+            const retained = await within(options.redis.get(lastKnownKey(organization)), timeoutMs);
             if (retained !== null) {
               walletBalance = WalletLastKnownSchema.parse(JSON.parse(retained) as unknown).balance;
               source = 'cache';
@@ -292,11 +356,14 @@ export function createCachedCreditBalanceGate(options: {
             walletBalance = graceFloorCredits;
             source = 'grace';
           }
-          try {
-            await options.alerts.emit({ type: 'flexprice_wallet_unavailable', organizationId: organization });
-          } catch {
-            // Ops alert delivery is best effort and must not block admissions.
-          }
+          void Promise.resolve()
+            .then(() => {
+              return options.alerts.emit({
+                type: 'flexprice_wallet_unavailable',
+                organizationId: organization,
+              });
+            })
+            .catch(() => undefined);
         }
       }
       const reserved = await reservedCredits(organization);
@@ -312,6 +379,39 @@ export function createCachedCreditBalanceGate(options: {
       if (creditUnits(balance.availableCredits) <= 0n) throw new CreditBalanceExhaustedError();
     },
   };
+}
+
+async function mapConcurrentStrict<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  map: (value: T) => Promise<R>,
+): Promise<readonly R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (cursor < values.length) {
+        const index = cursor;
+        cursor += 1;
+        results[index] = await map(values[index] as T);
+      }
+    }),
+  );
+  return results;
+}
+
+async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    handle = setTimeout(() => {
+      reject(new Error('usage dependency timed out'));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (handle !== undefined) clearTimeout(handle);
+  }
 }
 
 function creditUnits(value: string): bigint {

@@ -39,6 +39,7 @@ import type { PricingConfig } from './usage/pricing.js';
 import {
   createBudgetThresholdAlerts,
   createCachedCreditBalanceGate,
+  createDatabaseActiveReservationSource,
   createFlexpriceWalletClient,
   type PlanLimitsConfig,
   type CreditBalanceGate,
@@ -183,7 +184,11 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       : createCachedCreditBalanceGate({
           wallets: createFlexpriceWalletClient(runtime.flexprice),
           redis,
-          activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+          activeRuns: {
+            list: (organizationId, limit) =>
+              tenantDb(organizationId).runs.listActiveRunIds(limit),
+          },
+          reservations: createDatabaseActiveReservationSource(database),
           graceFloorCredits:
             runtime.pricing.walletBalanceGraceFloor ??
             (() => {
@@ -338,11 +343,16 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     }),
     usageLedger,
     localAgent: {
-      sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
+      sessions: createLocalAgentSessionRepository({
+        database,
+        pricing: runtime.pricing,
+        ...(runtime.planLimits === undefined ? {} : { plans: runtime.planLimits }),
+      }),
       gateway: createModelGatewayLocalAgentClient({
         baseUrl: runtime.modelGatewayUrl,
         serviceTokens: runtime.serviceTokens,
       }),
+      ...(creditBalance === undefined ? {} : { creditBalance }),
     },
     ...(runtime.github === undefined ||
     githubStateStore === undefined ||

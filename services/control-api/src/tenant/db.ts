@@ -397,6 +397,7 @@ export interface NewRunInput {
   readonly appType: AppType;
   readonly model: ModelIdentifier | null;
   readonly budget: unknown;
+  readonly planMaxCredits: string;
   readonly accounting: {
     readonly baseCeiling: string;
     readonly pricingVersion: string;
@@ -413,6 +414,13 @@ export type RunCreateResult =
   | { readonly outcome: 'created'; readonly run: AgentRun }
   | { readonly outcome: 'recovered'; readonly run: AgentRun }
   | { readonly outcome: 'conflict'; readonly run: AgentRun };
+
+export interface ReadmitRunDispatchInput {
+  readonly runId: string;
+  readonly requestFingerprint: string;
+  readonly concurrentAutonomousLimit?: number;
+  readonly audit: AuditHook<AgentRun>;
+}
 
 export type OperationOutcome = 'dispatch' | 'completed' | 'rejected' | 'blocked';
 
@@ -444,8 +452,10 @@ export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'>
   /** Plan-limit admission reads only active autonomous runs for this tenant. */
   countActiveAutonomousRuns(): Promise<number>;
   /** Redis credit mirrors are summed only for active runs in this tenant. */
-  listActiveRunIds(): Promise<readonly string[]>;
+  listActiveRunIds(limit?: number): Promise<readonly string[]>;
   create(input: NewRunInput): Promise<RunCreateResult>;
+  readmitDispatch(input: ReadmitRunDispatchInput): Promise<RunCreateResult | undefined>;
+  markDispatchFailed(input: { readonly runId: string; readonly audit: AuditHook<AgentRun> }): Promise<AgentRun | undefined>;
   claimOperation(input: ClaimRunOperationInput): Promise<OperationClaim<AgentRun> | undefined>;
   completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined>;
   rejectOperation(
@@ -1843,7 +1853,8 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
           return result?.count ?? 0;
         },
 
-        async listActiveRunIds(): Promise<readonly string[]> {
+        async listActiveRunIds(rawLimit = 101): Promise<readonly string[]> {
+          const limit = z.number().int().min(1).max(101).parse(rawLimit);
           const rows = await db
             .select({ id: agentRuns.id })
             .from(agentRuns)
@@ -1852,7 +1863,8 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 eq(agentRuns.organizationId, orgId),
                 inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
               ),
-            );
+            )
+            .limit(limit);
           return rows.map((row) => row.id);
         },
 
@@ -1896,6 +1908,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 temporalWorkflowId: input.workflowId,
                 startedBy: input.startedBy,
                 budgetJson: input.budget,
+                planMaxCredits: input.planMaxCredits,
                 startedAt: input.now,
                 completedAt: null,
               })
@@ -1929,6 +1942,65 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 run.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
               run,
             };
+          });
+        },
+
+        async readmitDispatch(input): Promise<RunCreateResult | undefined> {
+          return await db.transaction(async (tx) => {
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
+            const [existing] = await tx
+              .select()
+              .from(agentRuns)
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .limit(1);
+            if (existing === undefined) return undefined;
+            if (existing.requestFingerprint !== input.requestFingerprint) {
+              return { outcome: 'conflict', run: existing };
+            }
+            if (existing.status !== 'dispatch_failed') {
+              return { outcome: 'recovered', run: existing };
+            }
+            if (existing.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
+              const [active] = await tx
+                .select({ count: sql<number>`count(*)::int` })
+                .from(agentRuns)
+                .where(and(
+                  eq(agentRuns.organizationId, orgId),
+                  eq(agentRuns.mode, 'autonomous'),
+                  inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+                ));
+              if ((active?.count ?? 0) >= input.concurrentAutonomousLimit) {
+                throw new PlanLimitConcurrentRunsError();
+              }
+            }
+            const [readmitted] = await tx
+              .update(agentRuns)
+              .set({ status: 'queued' })
+              .where(scoped(
+                agentRuns.organizationId,
+                eq(agentRuns.id, input.runId),
+                eq(agentRuns.status, 'dispatch_failed'),
+              ))
+              .returning();
+            if (readmitted === undefined) return undefined;
+            await input.audit(tx, readmitted);
+            return { outcome: 'recovered', run: readmitted };
+          });
+        },
+
+        async markDispatchFailed(input): Promise<AgentRun | undefined> {
+          return await db.transaction(async (tx) => {
+            const [failed] = await tx
+              .update(agentRuns)
+              .set({ status: 'dispatch_failed' })
+              .where(scoped(
+                agentRuns.organizationId,
+                eq(agentRuns.id, input.runId),
+                eq(agentRuns.status, 'queued'),
+              ))
+              .returning();
+            if (failed !== undefined) await input.audit(tx, failed);
+            return failed;
           });
         },
 

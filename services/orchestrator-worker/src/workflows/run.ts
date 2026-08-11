@@ -12,10 +12,8 @@ import {
   workflowInfo,
   type RetryPolicy,
 } from '@temporalio/workflow';
-import {
-  MessageAssistantPayloadSchema,
-  MessageUserPayloadSchema,
-} from '@zapp/contracts/events';
+import { RunWorkflowStartInputSchema } from '@zapp/contracts/temporal-run';
+import { MessageAssistantPayloadSchema, MessageUserPayloadSchema } from '@zapp/contracts/events';
 import { TOOL_GROUPS, TOOL_NAMES, type ToolName } from '@zapp/contracts/tools';
 import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
 import { z } from 'zod';
@@ -42,44 +40,27 @@ import {
   type RedirectPlanChangeHooks,
 } from './redirect.js';
 import { runTaskBatchWorkflow, TaskWorkflowResultSchema } from './task.js';
+import {
+  BudgetApprovalResolutionSchema,
+  budgetApprovalResolvedSignal,
+  immutableRunCeiling,
+} from './budget-approval.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
 export {
   autonomousWorkflow,
   autonomousPlanApprovalSignal,
+  autonomousCreditBalanceExhaustedSignal,
   autonomousSpecificationApprovalSignal,
 } from './autonomous.js';
-export { fixWorkflow } from './fix.js';
+export { fixCreditBalanceExhaustedSignal, fixWorkflow } from './fix.js';
 
 const workflowIdSchema = (
   prefix: 'run' | 'org' | 'proj' | 'br' | 'art' | 'phase' | 'task' | 'vr',
 ): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
 
-export const RunWorkflowInputSchema = z
-  .object({
-    runId: workflowIdSchema('run'),
-    workflowId: z.string().min(1).max(255),
-    organizationId: workflowIdSchema('org'),
-    projectId: workflowIdSchema('proj'),
-    branchId: workflowIdSchema('br').nullable(),
-    mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']),
-    appType: z.enum(['web', 'mobile']),
-    model: z
-      .string()
-      .min(1)
-      .max(160)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u)
-      .nullable(),
-    prompt: z.string().min(1).max(20_000),
-    budget: z
-      .object({ maxCredits: z.number().int().positive().max(1_000_000) })
-      .strict()
-      .nullable(),
-    planMaxCredits: z.number().int().positive().max(1_000_000).optional(),
-    operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
-  })
-  .strict();
+export const RunWorkflowInputSchema = RunWorkflowStartInputSchema;
 export type RunWorkflowInput = z.infer<typeof RunWorkflowInputSchema>;
 
 export const BuildModePlanSchema = PlanSchema.superRefine((plan, context) => {
@@ -412,22 +393,7 @@ const controlApprovals = proxyActivities<ApprovalActivities>({
   retry: CONTROL_ACTIVITY_RETRY_POLICY,
 });
 
-const BudgetApprovalResolutionSchema = z.discriminatedUnion('decision', [
-  z
-    .object({
-      approvalId: z.string().regex(/^appr_[0-9A-HJKMNP-TV-Z]{26}$/u),
-      decision: z.literal('approved'),
-      absoluteCeiling: z.string().regex(/^\d+\.\d{4}$/u),
-    })
-    .strict(),
-  z
-    .object({
-      approvalId: z.string().regex(/^appr_[0-9A-HJKMNP-TV-Z]{26}$/u),
-      decision: z.literal('rejected'),
-    })
-    .strict(),
-]);
-export const budgetApprovalResolvedSignal = defineSignal<[unknown]>('budgetApprovalResolved');
+export { budgetApprovalResolvedSignal } from './budget-approval.js';
 export const pauseRunSignal = defineSignal<[unknown]>('pause');
 /**
  * The credit reconciler signals a durable boundary only; it deliberately never
@@ -908,10 +874,122 @@ async function executeRunWorkflow(
     return undefined;
   };
 
+  const honorOrganizationCreditBoundary = async (
+    workspaceId: string | null,
+    resumedPhase: Exclude<RunControlStatus['phase'], 'paused' | 'terminal'>,
+  ): Promise<RunWorkflowResult | undefined> => {
+    if (!creditBalanceExhausted) return undefined;
+    const episodeOperationKey = OperationKeySchema.parse(creditBalanceOperationKey);
+    const immutableCeiling = immutableRunCeiling(input);
+    const requested = await approvals.requestBudgetIncrease({
+      runId: input.runId,
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      workspaceId,
+      currentCeiling: immutableCeiling,
+      absoluteCeiling: immutableCeiling,
+      reason: 'organization_credit_exhausted',
+      idempotencyKey: operationKey(input, `organization-credit-${episodeOperationKey.slice(-12)}`),
+    });
+    currentStatus = 'waiting_for_approval';
+    await events.transitionRunStatus({
+      runId: input.runId,
+      status: 'waiting_for_approval',
+      idempotencyKey: operationKey(input, `status-organization-credit-${episodeOperationKey.slice(-12)}`),
+    });
+    await events.emitEvents({
+      events: [
+        event(input, 'approval.requested', `organization-credit-${episodeOperationKey.slice(-12)}`, {
+          approvalId: requested.approvalId,
+          type: 'budget_increase',
+          reason: 'organization_credit_exhausted',
+          absoluteCeiling: requested.absoluteCeiling,
+        }),
+      ],
+    });
+    await condition(() => budgetResolutions.has(requested.approvalId) || cancelRequested);
+    if (cancelRequested) {
+      if (workspaceId !== null) return await completeCancellation(workspaceId);
+      currentStatus = 'cancelled';
+      currentPhase = 'terminal';
+      const checkpointRef = `run:${input.runId}:organization-credit`;
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'cancelled',
+        idempotencyKey: operationKey(input, 'status-cancelled-before-workspace'),
+      });
+      return RunWorkflowResultSchema.parse({ status: 'cancelled', checkpointRef });
+    }
+    const resolution = budgetResolutions.get(requested.approvalId);
+    if (
+      resolution === undefined ||
+      resolution.reason !== 'organization_credit_exhausted'
+    ) throw new Error('organization credit approval resolution does not match the request');
+    await events.emitEvents({
+      events: [
+        event(input, 'approval.resolved', `organization-credit-resolution-${episodeOperationKey.slice(-12)}`, {
+          approvalId: requested.approvalId,
+          decision: resolution.decision,
+          reason: resolution.reason,
+        }),
+      ],
+    });
+    if (resolution.decision === 'rejected') {
+      const checkpointRef = workspaceId === null
+        ? `run:${input.runId}:organization-credit`
+        : (await approvals.checkpointBudgetStop({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            workspaceId,
+            approvalId: requested.approvalId,
+            idempotencyKey: operationKey(input, `organization-credit-stop-${episodeOperationKey.slice(-12)}`),
+          })).checkpointRef;
+      await events.transitionRunStatus({
+        runId: input.runId,
+        status: 'cancelled',
+        idempotencyKey: operationKey(input, `status-organization-credit-rejected-${episodeOperationKey.slice(-12)}`),
+      });
+      await events.emitEvents({
+        events: [event(input, 'run.cancelled', `organization-credit-rejected-${episodeOperationKey.slice(-12)}`, {
+          reason: 'organization_credit_exhausted',
+          checkpointRef,
+        })],
+      });
+      currentStatus = 'cancelled';
+      currentPhase = 'terminal';
+      return RunWorkflowResultSchema.parse({ status: 'cancelled', checkpointRef });
+    }
+    if (resolution.absoluteCeiling !== immutableCeiling) {
+      throw new Error('organization credit approval changed the immutable run ceiling');
+    }
+    creditBalanceExhausted = false;
+    creditBalanceOperationKey = null;
+    currentStatus = 'running';
+    currentPhase = resumedPhase;
+    await events.transitionRunStatus({
+      runId: input.runId,
+      status: 'running',
+      idempotencyKey: operationKey(input, `status-organization-credit-approved-${episodeOperationKey.slice(-12)}`),
+    });
+    return undefined;
+  };
+
+  const honorNewWorkBoundary = async (
+    workspaceId: string,
+    resumedPhase: Exclude<RunControlStatus['phase'], 'paused' | 'terminal'>,
+  ): Promise<RunWorkflowResult | undefined> => {
+    const controlled = await honorControlBoundary(workspaceId, resumedPhase);
+    if (controlled !== undefined) return controlled;
+    return await honorOrganizationCreditBoundary(workspaceId, resumedPhase);
+  };
+
   const budgetAttempt = input.budgetAttempt ?? 0;
   const sessionStep = input.sessionStep ?? 0;
   let lastEmittedAssistantTurn = input.lastEmittedAssistantTurn ?? 0;
   if (input.continuation === undefined) {
+    const initialCreditResult = await honorOrganizationCreditBoundary(null, 'preparing');
+    if (initialCreditResult !== undefined) return initialCreditResult;
     let workspaceId: string;
     try {
       const estimate =
@@ -988,7 +1066,7 @@ async function executeRunWorkflow(
       });
       throw error;
     }
-    const controlResult = await honorControlBoundary(workspaceId, 'session');
+    const controlResult = await honorNewWorkBoundary(workspaceId, 'session');
     if (controlResult !== undefined) return controlResult;
     return continueAsNew<typeof runWorkflow>({
       ...input,
@@ -1006,7 +1084,7 @@ async function executeRunWorkflow(
   if (input.continuation.phase === 'build_plan') {
     const { workspaceId } = input.continuation;
     currentPhase = 'session';
-    const prePlanControlResult = await honorControlBoundary(workspaceId, 'session');
+    const prePlanControlResult = await honorNewWorkBoundary(workspaceId, 'session');
     if (prePlanControlResult !== undefined) return prePlanControlResult;
     try {
       const planScope = new CancellationScope();
@@ -1039,6 +1117,8 @@ async function executeRunWorkflow(
         activeScope = undefined;
       }
       const plan = BuildModePlanSchema.parse(produced.plan);
+      const postProduceControlResult = await honorNewWorkBoundary(workspaceId, 'session');
+      if (postProduceControlResult !== undefined) return postProduceControlResult;
       const phase = plan.phases[0];
       if (phase === undefined) throw new Error('build_plan_phase_missing');
       const allocatedCredits = plan.tasks.reduce(
@@ -1226,7 +1306,7 @@ async function executeRunWorkflow(
           'build_plan_approval_identity_mismatch',
         );
       }
-      const postPlanControlResult = await honorControlBoundary(workspaceId, 'session');
+      const postPlanControlResult = await honorNewWorkBoundary(workspaceId, 'session');
       if (postPlanControlResult !== undefined) return postPlanControlResult;
       return await continueAsNew<typeof runWorkflow>({
         ...input,
@@ -1343,7 +1423,7 @@ async function executeRunWorkflow(
         }
       }
 
-      const preExecuteControlResult = await honorControlBoundary(workspaceId, 'session');
+      const preExecuteControlResult = await honorNewWorkBoundary(workspaceId, 'session');
       if (preExecuteControlResult !== undefined) return preExecuteControlResult;
       const taskCommitById = new Map(taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]));
       if (taskCommitById.size !== taskCommits.length) {
@@ -1384,7 +1464,7 @@ async function executeRunWorkflow(
             control: controlContinuation(),
           });
         }
-        const postExecuteControlResult = await honorControlBoundary(workspaceId, 'commit');
+        const postExecuteControlResult = await honorNewWorkBoundary(workspaceId, 'commit');
         if (postExecuteControlResult !== undefined) return postExecuteControlResult;
         return await continueAsNew<typeof runWorkflow>({
           ...input,
@@ -1421,6 +1501,8 @@ async function executeRunWorkflow(
           }, { phaseId: phase.id, taskId: nextTask.id }),
         ],
       });
+      const preChildCreditResult = await honorNewWorkBoundary(workspaceId, 'session');
+      if (preChildCreditResult !== undefined) return preChildCreditResult;
       const taskScope = new CancellationScope();
       activeScope = taskScope;
       let result: z.infer<typeof TaskWorkflowResultSchema>;
@@ -1540,7 +1622,7 @@ async function executeRunWorkflow(
         'build_task_commit_provenance_mismatch',
       );
     }
-    const preVerifyControlResult = await honorControlBoundary(workspaceId, 'commit');
+    const preVerifyControlResult = await honorNewWorkBoundary(workspaceId, 'commit');
     if (preVerifyControlResult !== undefined) return preVerifyControlResult;
     try {
       const verificationScope = new CancellationScope();
@@ -1667,7 +1749,7 @@ async function executeRunWorkflow(
           }),
         ],
       });
-      const preSessionControlResult = await honorControlBoundary(
+      const preSessionControlResult = await honorNewWorkBoundary(
         sessionWorkspaceId,
         'session',
       );
@@ -1723,7 +1805,7 @@ async function executeRunWorkflow(
       } finally {
         activeScope = undefined;
       }
-      const controlResult = await honorControlBoundary(
+      const controlResult = await honorNewWorkBoundary(
         sessionWorkspaceId,
         'session',
       );
@@ -1738,16 +1820,6 @@ async function executeRunWorkflow(
         const model = sessionResult.model ?? input.model ?? 'policy/default';
         await emitAssistantMessage(input, assistantTurn, sessionResult.summary, model);
         lastEmittedAssistantTurn = assistantTurn;
-      }
-      if (
-        creditBalanceExhausted &&
-        (sessionResult.status === 'completed' || sessionResult.status === 'yielded')
-      ) {
-        // Consume this durable boundary exactly once. The existing AR-14
-        // branch below owns the approval, checkpoint, and cancellation logic.
-        creditBalanceExhausted = false;
-        creditBalanceOperationKey = null;
-        sessionResult = { ...sessionResult, status: 'budget_exhausted' };
       }
       switch (sessionResult.status) {
         case 'completed':
@@ -1765,6 +1837,7 @@ async function executeRunWorkflow(
             workspaceId: input.continuation.workspaceId,
             currentCeiling,
             absoluteCeiling: nextRunCreditCeiling(input.budget.maxCredits, input.planMaxCredits),
+            reason: 'run_budget_exhausted',
             idempotencyKey: operationKey(
               input,
               `budget-increase-${String(budgetAttempt)}`,
@@ -1794,6 +1867,9 @@ async function executeRunWorkflow(
           if (cancelRequested) return await completeCancellation(sessionWorkspaceId);
           const resolution = budgetResolutions.get(requested.approvalId);
           if (resolution === undefined) throw new Error('budget approval resolution disappeared');
+          if (resolution.reason !== 'run_budget_exhausted') {
+            throw new Error('budget approval resolution reason does not match the request');
+          }
           await events.emitEvents({
             events: [
               event(input, 'approval.resolved', `budget-resolution-${String(budgetAttempt)}`, {
@@ -1958,7 +2034,7 @@ async function executeRunWorkflow(
 
   const commitWorkspaceId = input.continuation.workspaceId;
   currentPhase = 'commit';
-  const commitControlResult = await honorControlBoundary(commitWorkspaceId, 'commit');
+  const commitControlResult = await honorNewWorkBoundary(commitWorkspaceId, 'commit');
   if (commitControlResult !== undefined) return commitControlResult;
   try {
     const commitScope = new CancellationScope();
@@ -1987,7 +2063,7 @@ async function executeRunWorkflow(
       activeScope = undefined;
     }
     if (cancelRequested) return await completeCancellation(commitWorkspaceId);
-    const postCommitControlResult = await honorControlBoundary(commitWorkspaceId, 'commit');
+    const postCommitControlResult = await honorNewWorkBoundary(commitWorkspaceId, 'commit');
     if (postCommitControlResult !== undefined) return postCommitControlResult;
     const commitCreated = event(
       input,

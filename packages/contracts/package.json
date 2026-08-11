@@ -19,6 +19,18 @@
     "./run-intent": {
       "types": "./dist/run-intent.d.ts",
       "default": "./dist/run-intent.js"
+    },
+    "./temporal-run": {
+      "types": "./dist/temporal-run.d.ts",
+      "default": "./dist/temporal-run.js"
+    },
+    "./usage": {
+      "types": "./dist/usage.d.ts",
+      "default": "./dist/usage.js"
+    },
+    "./budget-approval": {
+      "types": "./dist/budget-approval.d.ts",
+      "default": "./dist/budget-approval.js"
     }
   },
   "scripts": {

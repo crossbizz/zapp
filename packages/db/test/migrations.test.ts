@@ -31,6 +31,10 @@ const partitioningSql = readFileSync(
   new URL('../drizzle/0001_prd23_schema_and_event_partitioning.sql', import.meta.url),
   'utf8',
 );
+const planEnforcementSql = readFileSync(
+  new URL('../drizzle/0026_cooing_hemingway.sql', import.meta.url),
+  'utf8',
+);
 
 describe('migration journal', () => {
   it('lists every migration file, in order, exactly once', () => {
@@ -75,6 +79,21 @@ describe('migration journal', () => {
     ]) {
       expect(allSql).toContain(statement);
     }
+  });
+
+  it('backfills immutable run caps from the organization plan before future plan changes', () => {
+    expect(planEnforcementSql).toMatch(/update "agent_runs" as run/iu);
+    expect(planEnforcementSql).toMatch(/when 'trial' then 10\.0000/iu);
+    expect(planEnforcementSql).toMatch(/when 'builder' then 100\.0000/iu);
+    expect(planEnforcementSql).toMatch(/when 'studio' then 1000\.0000/iu);
+    expect(planEnforcementSql).toContain(
+      'cannot backfill agent_runs.plan_max_credits for an unknown organization plan',
+    );
+    expect(planEnforcementSql).not.toMatch(/plan_max_credits[^;]*default/iu);
+    expect(planEnforcementSql).not.toMatch(/else\s+\d/iu);
+    expect(planEnforcementSql).toMatch(
+      /alter table "agent_runs" alter column "plan_max_credits" set not null/iu,
+    );
   });
 });
 

@@ -1,90 +1,20 @@
 import {
-  AppTypeSchema,
-  FixRequestSchema,
-  MessageUserPayloadSchema,
-  idSchema,
-  ModelIdentifierSchema,
-  RunModeSchema,
+  OperationKeySchema,
+  SignalRunInputSchema,
+  SignalRunResultSchema,
+  StartRunInputSchema,
+  type SignalRunInput,
+  type StartRunInput,
 } from '@zapp/contracts';
-import { z } from 'zod';
 
-export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/);
-
-const StartRunIdentityShape = {
-    runId: idSchema('run'),
-    workflowId: z.string().min(1).max(255),
-    organizationId: idSchema('org'),
-    projectId: idSchema('proj'),
-    branchId: idSchema('br').nullable(),
-    appType: AppTypeSchema,
-    model: ModelIdentifierSchema.nullable(),
-    prompt: z.string().min(1).max(20_000),
-    budget: z
-      .object({ maxCredits: z.number().int().positive().max(1_000_000) })
-      .strict()
-      .nullable(),
-    /** Immutable plan ceiling carried to the durable AR-14 approval loop. */
-    planMaxCredits: z.number().int().positive().max(1_000_000).optional(),
-    operationKey: OperationKeySchema,
-} as const;
-export const StartRunInputSchema = z.discriminatedUnion('mode', [
-  z.object({ ...StartRunIdentityShape, mode: z.literal('fix'), fixRequest: FixRequestSchema }).strict(),
-  z
-    .object({
-      ...StartRunIdentityShape,
-      mode: RunModeSchema.exclude(['fix']),
-    })
-    .strict(),
-]);
-export type StartRunInput = z.infer<typeof StartRunInputSchema>;
-
-const SignalIdentityShape = {
-  runId: idSchema('run'),
-  workflowId: z.string().min(1).max(255),
-  operationKey: OperationKeySchema,
-} as const;
-export const SignalRunInputSchema = z.union([
-  z
-    .object({
-      ...SignalIdentityShape,
-      signal: z.literal('credit_balance_exhausted'),
-    })
-    .strict(),
-  z
-    .object({
-      ...SignalIdentityShape,
-      signal: z.enum(['pause', 'resume', 'cancel', 'redirect']),
-      prompt: z.string().min(1).max(20_000).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      ...SignalIdentityShape,
-      signal: z.literal('message'),
-      message: MessageUserPayloadSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...SignalIdentityShape,
-      signal: z.literal('budget_approval'),
-      approvalId: idSchema('appr'),
-      decision: z.literal('approved'),
-      absoluteCeiling: z.string().regex(/^\d+\.\d{4}$/u),
-    })
-    .strict(),
-  z
-    .object({
-      ...SignalIdentityShape,
-      signal: z.literal('budget_approval'),
-      approvalId: idSchema('appr'),
-      decision: z.literal('rejected'),
-    })
-    .strict(),
-]);
-export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
-
-export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();
+export {
+  OperationKeySchema,
+  SignalRunInputSchema,
+  SignalRunResultSchema,
+  StartRunInputSchema,
+  type SignalRunInput,
+  type StartRunInput,
+};
 
 /** The durable-workflow boundary for the public run lifecycle. */
 export interface OrchestratorPort {
@@ -99,6 +29,16 @@ export class OrchestratorError extends Error {
   constructor(message = 'the orchestrator is unavailable') {
     super(message);
     this.name = 'OrchestratorError';
+  }
+}
+
+/** A reconciled start failure where Temporal proves that no stable execution exists. */
+export class DispatchNotStartedError extends OrchestratorError {
+  public readonly code = 'dispatch_not_started' as const;
+
+  constructor() {
+    super('the workflow dispatch was not started');
+    this.name = 'DispatchNotStartedError';
   }
 }
 

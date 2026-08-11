@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { PlanLimitsConfigSchema } from '../src/index.js';
+import { IntegralCreditDecimalSchema, PlanLimitsConfigSchema } from '../src/index.js';
 
 const validPlan = {
   concurrentAutonomousRuns: 1,
@@ -14,6 +14,16 @@ const validPlan = {
 };
 
 describe('plan policy contract', () => {
+  it.each([
+    ['0.0000', false],
+    ['1', true],
+    ['1000000.0000', true],
+    ['1000001.0000', false],
+    ['1.5000', false],
+  ] as const)('accepts only integral workflow-domain run maxima: %s', (value, accepted) => {
+    expect(IntegralCreditDecimalSchema.safeParse(value).success).toBe(accepted);
+  });
+
   it('accepts all contractual tiers and rejects fractional run-budget maxima', () => {
     expect(
       PlanLimitsConfigSchema.parse({

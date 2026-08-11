@@ -1295,6 +1295,8 @@
                 "specification.updated",
                 "specification.approved",
                 "run.created",
+                "run.dispatch_failed",
+                "run.dispatch_retried",
                 "run.message_created",
                 "run.events_ingested",
                 "run.pause_requested",
@@ -1460,6 +1462,8 @@
                               "specification.updated",
                               "specification.approved",
                               "run.created",
+                              "run.dispatch_failed",
+                              "run.dispatch_retried",
                               "run.message_created",
                               "run.events_ingested",
                               "run.pause_requested",
@@ -3879,6 +3883,10 @@
                           "status": {
                             "type": "string"
                           },
+                          "planMaxCredits": {
+                            "type": "string",
+                            "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                          },
                           "startedBy": {
                             "type": "string"
                           },
@@ -3901,6 +3909,7 @@
                           "appType",
                           "model",
                           "status",
+                          "planMaxCredits",
                           "startedBy",
                           "startedAt",
                           "completedAt"
@@ -4307,6 +4316,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -4329,6 +4342,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -6814,6 +6828,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -6836,6 +6854,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -7013,6 +7032,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -7035,6 +7058,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -7212,6 +7236,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -7234,6 +7262,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -7432,6 +7461,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -7454,6 +7487,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -8028,6 +8062,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -8050,6 +8088,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"
@@ -8771,6 +8810,10 @@
                         "status": {
                           "type": "string"
                         },
+                        "planMaxCredits": {
+                          "type": "string",
+                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        },
                         "startedBy": {
                           "type": "string"
                         },
@@ -8793,6 +8836,7 @@
                         "appType",
                         "model",
                         "status",
+                        "planMaxCredits",
                         "startedBy",
                         "startedAt",
                         "completedAt"

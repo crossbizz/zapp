@@ -8,8 +8,8 @@ import {
   setHandler,
   type RetryPolicy,
 } from '@temporalio/workflow';
+import { FixWorkflowStartInputSchema } from '@zapp/contracts/temporal-run';
 import {
-  AppTypeSchema,
   FixEvidenceSchema,
   FixRequestSchema,
   ModelIdentifierSchema,
@@ -19,6 +19,12 @@ import {
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
+import type { ApprovalActivities } from '../activities/approvals.js';
+import {
+  BudgetApprovalResolutionSchema,
+  budgetApprovalResolvedSignal,
+  immutableRunCeiling,
+} from './budget-approval.js';
 
 const workflowIdSchema = (
   prefix: 'run' | 'org' | 'proj' | 'br' | 'phase' | 'task' | 'art' | 'vr',
@@ -37,25 +43,7 @@ const RelativePathSchema = z
 export { FixEvidenceSchema, FixRequestSchema };
 export type { FixEvidence, FixRequest };
 
-export const FixWorkflowInputSchema = z
-  .object({
-    runId: workflowIdSchema('run'),
-    workflowId: z.string().min(1).max(255),
-    organizationId: workflowIdSchema('org'),
-    projectId: workflowIdSchema('proj'),
-    branchId: workflowIdSchema('br').nullable(),
-    mode: z.literal('fix'),
-    appType: AppTypeSchema,
-    model: ModelIdentifierSchema.nullable(),
-    prompt: z.string().trim().min(1).max(20_000),
-    budget: z
-      .object({ maxCredits: z.number().int().positive().max(1_000_000) })
-      .strict()
-      .nullable(),
-    operationKey: OperationKeySchema,
-    fixRequest: FixRequestSchema,
-  })
-  .strict();
+export const FixWorkflowInputSchema = FixWorkflowStartInputSchema;
 export type FixWorkflowInput = z.infer<typeof FixWorkflowInputSchema>;
 
 const FixPhaseVerificationResultSchema = z
@@ -397,7 +385,7 @@ export const FixWorkflowResultSchema = z.discriminatedUnion('status', [
   z
     .object({
       status: z.literal('cancelled'),
-      reason: z.enum(['user_requested', 'redirected']),
+      reason: z.enum(['user_requested', 'redirected', 'organization_credit_exhausted']),
       checkpointRef: z.string().min(1).max(4_096).nullable(),
     })
     .strict(),
@@ -434,6 +422,10 @@ const fixControlActivities = proxyActivities<FixModeActivities>({
   scheduleToCloseTimeout: '1 second',
   startToCloseTimeout: '1 second',
   retry: FIX_CONTROL_RETRY_POLICY,
+});
+const fixApprovalActivities = proxyActivities<ApprovalActivities>({
+  startToCloseTimeout: '2 minutes',
+  retry: FIX_ACTIVITY_RETRY_POLICY,
 });
 
 function activityKey(fixCase: FixCase, step: string): string {
@@ -488,6 +480,7 @@ export const fixPauseSignal = defineSignal<[unknown]>('pause');
 export const fixResumeSignal = defineSignal<[unknown]>('resume');
 export const fixCancelSignal = defineSignal<[unknown]>('cancel');
 export const fixRedirectSignal = defineSignal<[unknown]>('redirect');
+export const fixCreditBalanceExhaustedSignal = defineSignal<[unknown]>('creditBalanceExhausted');
 
 /** PRD §11.4: an isolated reproduce-first repair with code-owned verification gates. */
 export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResult> {
@@ -500,6 +493,9 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
   let controlReason: 'user_requested' | 'redirected' | undefined;
   let controlOperationKey: string | undefined;
   let pauseOperationKey: string | undefined;
+  let creditBalanceExhausted = false;
+  let creditBalanceOperationKey: string | undefined;
+  let creditApprovalResolution: z.infer<typeof BudgetApprovalResolutionSchema> | undefined;
   const seenControlOperations = new Set<string>();
   const pendingControlReason = (): 'user_requested' | 'redirected' | undefined => controlReason;
 
@@ -516,6 +512,17 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
     seenControlOperations.add(signal.operationKey);
     pauseRequested = true;
     pauseOperationKey = signal.operationKey;
+  });
+  setHandler(fixCreditBalanceExhaustedSignal, (value) => {
+    const signal = controlSignal(value);
+    if (seenControlOperations.has(signal.operationKey)) return;
+    seenControlOperations.add(signal.operationKey);
+    if (creditBalanceExhausted) return;
+    creditBalanceExhausted = true;
+    creditBalanceOperationKey = signal.operationKey;
+  });
+  setHandler(budgetApprovalResolvedSignal, (value) => {
+    creditApprovalResolution = BudgetApprovalResolutionSchema.parse(value);
   });
   setHandler(fixResumeSignal, (value) => {
     const signal = controlSignal(value);
@@ -596,6 +603,106 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
 
   const honorControlBoundary = async (): Promise<FixWorkflowResult | undefined> => {
     if (controlReason !== undefined) return await completeControl();
+    if (creditBalanceExhausted && fixCase !== undefined && workspaceId !== undefined) {
+      const episodeOperationKey = OperationKeySchema.parse(creditBalanceOperationKey);
+      const immutableCeiling = immutableRunCeiling(input);
+      const requested = await fixApprovalActivities.requestBudgetIncrease({
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        workspaceId,
+        currentCeiling: immutableCeiling,
+        absoluteCeiling: immutableCeiling,
+        reason: 'organization_credit_exhausted',
+        idempotencyKey: activityKey(fixCase, `organization-credit-${episodeOperationKey.slice(-12)}`),
+      });
+      await fixActivities.transitionRunStatus({
+        runId: input.runId,
+        status: 'waiting_for_approval',
+        idempotencyKey: activityKey(fixCase, `status-organization-credit-${episodeOperationKey.slice(-12)}`),
+      });
+      await fixActivities.emitEvents({
+        events: [
+          fixEvent(input, 'approval.requested', `organization-credit-${episodeOperationKey.slice(-12)}`, {
+            approvalId: requested.approvalId,
+            type: 'budget_increase',
+            reason: 'organization_credit_exhausted',
+            absoluteCeiling: requested.absoluteCeiling,
+          }, fixCase),
+        ],
+      });
+      await condition(
+        () =>
+          pendingControlReason() !== undefined ||
+          creditApprovalResolution?.approvalId === requested.approvalId,
+      );
+      if (pendingControlReason() !== undefined) return await completeControl();
+      const resolution = creditApprovalResolution;
+      if (
+        resolution === undefined ||
+        resolution.approvalId !== requested.approvalId ||
+        resolution.reason !== 'organization_credit_exhausted'
+      ) throw new Error('Fix organization credit resolution does not match the request');
+      await fixActivities.emitEvents({
+        events: [
+          fixEvent(input, 'approval.resolved', `organization-credit-resolution-${episodeOperationKey.slice(-12)}`, {
+            approvalId: requested.approvalId,
+            decision: resolution.decision,
+            reason: resolution.reason,
+          }, fixCase),
+        ],
+      });
+      if (resolution.decision === 'rejected') {
+        const checkpoint = await fixApprovalActivities.checkpointBudgetStop({
+          runId: input.runId,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          workspaceId,
+          approvalId: requested.approvalId,
+          idempotencyKey: activityKey(fixCase, `organization-credit-stop-${episodeOperationKey.slice(-12)}`),
+        });
+        await fixActivities.finalizeFixTask(
+          FinalizeFixTaskInputSchema.parse({
+            runId: fixCase.runId,
+            organizationId: fixCase.organizationId,
+            projectId: fixCase.projectId,
+            phaseId: fixCase.phaseId,
+            taskId: fixCase.taskId,
+            outcome: 'cancelled',
+            commitSha: null,
+            verificationResultId: null,
+            idempotencyKey: activityKey(fixCase, 'finalize-organization-credit-rejected'),
+          }),
+        );
+        await fixActivities.transitionRunStatus({
+          runId: input.runId,
+          status: 'cancelled',
+          idempotencyKey: activityKey(fixCase, 'status-organization-credit-rejected'),
+        });
+        await fixActivities.emitEvents({
+          events: [fixEvent(input, 'run.cancelled', 'organization-credit-rejected', {
+            reason: 'organization_credit_exhausted',
+            checkpointRef: checkpoint.checkpointRef,
+          }, fixCase)],
+        });
+        return FixWorkflowResultSchema.parse({
+          status: 'cancelled',
+          reason: 'organization_credit_exhausted',
+          checkpointRef: checkpoint.checkpointRef,
+        });
+      }
+      if (resolution.absoluteCeiling !== immutableCeiling) {
+        throw new Error('Fix organization credit approval changed the immutable ceiling');
+      }
+      creditBalanceExhausted = false;
+      creditBalanceOperationKey = undefined;
+      creditApprovalResolution = undefined;
+      await fixActivities.transitionRunStatus({
+        runId: input.runId,
+        status: 'running',
+        idempotencyKey: activityKey(fixCase, `status-organization-credit-approved-${episodeOperationKey.slice(-12)}`),
+      });
+    }
     if (!pauseRequested || fixCase === undefined || workspaceId === undefined) return undefined;
     const checkpoint = CheckpointFixWorkspaceResultSchema.parse(
       await fixControlActivities.checkpointFixWorkspace(

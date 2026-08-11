@@ -195,6 +195,139 @@ describe('OPS-3 plan limits', () => {
     );
   });
 
+  it.each(['failed', 'malformed', 'hanging'] as const)(
+    'uses the authoritative reservation aggregate when a Redis run credit read is %s',
+    async (failure) => {
+      const redis = memoryRedis();
+      redis.get = (key: string) => {
+        if (!key.startsWith('run:')) return Promise.resolve(null);
+        if (failure === 'failed') return Promise.reject(new Error('redis offline'));
+        if (failure === 'malformed') return Promise.resolve('{not-json');
+        return new Promise<string | null>(() => undefined);
+      };
+      const gate = createCachedCreditBalanceGate({
+        wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+        redis,
+        activeRuns: { list: () => Promise.resolve([runId]) },
+        reservations: { total: () => Promise.resolve('3.0000') },
+        graceFloorCredits: '5.0000',
+        alerts: { emit: () => Promise.resolve() },
+        timeoutMs: 5,
+      });
+
+      await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+        availableCredits: '7.0000',
+        reservedCredits: '3.0000',
+      });
+    },
+  );
+
+  it('treats a Redis reservation miss as unknown and uses the authoritative aggregate once', async () => {
+    let aggregateReads = 0;
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis: memoryRedis(),
+      activeRuns: { list: () => Promise.resolve([runId]) },
+      reservations: {
+        total: () => {
+          aggregateReads += 1;
+          return Promise.resolve('3.0000');
+        },
+      },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 20,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(aggregateReads).toBe(1);
+  });
+
+  it('bounds many hung Redis reservation reads by one deadline and capped concurrency', async () => {
+    let concurrentReads = 0;
+    let maximumConcurrentReads = 0;
+    const redis = memoryRedis();
+    redis.get = (key: string) => {
+      if (!key.startsWith('run:')) return Promise.resolve(null);
+      concurrentReads += 1;
+      maximumConcurrentReads = Math.max(maximumConcurrentReads, concurrentReads);
+      return new Promise<string | null>(() => undefined);
+    };
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis,
+      activeRuns: {
+        list: () => Promise.resolve(Array.from({ length: 100 }, (_, index) => `run_${String(index)}`)),
+      },
+      reservations: { total: () => Promise.resolve('3.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 20,
+    });
+    const startedAt = performance.now();
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(performance.now() - startedAt).toBeLessThan(200);
+    expect(maximumConcurrentReads).toBe(8);
+  });
+
+  it('falls back to the bounded authoritative aggregate for a large active-run set', async () => {
+    let redisRunReads = 0;
+    const redis = memoryRedis();
+    const originalGet = redis.get;
+    redis.get = (key: string) => {
+      if (key.startsWith('run:')) redisRunReads += 1;
+      return originalGet(key);
+    };
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis,
+      activeRuns: {
+        list: () => Promise.resolve(Array.from({ length: 101 }, (_, index) => `run_${String(index)}`)),
+      },
+      reservations: { total: () => Promise.resolve('3.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 5,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(redisRunReads).toBe(0);
+  });
+
+  it('does not await or leak rejection from a hanging or failed outage alert', async () => {
+    let calls = 0;
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.reject(new Error('offline')) },
+      redis: memoryRedis(),
+      activeRuns: { list: () => Promise.resolve([]) },
+      reservations: { total: () => Promise.resolve('0.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: {
+        emit: () => {
+          calls += 1;
+          return calls === 1
+            ? new Promise<void>(() => undefined)
+            : Promise.reject(new Error('alert rejected'));
+        },
+      },
+      timeoutMs: 5,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({ source: 'grace' });
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({ source: 'grace' });
+    expect(calls).toBe(2);
+  });
+
   it('emits each 50/80/100 budget threshold once from the durable credit state', async () => {
     const alerts: unknown[] = [];
     const gate = createBudgetThresholdAlerts({

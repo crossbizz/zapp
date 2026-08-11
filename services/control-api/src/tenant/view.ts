@@ -1,6 +1,7 @@
 import {
   AgentEventVisibilitySchema,
   AppTypeSchema,
+  CreditDecimalSchema,
   idSchema,
   ModelIdentifierSchema,
   PreviewOperationFailurePayloadSchema,
@@ -333,6 +334,7 @@ export const RunSchema = z.object({
   appType: AppTypeSchema,
   model: ModelIdentifierSchema.nullable(),
   status: z.string(),
+  planMaxCredits: CreditDecimalSchema,
   startedBy: z.string(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
@@ -475,6 +477,7 @@ export function toRun(run: AgentRun): z.infer<typeof RunSchema> {
     appType: run.appType,
     model: run.model,
     status: run.status,
+    planMaxCredits: run.planMaxCredits,
     startedBy: run.startedBy,
     startedAt: run.startedAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,

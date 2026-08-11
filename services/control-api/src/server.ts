@@ -32,6 +32,7 @@ import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
 import {
   createCachedCreditBalanceGate,
+  createDatabaseActiveReservationSource,
   createFlexpriceWalletClient,
   loadPlanLimitsFile,
   type UsageOpsAlertPort,
@@ -56,7 +57,8 @@ import {
   createFlexpriceUsageAggregateClient,
   createRedisCreditMirror,
   createCreditBalanceExhaustionProducer,
-  createDatabaseActiveRunOrganizationSource,
+  createCreditBalanceExhaustionLifecycle,
+  createDatabaseCreditExhaustionStore,
   createRedisUsageRunCounter,
   createThreeWayUsageReconciler,
   createUsageReconciliationLifecycle,
@@ -158,7 +160,11 @@ const creditBalance =
     : createCachedCreditBalanceGate({
         wallets: createFlexpriceWalletClient(flexpriceConfig),
         redis,
-        activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+        activeRuns: {
+          list: (organizationId, limit) =>
+            tenantDb(organizationId).runs.listActiveRunIds(limit),
+        },
+        reservations: createDatabaseActiveReservationSource(database.db),
         graceFloorCredits: pricing.walletBalanceGraceFloor ?? '0.0000',
         alerts: usageOpsAlerts,
       });
@@ -303,28 +309,27 @@ const creditExhaustionProducer =
   creditBalance === undefined
     ? undefined
     : createCreditBalanceExhaustionProducer({
-        organizations: createDatabaseActiveRunOrganizationSource(database.db),
-        activeRuns: { list: (organizationId) => tenantDb(organizationId).runs.listActiveRunIds() },
+        store: createDatabaseCreditExhaustionStore({
+          database: database.db,
+          owner: `control-api-${randomUUID()}`,
+          leaseMs: 120_000,
+        }),
         creditBalance,
         orchestrator: runOrchestrator,
+        organizationBatchSize: 1,
+        batchSize: 100,
+        signalConcurrency: 8,
+        signalTimeoutMs: 3_000,
       });
-let creditExhaustionInterval: ReturnType<typeof setInterval> | undefined;
-const creditExhaustionLifecycle = {
-  async start() {
-    if (creditExhaustionProducer === undefined) return;
-    await creditExhaustionProducer.runOnce();
-    creditExhaustionInterval = setInterval(() => {
-      void creditExhaustionProducer.runOnce().catch((error: unknown) => {
+const creditExhaustionLifecycle = creditExhaustionProducer === undefined
+  ? undefined
+  : createCreditBalanceExhaustionLifecycle({
+      producer: creditExhaustionProducer,
+      intervalMs: 30_000,
+      onError: (error) => {
         app.log.error({ err: error }, 'credit exhaustion signal poll failed');
-      });
-    }, 30_000);
-  },
-  close() {
-    if (creditExhaustionInterval !== undefined) clearInterval(creditExhaustionInterval);
-    creditExhaustionInterval = undefined;
-    return Promise.resolve();
-  },
-};
+      },
+    });
 const usageReconciliationLifecycle =
   flexpriceConfig === undefined
     ? undefined
@@ -367,7 +372,7 @@ const usageReconciliationLifecycle =
 const usageOutboxLifecycle = {
   async start() {
     await accountingReconcilerLifecycle.start();
-    await creditExhaustionLifecycle.start();
+    await creditExhaustionLifecycle?.start();
     await dailyStorageLifecycle.start();
     await usagePublisherLifecycle.start();
     await usageConsumerLifecycle?.start();
@@ -379,7 +384,7 @@ const usageOutboxLifecycle = {
     await usageConsumerLifecycle?.close();
     await usagePublisherLifecycle.close();
     await accountingReconcilerLifecycle.close();
-    await creditExhaustionLifecycle.close();
+    await creditExhaustionLifecycle?.close();
     usageQueue.close?.();
   },
 };

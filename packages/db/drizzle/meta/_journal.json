@@ -183,6 +183,13 @@
       "when": 1786460606925,
       "tag": "0025_huge_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786474270419,
+      "tag": "0026_cooing_hemingway",
+      "breakpoints": true
     }
   ]
 }

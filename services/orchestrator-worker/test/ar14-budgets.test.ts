@@ -2,6 +2,7 @@ import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
+import { RequestBudgetIncreaseInputSchema } from '../src/activities/approvals.js';
 import { createTemporalRunOrchestrator } from '../../control-api/src/orchestrator/temporal.js';
 import { CreditBalanceExhaustedError } from '../../control-api/src/usage/limits.js';
 import { createCreditBalanceExhaustionProducer } from '../../control-api/src/usage/reconciliation.js';
@@ -26,6 +27,7 @@ function input(runId = id('run')): RunWorkflowInput {
     model: null,
     prompt: 'Build within the approved run budget.',
     budget: { maxCredits: 100 },
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
   };
 }
@@ -36,6 +38,27 @@ describe('AR-14 durable run budget approval loop', () => {
   afterEach(async () => {
     await environment?.teardown();
     environment = undefined;
+  });
+
+  it('keeps ordinary increases monotonic and permits an equal ceiling only for organization credit', () => {
+    const request = {
+      runId: id('run'),
+      organizationId: id('org'),
+      projectId: id('proj'),
+      workspaceId: 'workspace-budget-reason',
+      currentCeiling: '100.0000',
+      absoluteCeiling: '100.0000',
+      idempotencyKey: 'budget-reason',
+    };
+
+    expect(RequestBudgetIncreaseInputSchema.safeParse({
+      ...request,
+      reason: 'run_budget_exhausted',
+    }).success).toBe(false);
+    expect(RequestBudgetIncreaseInputSchema.safeParse({
+      ...request,
+      reason: 'organization_credit_exhausted',
+    }).success).toBe(true);
   });
 
   it('pauses once at the hard ceiling and resumes with the approved absolute ceiling', async () => {
@@ -114,6 +137,7 @@ describe('AR-14 durable run budget approval loop', () => {
         approvalId: 'appr_01J00000000000000000000000',
         decision: 'approved',
         absoluteCeiling: '200.0000',
+        reason: 'run_budget_exhausted',
       });
       await expect(result).resolves.toEqual({ status: 'completed', commitSha: 'd'.repeat(40) });
     });
@@ -197,6 +221,7 @@ describe('AR-14 durable run budget approval loop', () => {
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000001',
         decision: 'rejected',
+        reason: 'run_budget_exhausted',
       });
       await expect(result).resolves.toEqual({
         status: 'cancelled',
@@ -209,7 +234,7 @@ describe('AR-14 durable run budget approval loop', () => {
     expect(statuses).toEqual(['running', 'waiting_for_approval', 'cancelled']);
   }, 30_000);
 
-  it('finishes the current task before a credit-balance gate enters the existing approval loop', async () => {
+  it('finishes the current task, ignores generic resume, and requires a matching credit approval at plan cap', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar14-credit-gate-${Date.now().toString(36)}`;
     let completeFirstTask!: (value: {
@@ -253,7 +278,7 @@ describe('AR-14 durable run budget approval loop', () => {
         approvalRequests.push(request);
         return Promise.resolve({
           approvalId: 'appr_01J00000000000000000000002',
-          absoluteCeiling: '200.0000',
+          absoluteCeiling: '100.0000',
         });
       },
       checkpointBudgetStop: () => Promise.reject(new Error('approval should resume')),
@@ -295,21 +320,36 @@ describe('AR-14 durable run budget approval loop', () => {
       await vi.waitFor(() => {
         expect(approvalRequests).toHaveLength(1);
       }, { timeout: 5_000 });
+      expect(approvalRequests).toEqual([
+        expect.objectContaining({
+          currentCeiling: '100.0000',
+          absoluteCeiling: '100.0000',
+          reason: 'organization_credit_exhausted',
+        }),
+      ]);
       await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({
         status: 'waiting_for_approval',
         phase: 'session',
       });
       expect(sessionAttempts).toBe(1);
 
+      await handle.signal('resume', {
+        runId: workflowInput.runId,
+        operationKey: `op_${'d'.repeat(64)}`,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sessionAttempts).toBe(1);
+
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000002',
         decision: 'approved',
-        absoluteCeiling: '200.0000',
+        absoluteCeiling: '100.0000',
+        reason: 'organization_credit_exhausted',
       });
       await expect(result).resolves.toEqual({ status: 'completed', commitSha: 'f'.repeat(40) });
     });
 
-    expect(sessionAttempts).toBe(2);
+    expect(sessionAttempts).toBe(1);
     expect(statuses).toEqual(['running', 'waiting_for_approval', 'running', 'completed']);
   }, 30_000);
 
@@ -343,7 +383,7 @@ describe('AR-14 durable run budget approval loop', () => {
         estimateRunCost: () => Promise.resolve({ estimatedCredits: '1.0000' }),
         requestBudgetIncrease: (request: unknown) => {
           approvals.push(request);
-          return Promise.resolve({ approvalId: 'appr_01J00000000000000000000003', absoluteCeiling: '200.0000' });
+          return Promise.resolve({ approvalId: 'appr_01J00000000000000000000003', absoluteCeiling: '100.0000' });
         },
         checkpointBudgetStop: () => Promise.reject(new Error('not expected')),
       },
@@ -361,13 +401,22 @@ describe('AR-14 durable run budget approval loop', () => {
         expect(attempts).toBe(1);
       }, { timeout: 5_000 });
       const producer = createCreditBalanceExhaustionProducer({
-        organizations: { listActiveOrganizationIds: () => Promise.resolve([workflowInput.organizationId]) },
-        activeRuns: { list: () => Promise.resolve([workflowInput.runId]) },
+        store: {
+          claimOrganizations: () => Promise.resolve({ acquired: true, leaseToken: 'ar14-lease', renewAfterMs: 10_000, organizationIds: [workflowInput.organizationId] }),
+          renewLease: () => Promise.resolve(true),
+          releaseLease: () => Promise.resolve(),
+          getOrOpenEpisode: () => Promise.resolve({ operationKey: `op_${'e'.repeat(64)}`, cursorRunId: null }),
+          closeEpisode: () => Promise.resolve(),
+          listActiveRuns: () => Promise.resolve([{ runId: workflowInput.runId, temporalWorkflowId: workflowInput.workflowId, mode: workflowInput.mode }]),
+          advanceEpisode: () => Promise.resolve(),
+        },
         creditBalance: {
           availableCredits: () => Promise.reject(new Error('not reached')),
           requireRunAdmission: () => Promise.reject(new CreditBalanceExhaustedError()),
         },
         orchestrator: createTemporalRunOrchestrator({ client: temporalClient }),
+        batchSize: 10,
+        signalConcurrency: 2,
       });
       await producer.runOnce();
       expect(approvals).toEqual([]);
@@ -377,7 +426,7 @@ describe('AR-14 durable run budget approval loop', () => {
       }, { timeout: 5_000 });
       await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({ status: 'waiting_for_approval' });
       await handle.signal('budgetApprovalResolved', {
-        approvalId: 'appr_01J00000000000000000000003', decision: 'approved', absoluteCeiling: '200.0000',
+        approvalId: 'appr_01J00000000000000000000003', decision: 'approved', absoluteCeiling: '100.0000', reason: 'organization_credit_exhausted',
       });
       await expect(result).resolves.toEqual({ status: 'completed', commitSha: '9'.repeat(40) });
     });

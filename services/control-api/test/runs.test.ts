@@ -12,7 +12,7 @@ import {
   type PlanLimitsConfig,
 } from '../src/usage/limits.js';
 import type { AuthIdentity } from '../src/auth/port.js';
-import { OrchestratorError } from '../src/orchestrator/port.js';
+import { DispatchNotStartedError, OrchestratorError } from '../src/orchestrator/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import {
   buildHarness,
@@ -60,6 +60,7 @@ interface StartCall {
   readonly model: string | null;
   readonly prompt: string;
   readonly budget?: { readonly maxCredits: number } | null;
+  readonly planMaxCredits?: number;
   readonly operationKey?: string;
   readonly fixRequest?: unknown;
 }
@@ -73,14 +74,20 @@ class FakeOrchestratorPort {
     readonly approvalId?: string;
     readonly decision?: string;
     readonly absoluteCeiling?: string;
+    readonly reason?: string;
   }[] = [];
   failStarts = 0;
+  ambiguousStarts = 0;
   signalResult: unknown = { applied: true };
 
   startRun(input: StartCall): Promise<void> {
     this.starts.push(input);
     if (this.failStarts > 0) {
       this.failStarts -= 1;
+      return Promise.reject(new DispatchNotStartedError());
+    }
+    if (this.ambiguousStarts > 0) {
+      this.ambiguousStarts -= 1;
       return Promise.reject(new OrchestratorError('temporary test failure'));
     }
     return Promise.resolve();
@@ -93,6 +100,7 @@ class FakeOrchestratorPort {
     readonly approvalId?: string;
     readonly decision?: string;
     readonly absoluteCeiling?: string;
+    readonly reason?: string;
   }): Promise<{ applied: boolean }> {
     this.signals.push({
       runId: input.runId,
@@ -101,6 +109,7 @@ class FakeOrchestratorPort {
       ...(input.approvalId === undefined ? {} : { approvalId: input.approvalId }),
       ...(input.decision === undefined ? {} : { decision: input.decision }),
       ...(input.absoluteCeiling === undefined ? {} : { absoluteCeiling: input.absoluteCeiling }),
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
     });
     return Promise.resolve(this.signalResult as { applied: boolean });
   }
@@ -219,6 +228,7 @@ function newRunInput(id: string) {
     appType: 'web' as const,
     model: null,
     budget: null,
+    planMaxCredits: '1000.0000',
     accounting: {
       baseCeiling: '1000.0000',
       pricingVersion: 'm1-test',
@@ -330,6 +340,60 @@ it('atomically admits one distinct autonomous intent at the trial limit while re
   expect(replay.statusCode, replay.body).toBe(201);
   expect(replay.json<{ run: { id: string } }>().run.id).toBe(admitted.json<{ run: { id: string } }>().run.id);
   expect(wired.orchestrator.starts).toHaveLength(1);
+});
+
+it('releases autonomous quota after dispatch failure so a distinct intent can start', async () => {
+  const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+  const project = await createProject(wired);
+  wired.orchestrator.failStarts = 1;
+  const failed = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'autonomous-dispatch-failed' },
+    payload: { mode: 'autonomous', prompt: 'Fail dispatch and release quota' },
+  });
+  const replacement = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'autonomous-after-failure' },
+    payload: { mode: 'autonomous', prompt: 'Use released quota' },
+  });
+
+  expect(failed.statusCode).toBe(502);
+  expect(wired.data.runs[0]?.status).toBe('dispatch_failed');
+  expect(replacement.statusCode, replacement.body).toBe(201);
+  expect(wired.data.runs[1]?.status).toBe('queued');
+});
+
+it('retains autonomous quota after ambiguous dispatch and converges on stable-intent retry', async () => {
+  const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+  const project = await createProject(wired);
+  wired.orchestrator.ambiguousStarts = 1;
+  const headers = {
+    ...wired.as(wired.owner),
+    'idempotency-key': 'autonomous-ambiguous-dispatch',
+  };
+  const payload = { mode: 'autonomous', prompt: 'Retain quota until dispatch is known' } as const;
+  const ambiguous = await wired.built.app.inject({
+    method: 'POST', url: `/v1/projects/${project.id}/runs`, headers, payload,
+  });
+  const competing = await wired.built.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers: { ...wired.as(wired.owner), 'idempotency-key': 'autonomous-ambiguous-race' },
+    payload: { mode: 'autonomous', prompt: 'Must not exceed trial concurrency' },
+  });
+
+  expect(ambiguous.statusCode).toBe(502);
+  expect(ambiguous.json<{ error: { code: string } }>().error.code).toBe('workflow_start_failed');
+  expect(wired.data.runs[0]?.status).toBe('queued');
+  expect(competing.statusCode).toBe(429);
+
+  const retry = await wired.built.app.inject({
+    method: 'POST', url: `/v1/projects/${project.id}/runs`, headers, payload,
+  });
+  expect(retry.statusCode, retry.body).toBe(201);
+  expect(retry.json<{ run: { id: string } }>().run.id).toBe(wired.data.runs[0]?.id);
 });
 
 it('blocks a new run when its available organization credits are exhausted', async () => {
@@ -711,6 +775,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       temporalWorkflowId: 'workflow-completed',
       startedBy: wired.owner.userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
       startedAt: wired.built.now(),
       completedAt: wired.built.now(),
     };
@@ -817,7 +882,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
 
   it('retries a persisted explicit intent after policy changes without reauthorizing it', async () => {
     const organizations = new ReadCountingOrganizationStore();
-    const wired = await wire({ organizations });
+    const wired = await wire({ organizations, planLimits: TEST_PLAN_LIMITS });
     const project = await createProject(wired);
     organizations.settings.set(wired.organizationId, {
       builderCanDeploy: false,
@@ -846,6 +911,8 @@ describe('POST /v1/projects/:projectId/runs', () => {
     expect(wired.data.runs[0]).toMatchObject({
       appType: 'mobile',
       model: 'anthropic/claude-sonnet-5',
+      status: 'dispatch_failed',
+      planMaxCredits: '10.0000',
     });
     const canonicalBody =
       '{"appType":"mobile","mode":"build","model":"anthropic/claude-sonnet-5","prompt":"Retry this durable mobile run"}';
@@ -878,6 +945,9 @@ describe('POST /v1/projects/:projectId/runs', () => {
     ).toHaveLength(1);
 
     organizations.settings.delete(wired.organizationId);
+    const organization = organizations.organizations.get(wired.organizationId);
+    if (organization === undefined) throw new Error('test organization disappeared');
+    organizations.organizations.set(wired.organizationId, { ...organization, plan: 'studio' });
 
     const retry = await wired.built.app.inject({
       method: 'POST',
@@ -887,7 +957,9 @@ describe('POST /v1/projects/:projectId/runs', () => {
     });
 
     expect(retry.statusCode, retry.body).toBe(201);
+    expect(retry.json<{ run: { planMaxCredits: string } }>().run.planMaxCredits).toBe('10.0000');
     expect(wired.data.runs).toHaveLength(1);
+    expect(wired.data.runs[0]).toMatchObject({ status: 'queued', planMaxCredits: '10.0000' });
     expect(
       wired.built.audit.events.filter(
         (event) => event.action === 'run.created' && event.targetId === runId,
@@ -898,14 +970,63 @@ describe('POST /v1/projects/:projectId/runs', () => {
         runId,
         appType: 'mobile',
         model: 'anthropic/claude-sonnet-5',
+        planMaxCredits: 10,
       }),
       expect.objectContaining({
         runId,
         appType: 'mobile',
         model: 'anthropic/claude-sonnet-5',
+        planMaxCredits: 10,
       }),
     ]);
     expect(organizations.settingsReads).toBe(1);
+  });
+
+  it('preserves a persisted studio cap when the plan downgrades before dispatch retry', async () => {
+    const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+    const project = await createProject(wired);
+    const organization = wired.built.organizations.organizations.get(wired.organizationId);
+    if (organization === undefined) throw new Error('test organization disappeared');
+    wired.built.organizations.organizations.set(wired.organizationId, {
+      ...organization,
+      plan: 'studio',
+    });
+    wired.orchestrator.failStarts = 1;
+    const headers = {
+      ...wired.as(wired.owner),
+      'idempotency-key': 'studio-cap-downgrade-retry',
+    };
+    const payload = { mode: 'build', prompt: 'Keep the admitted studio cap' } as const;
+
+    const first = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers,
+      payload,
+    });
+    expect(first.statusCode, first.body).toBe(502);
+    expect(wired.data.runs[0]).toMatchObject({
+      status: 'dispatch_failed',
+      planMaxCredits: '1000.0000',
+    });
+
+    wired.built.organizations.organizations.set(wired.organizationId, {
+      ...organization,
+      plan: 'trial',
+    });
+    const retry = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers,
+      payload,
+    });
+
+    expect(retry.statusCode, retry.body).toBe(201);
+    expect(retry.json<{ run: { planMaxCredits: string } }>().run.planMaxCredits).toBe(
+      '1000.0000',
+    );
+    expect(wired.orchestrator.starts).toHaveLength(2);
+    expect(wired.orchestrator.starts.every((start) => start.planMaxCredits === 1000)).toBe(true);
   });
 
   it('signals each applicable lifecycle action and records its matching audit action', async () => {
@@ -1008,6 +1129,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       temporalWorkflowId: `workflow-${foreignOrganizationId}`,
       startedBy: wired.owner.userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
       startedAt: wired.built.now(),
       completedAt: null,
     };
@@ -1105,6 +1227,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
       temporalWorkflowId: 'foreign-workflow',
       startedBy: wired.owner.userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
       startedAt: wired.built.now(),
       completedAt: null,
     };
@@ -1504,7 +1627,7 @@ describe('workspace passthrough routes', () => {
       const seeded: AgentRun = {
         id: newId('run'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
         mode: 'build', appType: 'web', model: null, requestFingerprint: `seed:viewer-${action}`, status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
-        startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
+        startedBy: wired.owner.userId, budgetJson: null, planMaxCredits: '1000.0000', startedAt: wired.built.now(), completedAt: null,
       };
       wired.data.runs.push(seeded);
       const callsBefore = wired.orchestrator.signals.length;
@@ -1566,7 +1689,7 @@ describe('workspace passthrough routes', () => {
     const foreignRun: AgentRun = {
       id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
       mode: 'build', appType: 'web', model: null, requestFingerprint: 'seed:foreign-resource-run', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
-      startedBy: wired.owner.userId, budgetJson: null, startedAt: wired.built.now(), completedAt: null,
+      startedBy: wired.owner.userId, budgetJson: null, planMaxCredits: '1000.0000', startedAt: wired.built.now(), completedAt: null,
     };
     const foreignWorkspace: Workspace = {
       id: newId('ws'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
@@ -1646,6 +1769,7 @@ describe('workspace passthrough routes', () => {
           currentCeiling: '100.0000',
           absoluteCeiling: '200.0000',
           workspaceId: 'workspace-ar14',
+          reason: 'run_budget_exhausted',
         },
         responseJson: null,
         requestedAt: wired.built.now(),
@@ -1679,6 +1803,7 @@ describe('workspace passthrough routes', () => {
         approvalId,
         decision,
         ...(decision === 'approved' ? { absoluteCeiling: '200.0000' } : {}),
+        reason: 'run_budget_exhausted',
       });
       expect(wired.data.approvals.find((row) => row.id === approvalId)).toMatchObject({
         status: decision,
@@ -1696,11 +1821,17 @@ describe('workspace passthrough routes', () => {
       payload: { mode: 'build', prompt: 'Reach plan maximum' },
     });
     const runId = created.json<{ run: { id: string } }>().run.id;
+    const organization = wired.built.organizations.organizations.get(wired.organizationId);
+    if (organization === undefined) throw new Error('test organization disappeared');
+    wired.built.organizations.organizations.set(wired.organizationId, {
+      ...organization,
+      plan: 'studio',
+    });
     const approvalId = newId('appr');
     wired.data.approvals.push({
       id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
       type: 'budget_increase', status: 'pending',
-      requestJson: { currentCeiling: '10.0000', absoluteCeiling: '20.0000', workspaceId: 'workspace-cap' },
+      requestJson: { currentCeiling: '10.0000', absoluteCeiling: '20.0000', workspaceId: 'workspace-cap', reason: 'run_budget_exhausted' },
       responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
     });
     const response = await wired.built.app.inject({
@@ -1712,6 +1843,40 @@ describe('workspace passthrough routes', () => {
     expect(response.json<{ error: { code: string } }>().error.code).toBe('plan_budget_exceeded');
     expect(wired.data.approvals.find((approval) => approval.id === approvalId)?.status).toBe('pending');
     expect(wired.modelCompletions.increases).toEqual([]);
+  });
+
+  it('approves an organization-credit override at the immutable plan ceiling without mutating it', async () => {
+    const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'credit-override-run' },
+      payload: { mode: 'build', prompt: 'Wait at the organization credit boundary' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const approvalId = newId('appr');
+    wired.data.approvals.push({
+      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
+      type: 'budget_increase', status: 'pending',
+      requestJson: {
+        currentCeiling: '10.0000', absoluteCeiling: '10.0000', workspaceId: 'workspace-credit',
+        reason: 'organization_credit_exhausted',
+      },
+      responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'resolve-credit-override' },
+      payload: { decision: 'approved' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(wired.modelCompletions.increases).toEqual([]);
+    expect(wired.orchestrator.signals.at(-1)).toMatchObject({
+      signal: 'budget_approval', approvalId, decision: 'approved',
+      absoluteCeiling: '10.0000', reason: 'organization_credit_exhausted',
+    });
   });
 
   it('does not resolve or audit a non-budget approval through the budget endpoint', async () => {

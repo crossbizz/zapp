@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./app": {
+      "types": "./dist/compose.d.ts",
+      "default": "./dist/compose.js"
+    },
     "./provider/modal": {
       "types": "./dist/provider/modal.d.ts",
       "default": "./dist/provider/modal.js"
