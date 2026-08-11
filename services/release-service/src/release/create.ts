@@ -18,6 +18,8 @@ import { CommitShaSchema, idSchema, newId } from '@zapp/contracts';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
+import type { DeploymentConfirmation, DeploymentType } from './types.js';
+
 export const ReleaseStatusSchema = z.enum([
   'candidate',
   'verifying',
@@ -124,10 +126,6 @@ export interface ReadinessReport {
   readonly findings: readonly unknown[];
 }
 
-export type DeploymentType = 'first_deploy' | 'redeploy' | 'replace_deployment';
-export interface DeploymentConfirmation {
-  readonly dataDisposition: 'preserve' | 'transfer' | 'reset' | null;
-}
 export interface EvidenceManifest {
   readonly releaseId: string;
   readonly commitSha: string;
