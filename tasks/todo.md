@@ -191,7 +191,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-21 Forking (project/branch/conversation/run)
 - [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
 - [ ] WEB-13 Releases + evidence viewer
-- [ ] OPS-12 Security suites (start; complete M5)
+- [x] OPS-12 Security suites (start; complete M5)
 - [ ] OPS-13 Injection evals + Semgrep gates (start; complete M5)
 
 ## M4 — Integrations & deployment (Weeks 16–22)
