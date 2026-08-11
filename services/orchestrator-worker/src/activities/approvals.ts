@@ -81,6 +81,21 @@ export type EstimateRunCostInput = z.infer<typeof EstimateRunCostInputSchema>;
 export type RequestBudgetIncreaseInput = z.infer<typeof RequestBudgetIncreaseInputSchema>;
 export type CheckpointBudgetStopInput = z.infer<typeof CheckpointBudgetStopInputSchema>;
 
+function decodeRequestBudgetIncreaseActivityInput(value: unknown): RequestBudgetIncreaseInput {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !Object.hasOwn(value, 'reason')
+  ) {
+    return RequestBudgetIncreaseInputSchema.parse({
+      ...value,
+      reason: 'run_budget_exhausted',
+    });
+  }
+  return RequestBudgetIncreaseInputSchema.parse(value);
+}
+
 export interface ApprovalActivityPort {
   estimateRunCost(input: EstimateRunCostInput): Promise<unknown>;
   requestBudgetIncrease(input: RequestBudgetIncreaseInput): Promise<unknown>;
@@ -104,7 +119,7 @@ export function createApprovalActivities(port: ApprovalActivityPort): ApprovalAc
       return RunCostEstimateSchema.parse(await port.estimateRunCost(input));
     },
     async requestBudgetIncrease(inputValue) {
-      const input = RequestBudgetIncreaseInputSchema.parse(inputValue);
+      const input = decodeRequestBudgetIncreaseActivityInput(inputValue);
       return BudgetIncreaseRequestSchema.parse(await port.requestBudgetIncrease(input));
     },
     async checkpointBudgetStop(inputValue) {

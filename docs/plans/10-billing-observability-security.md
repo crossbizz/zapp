@@ -110,6 +110,16 @@ Master plan §Global Constraints, plus:
 - [x] Verify focused RED/GREEN, actual local Temporal interleavings/replay, clean migration plus no-diff generation, affected-package lint/typecheck/build/unit/integration, architecture boundaries, and diff hygiene; no provider calls.
 - [x] Commit: `fix(usage): enforce every credit boundary and replay legacy approvals`
 
+#### Task OPS-3-FIX-3 [M2]: Build scheduling and legacy activity boundary closure
+
+**Files:** Modify the Build workflow credit gate plus its real-Temporal interleaving test; the budget-approval activity's legacy execution decoder plus activity tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-3-FIX-2. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: place an organization-credit boundary immediately adjacent to Build's provider-backed `workspace.ensureWorkspace` activity, with no awaited operation between the successful check and activity scheduling; a real Temporal interleaving exhausts credit during the preceding status/event await and proves no workspace activity starts before matching organization-credit approval while preserving estimation, bookkeeping, idempotency, and error behavior.
+- [x] RED/GREEN: keep new/public/workflow budget-approval validation strict while the activity execution boundary alone defaults a missing legacy `requestBudgetIncrease` reason to `run_budget_exhausted`; prove an actual activity accepts the old payload without weakening organization-credit reason or approval-ID matching.
+- [x] Verify focused RED/GREEN and actual local Temporal/activity regressions, full worker unit, affected control/database compatibility regressions, touched-package lint/typecheck/build, architecture boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): close build scheduling and legacy activity boundaries`
+
 ### Task OPS-4 [M5]: Stripe platform billing
 
 **Files:** Create: `services/control-api/src/billing/{stripe,webhooks,portal}.ts`, `test/integration/billing.test.ts` (Stripe test mode)
@@ -250,6 +260,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-3-FIX-3 done — Closed Build's workspace scheduling credit race and defaulted only legacy reason-less budget-approval activity payloads; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-2 done — Gated Build and Autonomous planner, repair, and reverify boundaries and preserved legacy budget approvals through a canonical backfill and deterministic replay decoder; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3-FIX-1 done — Closed shared Temporal dispatch, immutable plan caps, atomic dispatch retry, durable leased exhaustion delivery, bounded authoritative credit fallback, the desktop request boundary, and deployable sandbox enforcement; no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-3 done — Added strict deployable plan policy, local run/sandbox enforcement, Flexprice wallet cache/grace admission, deduplicated budget thresholds, and a durable next-task credit gate reusing AR-14; focused RED/GREEN and touched-package static/unit/build gates passed, and an isolated env-backed integration rerun completed after the publisher test passed in focused reproduction.

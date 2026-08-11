@@ -160,6 +160,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-3 Plan quotas + budget enforcement
 - [x] OPS-3-FIX-1 Production enforcement closure
 - [x] OPS-3-FIX-2 Credit-boundary and legacy-approval rollout closure
+- [x] OPS-3-FIX-3 Build scheduling and legacy activity boundary closure
 - [x] MAC-4 Platform auth + Keychain
 - [x] MAC-4-FIX-1 Close auth revocation and startup bounds
 - [x] MAC-5 Unified local+cloud dashboard

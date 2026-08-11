@@ -366,6 +366,82 @@ describe('AR-18 Build mode', () => {
     ).rejects.toThrow('Workflow execution failed');
   }, 30_000);
 
+  it('holds workspace scheduling when credit exhausts during the starting-event await', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar18-build-workspace-credit-${Date.now().toString(36)}`;
+    const workflowInput = buildInput('8');
+    let resolveStartingEvents: (() => void) | undefined;
+    const startingEvents = new Promise<void>((resolve) => {
+      resolveStartingEvents = resolve;
+    });
+    let releaseStartingEvents: (() => void) | undefined;
+    const startingEventsReleased = new Promise<void>((resolve) => {
+      releaseStartingEvents = resolve;
+    });
+    let resolveApprovalRequested: (() => void) | undefined;
+    const approvalRequested = new Promise<void>((resolve) => {
+      resolveApprovalRequested = resolve;
+    });
+    let resolveWorkspaceScheduled: (() => void) | undefined;
+    const workspaceScheduled = new Promise<void>((resolve) => {
+      resolveWorkspaceScheduled = resolve;
+    });
+    let workspaceCalls = 0;
+
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        transitionRunStatus: () => Promise.resolve(),
+        async emitEvents({ events }: { events: Array<{ type: string }> }) {
+          if (events.some(({ type }) => type === 'run.started')) {
+            resolveStartingEvents?.();
+            await startingEventsReleased;
+          }
+        },
+        storeAssistantContent: () => Promise.reject(new Error('not expected')),
+        ensureWorkspace: () => {
+          workspaceCalls += 1;
+          resolveWorkspaceScheduled?.();
+          return Promise.resolve({ workspaceId: 'workspace-build-credit-boundary' });
+        },
+        estimateRunCost: () => Promise.resolve({ estimatedCredits: '20.0000' }),
+        requestBudgetIncrease: () => {
+          resolveApprovalRequested?.();
+          return Promise.resolve({
+            approvalId: 'appr_01J00000000000000000000006',
+            absoluteCeiling: '40.0000',
+          });
+        },
+        checkpointBudgetStop: () => Promise.reject(new Error('checkpoint not expected')),
+      },
+    });
+
+    await worker.runUntil(async () => {
+      const handle = await environment?.client.workflow.start(buildWorkflow, {
+        taskQueue,
+        workflowId: workflowInput.workflowId,
+        args: [workflowInput],
+      });
+      await startingEvents;
+      await handle?.signal(creditBalanceExhaustedSignal, {
+        runId: workflowInput.runId,
+        operationKey: `op_${'6'.repeat(64)}`,
+      });
+      releaseStartingEvents?.();
+
+      const firstBoundary = await Promise.race([
+        approvalRequested.then(() => 'approval' as const),
+        workspaceScheduled.then(() => 'workspace' as const),
+      ]);
+      expect(firstBoundary).toBe('approval');
+      expect(workspaceCalls).toBe(0);
+      await handle?.terminate('workspace boundary observed');
+      await expect(handle?.result()).rejects.toThrow('workspace boundary observed');
+    });
+  }, 30_000);
+
   it('holds redirect planning when credit exhausts during redirect status work, then passes VF', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar18-build-auto-${Date.now().toString(36)}`;

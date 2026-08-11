@@ -3,7 +3,10 @@ import { Worker } from '@temporalio/worker';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRunWorker, type RunActivities } from '../src/worker.js';
-import { RequestBudgetIncreaseInputSchema } from '../src/activities/approvals.js';
+import {
+  createApprovalActivities,
+  RequestBudgetIncreaseInputSchema,
+} from '../src/activities/approvals.js';
 import { createTemporalRunOrchestrator } from '../../control-api/src/orchestrator/temporal.js';
 import { CreditBalanceExhaustedError } from '../../control-api/src/usage/limits.js';
 import { createCreditBalanceExhaustionProducer } from '../../control-api/src/usage/reconciliation.js';
@@ -60,6 +63,44 @@ describe('AR-14 durable run budget approval loop', () => {
       ...request,
       reason: 'organization_credit_exhausted',
     }).success).toBe(true);
+  });
+
+  it('defaults only a legacy activity payload that omitted the approval reason', async () => {
+    const forwarded: unknown[] = [];
+    const activities = createApprovalActivities({
+      estimateRunCost: () => Promise.reject(new Error('estimate not expected')),
+      requestBudgetIncrease: (request) => {
+        forwarded.push(request);
+        return Promise.resolve({
+          approvalId: 'appr_01J00000000000000000000006',
+          absoluteCeiling: '120.0000',
+        });
+      },
+      checkpointBudgetStop: () => Promise.reject(new Error('checkpoint not expected')),
+    });
+    const legacyPayload = {
+      runId: id('run'),
+      organizationId: id('org'),
+      projectId: id('proj'),
+      workspaceId: 'workspace-legacy-activity',
+      currentCeiling: '100.0000',
+      absoluteCeiling: '120.0000',
+      idempotencyKey: 'legacy-budget-activity',
+    };
+
+    expect(RequestBudgetIncreaseInputSchema.safeParse(legacyPayload).success).toBe(false);
+    const executeLegacyActivity = (inputValue: unknown): Promise<unknown> =>
+      activities.requestBudgetIncrease(inputValue as never);
+    await expect(executeLegacyActivity(legacyPayload)).resolves.toEqual({
+      approvalId: 'appr_01J00000000000000000000006',
+      absoluteCeiling: '120.0000',
+    });
+    expect(forwarded).toEqual([
+      {
+        ...legacyPayload,
+        reason: 'run_budget_exhausted',
+      },
+    ]);
   });
 
   it('pauses once at the hard ceiling and resumes with the approved absolute ceiling', async () => {

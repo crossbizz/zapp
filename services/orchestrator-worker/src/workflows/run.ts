@@ -1049,6 +1049,8 @@ async function executeRunWorkflow(
       );
       await events.emitEvents({ events: startingEvents });
 
+      const workspaceCreditResult = await honorOrganizationCreditBoundary(null, 'preparing');
+      if (workspaceCreditResult !== undefined) return workspaceCreditResult;
       const ensured = await workspace.ensureWorkspace({
         runId: input.runId,
         organizationId: input.organizationId,
