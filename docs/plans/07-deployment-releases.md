@@ -99,11 +99,11 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 
 #### DEP-4b: Machines deploy, vault secrets, health, rollback
 
-- [ ] Failing local integration tests first, against a recording HTTP server: app creation is idempotent in the configured zapp Fly org; environment values are resolved only through an injected decrypt-allowlisted vault port and sent by name to the Fly Secrets API without appearing in adapter results/errors; production deploy creates a new Machine with `skip_service_registration: true`, waits for `started` plus passing service health checks, uncordons it, then and only then stops the prior Machine; a failed health check stops the candidate and leaves the prior Machine serving.
-- [ ] Implement a strict Machines API client and `DeploymentProvider` production path. Machine config uses the exact image artifact, contract start command/port/health path, restart policy, release/project/environment metadata, and app secrets; provider deployment IDs durably encode app + Machine identity. Call the OPS-2 seam with usage category `deploy_provider` after an accepted provider mutation, without recording secret material.
-- [ ] Failing rollback tests first: resolve the explicit prior provider deployment ID, retain its image/config, perform the same cordoned health-gated handoff, and return a new deployment handle; invalid cross-app targets fail before mutation.
-- [ ] Run the focused red/green cycles, then the release-service test/lint/typecheck/build commands. Check only DEP-4b boxes in this commit.
-- [ ] Commit: `feat(release-service): health-gated Fly Machine deploys and rollback`
+- [x] Failing local integration tests first, against a recording HTTP server: app creation is idempotent in the configured zapp Fly org; environment values are resolved only through an injected decrypt-allowlisted vault port and sent by name to the Fly Secrets API without appearing in adapter results/errors; production deploy creates a new Machine with `skip_service_registration: true`, waits for `started` plus passing service health checks, uncordons it, then and only then stops the prior Machine; a failed health check stops the candidate and leaves the prior Machine serving.
+- [x] Implement a strict Machines API client and `DeploymentProvider` production path. Machine config uses the exact image artifact, contract start command/port/health path, restart policy, release/project/environment metadata, and app secrets; provider deployment IDs durably encode app + Machine identity. Call the OPS-2 seam with usage category `deploy_provider` after an accepted provider mutation, without recording secret material.
+- [x] Failing rollback tests first: resolve the explicit prior provider deployment ID, retain its image/config, perform the same cordoned health-gated handoff, and return a new deployment handle; invalid cross-app targets fail before mutation.
+- [x] Run the focused red/green cycles, then the release-service test/lint/typecheck/build commands. Check only DEP-4b boxes in this commit.
+- [x] Commit: `feat(release-service): health-gated Fly Machine deploys and rollback`
 
 #### DEP-4c: Status, log streaming, final staging proof
 
