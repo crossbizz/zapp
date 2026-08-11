@@ -90,6 +90,29 @@ Release flow states: `candidate → verifying → ready|warnings|blocked → app
 
 Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility` (any Node app with build+start or Dockerfile); build: in sandbox — Dockerfile template (node:22-slim multi-stage, contract build command, non-root user) unless project Dockerfile exists → `docker buildx` → push to Fly registry `registry.fly.io/zapp-{projectId}-{env}`; deploy: Fly app per project-env under zapp org (locked decision #4), machines update with new image ref (blue-green: start new machine → health check → stop old), secrets via Fly secrets API from vault (release-service is decrypt-allowlisted, CP-7); `getStatus`/`streamLogs` from Machines API; `rollback` = machines update to previous image ref (image refs retained on `deployments` rows); cost attribution stub → OPS-2 (deploy provider usage category).
 
+#### DEP-4a: Sandbox image build + push
+
+- [x] Failing tests first: compatibility accepts a Dockerfile or a Node `package.json` with both build/start scripts and rejects incomplete projects; stable Fly app/registry naming handles prefixed IDs and provider length limits; generated Dockerfile snapshot is `node:22-slim` multi-stage, executes the contract install/build/start commands through JSON-form shell arguments, and ends as a non-root user; an existing project Dockerfile is used unchanged; a failed `docker buildx build --push` never returns an artifact.
+- [x] Implement strict Zod inputs/outputs plus a minimal sandbox execution port; `buildFlyImage` writes only a temporary generated Dockerfile when needed, never passes secrets/build args, runs buildx in the contract workspace, pushes `registry.fly.io/<stable project-environment app>:<exact commit sha>`, removes the temporary file, and returns a validated `container_image` artifact. The sandbox is pre-authenticated with a registry-scoped credential outside this adapter.
+- [x] Run the focused red/green cycle, then the release-service test/lint/typecheck/build commands. Check only DEP-4a boxes in this commit.
+- [x] Commit: `feat(release-service): build and push Fly images`
+
+#### DEP-4b: Machines deploy, vault secrets, health, rollback
+
+- [ ] Failing local integration tests first, against a recording HTTP server: app creation is idempotent in the configured zapp Fly org; environment values are resolved only through an injected decrypt-allowlisted vault port and sent by name to the Fly Secrets API without appearing in adapter results/errors; production deploy creates a new Machine with `skip_service_registration: true`, waits for `started` plus passing service health checks, uncordons it, then and only then stops the prior Machine; a failed health check stops the candidate and leaves the prior Machine serving.
+- [ ] Implement a strict Machines API client and `DeploymentProvider` production path. Machine config uses the exact image artifact, contract start command/port/health path, restart policy, release/project/environment metadata, and app secrets; provider deployment IDs durably encode app + Machine identity. Call the OPS-2 seam with usage category `deploy_provider` after an accepted provider mutation, without recording secret material.
+- [ ] Failing rollback tests first: resolve the explicit prior provider deployment ID, retain its image/config, perform the same cordoned health-gated handoff, and return a new deployment handle; invalid cross-app targets fail before mutation.
+- [ ] Run the focused red/green cycles, then the release-service test/lint/typecheck/build commands. Check only DEP-4b boxes in this commit.
+- [ ] Commit: `feat(release-service): health-gated Fly Machine deploys and rollback`
+
+#### DEP-4c: Status, log streaming, final staging proof
+
+- [ ] Failing local integration tests first: map Fly Machine lifecycle/check states into the FND-4 deployment status without false-ready states; page the official Logs API cursor, emit only the selected Machine's validated stdout/stderr records, and redact every vault value before yielding; provider/API failures surface as failed status detail or typed errors, never success.
+- [ ] Implement `getStatus` and `streamLogs`, plus the FND-4 preview rejection and DEP-10 domain seam without inventing provider-hosted previews or premature custom-domain behavior. Keep all Fly-specific identity inside the adapter.
+- [ ] After local suites and the single capped review are complete, run the env-gated Fly staging test exactly once when `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are present: build/push the fixture, deploy it, prove runtime env + URL health, observe status/logs, roll back to the retained image, and clean up the staging app. Otherwise print a visible `SKIPPED — not run, not passed` reason naming the missing gate.
+- [ ] Run release-service test/lint/typecheck/build, root lint/typecheck, and the task's one real-provider gate; record any credential skip honestly. Check DEP-4 and tracker boxes and append the Execution log in this final substep commit.
+- [ ] Commit: `feat(release-service): Fly status and log streaming`
+
 ### Task DEP-5: Vercel adapter
 
 **Files:** Create: `src/providers/vercel.ts`, `test/integration/vercel.test.ts` (env-gated)
