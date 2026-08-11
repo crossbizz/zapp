@@ -7,6 +7,8 @@ import {
   createInMemoryPreviewShareStore,
 } from '../src/routes/preview.js';
 import { buildHarness } from './support/harness.js';
+import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
+import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 
 const apps: AppInstance[] = [];
 
@@ -36,6 +38,19 @@ function documentedApp(): AppInstance {
         get: () => Promise.reject(new Error('OpenAPI must not read local sessions.')),
       },
       gateway: { async *stream() {} },
+    },
+    github: {
+      appSlug: 'zapp-build-test',
+      stateStore: createInMemoryGitHubAuthorizationStateStore(),
+      provider: {
+        completeInstallation: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listRepositories: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+        listBranches: () => Promise.reject(new Error('OpenAPI must not call GitHub.')),
+      },
+    },
+    githubWebhook: {
+      secret: 'openapi-test-secret',
+      store: createInMemoryGitHubWebhookStore(),
     },
   });
   apps.push(built.app);
@@ -91,6 +106,7 @@ describe('GET /v1/openapi.json', () => {
     );
     expect(Object.keys(document.paths)).toEqual(expect.arrayContaining([
       '/v1/projects',
+      '/v1/projects/summaries',
       '/v1/organizations/{orgId}/audit-events',
       '/v1/organizations/{orgId}/settings',
       '/v1/workspaces/{workspaceId}/preview/shares',
@@ -110,9 +126,15 @@ describe('GET /v1/openapi.json', () => {
       '/v1/workspaces/{workspaceId}/dev-server/restart',
       '/v1/workspaces/{workspaceId}/preview/events',
       '/v1/workspaces/{workspaceId}/preview/screenshot',
+      '/v1/integrations/github/install/authorize',
+      '/v1/integrations/github/install',
+      '/v1/integrations/github/repositories',
+      '/v1/integrations/github/repositories/{repositoryId}/branches',
+      '/v1/projects/{projectId}/import/github',
+      '/v1/webhooks/github',
       '/v1/forks',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(67);
+    expect(Object.keys(document.paths)).toHaveLength(73);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

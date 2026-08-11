@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 import { organizationId } from './columns.js';
 import { users } from './identity.js';
@@ -145,7 +145,90 @@ export const integrationConnections = pgTable(
   },
   (t) => [
     index('integration_connections_org_project_idx').on(t.organizationId, t.projectId),
+    uniqueIndex('integration_connections_github_installation_idx')
+      .on(
+        t.organizationId,
+        t.provider,
+        sql`(${t.configurationJson} ->> 'installationId')`,
+      )
+      .where(sql`${t.provider} = 'github' and ${t.projectId} is null`),
     projectTenantForeignKey('integration_connections', t.projectId, t.organizationId),
+  ],
+);
+
+/** Durable, signature-free receipt ledger for supported GitHub deliveries (INT-1). */
+export const githubWebhookDeliveries = pgTable(
+  'github_webhook_deliveries',
+  {
+    deliveryId: text('delivery_id').primaryKey(),
+    eventName: text('event_name').notNull(),
+    payloadJson: jsonb('payload_json').notNull(),
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('github_webhook_deliveries_status_check', sql`${t.status} in ('pending', 'published')`),
+    index('github_webhook_deliveries_pending_idx').on(t.status, t.nextAttemptAt),
+  ],
+);
+
+/** One durable, resumable GitHub import state machine per project (INT-2). */
+export const githubImports = pgTable(
+  'github_imports',
+  {
+    projectId: text('project_id')
+      .primaryKey()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    organizationId: organizationId(),
+    installationId: text('installation_id').notNull(),
+    /** Non-secret external repository reference (`owner/name`). */
+    repo: text('repo').notNull(),
+    branch: text('branch').notNull(),
+    operationKey: text('operation_key').notNull(),
+    status: text('status').notNull(),
+    externalRepoRef: text('external_repo_ref'),
+    headCommitSha: text('head_commit_sha'),
+    scanId: text('scan_id'),
+    errorCode: text('error_code'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('github_imports_org_operation_key_idx').on(t.organizationId, t.operationKey),
+    check(
+      'github_imports_status_check',
+      sql`${t.status} in ('queued', 'mirroring', 'scan_pending', 'scan_accepted', 'failed')`,
+    ),
+    check(
+      'github_imports_error_code_check',
+      sql`${t.errorCode} is null or ${t.errorCode} in ('github_unavailable', 'repository_not_found', 'branch_not_found', 'mirror_failed', 'scan_unavailable')`,
+    ),
+    projectTenantForeignKey('github_imports', t.projectId, t.organizationId),
+  ],
+);
+
+/** Transactional, one-stage-per-delivery outbox for `zapp-github-imports`. */
+export const githubImportOutbox = pgTable(
+  'github_import_outbox',
+  {
+    projectId: text('project_id')
+      .notNull()
+      .references(() => githubImports.projectId, { onDelete: 'cascade' }),
+    stage: text('stage').notNull(),
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('github_import_outbox_project_stage_idx').on(t.projectId, t.stage),
+    index('github_import_outbox_pending_idx').on(t.status, t.nextAttemptAt),
+    check('github_import_outbox_stage_check', sql`${t.stage} in ('queued', 'scan_pending')`),
+    check('github_import_outbox_status_check', sql`${t.status} in ('pending', 'published')`),
   ],
 );
 
@@ -189,5 +272,11 @@ export type SecretCiphertext = typeof secretCiphertexts.$inferSelect;
 export type NewSecretCiphertext = typeof secretCiphertexts.$inferInsert;
 export type IntegrationConnection = typeof integrationConnections.$inferSelect;
 export type NewIntegrationConnection = typeof integrationConnections.$inferInsert;
+export type GitHubWebhookDelivery = typeof githubWebhookDeliveries.$inferSelect;
+export type NewGitHubWebhookDelivery = typeof githubWebhookDeliveries.$inferInsert;
+export type GitHubImport = typeof githubImports.$inferSelect;
+export type NewGitHubImport = typeof githubImports.$inferInsert;
+export type GitHubImportOutboxEntry = typeof githubImportOutbox.$inferSelect;
+export type NewGitHubImportOutboxEntry = typeof githubImportOutbox.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;

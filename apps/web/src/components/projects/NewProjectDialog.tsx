@@ -16,20 +16,26 @@ export function NewProjectDialog({
   organizationId,
 }: NewProjectDialogProps): ReactElement {
   const [prompt, setPrompt] = useState('');
+  const [open, setOpen] = useState(false);
 
   return (
     <Dialog
       className={styles.newProjectDialog ?? ''}
       description="Describe the project and zapp will start the first build."
+      onOpenChange={setOpen}
+      open={open}
       title="Create a new project"
       trigger={<Button>New project</Button>}
     >
       <PromptComposer
         allowedModels={allowedModels}
         appType="web"
-        githubImportEnabled={false}
+        githubImportEnabled
         organizationId={organizationId}
         onPromptChange={setPrompt}
+        onGitHubImport={() => {
+          setOpen(false);
+        }}
         prompt={prompt}
         voiceInputEnabled={false}
       />

@@ -1,4 +1,4 @@
-import { newId } from '@zapp/contracts';
+import { idSchema, newId } from '@zapp/contracts';
 import { specificationContentEtag } from '@zapp/specification-engine';
 import type {
   AgentEventRow,
@@ -9,11 +9,16 @@ import type {
   Artifact,
   AuditEvent,
   Branch,
+  Deployment,
   Environment,
+  GitHubImport,
+  GitHubImportOutboxEntry,
+  IntegrationConnection,
   Project,
   ProjectContract,
   PreviewShareRow,
   Repository,
+  Release,
   RunCreditAccount,
   RunCreditCeilingAdjustment,
   SecretMetadata,
@@ -24,9 +29,16 @@ import type {
 } from '@zapp/db';
 
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
+import {
+  GitHubImportRowSchema,
+  GitHubInstallationConfigurationSchema,
+} from '../../src/integrations/github/schemas.js';
 import type { StorePage } from '../../src/pagination.js';
 import type { SecretEnvelope } from '../../src/secrets/crypto.js';
+import { IntegrationConnectionSchema } from '../../src/tenant/view.js';
 import {
+  AcceptGitHubImportInputSchema,
+  AcceptedGitHubImportSchema,
   vaultRef,
   type CreatedProject,
   type CreatedSecret,
@@ -39,6 +51,7 @@ import {
   type SecretListRequest,
   type StoredSecret,
   type ApproveSpecificationInput,
+  type AcceptGitHubImportInput,
   type NewSpecificationInput,
   type TenantDatabase,
   type TenantDbFactory,
@@ -46,6 +59,10 @@ import {
   type UpdateProjectInput,
   type UpdatedProject,
 } from '../../src/tenant/db.js';
+import {
+  ProjectDashboardPreviewEventSchema,
+  ProjectDashboardSummarySourceSchema,
+} from '../../src/tenant/view.js';
 import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
@@ -82,6 +99,13 @@ export class InMemoryTenantData {
   readonly repositories: Repository[] = [];
   readonly branches: Branch[] = [];
   readonly environments: Environment[] = [];
+  readonly releases: Release[] = [];
+  readonly deployments: Deployment[] = [];
+  readonly integrationConnections: IntegrationConnection[] = [];
+  readonly githubImports: GitHubImport[] = [];
+  readonly githubImportOutbox: GitHubImportOutboxEntry[] = [];
+  /** Makes concurrent GitHub callbacks expose a check/insert race in this double. */
+  yieldGitHubConnects = false;
   readonly contracts: ProjectContract[] = [];
   readonly specifications: Specification[] = [];
   /** Makes the concurrent-create test expose a MAX(version) race in this double. */
@@ -89,6 +113,8 @@ export class InMemoryTenantData {
   readonly specificationLocks = new Map<string, Promise<void>>();
   readonly runCreateLocks = new Map<string, Promise<void>>();
   readonly capabilityScanLocks = new Map<string, Promise<void>>();
+  readonly githubConnectLocks = new Map<string, Promise<void>>();
+  readonly githubImportLocks = new Map<string, Promise<void>>();
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
@@ -123,6 +149,20 @@ export class InMemoryTenantData {
   /** Every handle reads and writes the same rows — see the class comment. */
   readonly factory: TenantDbFactory = (organizationId: string): TenantDatabase =>
     handleFor(this, organizationId);
+
+  addGitHubConnection(organizationId: string, installationId: string): IntegrationConnection {
+    const row: IntegrationConnection = {
+      id: newId('intc'),
+      organizationId,
+      projectId: null,
+      provider: 'github',
+      status: 'connected',
+      credentialRef: null,
+      configurationJson: { installationId },
+    };
+    this.integrationConnections.push(row);
+    return row;
+  }
 
   /** Seeds a contract for a project, as plan 05's scan pipeline eventually will. */
   addContract(project: Project, contract: Partial<ProjectContract> = {}): ProjectContract {
@@ -214,10 +254,116 @@ async function withCapabilityScanLock<T>(
   }
 }
 
+async function withGitHubConnectLock<T>(
+  data: InMemoryTenantData,
+  key: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const previous = data.githubConnectLocks.get(key) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.githubConnectLocks.set(key, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.githubConnectLocks.get(key) === current) data.githubConnectLocks.delete(key);
+  }
+}
+
+async function withGitHubImportLock<T>(
+  data: InMemoryTenantData,
+  input: AcceptGitHubImportInput,
+  work: () => T | Promise<T>,
+): Promise<T> {
+  const key = input.projectId;
+  const previous = data.githubImportLocks.get(key) ?? Promise.resolve();
+  let unlock: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  data.githubImportLocks.set(key, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (data.githubImportLocks.get(key) === current) data.githubImportLocks.delete(key);
+  }
+}
+
+function githubInstallationId(configuration: unknown): string | undefined {
+  const parsed = GitHubInstallationConfigurationSchema.safeParse(configuration);
+  return parsed.success ? parsed.data.installationId : undefined;
+}
+
 /** One organization's view of `data`. A free function, so nothing aliases `this`. */
 function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
   return {
     organizationId: orgId,
+
+    integrations: {
+      getGitHubInstallation(installationId) {
+        const row = mine(orgId, data.integrationConnections).find(
+          (connection) =>
+            connection.provider === 'github' &&
+            connection.projectId === null &&
+            githubInstallationId(connection.configurationJson) === installationId,
+        );
+        return Promise.resolve(
+          row === undefined
+            ? undefined
+            : IntegrationConnectionSchema.parse({
+                id: row.id,
+                organizationId: row.organizationId,
+                projectId: row.projectId,
+                provider: row.provider,
+                status: row.status,
+                credentialRef: row.credentialRef,
+                configuration: row.configurationJson,
+              }),
+        );
+      },
+      async connectGitHub(input) {
+        return await withGitHubConnectLock(data, `${orgId}:${input.installationId}`, async () => {
+          const existing = mine(orgId, data.integrationConnections).find(
+            (connection) =>
+              connection.provider === 'github' &&
+              connection.projectId === null &&
+              githubInstallationId(connection.configurationJson) === input.installationId,
+          );
+          const row =
+            existing ??
+            ({
+              id: newId('intc'),
+              organizationId: orgId,
+              projectId: null,
+              provider: 'github',
+              status: 'connected',
+              credentialRef: null,
+              configurationJson: { installationId: input.installationId },
+            } satisfies IntegrationConnection);
+          if (data.yieldGitHubConnects) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+          const result = IntegrationConnectionSchema.parse({
+            id: row.id,
+            organizationId: row.organizationId,
+            projectId: row.projectId,
+            provider: row.provider,
+            status: row.status,
+            credentialRef: row.credentialRef,
+            configuration: row.configurationJson,
+          });
+          await input.audit(NO_TRANSACTION, result);
+          if (existing === undefined) data.integrationConnections.push(row);
+          return result;
+        });
+      },
+    },
 
     previewShares: {
       getById(shareId) {
@@ -248,6 +394,104 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           items,
           nextCursor: rows.length > request.limit ? (items.at(-1)?.id ?? null) : null,
         });
+      },
+    },
+
+    githubImports: {
+      get(projectId) {
+        const parsedProjectId = idSchema('proj').parse(projectId);
+        const row = mine(orgId, data.githubImports).find(
+          (candidate) => candidate.projectId === parsedProjectId,
+        );
+        return Promise.resolve(row === undefined ? undefined : GitHubImportRowSchema.parse(row));
+      },
+      async accept(rawInput) {
+        const input = AcceptGitHubImportInputSchema.parse(rawInput);
+        const result = await withGitHubImportLock(data, input, () => {
+          const project = mine(orgId, data.projects).find((row) => row.id === input.projectId);
+          if (project === undefined) return 'project_not_found' as const;
+          if (project.sourceType !== 'github_import') return 'source_type_required' as const;
+          const installation = mine(orgId, data.integrationConnections).find(
+            (row) =>
+              row.provider === 'github' &&
+              row.projectId === null &&
+              githubInstallationId(row.configurationJson) === input.installationId,
+          );
+          if (installation === undefined) return 'installation_not_found' as const;
+          const existing = mine(orgId, data.githubImports).find(
+            (row) => row.projectId === project.id,
+          );
+          if (existing !== undefined) {
+            const sameOperation =
+              existing.operationKey === input.operationKey &&
+              existing.installationId === input.installationId &&
+              existing.repo === input.repo &&
+              existing.branch === input.branch;
+            if (!sameOperation) return 'operation_conflict' as const;
+            if (existing.status !== 'failed') return existing;
+
+            const hasMirrorResult =
+              existing.externalRepoRef !== null && existing.headCommitSha !== null;
+            const stage = hasMirrorResult ? 'scan_pending' : 'queued';
+            Object.assign(existing, { status: stage, errorCode: null, updatedAt: input.now });
+            const delivery = data.githubImportOutbox.find(
+              (candidate) => candidate.projectId === project.id && candidate.stage === stage,
+            );
+            if (delivery === undefined) {
+              data.githubImportOutbox.push({
+                projectId: project.id,
+                stage,
+                status: 'pending',
+                attempts: 0,
+                nextAttemptAt: input.now,
+                createdAt: input.now,
+                publishedAt: null,
+              });
+            } else {
+              Object.assign(delivery, {
+                status: 'pending',
+                attempts: 0,
+                nextAttemptAt: input.now,
+                createdAt: input.now,
+                publishedAt: null,
+              });
+            }
+            return existing;
+          }
+          if (
+            mine(orgId, data.githubImports).some((row) => row.operationKey === input.operationKey)
+          ) {
+            return 'operation_conflict' as const;
+          }
+          const row: GitHubImport = {
+            projectId: project.id,
+            organizationId: orgId,
+            installationId: input.installationId,
+            repo: input.repo,
+            branch: input.branch,
+            operationKey: input.operationKey,
+            status: 'queued',
+            externalRepoRef: null,
+            headCommitSha: null,
+            scanId: null,
+            errorCode: null,
+            createdAt: input.now,
+            updatedAt: input.now,
+          };
+          const outbox: GitHubImportOutboxEntry = {
+            projectId: project.id,
+            stage: 'queued',
+            status: 'pending',
+            attempts: 0,
+            nextAttemptAt: input.now,
+            createdAt: input.now,
+            publishedAt: null,
+          };
+          data.githubImports.push(row);
+          data.githubImportOutbox.push(outbox);
+          return row;
+        });
+        return AcceptedGitHubImportSchema.parse(result);
       },
     },
 
@@ -371,6 +615,72 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         await input.audit(NO_TRANSACTION, updated);
         data.projects.splice(data.projects.indexOf(existing), 1, updated);
         return updated;
+      },
+    },
+
+    projectSummaries: {
+      forProjects(projectIds) {
+        const tenantProjects = projectIds.map((projectId) =>
+          mine(orgId, data.projects).find((project) => project.id === projectId),
+        );
+        if (tenantProjects.some((project) => project === undefined)) return Promise.resolve(undefined);
+        return Promise.resolve(
+          tenantProjects.map((project) => {
+            if (project === undefined) throw new Error('tenant project disappeared');
+            const visible = mine(orgId, data.events)
+              .filter((event) => event.projectId === project.id && event.visibility === 'user')
+              .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime());
+            const preview = visible.find(
+              (event) => ProjectDashboardPreviewEventSchema.safeParse({
+                type: event.type,
+                occurredAt: event.occurredAt,
+                payload: event.payloadJson,
+              }).success,
+            );
+            const productionEnvironment = mine(orgId, data.environments).find(
+              (environment) => environment.projectId === project.id && environment.type === 'production',
+            );
+            const release =
+              productionEnvironment === undefined
+                ? undefined
+                : mine(orgId, data.releases)
+                    .filter(
+                      (candidate) =>
+                        candidate.projectId === project.id &&
+                        candidate.environmentId === productionEnvironment.id,
+                    )
+                    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
+            const deployment =
+              release === undefined
+                ? undefined
+                : mine(orgId, data.deployments)
+                    .filter((candidate) => candidate.releaseId === release.id)
+                    .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())[0];
+            return ProjectDashboardSummarySourceSchema.parse({
+              projectId: project.id,
+              lastActivityAt: visible[0]?.occurredAt ?? null,
+              preview:
+                preview === undefined
+                  ? null
+                  : {
+                      type: preview.type,
+                      occurredAt: preview.occurredAt,
+                      payload: preview.payloadJson,
+                    },
+              release:
+                release === undefined
+                  ? null
+                  : { id: release.id, status: release.status, createdAt: release.createdAt },
+              deployment:
+                deployment === undefined
+                  ? null
+                  : {
+                      status: deployment.status,
+                      occurredAt: deployment.completedAt ?? deployment.startedAt,
+                    },
+            });
+          }),
+        );
       },
     },
 

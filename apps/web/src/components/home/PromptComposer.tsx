@@ -118,6 +118,7 @@ export interface PromptComposerProps {
   readonly githubImportEnabled?: boolean;
   readonly organizationId: string;
   readonly onPromptChange: (value: string) => void;
+  readonly onGitHubImport?: () => void;
   readonly prompt: string;
   readonly voiceInputEnabled: boolean;
 }
@@ -128,6 +129,7 @@ export function PromptComposer({
   githubImportEnabled = true,
   organizationId,
   onPromptChange,
+  onGitHubImport,
   prompt,
   voiceInputEnabled,
 }: PromptComposerProps): ReactElement {
@@ -333,7 +335,11 @@ export function PromptComposer({
               />
             </label>
             {githubImportEnabled ? (
-              <Link className={styles.menuItem} href="/projects?import=github">
+              <Link
+                className={styles.menuItem}
+                href="/projects?import=github"
+                {...(onGitHubImport === undefined ? {} : { onClick: onGitHubImport })}
+              >
                 Import from GitHub
               </Link>
             ) : null}

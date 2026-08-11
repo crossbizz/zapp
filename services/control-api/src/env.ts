@@ -129,6 +129,141 @@ export function loadUsageQueueEnv(source: unknown = process.env): UsageQueueEnv 
   };
 }
 
+const GitHubAppEnvSchema = z.object({
+  GITHUB_APP_ID: z.string().trim().min(1),
+  GITHUB_APP_SLUG: z.string().trim().regex(/^[A-Za-z0-9-]+$/u),
+  GITHUB_APP_PRIVATE_KEY: z.string().min(1),
+  GITHUB_APP_CLIENT_ID: z.string().trim().min(1),
+  GITHUB_APP_CLIENT_SECRET: z.string().min(1),
+  GITHUB_WEBHOOK_SECRET: z.string().min(1),
+  GITHUB_API_BASE_URL: z.union([z.string().url(), z.literal('')]).optional(),
+});
+
+const GitHubAppConfigSchema = z
+  .object({
+    appId: z.string().min(1),
+    appSlug: z.string().min(1),
+    privateKey: z.string().min(1),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    webhookSecret: z.string().min(1),
+    apiBaseUrl: z.string().url().optional(),
+  })
+  .strict();
+
+export type GitHubAppEnv = z.infer<typeof GitHubAppConfigSchema>;
+
+export function loadGitHubAppEnv(source: unknown = process.env): GitHubAppEnv {
+  const env = defineEnv(GitHubAppEnvSchema, source);
+  return GitHubAppConfigSchema.parse({
+    appId: env.GITHUB_APP_ID,
+    appSlug: env.GITHUB_APP_SLUG,
+    privateKey: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/gu, '\n'),
+    clientId: env.GITHUB_APP_CLIENT_ID,
+    clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+    webhookSecret: env.GITHUB_WEBHOOK_SECRET,
+    ...(env.GITHUB_API_BASE_URL === undefined || env.GITHUB_API_BASE_URL === ''
+      ? {}
+      : { apiBaseUrl: env.GITHUB_API_BASE_URL.replace(/\/+$/u, '') }),
+  });
+}
+
+const GitHubWebhookQueueEnvSchema = z
+  .object({
+    AWS_REGION: z.string().trim().min(1),
+    AWS_ENDPOINT_URL: z.union([z.string().url(), z.literal('')]).optional(),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    SQS_GITHUB_WEBHOOK_QUEUE_NAME: z.string().trim().min(1).default('zapp-github-webhooks'),
+  })
+  .superRefine((value, context) => {
+    if ((value.AWS_ACCESS_KEY_ID === undefined) !== (value.AWS_SECRET_ACCESS_KEY === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together',
+      });
+    }
+  });
+
+const GitHubWebhookQueueConfigSchema = z
+  .object({
+    region: z.string().min(1),
+    endpoint: z.string().url().optional(),
+    accessKeyId: z.string().min(1).optional(),
+    secretAccessKey: z.string().min(1).optional(),
+    queueName: z.string().min(1),
+  })
+  .strict();
+
+export type GitHubWebhookQueueEnv = z.infer<typeof GitHubWebhookQueueConfigSchema>;
+
+export function loadGitHubWebhookQueueEnv(
+  source: unknown = process.env,
+): GitHubWebhookQueueEnv {
+  const env = defineEnv(GitHubWebhookQueueEnvSchema, source);
+  return GitHubWebhookQueueConfigSchema.parse({
+    region: env.AWS_REGION,
+    ...(env.AWS_ENDPOINT_URL === undefined || env.AWS_ENDPOINT_URL === ''
+      ? {}
+      : { endpoint: env.AWS_ENDPOINT_URL }),
+    ...(env.AWS_ACCESS_KEY_ID === undefined || env.AWS_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        }),
+    queueName: env.SQS_GITHUB_WEBHOOK_QUEUE_NAME,
+  });
+}
+
+const GitHubImportQueueEnvSchema = z
+  .object({
+    AWS_REGION: z.string().trim().min(1),
+    AWS_ENDPOINT_URL: z.union([z.string().url(), z.literal('')]).optional(),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    SQS_GITHUB_IMPORT_QUEUE_NAME: z.string().trim().min(1).default('zapp-github-imports'),
+  })
+  .superRefine((value, context) => {
+    if ((value.AWS_ACCESS_KEY_ID === undefined) !== (value.AWS_SECRET_ACCESS_KEY === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together',
+      });
+    }
+  });
+
+const GitHubImportQueueConfigSchema = z
+  .object({
+    region: z.string().min(1),
+    endpoint: z.string().url().optional(),
+    accessKeyId: z.string().min(1).optional(),
+    secretAccessKey: z.string().min(1).optional(),
+    queueName: z.string().min(1),
+    deadLetterQueueName: z.string().min(1),
+  })
+  .strict();
+
+export type GitHubImportQueueEnv = z.infer<typeof GitHubImportQueueConfigSchema>;
+
+export function loadGitHubImportQueueEnv(source: unknown = process.env): GitHubImportQueueEnv {
+  const env = defineEnv(GitHubImportQueueEnvSchema, source);
+  return GitHubImportQueueConfigSchema.parse({
+    region: env.AWS_REGION,
+    ...(env.AWS_ENDPOINT_URL === undefined || env.AWS_ENDPOINT_URL === ''
+      ? {}
+      : { endpoint: env.AWS_ENDPOINT_URL }),
+    ...(env.AWS_ACCESS_KEY_ID === undefined || env.AWS_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        }),
+    queueName: env.SQS_GITHUB_IMPORT_QUEUE_NAME,
+    deadLetterQueueName: `${env.SQS_GITHUB_IMPORT_QUEUE_NAME}-dlq`,
+  });
+}
+
 const FlexpriceEnvSchema = z.object({
   FLEXPRICE_API_KEY: z.union([z.string().trim().min(1), z.literal('')]).optional(),
   FLEXPRICE_BASE_URL: z

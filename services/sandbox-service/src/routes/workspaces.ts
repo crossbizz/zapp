@@ -4,6 +4,7 @@ import {
   ExecInputSchema,
   EnvVarsSchema,
   NetworkProfileSchema,
+  PreviewLifecycleEventSchema,
   ResourceProfileSchema,
   WorkspacePurposeSchema,
   WorkspaceHandleSchema,
@@ -12,6 +13,7 @@ import {
   type CreateWorkspaceInput,
   type ExecutionContract,
   type ExecInput,
+  type PreviewLifecycleEvent,
   type WorkspaceHandle,
   type WorkspacePurpose,
   type WorkspaceStatus,
@@ -194,23 +196,11 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
   ): Promise<z.infer<typeof DevServerLogsResponseSchema>>;
 }
 
-export const PreviewLifecycleEventSchema = z
-  .object({
-    eventKey: z.string().min(1).max(512),
-    organizationId: idSchema('org'),
-    projectId: idSchema('proj'),
-    runId: idSchema('run'),
-    taskId: idSchema('task').optional(),
-    occurredAt: z.string().datetime(),
-    type: z.enum(['preview.starting', 'preview.ready', 'preview.failed']),
-    visibility: z.literal('user'),
-    payload: z.record(z.unknown()),
-  })
-  .strict();
+export { PreviewLifecycleEventSchema };
 
 export interface PreviewLifecycleEventPort {
   /** CP-13 consumes eventKey as the durable idempotency identity. */
-  emit(event: z.infer<typeof PreviewLifecycleEventSchema>): Promise<void>;
+  emit(event: PreviewLifecycleEvent): Promise<void>;
 }
 
 const CreateWorkspaceBodySchema = z

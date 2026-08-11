@@ -7,6 +7,8 @@ import type { ForgejoEnv } from './env.js';
 import { createForgejoClient } from './forgejo/client.js';
 import type { LoggerConfig } from './logging.js';
 import { createForgejoGitProvider } from './provider/forgejo.js';
+import { parseInternalRepoRef } from '@zapp/contracts';
+import { createGitMirror } from './import/mirror.js';
 import { createTokenService, type TokenService } from './tokens.js';
 
 /**
@@ -70,6 +72,17 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
   // be two Forgejo clients and two chances for them to disagree about which
   // instance, which credential and which deadline.
   const tokens = createTokenService({ client, audit: createDbGitAuditSink(runtime.database) });
+  const provider = createForgejoGitProvider({ client });
+  const importProvider = Object.assign(provider, {
+    async setDefaultBranch(ref: string, branch: string): Promise<void> {
+      const { owner, name } = parseInternalRepoRef(ref);
+      await client.send({
+        method: 'PATCH',
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+        body: { default_branch: branch },
+      });
+    },
+  });
 
   const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -77,9 +90,10 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
     // port's shipping binding is supposed to be legible: Forgejo, reached
     // through the one client that gives every call a deadline and keeps the
     // admin token out of every error it raises.
-    provider: createForgejoGitProvider({ client }),
+    provider: importProvider,
     tokens,
     signer: createServiceTokenSigner(runtime.serviceTokens),
+    mirror: createGitMirror(),
   });
 
   return { app, tokens };

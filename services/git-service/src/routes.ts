@@ -15,6 +15,10 @@ import { ApiError } from './errors.js';
 import { ForgejoError, redactToken } from './forgejo/client.js';
 import { GitProviderConflictError, type GitProvider } from './provider/types.js';
 import {
+  GitMirrorConflictError,
+  type GitMirror,
+} from './import/mirror.js';
+import {
   DEFAULT_TOKEN_TTL_SECONDS,
   MAX_TOKEN_TTL_SECONDS,
   TOKEN_ACCESS_LEVELS,
@@ -160,6 +164,35 @@ const MintedTokenSchema = z.object({
   expiresAt: z.string().datetime(),
 });
 
+const ImportRepositoryBody = z
+  .object({
+    externalRepoRef: z.string().trim().min(1).max(255),
+    sourceCloneUrl: z
+      .string()
+      .url()
+      .refine((value) => /^https?:\/\//u.test(value), 'sourceCloneUrl must use HTTP(S)'),
+    sourceToken: z.string().min(1),
+    sourceBranch: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
+const ImportedRepository = z
+  .object({
+    externalRepoRef: z.string().min(1),
+    branch: z.string().min(1),
+    headCommitSha: z.string().regex(/^[0-9a-f]{40}$/u),
+  })
+  .strict();
+
+export interface ImportGitProvider extends GitProvider {
+  setDefaultBranch(ref: string, branch: string): Promise<void>;
+}
+
+export interface ImportBranchPoll {
+  readonly attempts: number;
+  readonly delay: () => Promise<void>;
+}
+
 export interface GitRoutesDeps {
   readonly provider: GitProvider;
   /**
@@ -170,12 +203,19 @@ export interface GitRoutesDeps {
   readonly tokens: TokenService;
   /** Overridable so a test can prove a caller outside the allowlist is refused. */
   readonly callers?: readonly ServiceName[];
+  readonly mirror?: GitMirror;
+  readonly importPoll?: ImportBranchPoll;
 }
 
 export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
   const { provider, tokens } = deps;
   const callers = deps.callers ?? GIT_CALLERS;
   const guard = (): ReturnType<AppInstance['requireService']> => app.requireService({ callers });
+  const importProvider = provider as Partial<ImportGitProvider>;
+  const importPoll = deps.importPoll ?? {
+    attempts: 20,
+    delay: () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
+  };
 
   /**
    * Turns a provider failure into an answer, having logged the cause.
@@ -241,6 +281,82 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
       }
     },
   );
+
+  if (deps.mirror !== undefined) {
+    if (typeof importProvider.setDefaultBranch !== 'function') {
+      throw new Error('GitHub import mirror requires setDefaultBranch provider capability');
+    }
+    const mirror = deps.mirror;
+    const setDefaultBranch = importProvider.setDefaultBranch.bind(importProvider);
+    app.post(
+      '/internal/git/repositories/:organizationId/:projectId/import',
+      {
+        preHandler: [guard()],
+        schema: {
+          params: ProjectParams,
+          body: ImportRepositoryBody,
+          response: { 200: ImportedRepository },
+        },
+      },
+      async (request, reply) => {
+        const caller = serviceOf(request);
+        const ref = internalRepoRef(request.params);
+        const body = request.body;
+        try {
+          const target = await tokens.mint({
+            organizationId: request.params.organizationId,
+            projectId: request.params.projectId,
+            access: 'write',
+            ttlSec: DEFAULT_TOKEN_TTL_SECONDS,
+            requestingService: caller.service,
+          });
+          const result = await mirror.mirror({
+            sourceCloneUrl: body.sourceCloneUrl,
+            sourceToken: body.sourceToken,
+            sourceBranch: body.sourceBranch,
+            targetCloneUrl: target.cloneUrl,
+            targetUsername: target.username,
+            targetToken: target.token,
+          });
+
+          let imported = false;
+          for (let attempt = 0; attempt < importPoll.attempts; attempt += 1) {
+            const branch = await provider.getBranch(ref, body.sourceBranch);
+            if (branch?.headSha === result.headCommitSha) {
+              imported = true;
+              break;
+            }
+            await importPoll.delay();
+          }
+          if (!imported) throw new Error('imported branch did not reach the mirrored head');
+          await setDefaultBranch(ref, body.sourceBranch);
+          void reply.header('cache-control', 'no-store');
+          return await reply.status(200).send({
+            externalRepoRef: body.externalRepoRef,
+            branch: body.sourceBranch,
+            headCommitSha: result.headCommitSha,
+          });
+        } catch (error) {
+          if (error instanceof GitMirrorConflictError || error instanceof GitProviderConflictError) {
+            throw new ApiError(
+              'git_import_conflict',
+              409,
+              'The target branch already contains different history.',
+            );
+          }
+          request.log.error(
+            { errorCode: 'git_import_failed', operation: 'importRepository' },
+            'the git import failed',
+          );
+          throw new ApiError(
+            'git_import_failed',
+            502,
+            'The git provider could not import that repository.',
+          );
+        }
+      },
+    );
+  }
 
   app.delete(
     '/internal/git/repositories/:organizationId/:projectId',

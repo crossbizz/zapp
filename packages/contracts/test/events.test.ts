@@ -4,6 +4,7 @@ import {
   AgentEventSchema,
   AgentEventVisibilitySchema,
   AttachmentRefSchema,
+  PreviewLifecycleEventSchema,
 } from '../src/events.js';
 
 // The accepted-event test below intentionally keeps its own literal: it is the
@@ -143,6 +144,57 @@ describe('AGENT_EVENT_TYPES', () => {
   });
   it('event type list matches PRD count', () => {
     expect(AGENT_EVENT_TYPES).toHaveLength(36);
+  });
+});
+
+describe('PreviewLifecycleEventSchema', () => {
+  const envelope = {
+    eventKey: 'ws13:preview-contract',
+    organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+    projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
+    runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7ND',
+    taskId: 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NE',
+    occurredAt: '2026-08-10T18:02:00.000Z',
+    visibility: 'user',
+  } as const;
+
+  it('pins exact starting, ready, operation-failure, and terminal-failure producer payloads', () => {
+    const workspaceId = 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NF';
+    expect(
+      PreviewLifecycleEventSchema.safeParse({
+        ...envelope,
+        type: 'preview.starting',
+        payload: { workspaceId, action: 'restart' },
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewLifecycleEventSchema.safeParse({
+        ...envelope,
+        type: 'preview.ready',
+        payload: { workspaceId, action: 'start', port: 4_173, supervisorId: 'preview-1' },
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewLifecycleEventSchema.safeParse({
+        ...envelope,
+        type: 'preview.failed',
+        payload: { workspaceId, action: 'restart', code: 'dev_server_operation_failed' },
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewLifecycleEventSchema.safeParse({
+        ...envelope,
+        type: 'preview.failed',
+        payload: { workspaceId, code: 'restart_limit_exceeded', monitorLeaseToken: 'lease-1' },
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewLifecycleEventSchema.safeParse({
+        ...envelope,
+        type: 'preview.ready',
+        payload: { workspaceId, action: 'start' },
+      }).success,
+    ).toBe(false);
   });
 });
 

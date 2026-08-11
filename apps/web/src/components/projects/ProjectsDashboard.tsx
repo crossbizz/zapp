@@ -1,18 +1,26 @@
 'use client';
 
 import { ZappApiError } from '@zapp/api-client';
-import { Button, Card, EmptyState, SupportLevelBadge } from '@zapp/ui';
-import Link from 'next/link';
+import { Button, EmptyState } from '@zapp/ui';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { createControlPlaneClient, type MeResponse } from '../../lib/api';
 import { activeMemberships, organizationStorageKey, resolveOrganization } from '../../lib/session';
 import styles from './projects.module.css';
+import {
+  GitHubImportDialog,
+  type GitHubInstallCallback,
+} from './GitHubImportDialog';
 import { NewProjectDialog } from './NewProjectDialog';
+import { ProjectCard } from './ProjectCard';
 
 type ProjectPage = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['listProjects']>>;
 type Project = ProjectPage['items'][number];
+type ProjectSummaryPage = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['getProjectSummaries']>
+>;
+type ProjectSummary = ProjectSummaryPage['summaries'][number];
 
 const PAGE_SIZE = 24;
 
@@ -47,13 +55,108 @@ export function ProjectsDashboard(): ReactElement {
   const [projectsFailed, setProjectsFailed] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
   const [projectsAttempt, setProjectsAttempt] = useState(0);
+  const [githubImportOpen, setGitHubImportOpen] = useState(false);
+  const [githubCallback, setGitHubCallback] = useState<GitHubInstallCallback>();
+  const processedImportSearchRef = useRef<string | undefined>(undefined);
+  const [summaries, setSummaries] = useState<ReadonlyMap<string, ProjectSummary>>(new Map());
+  const [summaryFailedIds, setSummaryFailedIds] = useState<ReadonlySet<string>>(new Set());
+  const [summaryLoadingIds, setSummaryLoadingIds] = useState<ReadonlySet<string>>(new Set());
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
   const activeOrganizationRef = useRef(organizationId);
   const requestGenerationRef = useRef(0);
   const paginationAbortRef = useRef<AbortController | undefined>(undefined);
+  const summaryAbortControllersRef = useRef<Set<AbortController>>(new Set());
 
   activeOrganizationRef.current = organizationId;
+
+  const clearGitHubCallback = useCallback((): void => {
+    setGitHubCallback(undefined);
+  }, []);
+
+  useEffect(() => {
+    const rawSearch = window.location.search;
+    const search = new URLSearchParams(rawSearch);
+    if (search.get('import') !== 'github') {
+      processedImportSearchRef.current = undefined;
+      return;
+    }
+    if (processedImportSearchRef.current === rawSearch) return;
+    processedImportSearchRef.current = rawSearch;
+    const installationId = search.get('installation_id');
+    const state = search.get('state');
+    const code = search.get('code');
+    setGitHubCallback(
+      installationId === null || state === null || code === null
+        ? undefined
+        : { code, installationId, state },
+    );
+    setGitHubImportOpen(true);
+    search.delete('import');
+    search.delete('installation_id');
+    search.delete('setup_action');
+    search.delete('state');
+    search.delete('code');
+    const query = search.toString();
+    router.replace(query.length === 0 ? pathname : `${pathname}?${query}`, { scroll: false });
+  });
+
+  const loadSummaries = useCallback(
+    async (
+      projectIds: readonly string[],
+      requestedOrganization: string,
+      generation: number,
+    ): Promise<void> => {
+      if (
+        projectIds.length === 0 ||
+        requestGenerationRef.current !== generation ||
+        activeOrganizationRef.current !== requestedOrganization
+      ) {
+        return;
+      }
+      const controller = new AbortController();
+      summaryAbortControllersRef.current.add(controller);
+      const isCurrent = (): boolean =>
+        !controller.signal.aborted &&
+        requestGenerationRef.current === generation &&
+        activeOrganizationRef.current === requestedOrganization;
+
+      if (!isCurrent()) return;
+      setSummaryFailedIds((current) => {
+        const next = new Set(current);
+        for (const projectId of projectIds) next.delete(projectId);
+        return next;
+      });
+      if (!isCurrent()) return;
+      setSummaryLoadingIds((current) => new Set([...current, ...projectIds]));
+
+      try {
+        const response = await createControlPlaneClient(requestedOrganization).getProjectSummaries(
+          { projectId: [...projectIds] },
+          controller.signal,
+        );
+        if (!isCurrent()) return;
+        setSummaries((current) => {
+          const next = new Map(current);
+          for (const summary of response.summaries) next.set(summary.projectId, summary);
+          return next;
+        });
+      } catch {
+        if (!isCurrent()) return;
+        setSummaryFailedIds((current) => new Set([...current, ...projectIds]));
+      } finally {
+        summaryAbortControllersRef.current.delete(controller);
+        if (isCurrent()) {
+          setSummaryLoadingIds((current) => {
+            const next = new Set(current);
+            for (const projectId of projectIds) next.delete(projectId);
+            return next;
+          });
+        }
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     let current = true;
@@ -99,11 +202,16 @@ export function ProjectsDashboard(): ReactElement {
     requestGenerationRef.current = generation;
     paginationAbortRef.current?.abort();
     paginationAbortRef.current = undefined;
+    for (const summaryController of summaryAbortControllersRef.current) summaryController.abort();
+    summaryAbortControllersRef.current.clear();
     const controller = new AbortController();
     let current = true;
 
     const loadProjects = async (): Promise<void> => {
       setProjects([]);
+      setSummaries(new Map());
+      setSummaryFailedIds(new Set());
+      setSummaryLoadingIds(new Set());
       setNextCursor(undefined);
       setProjectsFailed(false);
       setProjectsLoading(true);
@@ -117,6 +225,11 @@ export function ProjectsDashboard(): ReactElement {
         if (current && !controller.signal.aborted && requestGenerationRef.current === generation) {
           setProjects(page.items);
           setNextCursor(page.nextCursor);
+          void loadSummaries(
+            page.items.map((item) => item.id),
+            organizationId,
+            generation,
+          );
         }
       } catch {
         if (current && !controller.signal.aborted && requestGenerationRef.current === generation) {
@@ -134,8 +247,10 @@ export function ProjectsDashboard(): ReactElement {
       current = false;
       controller.abort();
       paginationAbortRef.current?.abort();
+      for (const summaryController of summaryAbortControllersRef.current) summaryController.abort();
+      summaryAbortControllersRef.current.clear();
     };
-  }, [organizationId, projectsAttempt]);
+  }, [loadSummaries, organizationId, projectsAttempt]);
 
   const loadNextPage = useCallback(async (): Promise<void> => {
     if (
@@ -173,6 +288,11 @@ export function ProjectsDashboard(): ReactElement {
         return [...current, ...page.items.filter((item) => !existing.has(item.id))];
       });
       setNextCursor(page.nextCursor);
+      void loadSummaries(
+        page.items.map((item) => item.id),
+        requestedOrganization,
+        generation,
+      );
     } catch {
       if (
         !controller.signal.aborted &&
@@ -192,7 +312,7 @@ export function ProjectsDashboard(): ReactElement {
         setLoadingMore(false);
       }
     }
-  }, [nextCursor, organizationId]);
+  }, [loadSummaries, nextCursor, organizationId]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -264,9 +384,16 @@ export function ProjectsDashboard(): ReactElement {
                 requestGenerationRef.current += 1;
                 paginationAbortRef.current?.abort();
                 paginationAbortRef.current = undefined;
+                for (const summaryController of summaryAbortControllersRef.current)
+                  summaryController.abort();
+                summaryAbortControllersRef.current.clear();
                 activeOrganizationRef.current = selectedId;
+                setGitHubCallback(undefined);
                 loadingMoreRef.current = false;
                 setProjects([]);
+                setSummaries(new Map());
+                setSummaryFailedIds(new Set());
+                setSummaryLoadingIds(new Set());
                 setNextCursor(undefined);
                 setProjectsFailed(false);
                 setProjectsLoading(true);
@@ -287,6 +414,13 @@ export function ProjectsDashboard(): ReactElement {
               ))}
             </select>
           </label>
+          <GitHubImportDialog
+            callback={githubCallback}
+            onCallbackConsumed={clearGitHubCallback}
+            onOpenChange={setGitHubImportOpen}
+            open={githubImportOpen}
+            organizationId={organizationId}
+          />
           <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
         </div>
       </header>
@@ -314,17 +448,16 @@ export function ProjectsDashboard(): ReactElement {
       ) : (
         <section aria-label="Projects" className={styles.grid}>
           {projects.map((projectItem) => (
-            <Card as="article" className={styles.projectCard} key={projectItem.id}>
-              <h2>{projectItem.name}</h2>
-              <SupportLevelBadge level={projectItem.supportLevel} />
-              <Link
-                aria-label={`Open ${projectItem.name}`}
-                className={styles.openLink}
-                href={`/projects/${encodeURIComponent(projectItem.id)}`}
-              >
-                Open
-              </Link>
-            </Card>
+            <ProjectCard
+              key={projectItem.id}
+              loadingSummary={summaryLoadingIds.has(projectItem.id)}
+              onRetrySummary={() => {
+                void loadSummaries([projectItem.id], organizationId, requestGenerationRef.current);
+              }}
+              project={projectItem}
+              summary={summaries.get(projectItem.id)}
+              summaryFailed={summaryFailedIds.has(projectItem.id)}
+            />
           ))}
         </section>
       )}

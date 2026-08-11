@@ -69,6 +69,42 @@ const production = vi.hoisted(() => {
     accessKeyId: 'test-access-key',
     secretAccessKey: 'test-secret-key',
   };
+  const github = {
+    appId: 'github-app-id',
+    appSlug: 'zapp-test',
+    privateKey: 'not-a-real-private-key',
+    clientId: 'github-client-id',
+    clientSecret: 'github-client-secret',
+    webhookSecret: 'github-webhook-secret',
+  };
+  const githubWebhookQueue = { send: vi.fn(() => Promise.resolve()), close: vi.fn() };
+  const githubWebhookPublisher = { publishOnce: vi.fn(() => Promise.resolve(0)) };
+  const githubWebhookLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const githubImportQueue = {
+    send: vi.fn(() => Promise.resolve()),
+    receive: vi.fn(() => Promise.resolve([])),
+    changeVisibility: vi.fn(() => Promise.resolve()),
+    delete: vi.fn(() => Promise.resolve()),
+    close: vi.fn(),
+  };
+  const githubImportPublisher = { publishOnce: vi.fn(() => Promise.resolve(0)) };
+  const githubImportPublisherLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const githubImportConsumerLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const githubImportWorker = { process: vi.fn(), settleDeadLetter: vi.fn() };
+  const githubProvider = { kind: 'github-provider' };
+  const githubImportStore = { kind: 'github-import-store' };
+  const tenantDb = { kind: 'tenant-db' };
+  const capabilityScan = { kind: 'capability-scan' };
+  const gitService = { kind: 'git-service' };
 
   return {
     app,
@@ -81,6 +117,20 @@ const production = vi.hoisted(() => {
     accountingReconcilerLifecycle,
     preview,
     artifactStorage,
+    github,
+    githubWebhookQueue,
+    githubWebhookPublisher,
+    githubWebhookLifecycle,
+    githubImportQueue,
+    githubImportPublisher,
+    githubImportPublisherLifecycle,
+    githubImportConsumerLifecycle,
+    githubImportWorker,
+    githubProvider,
+    githubImportStore,
+    tenantDb,
+    capabilityScan,
+    gitService,
     redis,
     temporal,
     temporalConnection,
@@ -117,6 +167,20 @@ const production = vi.hoisted(() => {
     createAccountingReconciler: vi.fn(() => accountingReconciler),
     createAccountingReconcilerLifecycle: vi.fn(() => accountingReconcilerLifecycle),
     createRedisCreditMirror: vi.fn(() => ({ kind: 'credit-mirror' })),
+    createGitHubProvider: vi.fn(() => githubProvider),
+    createDbGitHubWebhookStore: vi.fn(() => ({ kind: 'github-webhook-store' })),
+    createSqsGitHubWebhookQueue: vi.fn(() => githubWebhookQueue),
+    createGitHubWebhookPublisher: vi.fn(() => githubWebhookPublisher),
+    createGitHubWebhookPublisherLifecycle: vi.fn(() => githubWebhookLifecycle),
+    createSqsGitHubImportQueue: vi.fn(() => githubImportQueue),
+    createGitHubImportPublisher: vi.fn(() => githubImportPublisher),
+    createGitHubImportPublisherLifecycle: vi.fn(() => githubImportPublisherLifecycle),
+    createGitHubImportConsumerLifecycle: vi.fn(() => githubImportConsumerLifecycle),
+    createGitHubImportWorker: vi.fn(() => githubImportWorker),
+    createDbGitHubImportWorkerStore: vi.fn(() => githubImportStore),
+    createTenantDbFactory: vi.fn(() => tenantDb),
+    createTemporalCapabilityScanPort: vi.fn(() => capabilityScan),
+    resolveGitService: vi.fn(() => gitService),
     loadAuthEnv: vi.fn(() => auth),
     loadArtifactStorageEnv: vi.fn(() => artifactStorage),
     loadEnv: vi.fn(() => ({
@@ -126,6 +190,16 @@ const production = vi.hoisted(() => {
       PORT: 4_321,
     })),
     loadGitServiceUrl: vi.fn(() => undefined),
+    loadGitHubAppEnv: vi.fn(() => github),
+    loadGitHubWebhookQueueEnv: vi.fn(() => ({
+      region: 'us-east-1',
+      queueName: 'zapp-github-webhooks',
+    })),
+    loadGitHubImportQueueEnv: vi.fn(() => ({
+      region: 'us-east-1',
+      queueName: 'zapp-github-imports',
+      deadLetterQueueName: 'zapp-github-imports-dlq',
+    })),
     loadFlexpriceEnv: vi.fn(() => ({
       apiKey: 'not-a-real-flexprice-key',
       baseUrl: 'https://api.cloud.flexprice.io/v1',
@@ -165,6 +239,9 @@ vi.mock('../src/env.js', () => ({
   loadArtifactStorageEnv: production.loadArtifactStorageEnv,
   loadEnv: production.loadEnv,
   loadFlexpriceEnv: production.loadFlexpriceEnv,
+  loadGitHubAppEnv: production.loadGitHubAppEnv,
+  loadGitHubImportQueueEnv: production.loadGitHubImportQueueEnv,
+  loadGitHubWebhookQueueEnv: production.loadGitHubWebhookQueueEnv,
   loadMasterKey: production.loadMasterKey,
   loadModelGatewayUrl: production.loadModelGatewayUrl,
   loadPreviewEnv: production.loadPreviewEnv,
@@ -182,6 +259,34 @@ vi.mock('../src/events/publisher.js', () => ({
 }));
 vi.mock('../src/git/client.js', () => ({
   loadGitServiceUrl: production.loadGitServiceUrl,
+  resolveGitService: production.resolveGitService,
+}));
+vi.mock('../src/integrations/github/app.js', () => ({
+  createGitHubProvider: production.createGitHubProvider,
+}));
+vi.mock('../src/integrations/github/store.js', () => ({
+  createDbGitHubWebhookStore: production.createDbGitHubWebhookStore,
+}));
+vi.mock('../src/integrations/github/queue.js', () => ({
+  createSqsGitHubWebhookQueue: production.createSqsGitHubWebhookQueue,
+  createGitHubWebhookPublisher: production.createGitHubWebhookPublisher,
+  createGitHubWebhookPublisherLifecycle: production.createGitHubWebhookPublisherLifecycle,
+}));
+vi.mock('../src/integrations/github/import-store.js', () => ({
+  createDbGitHubImportWorkerStore: production.createDbGitHubImportWorkerStore,
+}));
+vi.mock('../src/integrations/github/import-queue.js', () => ({
+  createSqsGitHubImportQueue: production.createSqsGitHubImportQueue,
+  createGitHubImportPublisher: production.createGitHubImportPublisher,
+  createGitHubImportPublisherLifecycle: production.createGitHubImportPublisherLifecycle,
+  createGitHubImportConsumerLifecycle: production.createGitHubImportConsumerLifecycle,
+  createGitHubImportWorker: production.createGitHubImportWorker,
+}));
+vi.mock('../src/tenant/db.js', () => ({
+  createTenantDbFactory: production.createTenantDbFactory,
+}));
+vi.mock('../src/orchestrator/capability-scan.js', () => ({
+  createTemporalCapabilityScanPort: production.createTemporalCapabilityScanPort,
 }));
 vi.mock('../src/logging.js', () => ({ loggerOptions: production.loggerOptions }));
 vi.mock('../src/redis/client.js', () => ({

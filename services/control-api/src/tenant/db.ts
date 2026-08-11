@@ -21,6 +21,9 @@ import {
   decisions,
   environments,
   forOrg,
+  githubImportOutbox,
+  githubImports,
+  integrationConnections,
   MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
   projects,
@@ -45,6 +48,7 @@ import {
   type Database,
   type Environment,
   type EventRepository,
+  type IntegrationConnection,
   type Project,
   type ProjectContract,
   type ProjectRepository,
@@ -66,8 +70,14 @@ import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQ
 import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
+import {
+  GitHubImportRequestSchema,
+  GitHubImportRowSchema,
+  type GitHubImportRow,
+} from '../integrations/github/schemas.js';
 import type { PageRequest, StorePage } from '../pagination.js';
 import type { AuditHook } from '../plugins/audit.js';
+import { IdempotencyKeySchema } from '../plugins/idempotency.js';
 import type { SecretEnvelope } from '../secrets/crypto.js';
 import type { PricingConfig } from '../usage/pricing.js';
 import {
@@ -78,6 +88,12 @@ import {
   NO_SYNC,
   type SourceType,
 } from './vocabulary.js';
+import {
+  IntegrationConnectionSchema,
+  type IntegrationConnectionView,
+  type ProjectDashboardSummarySource,
+  ProjectDashboardSummarySourceSchema,
+} from './view.js';
 
 const PrototypeAssumptionsPayloadSchema = z
   .object({
@@ -250,6 +266,11 @@ export interface TenantProjectRepository extends Omit<ProjectRepository, 'list'>
   list(request: ProjectListRequest): Promise<StorePage<Project>>;
   create(input: NewProjectInput): Promise<CreatedProject>;
   update(input: UpdateProjectInput): Promise<UpdatedProject>;
+}
+
+/** Batch dashboard projection. `undefined` keeps a mixed tenant batch opaque. */
+export interface TenantProjectSummaryRepository {
+  forProjects(projectIds: readonly string[]): Promise<ProjectDashboardSummarySource[] | undefined>;
 }
 
 export interface TenantRepositoryRepository {
@@ -646,9 +667,56 @@ export interface TenantAuditEventRepository {
   list(request: AuditEventListRequest): Promise<StorePage<AuditEvent>>;
 }
 
+export interface ConnectGitHubInstallationInput {
+  readonly installationId: string;
+  readonly audit: AuditHook<IntegrationConnectionView>;
+}
+
+export interface TenantIntegrationRepository {
+  getGitHubInstallation(installationId: string): Promise<IntegrationConnectionView | undefined>;
+  connectGitHub(input: ConnectGitHubInstallationInput): Promise<IntegrationConnectionView>;
+}
+
+export const AcceptGitHubImportInputSchema = GitHubImportRequestSchema.extend({
+  projectId: idSchema('proj'),
+  operationKey: IdempotencyKeySchema,
+  now: z.date(),
+}).strict();
+
+export const AcceptedGitHubImportSchema = z.union([
+  GitHubImportRowSchema,
+  z.literal('operation_conflict'),
+  z.literal('project_not_found'),
+  z.literal('installation_not_found'),
+  z.literal('source_type_required'),
+]);
+
+export type AcceptGitHubImportInput = z.infer<typeof AcceptGitHubImportInputSchema>;
+export type AcceptedGitHubImport = z.infer<typeof AcceptedGitHubImportSchema>;
+
+export interface TenantGitHubImportRepository {
+  /** Missing and foreign projects/imports are deliberately the same answer. */
+  get(projectId: string): Promise<GitHubImportRow | undefined>;
+  /** Atomically creates the import row and its first queued stage delivery. */
+  accept(input: AcceptGitHubImportInput): Promise<AcceptedGitHubImport>;
+}
+
+function integrationView(row: IntegrationConnection): IntegrationConnectionView {
+  return IntegrationConnectionSchema.parse({
+    id: row.id,
+    organizationId: row.organizationId,
+    projectId: row.projectId,
+    provider: row.provider,
+    status: row.status,
+    credentialRef: row.credentialRef,
+    configuration: row.configurationJson,
+  });
+}
+
 /** `TenantDb` (plan 01's reads) plus the project lifecycle the control plane owns. */
 export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
+  readonly projectSummaries: TenantProjectSummaryRepository;
   readonly runs: TenantRunRepository;
   readonly workspaces: TenantWorkspaceRepository;
   readonly repositories: TenantRepositoryRepository;
@@ -662,6 +730,8 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly missionControl: TenantMissionControlRepository;
   readonly approvals: TenantApprovalRepository;
   readonly auditEvents: TenantAuditEventRepository;
+  readonly integrations: TenantIntegrationRepository;
+  readonly githubImports: TenantGitHubImportRepository;
 }
 
 /**
@@ -721,6 +791,322 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
 
     return {
       ...base,
+
+      integrations: {
+        async getGitHubInstallation(installationId) {
+          const [row] = await db
+            .select()
+            .from(integrationConnections)
+            .where(
+              scoped(
+                integrationConnections.organizationId,
+                eq(integrationConnections.provider, 'github'),
+                isNull(integrationConnections.projectId),
+                sql`${integrationConnections.configurationJson} ->> 'installationId' = ${installationId}`,
+              ),
+            )
+            .limit(1);
+          return row === undefined ? undefined : integrationView(row);
+        },
+        async connectGitHub(input) {
+          return await db.transaction(async (tx) => {
+            const [inserted] = await tx
+              .insert(integrationConnections)
+              .values({
+                id: newId('intc'),
+                organizationId: orgId,
+                projectId: null,
+                provider: 'github',
+                status: 'connected',
+                credentialRef: null,
+                configurationJson: { installationId: input.installationId },
+              })
+              .onConflictDoNothing()
+              .returning();
+            const [existing] = inserted === undefined
+              ? await tx
+                  .select()
+                  .from(integrationConnections)
+                  .where(
+                    scoped(
+                      integrationConnections.organizationId,
+                      eq(integrationConnections.provider, 'github'),
+                      isNull(integrationConnections.projectId),
+                      sql`${integrationConnections.configurationJson} ->> 'installationId' = ${input.installationId}`,
+                    ),
+                  )
+                  .limit(1)
+              : [];
+            const row = inserted ?? existing;
+            if (row === undefined) throw new Error('GitHub integration insert returned no row');
+            const result = integrationView(row);
+            await input.audit(tx, result);
+            return result;
+          });
+        },
+      },
+
+      githubImports: {
+        async get(projectId) {
+          const [row] = await db
+            .select()
+            .from(githubImports)
+            .where(
+              scoped(
+                githubImports.organizationId,
+                eq(githubImports.projectId, idSchema('proj').parse(projectId)),
+              ),
+            )
+            .limit(1);
+          return row === undefined ? undefined : GitHubImportRowSchema.parse(row);
+        },
+        async accept(rawInput) {
+          const input = AcceptGitHubImportInputSchema.parse(rawInput);
+          const result = await db.transaction(async (tx) => {
+            const [project] = await tx
+              .select({ id: projects.id, sourceType: projects.sourceType })
+              .from(projects)
+              .where(scoped(projects.organizationId, eq(projects.id, input.projectId)))
+              .limit(1)
+              .for('update');
+            if (project === undefined) return 'project_not_found' as const;
+            if (project.sourceType !== 'github_import') return 'source_type_required' as const;
+
+            const [installation] = await tx
+              .select({ id: integrationConnections.id })
+              .from(integrationConnections)
+              .where(
+                scoped(
+                  integrationConnections.organizationId,
+                  eq(integrationConnections.provider, 'github'),
+                  isNull(integrationConnections.projectId),
+                  sql`${integrationConnections.configurationJson} ->> 'installationId' = ${input.installationId}`,
+                ),
+              )
+              .limit(1);
+            if (installation === undefined) return 'installation_not_found' as const;
+
+            const [existing] = await tx
+              .select()
+              .from(githubImports)
+              .where(scoped(githubImports.organizationId, eq(githubImports.projectId, project.id)))
+              .limit(1);
+            if (existing !== undefined) {
+              const sameOperation =
+                existing.operationKey === input.operationKey &&
+                existing.installationId === input.installationId &&
+                existing.repo === input.repo &&
+                existing.branch === input.branch;
+              if (!sameOperation) return 'operation_conflict' as const;
+              if (existing.status !== 'failed') return existing;
+
+              const hasMirrorResult =
+                existing.externalRepoRef !== null && existing.headCommitSha !== null;
+              const stage = hasMirrorResult ? 'scan_pending' : 'queued';
+              const [rearmed] = await tx
+                .update(githubImports)
+                .set({ status: stage, errorCode: null, updatedAt: input.now })
+                .where(
+                  and(
+                    eq(githubImports.projectId, project.id),
+                    eq(githubImports.organizationId, orgId),
+                  ),
+                )
+                .returning();
+              if (rearmed === undefined) throw new Error('GitHub import rearm returned no row');
+              await tx
+                .insert(githubImportOutbox)
+                .values({
+                  projectId: project.id,
+                  stage,
+                  status: 'pending',
+                  attempts: 0,
+                  nextAttemptAt: input.now,
+                  createdAt: input.now,
+                  publishedAt: null,
+                })
+                .onConflictDoUpdate({
+                  target: [githubImportOutbox.projectId, githubImportOutbox.stage],
+                  set: {
+                    status: 'pending',
+                    attempts: 0,
+                    nextAttemptAt: input.now,
+                    createdAt: input.now,
+                    publishedAt: null,
+                  },
+                });
+              return rearmed;
+            }
+
+            const [inserted] = await tx
+              .insert(githubImports)
+              .values({
+                projectId: project.id,
+                organizationId: orgId,
+                installationId: input.installationId,
+                repo: input.repo,
+                branch: input.branch,
+                operationKey: input.operationKey,
+                status: 'queued',
+                externalRepoRef: null,
+                headCommitSha: null,
+                scanId: null,
+                errorCode: null,
+                createdAt: input.now,
+                updatedAt: input.now,
+              })
+              .onConflictDoNothing()
+              .returning();
+            if (inserted === undefined) return 'operation_conflict' as const;
+            await tx.insert(githubImportOutbox).values({
+              projectId: project.id,
+              stage: 'queued',
+              status: 'pending',
+              attempts: 0,
+              nextAttemptAt: input.now,
+              createdAt: input.now,
+              publishedAt: null,
+            });
+            return inserted;
+          });
+          return AcceptedGitHubImportSchema.parse(result);
+        },
+      },
+
+      projectSummaries: {
+        async forProjects(projectIds) {
+          const requested = sql.join(projectIds.map((projectId) => sql`${projectId}`), sql`, `);
+          const rows = await db.execute<{
+            readonly projectId: string;
+            readonly found: boolean;
+            readonly lastActivityAt: Date | null;
+            readonly previewOccurredAt: Date | null;
+            readonly previewType: 'preview.starting' | 'preview.ready' | 'preview.failed' | null;
+            readonly previewPayload: unknown;
+            readonly releaseId: string | null;
+            readonly releaseStatus: string | null;
+            readonly releaseCreatedAt: Date | null;
+            readonly deploymentStatus: string | null;
+            readonly deploymentOccurredAt: Date | null;
+          }>(sql`
+            with requested(project_id, ordinal) as (
+              select * from unnest(array[${requested}]::text[]) with ordinality
+            )
+            select
+              requested.project_id as "projectId",
+              projects.id is not null as "found",
+              activity.occurred_at as "lastActivityAt",
+              preview.occurred_at as "previewOccurredAt",
+              preview.type as "previewType",
+              preview.payload_json as "previewPayload",
+              release.id as "releaseId",
+              release.status as "releaseStatus",
+              release.created_at as "releaseCreatedAt",
+              deployment.status as "deploymentStatus",
+              coalesce(deployment.completed_at, deployment.started_at) as "deploymentOccurredAt"
+            from requested
+            left join projects
+              on projects.organization_id = ${orgId}
+              and projects.id = requested.project_id
+            left join lateral (
+              select occurred_at
+              from agent_events
+              where organization_id = ${orgId}
+                and project_id = projects.id
+                and visibility = 'user'
+              order by occurred_at desc
+              limit 1
+            ) activity on true
+            left join lateral (
+              select type, occurred_at, payload_json
+              from agent_events
+              where organization_id = ${orgId}
+                and project_id = projects.id
+                and visibility = 'user'
+                and type in ('preview.starting', 'preview.ready', 'preview.failed')
+                and jsonb_typeof(payload_json) = 'object'
+                and payload_json ->> 'workspaceId' ~ '^ws_[0-9A-HJKMNP-TV-Z]{26}$'
+                and (
+                  (
+                    type = 'preview.starting'
+                    and payload_json - 'workspaceId' - 'action' = '{}'::jsonb
+                    and payload_json ->> 'action' in ('start', 'restart')
+                  )
+                  or (
+                    type = 'preview.ready'
+                    and payload_json - 'workspaceId' - 'action' - 'port' - 'supervisorId' = '{}'::jsonb
+                    and payload_json ->> 'action' in ('start', 'restart')
+                    and jsonb_typeof(payload_json -> 'port') = 'number'
+                    and (payload_json ->> 'port')::numeric between 1 and 65535
+                    and (payload_json ->> 'port')::numeric = trunc((payload_json ->> 'port')::numeric)
+                    and jsonb_typeof(payload_json -> 'supervisorId') = 'string'
+                    and length(payload_json ->> 'supervisorId') >= 1
+                  )
+                  or (
+                    type = 'preview.failed'
+                    and (
+                      (
+                        payload_json - 'workspaceId' - 'action' - 'code' = '{}'::jsonb
+                        and payload_json ->> 'action' in ('start', 'restart')
+                        and payload_json ->> 'code' = 'dev_server_operation_failed'
+                      )
+                      or (
+                        payload_json - 'workspaceId' - 'code' - 'monitorLeaseToken' = '{}'::jsonb
+                        and payload_json ->> 'code' = 'restart_limit_exceeded'
+                        and jsonb_typeof(payload_json -> 'monitorLeaseToken') = 'string'
+                        and length(btrim(payload_json ->> 'monitorLeaseToken')) between 1 and 256
+                      )
+                    )
+                  )
+                )
+              order by occurred_at desc
+              limit 1
+            ) preview on true
+            left join lateral (
+              select releases.id, releases.status, releases.created_at
+              from releases
+              inner join environments
+                on environments.id = releases.environment_id
+                and environments.organization_id = ${orgId}
+                and environments.type = 'production'
+              where releases.organization_id = ${orgId}
+                and releases.project_id = projects.id
+              order by releases.created_at desc
+              limit 1
+            ) release on true
+            left join lateral (
+              select deployments.status, deployments.started_at, deployments.completed_at
+              from deployments
+              where deployments.organization_id = ${orgId}
+                and deployments.release_id = release.id
+              order by deployments.started_at desc
+              limit 1
+            ) deployment on true
+            order by requested.ordinal
+          `);
+          if (rows.some((row) => !row.found)) return undefined;
+          return rows.map((row) => ProjectDashboardSummarySourceSchema.parse({
+            projectId: row.projectId,
+            lastActivityAt: row.lastActivityAt,
+            preview:
+              row.previewOccurredAt === null || row.previewType === null
+                ? null
+                : {
+                    type: row.previewType,
+                    occurredAt: row.previewOccurredAt,
+                    payload: row.previewPayload,
+                  },
+            release:
+              row.releaseId === null || row.releaseStatus === null || row.releaseCreatedAt === null
+                ? null
+                : { id: row.releaseId, status: row.releaseStatus, createdAt: row.releaseCreatedAt },
+            deployment:
+              row.deploymentStatus === null || row.deploymentOccurredAt === null
+                ? null
+                : { status: row.deploymentStatus, occurredAt: row.deploymentOccurredAt },
+          }));
+        },
+      },
 
       events: {
         ...base.events,

@@ -81,6 +81,7 @@ import { createUnavailableForkActivity, type ForkActivity } from './activities/f
 import { registerForkRoutes } from './routes/forks.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
+import { registerProjectSummaryRoutes } from './routes/project-summaries.js';
 import {
   registerPreviewRoutes,
   rewritePreviewOriginUrl,
@@ -115,6 +116,16 @@ import {
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createSecretVault } from './secrets/vault.js';
 import type { TenantDbFactory } from './tenant/db.js';
+import {
+  createGitHubIntegrationPort,
+  registerGitHubInstallRoutes,
+  type GitHubInstallDependencies,
+} from './integrations/github/install.js';
+import {
+  registerGitHubWebhookRoute,
+  type GitHubWebhookDependencies,
+} from './integrations/github/webhooks.js';
+import { registerGitHubImportRoutes } from './integrations/github/import.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -289,6 +300,8 @@ export interface AppDeps {
   readonly usageLedger?: UsageLedgerRepository;
   /** MAC-6's public, user-authenticated desktop local-agent accounting scope. */
   readonly localAgent?: LocalAgentDeps;
+  readonly github?: GitHubInstallDependencies;
+  readonly githubWebhook?: GitHubWebhookDependencies;
 }
 
 /**
@@ -389,6 +402,19 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+  const parseJson = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'buffer' },
+    (request, body, done) => {
+      if (request.url.split('?')[0] === '/v1/webhooks/github') {
+        done(null, body);
+        return;
+      }
+      void parseJson(request, body.toString('utf8'), done);
+    },
+  );
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
@@ -533,11 +559,17 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         // never ship.
         if (tenant !== undefined) {
           registerAuditRoutes(app, { organizations: orgs.organizations });
+          // Static paths must be enrolled before `/v1/projects/:projectId`, or
+          // Fastify treats `summaries` as a malformed project id.
+          registerProjectSummaryRoutes(app, {
+            releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
+          });
           registerProjectRoutes(app, {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
           });
+          registerGitHubImportRoutes(app, now);
           registerSpecificationRoutes(app, { now });
           registerRunRoutes(app, {
             now,
@@ -618,8 +650,19 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             permissionContextFor: async (organizationId) =>
               (await orgs.organizations.getSettings(organizationId)) ?? {},
           });
+          if (deps.github !== undefined) {
+            registerGitHubInstallRoutes(app, deps.github);
+          }
           registerIntegrationRoutes(app, {
-            port: tenant.integrationPort ?? createUnavailableIntegrationPort(),
+            port:
+              tenant.integrationPort ??
+              (deps.github === undefined
+                ? createUnavailableIntegrationPort()
+                : createGitHubIntegrationPort({
+                    tenantDb: tenant.tenantDb,
+                    provider: deps.github.provider,
+                    stateStore: deps.github.stateStore,
+                  })),
           });
 
           if (secrets !== undefined) {
@@ -665,6 +708,11 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
       });
     });
   }
+
+  app.after((error) => {
+    if (error) throw error;
+    if (deps.githubWebhook !== undefined) registerGitHubWebhookRoute(app, deps.githubWebhook);
+  });
 
   return app;
 }

@@ -1,7 +1,12 @@
 import {
   AgentEventVisibilitySchema,
   AppTypeSchema,
+  idSchema,
   ModelIdentifierSchema,
+  PreviewOperationFailurePayloadSchema,
+  PreviewReadyPayloadSchema,
+  PreviewStartingPayloadSchema,
+  PreviewTerminalFailurePayloadSchema,
   ResourceProfileSchema,
   RunModeSchema,
   SupportLevelSchema,
@@ -50,6 +55,122 @@ export const ProjectSchema = z.object({
   createdAt: z.string().datetime(),
   archivedAt: z.string().datetime().nullable(),
 });
+
+/** ADR-0028's public, durable dashboard card contract. */
+export const ProjectDashboardPreviewEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('preview.starting'),
+    occurredAt: z.date(),
+    payload: PreviewStartingPayloadSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('preview.ready'),
+    occurredAt: z.date(),
+    payload: PreviewReadyPayloadSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('preview.failed'),
+    occurredAt: z.date(),
+    payload: z.union([
+      PreviewOperationFailurePayloadSchema,
+      PreviewTerminalFailurePayloadSchema,
+    ]),
+  }).strict(),
+]);
+
+export const ProjectDashboardPreviewSchema = z.object({
+  status: z.enum(['not_started', 'starting', 'ready', 'failed']),
+  occurredAt: z.string().datetime().nullable(),
+}).strict();
+
+export const ProjectDashboardProductionSchema = z.object({
+  status: z.enum(['not_deployed', 'deploying', 'healthy', 'failed']),
+  occurredAt: z.string().datetime().nullable(),
+  releaseId: idSchema('rel').nullable(),
+}).strict();
+
+export const ReadinessFindingSchema = z.object({
+  id: z.string().min(1),
+  severity: z.enum(['blocker', 'warning']),
+  title: z.string().min(1),
+  detail: z.string().min(1),
+  action: z.enum(['fix_and_recheck', 'review', 'waive']),
+}).strict();
+
+export const ProjectDashboardDeployReadinessSchema = z.object({
+  releaseId: idSchema('rel'),
+  state: z.enum(['ready', 'warnings', 'blocked']),
+  findings: z.array(ReadinessFindingSchema),
+}).strict();
+
+export const ProjectDashboardSummarySchema = z.object({
+  projectId: idSchema('proj'),
+  lastActivityAt: z.string().datetime().nullable(),
+  preview: ProjectDashboardPreviewSchema,
+  production: ProjectDashboardProductionSchema,
+  deployReadiness: ProjectDashboardDeployReadinessSchema.nullable(),
+}).strict();
+
+export const ProjectDashboardSummariesResponseSchema = z.object({
+  summaries: z.array(ProjectDashboardSummarySchema),
+}).strict();
+
+export type ProjectDashboardSummary = z.infer<typeof ProjectDashboardSummarySchema>;
+export type ProjectDashboardSummariesResponse = z.infer<
+  typeof ProjectDashboardSummariesResponseSchema
+>;
+
+export const ProjectDashboardSummarySourceSchema = z.object({
+  projectId: idSchema('proj'),
+  lastActivityAt: z.date().nullable(),
+  preview: ProjectDashboardPreviewEventSchema.nullable(),
+  release: z.object({
+    id: idSchema('rel'),
+    status: z.string(),
+    createdAt: z.date(),
+  }).strict().nullable(),
+  deployment: z.object({
+    status: z.string(),
+    occurredAt: z.date(),
+  }).strict().nullable(),
+}).strict();
+
+export type ProjectDashboardSummarySource = z.infer<typeof ProjectDashboardSummarySourceSchema>;
+
+export function toProjectDashboardSummary(
+  source: ProjectDashboardSummarySource,
+  deployReadiness: z.infer<typeof ProjectDashboardDeployReadinessSchema> | null,
+): ProjectDashboardSummary {
+  const preview = source.preview === null
+    ? { status: 'not_started' as const, occurredAt: null }
+    : {
+        status:
+          source.preview.type === 'preview.starting'
+            ? 'starting' as const
+            : source.preview.type === 'preview.ready'
+              ? 'ready' as const
+              : 'failed' as const,
+        occurredAt: source.preview.occurredAt.toISOString(),
+      };
+  const release = source.release;
+  const deployment = source.deployment;
+  const productionStatus =
+    deployment?.status === 'healthy' ? 'healthy' :
+    deployment?.status === 'failed' ? 'failed' :
+    release?.status === 'deploying' ? 'deploying' : 'not_deployed';
+
+  return ProjectDashboardSummarySchema.parse({
+    projectId: source.projectId,
+    lastActivityAt: source.lastActivityAt?.toISOString() ?? null,
+    preview,
+    production: {
+      status: productionStatus,
+      occurredAt: deployment?.occurredAt.toISOString() ?? release?.createdAt.toISOString() ?? null,
+      releaseId: release?.id ?? null,
+    },
+    deployReadiness,
+  });
+}
 
 /**
  * The repository a project's code lives in (PRD §19.1). `internalRepoRef` is the

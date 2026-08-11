@@ -17,7 +17,8 @@ import { errorHandler, notFoundHandler } from './errors.js';
 import { serviceAuth } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import type { GitProvider } from './provider/types.js';
-import { registerGitRoutes } from './routes.js';
+import type { GitMirror } from './import/mirror.js';
+import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
@@ -56,6 +57,8 @@ export interface AppDeps {
   readonly callers?: readonly ServiceName[];
   /** Injected in tests so token expiry is asserted rather than waited for. */
   readonly now?: () => Date;
+  readonly mirror?: GitMirror;
+  readonly importPoll?: ImportBranchPoll;
 }
 
 /**
@@ -112,6 +115,8 @@ export function buildApp(deps: AppDeps): AppInstance {
       provider: deps.provider,
       tokens: deps.tokens,
       ...(deps.callers === undefined ? {} : { callers: deps.callers }),
+      ...(deps.mirror === undefined ? {} : { mirror: deps.mirror }),
+      ...(deps.importPoll === undefined ? {} : { importPoll: deps.importPoll }),
     });
   });
 

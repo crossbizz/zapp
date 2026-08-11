@@ -8,6 +8,8 @@ import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  loadGitHubAppEnv,
+  loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadPreviewEnv,
   loadModelGatewayUrl,
@@ -66,9 +68,18 @@ const GENERATED: Record<string, string> = {
   PREVIEW_SHARE_SIGNING_KEY: 'd'.repeat(64),
 };
 
+const GITHUB_TEST_ENV = {
+  GITHUB_APP_ID: '12345',
+  GITHUB_APP_SLUG: 'zapp-build-test',
+  GITHUB_APP_PRIVATE_KEY: 'test-private-key',
+  GITHUB_APP_CLIENT_ID: 'Iv1.test-client',
+  GITHUB_APP_CLIENT_SECRET: 'test-client-secret',
+  GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
+} as const;
+
 describe('the shipped .env.example', () => {
   const template = readTemplate();
-  const environment = { ...template, ...GENERATED };
+  const environment = { ...template, ...GENERATED, ...GITHUB_TEST_ENV };
 
   it('boots every loader this service calls at startup', () => {
     // `server.ts` calls these six before it listens.
@@ -81,6 +92,8 @@ describe('the shipped .env.example', () => {
     expect(() => loadPreviewEnv(environment)).not.toThrow();
     expect(() => loadModelGatewayUrl(environment)).not.toThrow();
     expect(() => loadUsageQueueEnv(environment)).not.toThrow();
+    expect(() => loadGitHubAppEnv(environment)).not.toThrow();
+    expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
   });
@@ -142,6 +155,13 @@ describe('the shipped .env.example', () => {
       'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',
+      'GITHUB_APP_ID',
+      'GITHUB_APP_SLUG',
+      'GITHUB_APP_PRIVATE_KEY',
+      'GITHUB_APP_CLIENT_ID',
+      'GITHUB_APP_CLIENT_SECRET',
+      'GITHUB_WEBHOOK_SECRET',
+      'GITHUB_API_BASE_URL',
       'ARTIFACT_ENDPOINT',
       'ARTIFACT_REGION',
       'ARTIFACT_BUCKET',
@@ -149,6 +169,20 @@ describe('the shipped .env.example', () => {
       'ARTIFACT_SECRET',
     ]) {
       expect(template, name).toHaveProperty(name);
+    }
+  });
+
+  it('keeps every GitHub App credential entry name-only', () => {
+    for (const name of [
+      'GITHUB_APP_ID',
+      'GITHUB_APP_SLUG',
+      'GITHUB_APP_PRIVATE_KEY',
+      'GITHUB_APP_CLIENT_ID',
+      'GITHUB_APP_CLIENT_SECRET',
+      'GITHUB_WEBHOOK_SECRET',
+      'GITHUB_API_BASE_URL',
+    ]) {
+      expect(template, name).toHaveProperty(name, '');
     }
   });
 });

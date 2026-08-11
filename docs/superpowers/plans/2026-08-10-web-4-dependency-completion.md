@@ -39,11 +39,11 @@
 - Produces: the exact routes and schemas approved in `docs/superpowers/specs/2026-08-10-web-4-dependency-completion-design.md`.
 - Produces: tracker order `CP-21 → INT-1 → INT-2 → WEB-4`; removes the duplicate INT-1/INT-2 entries from their former M4 position.
 
-- [ ] **Step 1: Write ADR-0028**
+- [x] **Step 1: Write ADR-0028**
 
 Record context, decision, alternatives, consequences, exact route names, exact public states, SQS queue names, and the accepted Files-list expansions. Mark the ADR `Accepted`, date it `2026-08-10`, and cite the user's instruction to self-audit and execute without another approval gate.
 
-- [ ] **Step 2: Add CP-21 to Plan 02**
+- [x] **Step 2: Add CP-21 to Plan 02**
 
 Add a binding task whose interface is:
 
@@ -54,15 +54,15 @@ GET /v1/projects/summaries?projectId=<proj>&projectId=<proj>
 
 Name every control API, database index, generated SDK, and test file from Task 2 below in its Files block. Specify the commit message `feat(control-api): public project dashboard summaries`.
 
-- [ ] **Step 3: Expand INT-1/INT-2 and WEB-4 Files/Interfaces**
+- [x] **Step 3: Expand INT-1/INT-2 and WEB-4 Files/Interfaces**
 
 Copy Task 3's installation/discovery/webhook interfaces and Task 4's durable import interfaces into Plan 06. Update Plan 08 so Slice B consumes CP-21 and Slice C consumes the generated INT-1/INT-2 operations. Preserve all existing completed Slice A checkboxes.
 
-- [ ] **Step 4: Reorder the authoritative tracker**
+- [x] **Step 4: Reorder the authoritative tracker**
 
 Place unchecked CP-21, INT-1, and INT-2 immediately before unchecked WEB-4 in `tasks/todo.md`; remove INT-1 and INT-2 from the M4 block so each task appears once.
 
-- [ ] **Step 5: Verify and commit the decision**
+- [x] **Step 5: Verify and commit the decision**
 
 Run:
 
@@ -209,6 +209,7 @@ git commit -m "feat(control-api): public project dashboard summaries"
 - Modify: `services/control-api/src/redis/client.ts` only if its existing `eval` surface needs no new command
 - Modify: `services/control-api/test/support/{harness,tenant-db}.ts`
 - Modify: `services/control-api/test/{compose,env,server-bootstrap,openapi}.test.ts`
+- Modify: `services/control-api/test/openapi-contract.test.ts` for generated path-count and determinism coverage
 - Modify: `services/control-api/package.json`
 - Modify: `packages/db/src/schema/security.ts`
 - Modify: `packages/db/test/schema-security.test.ts`
@@ -247,7 +248,7 @@ Expected RED: missing GitHub install modules/routes.
 
 Use 32 random bytes encoded base64url. Persist `{ organizationId, actorId }` under a SHA-256-derived Redis key for 600,000 ms. Consume with one Lua `GET` + `DEL` script through the existing `RedisCommands.eval` method. Do not add a read-then-delete implementation.
 
-JWT input is `{ appId, privateKey }`; parse the provider response with strict Zod schemas. Store only `installationId` in `integration_connections.configuration_json`, keep `credentialRef` null for the platform-owned App, and audit `integration.connected` without callback code/state.
+JWT input is `{ appId, privateKey }`; per ADR-0029, exchange the callback code with `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET`, use the ephemeral user token to list the user's accessible installations, and accept only a requested installation present in that strict parsed response. Store only `installationId` in `integration_connections.configuration_json`, keep `credentialRef` null for the platform-owned App, and audit `integration.connected` without callback code/state/token material.
 
 - [ ] **Step 3: Write repository/branch discovery RED tests**
 
@@ -274,7 +275,7 @@ Create queue and publisher lifecycles patterned after `usage/outbox.ts`, but kee
 
 - [ ] **Step 6: Wire environment, LocalStack, Terraform, and lifecycle**
 
-Add name-only `.env.example` entries for `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and optional `GITHUB_API_BASE_URL`. Add `zapp-github-imports` and its DLQ alongside the existing webhook queue, update `EXPECTED_QUEUES`, expected count, and LocalStack health proof. Terraform must declare the exact INT-1 permissions/events and output no private key.
+Add name-only `.env.example` entries for `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, and optional `GITHUB_API_BASE_URL`. Add `zapp-github-imports` and its DLQ alongside the existing webhook queue, update `EXPECTED_QUEUES`, expected count, and LocalStack health proof. Terraform must declare the exact INT-1 permissions/events and output no private key.
 
 Add lifecycle ordering tests proving publisher shutdown drains before database/queue closure.
 
@@ -509,3 +510,9 @@ rg -n '^- \[ \] (CP-21|INT-1|INT-2|WEB-4)' tasks/todo.md
 ```
 
 Expected: clean worktree; four prescribed implementation commits after ADR-0028; the final `rg` emits no matches.
+
+## Execution log
+
+- 2026-08-10 Task 1 done — accepted ADR-0028; bound CP-21, INT-1, INT-2, and WEB-4 in the authoritative tracker; required route/queue reference and one-entry-per-tracker-task checks passed with `git diff --check` clean; no deviations.
+- 2026-08-10 Task 3 review round 1 revision — accepted ADR-0029 for GitHub setup ownership proof and added `services/control-api/test/openapi-contract.test.ts` to INT-1's explicit file scope and generated determinism gate; the authoritative tracker remains the single existing INT-1 entry.
+- 2026-08-11 whole-branch final acceptance correction: projected preview state from exact sandbox lifecycle event types and payloads; added durable failed-import rearm, SQS visibility leases, authorize-start idempotency, and semantic ID/SHA schemas; regenerated OpenAPI/SDK; and corrected the INT-1 and WEB-4 evidence logs. Focused control-api passed 65/65, API client 52/52, projects E2E 17/17, PostgreSQL retry 1/1, tenant isolation 54/54, Gate 5 Forgejo 1/1, and root lint/typecheck passed. The one-time cold gate exited 1 when six unrelated load-sensitive tests hit existing timeouts or process cleanup races; every failing target passed in isolation. A cached full retry still hit two of those timeouts, and the serial integration follow-up found an ahead-of-branch shared database with a later non-null `usage_ledger.operation_key`; both failures are retained in the final fix report. Real GitHub provider checks were not rerun, as required.
