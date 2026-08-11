@@ -139,6 +139,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-15 Runaway-compute governor
 - [x] WS-15-FIX-1 Fenced sweep and shutdown closure
 - [x] WS-15-FIX-2 Preview-proxy smoke readiness
+- [x] M2-CI-PREVIEW-CDP Deterministic aborted CDP serialization gate
 - [x] CP-21 Public builder preview bridge (ADR-0028)
 - [x] CP-21-FIX-1 Durable screenshot operation reservation
 - [x] WEB-7 Preview panel + states + capture drawer

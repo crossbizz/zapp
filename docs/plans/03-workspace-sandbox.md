@@ -438,6 +438,14 @@ Review exit (maximum two rounds): zero Critical/Important findings. Test-only; n
 - [x] **GREEN:** close the SSE reader before the launched browser and assert the already-sampled real descendant RSS directly from the aggregate plus `activeChildren`, preserving the 96 MiB real child/group proof without a post-snapshot process race.
 - [x] **Verify/review/ship:** run both exact focused tests, the two affected package suites/static gates, and root `pnpm verify`; close within two SOL High rounds; check the tracker, append one execution-log line, commit `test(plan03): bound clean-gate cleanup probes`, push `main`, and watch CI + Security green.
 
+#### M2-CI-PREVIEW-CDP — deterministic aborted CDP serialization gate
+
+Test-only; no provider call or production behavior change.
+
+- [x] **RED:** retain exact-sha CI's failure where the 25 ms screenshot deadline expired during loopback CDP discovery, before `connectOverCDP` could start; reproduce by delaying discovery beyond that deadline.
+- [x] **GREEN:** wait for the mocked CDP connection boundary, explicitly abort the downstream request, and prove a second request remains busy until the late browser is closed; do not use a wall-clock race to select the state under test.
+- [x] **Verify/ship:** run the focused regression, all 109 preview-proxy tests, and package lint/typecheck/build; append one execution-log line, commit `test(preview-proxy): make CDP serialization race deterministic`, push, and watch authoritative CI green.
+
 ---
 
 ## Testing strategy
@@ -516,3 +524,4 @@ Review exit (maximum two rounds): zero Critical/Important findings. Test-only; n
 - 2026-08-09 WS-15-FIX-1 done — one-row expiry leasing, exact-token renewal/takeover, abortable shutdown including delayed-claim release, and admitted terminal-replay compensation closed all capped lifecycle findings in two review rounds.
 - 2026-08-09 WS-15-FIX-2 done — the first WS-15 smoke exposed agent/proxy concurrent-start refusal; strict preview health now retries with an exact remaining 30-second curl budget, and FIX-2's single immutable-image smoke passed for dev.
 - 2026-08-10 M1-GATE-12 done — cold/full-contention verification exposed real-Chrome SSE/browser cleanup ordering and a post-snapshot leader-exit `ps` race; focused and affected package gates, root `pnpm verify`, and one zero-Critical/Important review passed without a provider call.
+- 2026-08-10 M2-CI-PREVIEW-CDP done — exact-sha CI exposed a 25 ms loopback CDP discovery race; the test now waits for the mocked connection boundary before explicit downstream abort and proves busy-slot retention plus late-browser cleanup; focused 1/1, preview-proxy 109/109, and package lint/typecheck/build passed with no provider call.

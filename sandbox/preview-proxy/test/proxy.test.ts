@@ -2497,6 +2497,7 @@ describe('preview proxy acceptance contract', () => {
       await closeServer(cdpServer);
     });
     const connection = deferred<Awaited<ReturnType<typeof chromium.connectOverCDP>>>();
+    const connectionStarted = deferred<undefined>();
     const lateClose = vi.fn(() => Promise.resolve());
     const recoveredClose = vi.fn(() => Promise.resolve());
     const lateBrowser = {
@@ -2513,27 +2514,31 @@ describe('preview proxy acceptance contract', () => {
     } as unknown as Awaited<ReturnType<typeof chromium.connectOverCDP>>;
     const connect = vi
       .spyOn(chromium, 'connectOverCDP')
-      .mockImplementationOnce(() => connection.promise)
+      .mockImplementationOnce(() => {
+        connectionStarted.resolve(undefined);
+        return connection.promise;
+      })
       .mockResolvedValue(recoveredBrowser);
     const proxy = await startProxy({
       cdpEndpoint: `http://127.0.0.1:${String(cdpPort)}`,
       probePorts: [],
-      screenshotTimeoutMs: 25,
+      screenshotTimeoutMs: 5_000,
     });
 
     if (!proxy) {
       return;
     }
 
-    const timedOut = await Promise.race([
-      fetch(`${proxy.url}/__zapp/screenshot`, { method: 'POST' }).then(
-        (response) => response.status,
-      ),
-      wait(150).then(() => 'timed out waiting for screenshot response'),
-    ]);
+    const controller = new AbortController();
+    const aborted = fetch(`${proxy.url}/__zapp/screenshot`, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    await connectionStarted.promise;
+    controller.abort();
+    await expect(aborted).rejects.toThrow(/abort/iu);
     const busy = await fetch(`${proxy.url}/__zapp/screenshot`, { method: 'POST' });
 
-    expect(timedOut).toBe(503);
     expect(busy.status).toBe(503);
     expect(connect).toHaveBeenCalledTimes(1);
 
