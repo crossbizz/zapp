@@ -14,6 +14,16 @@ export type CreateProjectInput =
 export type CreateRunInput =
   paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
 export type ListProjectsQuery = NonNullable<paths['/v1/projects']['get']['parameters']['query']>;
+export type ProjectSummariesQuery =
+  paths['/v1/projects/summaries']['get']['parameters']['query'];
+export type CompleteGitHubInstallInput =
+  paths['/v1/integrations/github/install']['post']['requestBody']['content']['application/json'];
+export type ListGitHubRepositoriesQuery =
+  paths['/v1/integrations/github/repositories']['get']['parameters']['query'];
+export type ListGitHubBranchesQuery =
+  paths['/v1/integrations/github/repositories/{repositoryId}/branches']['get']['parameters']['query'];
+export type EnqueueGitHubImportInput =
+  paths['/v1/projects/{projectId}/import/github']['post']['requestBody']['content']['application/json'];
 export type CreateRunMessageInput =
   paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
 
@@ -94,11 +104,78 @@ export function createControlPlaneClient(organizationId?: string) {
         query,
         ...(signal === undefined ? {} : { signal }),
       }),
-    createProject: (body: CreateProjectInput, idempotencyKey?: string) =>
+    getProjectSummaries: (query: ProjectSummariesQuery, signal?: AbortSignal) =>
+      client.request('/v1/projects/summaries', {
+        method: 'GET',
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>
       client.request('/v1/projects', {
         method: 'POST',
         headers: headers(true, true, idempotencyKey),
         body,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    authorizeGitHubInstall: (idempotencyKey?: string, signal?: AbortSignal) =>
+      client.request('/v1/integrations/github/install/authorize', {
+        method: 'POST',
+        headers: headers(true, true, idempotencyKey),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    completeGitHubInstall: (
+      body: CompleteGitHubInstallInput,
+      idempotencyKey?: string,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/integrations/github/install', {
+        method: 'POST',
+        headers: headers(true, true, idempotencyKey),
+        body,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listGitHubRepositories: (query: ListGitHubRepositoriesQuery, signal?: AbortSignal) =>
+      client.request('/v1/integrations/github/repositories', {
+        method: 'GET',
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listGitHubBranches: (
+      repositoryId: string,
+      query: ListGitHubBranchesQuery,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/integrations/github/repositories/{repositoryId}/branches', {
+        method: 'GET',
+        path: { repositoryId },
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    enqueueGitHubImport: (
+      projectId: string,
+      body: EnqueueGitHubImportInput,
+      idempotencyKey: string,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/projects/{projectId}/import/github', {
+        method: 'POST',
+        path: { projectId },
+        headers: {
+          ...headers(true, true, idempotencyKey),
+          [idempotencyHeaderName]: idempotencyKey,
+        },
+        body,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getGitHubImport: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/import/github', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
       }),
     createRun: (projectId: string, body: CreateRunInput, idempotencyKey?: string) =>
       client.request('/v1/projects/{projectId}/runs', {
