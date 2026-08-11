@@ -210,9 +210,9 @@ be built:
 **Files:** Create: `src/integrations/supabase/migrations.ts`, `templates/supabase/rls/*.sql.hbs`
 **Effort:** L
 
-- [ ] Binding behavior: migration pipeline: generated migration files in repo (`supabase/migrations/*`), applied to dev via CLI in workspace; validation against shadow database before any prod approval (VF-16 gate); destructive detection → approval (AR-5); RLS: policy generation templates for owner-scoped tables (auth.uid() pattern) + **generated RLS tests** (SQL asserting cross-user denial) required for Managed level (PRD §25.2); migration history recorded in release evidence (PRD §25.1).
-- [ ] Failing tests: destructive migration flagged; RLS template renders valid SQL for a fixture schema; RLS test catches a policy-less table.
-- [ ] Commit: `feat(integrations): supabase migration pipeline + RLS generation/tests`
+- [x] Binding behavior: migration pipeline: generated migration files in repo (`supabase/migrations/*`), applied to dev via CLI in workspace; validation against shadow database before any prod approval (VF-16 gate); destructive detection → approval (AR-5); RLS: policy generation templates for owner-scoped tables (auth.uid() pattern) + **generated RLS tests** (SQL asserting cross-user denial) required for Managed level (PRD §25.2); migration history recorded in release evidence (PRD §25.1).
+- [x] Failing tests: destructive migration flagged; RLS template renders valid SQL for a fixture schema; RLS test catches a policy-less table.
+- [x] Commit: `feat(integrations): supabase migration pipeline + RLS generation/tests`
 
 ### Task INT-7 [M4]: Neon adapter
 
@@ -273,3 +273,4 @@ be built:
 - 2026-08-11 INT-4 done — zapp-created projects now export through a deterministic provider operation, structurally force-free full-history push, exact default-head verification, and tenant/installation-scoped atomic peer-ref + sync-policy persistence with linked 409 replay; temporary memory and PostgreSQL TDD contracts passed alongside control-api build/lint/typecheck, Prettier, and Semgrep; no binding-file deviation or blocker, and live GitHub export was skipped because the named GitHub App credentials are unset.
 - 2026-08-11 INT-5 done — Supabase connect/provision/schema/typegen and agent-tool bindings now vault the management token, isolate preview/production project secrets, and keep migrations behind INT-6; one capped review corrected the current Management API provisioning payload, PostgreSQL/local suites passed, no blockers or plan deviations, and the live Supabase test skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
 - 2026-08-11 INT-5-FIX-1 done — The exact authoritative CI failure reproduced after wall time crossed the retry test's fixed publisher instant; injecting one clock into the app and publisher made the PostgreSQL retry proof deterministic, focused and package checks passed, and one capped review found no Critical/Major issue.
+- 2026-08-11 INT-6 done — Supabase migrations now stage keyed monotonic repo files, apply only to linked non-production projects, feed pending history through the VF-16 shadow receipt recorded in release evidence, and generate owner-scoped RLS plus pgTAP denial tests; one capped review fixed fixture-vacuity and migration-ordering risks, local PostgreSQL proved cross-user denial, no blockers or plan deviations occurred, and live Supabase verification skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.

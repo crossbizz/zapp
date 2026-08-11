@@ -1,4 +1,5 @@
 import { newId } from '@zapp/contracts';
+import { readFile } from 'node:fs/promises';
 import {
   createSupabaseMigrationPort,
   createSupabaseProjectDataPort,
@@ -14,6 +15,14 @@ import {
   createSupabaseIntegrationPort,
   type SupabaseManagementPort,
 } from '../src/integrations/supabase/connect.js';
+import {
+  analyzeSupabaseMigration,
+  assertManagedRlsCoverage,
+  createSupabaseMigrationPipeline,
+  createSupabaseMigrationValidationAdapter,
+  renderOwnerScopedRlsArtifacts,
+  type SupabaseMigrationRuntime,
+} from '../src/integrations/supabase/migrations.js';
 import {
   createSupabaseManagementClient,
   provisionDevelopmentProject,
@@ -45,6 +54,15 @@ const ACCESS_TOKEN = 'supabase-management-token-must-never-be-plaintext';
 const ANON_KEY = 'supabase-anon-key-must-never-be-plaintext';
 const PROJECT_REF = 'fixture-project-ref';
 
+const POLICY_TEMPLATE = new URL(
+  '../../../templates/supabase/rls/owner-policy.sql.hbs',
+  import.meta.url,
+);
+const TEST_TEMPLATE = new URL(
+  '../../../templates/supabase/rls/owner-scope.test.sql.hbs',
+  import.meta.url,
+);
+
 class FixtureManagementPort implements SupabaseManagementPort {
   readonly calls: Array<{ readonly projectRef: string; readonly accessToken: string }> = [];
 
@@ -61,6 +79,203 @@ class FixtureManagementPort implements SupabaseManagementPort {
     });
   }
 }
+
+describe('Supabase migration pipeline and owner-scoped RLS', () => {
+  it('classifies destructive SQL through AR-5 before migration execution', () => {
+    expect(analyzeSupabaseMigration('alter table public.todos drop column legacy')).toEqual({
+      destructive: true,
+      approvalRequired: true,
+      approvalReason: 'destructive_migration',
+    });
+    expect(
+      analyzeSupabaseMigration('alter table public.todos add column completed boolean'),
+    ).toEqual({
+      destructive: false,
+      approvalRequired: false,
+    });
+  });
+
+  it('renders valid owner-scoped policy and cross-user pgTAP SQL for a fixture table', async () => {
+    const templates = {
+      policy: await readFile(POLICY_TEMPLATE, 'utf8'),
+      test: await readFile(TEST_TEMPLATE, 'utf8'),
+    };
+
+    const rendered = renderOwnerScopedRlsArtifacts({
+      tables: [{ schema: 'public', table: 'todos', ownerColumn: 'owner_id' }],
+      templates,
+      fixtureOwnerId: '11111111-1111-4111-8111-111111111111',
+      otherUserId: '22222222-2222-4222-8222-222222222222',
+    });
+
+    expect(rendered.policySql).toMatch(
+      /alter table\s+"public"\."todos"\s+enable row level security;/u,
+    );
+    expect(rendered.policySql).toMatch(/\(select auth\.uid\(\)\) =\s+"owner_id"/u);
+    expect(rendered.testSql).toContain('select plan(4);');
+    expect(rendered.testSql).toContain('fixture row exists before the denial check');
+    expect(rendered.testSql).toContain('from pg_policies');
+    expect(rendered.testSql).toContain('array[0::bigint]');
+    expect(`${rendered.policySql}\n${rendered.testSql}`).not.toMatch(/\{\{[^}]+\}\}/u);
+  });
+
+  it('rejects a Managed RLS artifact set with a policy-less table', () => {
+    expect(() => {
+      assertManagedRlsCoverage({
+        managedTables: [
+          { schema: 'public', table: 'todos', ownerColumn: 'owner_id' },
+          { schema: 'public', table: 'profiles', ownerColumn: 'user_id' },
+        ],
+        policyTables: [{ schema: 'public', table: 'todos' }],
+      });
+    }).toThrow('managed_rls_policy_missing:public.profiles');
+  });
+
+  it('writes a keyed migration and applies preview through the official linked CLI flow', async () => {
+    const writes = new Map<string, Uint8Array>([
+      ['supabase/migrations/20260811123500_existing.sql', new TextEncoder().encode('select 1;\n')],
+    ]);
+    const execCalls: Array<Parameters<SupabaseMigrationRuntime['exec']>[0]> = [];
+    const runtime = {
+      exec(input: Parameters<SupabaseMigrationRuntime['exec']>[0]) {
+        execCalls.push(input);
+        return Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
+      },
+      listFiles: () =>
+        Promise.resolve([...writes.keys()].map((path) => ({ path, type: 'file' as const }))),
+      readFile(path: string) {
+        const value = writes.get(path);
+        return value === undefined
+          ? Promise.reject(new Error('file_not_found'))
+          : Promise.resolve(value);
+      },
+      writeFilesAtomically(files: readonly { readonly path: string; readonly data: Uint8Array }[]) {
+        for (const file of files) writes.set(file.path, file.data);
+        return Promise.resolve();
+      },
+    } satisfies SupabaseMigrationRuntime;
+    const pipeline = createSupabaseMigrationPipeline({
+      runtime,
+      connections: {
+        forEnvironment: () =>
+          Promise.resolve({
+            projectRef: PROJECT_REF,
+            accessToken: ACCESS_TOKEN,
+            scope: 'preview',
+          }),
+      },
+      now: () => new Date('2026-08-11T12:34:56.000Z'),
+    });
+    const signal = new AbortController().signal;
+    const result = await pipeline.executeMigration(
+      { environmentId: 'env_preview', migration: 'create table public.todos(id uuid);' },
+      {
+        organizationId: 'org_scope',
+        projectId: 'proj_scope',
+        runId: 'run_scope',
+        taskId: 'task_scope',
+        step: 'migration',
+        idempotencyKey: 'run_scope:task_scope:migration:execute_migration',
+      },
+      signal,
+    );
+
+    expect(result).toMatchObject({ status: 'applied' });
+    const migrationPath = [...writes.keys()].find((path) => path.includes('_agent_'));
+    expect(migrationPath).toMatch(
+      /^supabase\/migrations\/20260811123501_agent_[a-f0-9]{12}\.sql$/u,
+    );
+    expect(new TextDecoder().decode(writes.get(migrationPath ?? ''))).toBe(
+      'create table public.todos(id uuid);\n',
+    );
+    expect(execCalls).toEqual([
+      {
+        cmd: 'supabase',
+        args: ['link', '--project-ref', PROJECT_REF],
+        env: { SUPABASE_ACCESS_TOKEN: ACCESS_TOKEN },
+        timeoutMs: 120_000,
+      },
+      {
+        cmd: 'supabase',
+        args: ['db', 'push', '--linked', '--include-all'],
+        env: { SUPABASE_ACCESS_TOKEN: ACCESS_TOKEN },
+        timeoutMs: 120_000,
+      },
+      {
+        cmd: 'supabase',
+        args: ['test', 'db', '--linked'],
+        env: { SUPABASE_ACCESS_TOKEN: ACCESS_TOKEN },
+        timeoutMs: 120_000,
+      },
+    ]);
+
+    await expect(
+      pipeline.executeMigration(
+        { environmentId: 'env_preview', migration: 'create table public.todos(id uuid);' },
+        {
+          organizationId: 'org_scope',
+          projectId: 'proj_scope',
+          runId: 'run_scope',
+          taskId: 'task_scope',
+          step: 'migration',
+          idempotencyKey: 'run_scope:task_scope:migration:execute_migration',
+        },
+        signal,
+      ),
+    ).resolves.toEqual(result);
+    expect([...writes.keys()].filter((path) => path.includes('_agent_'))).toEqual([migrationPath]);
+  });
+
+  it('returns a VF-16 Supabase-shadow receipt whose paths become release evidence', async () => {
+    const migrations = new Map([
+      ['supabase/migrations/20260811000100_add_todos.sql', 'create table todos(id uuid);'],
+      [
+        'supabase/migrations/20260811000200_drop_legacy.sql',
+        'alter table todos drop column legacy;',
+      ],
+    ]);
+    const runtime = {
+      exec: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' }),
+      listFiles: () =>
+        Promise.resolve([...migrations.keys()].map((path) => ({ path, type: 'file' as const }))),
+      readFile(path: string) {
+        return Promise.resolve(new TextEncoder().encode(migrations.get(path) ?? ''));
+      },
+      writeFilesAtomically: () => Promise.resolve(),
+    } satisfies SupabaseMigrationRuntime;
+    const adapter = createSupabaseMigrationValidationAdapter({
+      runtime,
+      projectRef: PROJECT_REF,
+      accessToken: ACCESS_TOKEN,
+      history: {
+        pendingPaths: () => Promise.resolve([...migrations.keys()]),
+      },
+      shadow: {
+        validate: () =>
+          Promise.resolve({
+            reference: 'shadow-validation-01',
+            applyStatus: 'passed',
+            smokeStatus: 'passed',
+            cleanupStatus: 'passed',
+            reversibility: 'compensating',
+          }),
+      },
+    });
+
+    await expect(
+      adapter.validatePendingMigrations({ commitSha: 'a'.repeat(40), workspaceRoot: '.' }),
+    ).resolves.toEqual({
+      kind: 'validated',
+      provider: 'supabase',
+      isolatedTarget: { kind: 'supabase_shadow', reference: 'shadow-validation-01' },
+      migrations: [...migrations].map(([path, sql]) => ({ path, sql })),
+      applyStatus: 'passed',
+      smokeStatus: 'passed',
+      cleanupStatus: 'passed',
+      reversibility: 'compensating',
+    });
+  });
+});
 
 describe('Supabase schema and type generation', () => {
   it('reads tables from the postgres-meta boundary and binds the agent schema read', async () => {

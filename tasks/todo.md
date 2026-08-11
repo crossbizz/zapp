@@ -193,7 +193,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-4 GitHub export
 - [x] INT-5 Supabase connect/provision/schema/types
 - [x] INT-5-FIX-1 Make GitHub import retry integration clock deterministic
-- [ ] INT-6 Supabase migrations + RLS gen/tests
+- [x] INT-6 Supabase migrations + RLS gen/tests
 - [ ] INT-7 Neon branch workflows
 - [ ] INT-8 Generated-app Stripe adapter
 - [ ] INT-9 Stripe E2E integration tests
