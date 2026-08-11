@@ -214,9 +214,9 @@ describe.skipIf(!hasDatabase)('identity and billing schema', () => {
       expect(
         await rejection(handle.sql`
           insert into usage_ledger
-            (id, organization_id, category, quantity, unit, cost_usd, credits_charged, occurred_at)
+            (id, operation_key, organization_id, category, quantity, unit, cost_usd, credits_charged, occurred_at)
           values
-            (${newId('evt')}, ${organizationId}, 'crypto_mining', 1, 'unit', 0, 0, now())
+            (${newId('evt')}, ${newId('evt')}, ${organizationId}, 'crypto_mining', 1, 'unit', 0, 0, now())
         `),
       ).toMatchObject({
         code: '23514', // check_violation
