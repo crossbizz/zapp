@@ -356,12 +356,13 @@ test('exposes attachment, mode, model-policy, and advanced controls', async ({ p
   await page.getByRole('button', { name: /Auto/u }).click();
 
   await expect(page.getByRole('radio', { name: 'Auto (recommended)' })).toBeChecked();
-  for (const mode of ['Ask', 'Prototype', 'Build', 'Fix', 'Autonomous']) {
+  for (const mode of ['Ask', 'Prototype', 'Build', 'Autonomous']) {
     await expect(page.getByRole('radio', { name: new RegExp(`^${mode}`, 'u') })).toBeVisible();
   }
+  await expect(page.getByRole('radio', { name: /^Fix/u })).toHaveCount(0);
   await expect(page.getByText('Automatic selection managed by your organization.')).toBeVisible();
-  await page.getByRole('radio', { name: /^Fix/u }).check();
-  await expect(page.getByLabel('Selected mode: Fix')).toBeVisible();
+  await page.getByRole('radio', { name: /^Ask/u }).check();
+  await expect(page.getByLabel('Selected mode: Ask')).toBeVisible();
 
   await page.getByRole('button', { name: 'Advanced controls' }).click();
   await expect(page.getByRole('spinbutton', { name: 'Run budget cap' })).toHaveAttribute('min', '1');
@@ -497,12 +498,12 @@ test('uses the Auto heuristic and lets an explicit mode win', async ({ page }) =
   const explicit = await mockCreation(page);
   await page.getByRole('button', { name: 'Add attachment or controls' }).click();
   await page.getByRole('button', { name: /Auto/u }).click();
-  await page.getByRole('radio', { name: /^Fix/u }).check();
+  await page.getByRole('radio', { name: /^Ask/u }).check();
   await submitPrompt(page, 'I have an idea for a garden planning app');
   expect(explicit.runRequests[0]?.body).toEqual({
     appType: 'web',
     branchId: 'branch-main',
-    mode: 'fix',
+    mode: 'ask',
     prompt: 'I have an idea for a garden planning app',
   });
 });

@@ -172,15 +172,16 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-11 Browser agent (exploratory)
 - [x] VF-12 Accessibility gate
 - [x] VF-13 Classified repair loop (hard budgets)
+- [x] VF-13-FIX-1 Bound the real-Git repair exhaustion integration timeout
 - [x] VF-14 Anti-slop detectors
 - [x] VF-15 Evidence manifest + report renderer
 - [x] VF-16 Dependency + migration gates
 - [x] AR-16 specification-engine (interview + spec)
 - [x] AR-17 Autonomous mode workflow
-- [ ] AR-18 Build mode
-- [ ] AR-19 Fix mode (reproduce-first)
-- [ ] AR-20 Redirect + plan diff
-- [ ] AR-21 Forking (project/branch/conversation/run)
+- [x] AR-18 Build mode
+- [x] AR-19 Fix mode (reproduce-first)
+- [x] AR-20 Redirect + plan diff
+- [x] AR-21 Forking (project/branch/conversation/run)
 - [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
 - [ ] WEB-13 Releases + evidence viewer
 - [ ] OPS-12 Security suites (start; complete M5)

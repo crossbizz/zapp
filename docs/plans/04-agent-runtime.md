@@ -303,34 +303,34 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 **Files:** Modify: `src/workflows/run.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §11.3): lightweight plan (1 phase, ≤ 5 tasks) auto-approved under a config diff-size/risk threshold, else approval gate; AC mapping required (every task → ≥1 AC); per-task commits; project-required checks (VF gate set for support level) before `passed`.
-- [ ] Commit: `feat(orchestrator): build mode with lightweight planning`
+- [x] Binding behavior (PRD §11.3): lightweight plan (1 phase, ≤ 5 tasks) auto-approved under a config diff-size/risk threshold, else approval gate; AC mapping required (every task → ≥1 AC); per-task commits; project-required checks (VF gate set for support level) before `passed`.
+- [x] Commit: `feat(orchestrator): build mode with lightweight planning`
 
 ### Task AR-19 [M3]: Fix mode
 
 **Files:** Create: `src/workflows/fix.ts`, `test/integration/fix.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §11.4, §10.3): input = error report/failed check/user bug + captured evidence (console/network from preview proxy, Grafana error link — Faro event / Loki query); steps: restore relevant commit in isolated workspace → reproduce activity (must produce failing check or documented non-repro) → regression test written **before** patch when feasible (policy flag when skipped, with reason) → minimal patch (diff-size guard vs anti-slop policy) → targeted checks → full required gates → verify original symptom absent (re-run reproduction) — each step an event.
-- [ ] Integration test: seeded template app with planted bug + failing repro script → fix run produces regression test file + patch commit + green verification; unrelated-file-churn guard triggers on an oversized diff fixture.
-- [ ] Commit: `feat(orchestrator): fix mode with reproduce-first + regression-test policy`
+- [x] Binding behavior (PRD §11.4, §10.3): input = error report/failed check/user bug + captured evidence (console/network from preview proxy, Grafana error link — Faro event / Loki query); steps: restore relevant commit in isolated workspace → reproduce activity (must produce failing check or documented non-repro) → regression test written **before** patch when feasible (policy flag when skipped, with reason) → minimal patch (diff-size guard vs anti-slop policy) → targeted checks → full required gates → verify original symptom absent (re-run reproduction) — each step an event.
+- [x] Integration test: seeded template app with planted bug + failing repro script → fix run produces regression test file + patch commit + green verification; unrelated-file-churn guard triggers on an oversized diff fixture.
+- [x] Commit: `feat(orchestrator): fix mode with reproduce-first + regression-test policy`
 
 ### Task AR-20 [M3]: Redirect + plan change
 
 **Files:** Create: `src/workflows/redirect.ts` logic in run/autonomous workflows, `packages/planning-engine/src/diff.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §13.4): redirect signal → pause affected tasks (dependency-closure computation) → planner produces plan diff (`PlanDiff = { addedTasks, removedTaskIds, modifiedTasks, supersededTaskIds, impact: { scope, costDelta, archChange, dataChange } }`) → material change (any impact flag) → approval gate; else auto-apply → superseded tasks marked (state `superseded`, never deleted) → resume from durable checkpoint; completed work re-validated by verifier only where dependency-affected.
-- [ ] Failing tests: mid-phase redirect adding a feature yields diff with approval; trivial copy-change redirect auto-applies; superseded tasks retain artifacts.
-- [ ] Commit: `feat(orchestrator): redirect with plan diff + supersede semantics`
+- [x] Binding behavior (PRD §13.4): redirect signal → pause affected tasks (dependency-closure computation) → planner produces plan diff (`PlanDiff = { addedTasks, removedTaskIds, modifiedTasks, supersededTaskIds, impact: { scope, costDelta, archChange, dataChange } }`) → material change (any impact flag) → approval gate; else auto-apply → superseded tasks marked (state `superseded`, never deleted) → resume from durable checkpoint; completed work re-validated by verifier only where dependency-affected.
+- [x] Failing tests: mid-phase redirect adding a feature yields diff with approval; trivial copy-change redirect auto-applies; superseded tasks retain artifacts.
+- [x] Commit: `feat(orchestrator): redirect with plan diff + supersede semantics`
 
 ### Task AR-21 [M3]: Forking (project, branch, conversation, run checkpoint)
 
 **Files:** Create: `services/control-api/src/routes/forks.ts`, `src/activities/fork.ts`, `test/fork.test.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §28): fork targets: project (new project + repo copy via git-service), branch (new branch from sha), conversation (new run seeded with compacted context artifact linking source — AR-7 compaction), agent run from checkpoint (new run + workspace restored at checkpoint ref, WS-7), release into repair branch (delegates to DEP-12). Invariants as tests: forked entity gets new identity; source artifacts immutable (write attempts rejected); compacted context links back to source run; **secrets never copied across organizations** (cross-org fork carries secret *names* as setup checklist only); deployment configuration copied only with explicit `copyDeploymentConfig: true`; usage/billing attributed to destination org (ledger rows assert destination `organization_id`).
-- [ ] Commit: `feat: fork semantics for projects, branches, conversations, and runs`
+- [x] Binding behavior (PRD §28): fork targets: project (new project + repo copy via git-service), branch (new branch from sha), conversation (new run seeded with compacted context artifact linking source — AR-7 compaction), agent run from checkpoint (new run + workspace restored at checkpoint ref, WS-7), release into repair branch (delegates to DEP-12). Invariants as tests: forked entity gets new identity; source artifacts immutable (write attempts rejected); compacted context links back to source run; **secrets never copied across organizations** (cross-org fork carries secret *names* as setup checklist only); deployment configuration copied only with explicit `copyDeploymentConfig: true`; usage/billing attributed to destination org (ledger rows assert destination `organization_id`).
+- [x] Commit: `feat: fork semantics for projects, branches, conversations, and runs`
 
 ---
 
@@ -411,3 +411,8 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-09 AR-10-FIX-2 done — Made CP-13 enforce stable acknowledgement deadlines and atomically close run status, event, audit, notification, and operation replay; control-api passed 485/485 unit plus 232 passed/25 visible integration skips, and final review passed in round 2.
 - 2026-08-10 AR-16 done — Added the shared strict PRD specification schema, consequential max-three-question interview state machine with explicit delegated assumptions, generated-SDK CP-10 create/approval integration, and transactional If-Match content fencing; the single capped review found three Important wire-compatibility, idempotency-key, and concurrent-approval gaps and all were fixed. Package scaffolding, CP-10 schema replacement, generated SDK artifacts, and approval repository/test wiring extended the terse create-only file list with no interface deviation; the clean monorepo gate reached 87/90 before three unrelated load-sensitive tests failed, and all three passed immediately in focused isolation.
 - 2026-08-10 AR-17 done — Added production-routed autonomous interview/spec/plan approvals, phase-scoped AR-12 execution, bounded credits and repair, verified task transitions, lifecycle controls, durable continuation checkpoints, and scope-validated final evidence; the single capped review findings were resolved in one remediation pass, and production registration required the documented file-list joins with no interface deviation.
+- 2026-08-10 AR-18 done — Added the production-routed lightweight Build workflow with code-owned policy assessment, exact approval gating, AC-mapped per-task commits, independent VF approval, and provenance-protected continuations; production routing and existing mode/worker tests were required file-list joins, and the single capped review's two P1 findings were resolved in one remediation pass.
+- 2026-08-10 AR-19 done — Added the public API-routed reproduce-first Fix workflow with captured preview/Grafana evidence, regression-before-patch policy, immutable candidate diff guard, targeted/full verification, final symptom proof, and checkpointed control handling; the strict generated SDK and evidence-aware browser compatibility work required API, contract, generated-client, worker-routing, and web files beyond the terse create-only list, generic composers no longer expose Fix until they can supply immutable evidence, and the single capped review's P1/P2 findings were resolved in one remediation pass.
+- 2026-08-10 AR-19 CI remediation — Authoritative Linux first exhausted the 30-second whole-fixture wrapper, then the widened wrapper exposed a truthful 24.16-second post-signal cancellation failure caused by Temporal throttling a 30-second activity heartbeat; Fix mutation activities now use the proven 1.5-second control heartbeat while waiting for cancellation completion, the binding post-signal assertion remains strictly below five seconds, and the provider acceptance was not repeated.
+- 2026-08-11 AR-20 done — Added strict structurally classified plan diffs, dependency-closure pause/resume, exact material approval, supersede retention, affected-work revalidation, durable checkpoints, and late-boundary routing in Build and Autonomous; the single capped review's three P1 findings were resolved in one remediation pass, and required export, worker, and mode-test joins extended the terse file list without interface deviation.
+- 2026-08-11 AR-21 done — Added the public fork API and generated SDK plus destination-scoped, step-idempotent project, branch, conversation, checkpoint, and DEP-12 release boundaries; the single capped review's three Important identity, replay, and deployment-config findings were resolved in one remediation pass, and API registration, exports, OpenAPI inventory, harness, and generated artifacts were required file-list joins without interface deviation.

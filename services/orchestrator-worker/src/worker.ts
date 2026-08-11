@@ -21,6 +21,12 @@ import type { TaskWorkflowActivities } from './activities/merge.js';
 import type { RepairActivities } from './activities/repair.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
+  fixWorkflow,
+  FixWorkflowInputSchema,
+  type FixModeActivities,
+  type FixVerificationActivities,
+} from './workflows/fix.js';
+import {
   autonomousPlanApprovalSignal,
   autonomousSpecificationApprovalSignal,
   autonomousWorkflow,
@@ -29,6 +35,7 @@ import {
 } from './workflows/autonomous.js';
 import {
   budgetApprovalResolvedSignal,
+  buildWorkflow,
   cancelRunSignal,
   messageRunSignal,
   pauseRunSignal,
@@ -36,7 +43,9 @@ import {
   resumeRunSignal,
   runWorkflow,
   RunWorkflowInputSchema,
+  type BuildModeActivities,
 } from './workflows/run.js';
+import type { RedirectActivities } from './workflows/redirect.js';
 
 export type RunActivities =
   & EventActivities
@@ -46,11 +55,15 @@ export type RunActivities =
 export type ProductionRunActivities =
   & RunActivities
   & TaskWorkflowActivities
-  & AutonomousActivities;
+  & AutonomousActivities
+  & RedirectActivities
+  & BuildModeActivities
+  & FixModeActivities;
 export type ProductionVerificationActivities =
   & CapabilityScanActivities
   & VerifyPhaseActivities
-  & RepairActivities;
+  & RepairActivities
+  & FixVerificationActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -203,9 +216,23 @@ export interface TemporalOrchestrator {
 function createTemporalOrchestratorForQueue(
   client: Pick<Client, 'workflow'>,
   taskQueue: string,
+  useDedicatedBuildWorkflow: boolean,
 ): TemporalOrchestrator {
   return {
     async startRun(inputValue) {
+      const requestedMode = z
+        .object({ mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']) })
+        .passthrough()
+        .parse(inputValue).mode;
+      if (requestedMode === 'fix' && useDedicatedBuildWorkflow) {
+        const input = FixWorkflowInputSchema.parse(inputValue);
+        await client.workflow.start(fixWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
+        });
+        return;
+      }
       const input = RunWorkflowInputSchema.parse(inputValue);
       if (input.mode === 'autonomous') {
         const autonomousInput = AutonomousWorkflowInputSchema.parse({
@@ -222,6 +249,12 @@ function createTemporalOrchestratorForQueue(
           taskQueue,
           workflowId: input.workflowId,
           args: [autonomousInput],
+        });
+      } else if (input.mode === 'build' && useDedicatedBuildWorkflow) {
+        await client.workflow.start(buildWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
         });
       } else {
         await client.workflow.start(runWorkflow, {
@@ -308,7 +341,7 @@ function createTemporalOrchestratorForQueue(
 export function createTemporalOrchestrator(options: {
   readonly client: Pick<Client, 'workflow'>;
 }): TemporalOrchestrator {
-  return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns);
+  return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns, true);
 }
 
 export function createTestTemporalOrchestrator(options: {
@@ -318,5 +351,5 @@ export function createTestTemporalOrchestrator(options: {
   if (TaskQueueSchema.safeParse(options.taskQueue).success) {
     throw new TypeError('A test Temporal orchestrator must not target a production queue');
   }
-  return createTemporalOrchestratorForQueue(options.client, options.taskQueue);
+  return createTemporalOrchestratorForQueue(options.client, options.taskQueue, false);
 }

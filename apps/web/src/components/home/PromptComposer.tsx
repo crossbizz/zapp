@@ -16,7 +16,7 @@ import { createControlPlaneClient, type CreateRunInput } from '../../lib/api';
 import { rememberFirstPrompt } from '../../lib/prompt-handoff';
 import styles from './home.module.css';
 
-type RunMode = CreateRunInput['mode'];
+type RunMode = Exclude<CreateRunInput['mode'], 'fix'>;
 type ComposerMode = 'auto' | RunMode;
 
 interface ModeOption {
@@ -34,7 +34,6 @@ const MODE_OPTIONS = [
     value: 'prototype',
   },
   { description: 'Build a production-oriented implementation.', label: 'Build', value: 'build' },
-  { description: 'Repair a specific problem.', label: 'Fix', value: 'fix' },
   {
     description: 'Run the full workflow with minimal intervention.',
     label: 'Autonomous',
@@ -466,9 +465,8 @@ export function PromptComposer({
             window.location.href = 'mailto:support@zapp.build?subject=Project%20creation%20help';
           }}
           onFixAutomatically={() => {
-            setMode('fix');
             setSubmitError(false);
-            textareaRef.current?.focus();
+            void startCreation(true);
           }}
           onInspectDetails={() => {
             setDetailsOpen((open) => !open);

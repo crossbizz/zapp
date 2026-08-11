@@ -1,5 +1,6 @@
 import {
   AppTypeSchema,
+  FixRequestSchema,
   MessageUserPayloadSchema,
   idSchema,
   ModelIdentifierSchema,
@@ -9,14 +10,12 @@ import { z } from 'zod';
 
 export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/);
 
-export const StartRunInputSchema = z
-  .object({
+const StartRunIdentityShape = {
     runId: idSchema('run'),
     workflowId: z.string().min(1).max(255),
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
     branchId: idSchema('br').nullable(),
-    mode: RunModeSchema,
     appType: AppTypeSchema,
     model: ModelIdentifierSchema.nullable(),
     prompt: z.string().min(1).max(20_000),
@@ -25,8 +24,16 @@ export const StartRunInputSchema = z
       .strict()
       .nullable(),
     operationKey: OperationKeySchema,
-  })
-  .strict();
+} as const;
+export const StartRunInputSchema = z.discriminatedUnion('mode', [
+  z.object({ ...StartRunIdentityShape, mode: z.literal('fix'), fixRequest: FixRequestSchema }).strict(),
+  z
+    .object({
+      ...StartRunIdentityShape,
+      mode: RunModeSchema.exclude(['fix']),
+    })
+    .strict(),
+]);
 export type StartRunInput = z.infer<typeof StartRunInputSchema>;
 
 const SignalIdentityShape = {

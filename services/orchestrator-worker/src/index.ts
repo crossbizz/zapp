@@ -14,6 +14,8 @@ export * from './session/transcript.js';
 export * from './runtime/capability-scan-worker.js';
 export * from './worker.js';
 export * from './workflows/capability-scan.js';
+export * from './workflows/fix.js';
 export type { AutonomousActivities } from './workflows/autonomous.js';
+export * from './workflows/redirect.js';
 export * from './workflows/run.js';
 export * from './workflows/task.js';
