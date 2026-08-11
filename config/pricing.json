@@ -45,5 +45,22 @@
       "cacheReadUsdPerMillion": "0.030000",
       "cacheWriteUsdPerMillion": "0.300000"
     }
+  },
+  "usageRates": {
+    "sandbox_cpu_seconds": {
+      "usdPerUnit": "0.002000"
+    },
+    "sandbox_mem_gib_seconds": {
+      "usdPerUnit": "0.000500"
+    },
+    "storage_gib_hours": {
+      "usdPerUnit": "0.000100"
+    },
+    "deploy_provider": {
+      "usdPerUnit": "0.001000"
+    },
+    "artifact_storage": {
+      "usdPerUnit": "0.000100"
+    }
   }
 }

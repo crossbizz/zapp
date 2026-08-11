@@ -33,6 +33,7 @@ import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
 import type { PricingConfig } from './usage/pricing.js';
 import type { ModelCompletionRepository } from './usage/model-completions.js';
+import { registerInternalUsageRoutes, type UsageService } from './usage/ledger.js';
 import {
   loadRateLimitSettings,
   trustProxyOption,
@@ -87,9 +88,7 @@ import {
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
-import {
-  registerLocalAgentRoutes,
-} from './routes/local-agent.js';
+import { registerLocalAgentRoutes } from './routes/local-agent.js';
 import type {
   LocalAgentCompletionGateway,
   LocalAgentSessionRepository,
@@ -278,6 +277,8 @@ export interface AppDeps {
   /** WS-12 durable share/session and authenticated preview data plane. */
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   readonly modelCompletions?: ModelCompletionRepository;
+  /** OPS-1B's append-only non-model usage ingestion boundary. */
+  readonly usage?: UsageService;
   /** MAC-6's public, user-authenticated desktop local-agent accounting scope. */
   readonly localAgent?: LocalAgentDeps;
   readonly github?: GitHubInstallDependencies;
@@ -384,17 +385,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setSerializerCompiler(serializerCompiler);
   const parseJson = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
-  app.addContentTypeParser(
-    'application/json',
-    { parseAs: 'buffer' },
-    (request, body, done) => {
-      if (request.url.split('?')[0] === '/v1/webhooks/github') {
-        done(null, body);
-        return;
-      }
-      void parseJson(request, body.toString('utf8'), done);
-    },
-  );
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
+    if (request.url.split('?')[0] === '/v1/webhooks/github') {
+      done(null, body);
+      return;
+    }
+    void parseJson(request, body.toString('utf8'), done);
+  });
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
@@ -425,6 +422,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   }
   if (deps.modelCompletions !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: model completion routes require service authentication');
+  }
+  if (deps.usage !== undefined && deps.secrets === undefined) {
+    throw new Error('refusing to start: usage routes require service authentication');
   }
 
   if (deps.tenant !== undefined && deps.orgs === undefined) {
@@ -623,6 +623,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
             if (deps.modelCompletions !== undefined) {
               registerInternalModelCompletionRoutes(app, deps.modelCompletions);
+            }
+            if (deps.usage !== undefined) {
+              registerInternalUsageRoutes(app, deps.usage);
             }
             // One vault for both surfaces, so the key that encrypted a value on
             // the way in is by construction the key that unwraps it on the way

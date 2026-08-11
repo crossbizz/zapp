@@ -1,8 +1,5 @@
 import type { ServiceName } from '@zapp/config';
-import {
-  capabilityScanArtifactStorageRef,
-  type CapabilityScanPort,
-} from '@zapp/project-adapters';
+import { capabilityScanArtifactStorageRef, type CapabilityScanPort } from '@zapp/project-adapters';
 
 import type { AuthIdentity } from '../../src/auth/port.js';
 import type { UserProfile, UserStore } from '../../src/auth/users.js';
@@ -30,6 +27,7 @@ import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
 import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
+import type { UsageService } from '../../src/usage/ledger.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
@@ -260,6 +258,7 @@ export interface HarnessOptions {
   /** `null` exercises a tenant surface that fails closed with no pricing config. */
   readonly pricing?: PricingConfig | null;
   readonly modelCompletions?: ModelCompletionRepository;
+  readonly usage?: UsageService;
   readonly localAgent?: LocalAgentDeps;
   readonly attachmentStorage?: AttachmentStoragePort;
   readonly github?: GitHubInstallDependencies;
@@ -303,9 +302,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
           tenant: {
             tenantDb: options.tenantDb,
             runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
-            ...(options.pricing === null
-              ? {}
-              : { pricing: options.pricing ?? TEST_PRICING }),
+            ...(options.pricing === null ? {} : { pricing: options.pricing ?? TEST_PRICING }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.attachmentStorage === undefined
@@ -335,6 +332,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     ...(options.modelCompletions === undefined
       ? {}
       : { modelCompletions: options.modelCompletions }),
+    ...(options.usage === undefined ? {} : { usage: options.usage }),
     ...(options.localAgent === undefined ? {} : { localAgent: options.localAgent }),
     ...(options.github === undefined ? {} : { github: options.github }),
     ...(options.githubWebhook === undefined ? {} : { githubWebhook: options.githubWebhook }),

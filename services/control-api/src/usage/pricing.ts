@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
+import { USAGE_CATEGORIES } from '@zapp/db';
 import { z } from 'zod';
 
 const DecimalSchema = z
@@ -16,15 +17,23 @@ const ModelRateSchema = z
   })
   .strict();
 
+const UnitRateSchema = z.object({ usdPerUnit: DecimalSchema }).strict();
+
+const NonModelUsageCategorySchema = z.enum([
+  'sandbox_cpu_seconds',
+  'sandbox_mem_gib_seconds',
+  'storage_gib_hours',
+  'deploy_provider',
+  'artifact_storage',
+]);
+
 export const PricingConfigSchema = z
   .object({
     version: z.string().trim().min(1),
     defaultRunCreditCeiling: DecimalSchema,
     creditsPerUsd: DecimalSchema,
-    models: z.record(
-      z.string().regex(/^[a-z0-9-]+\/[a-z0-9][a-z0-9.-]*$/u),
-      ModelRateSchema,
-    ),
+    models: z.record(z.string().regex(/^[a-z0-9-]+\/[a-z0-9][a-z0-9.-]*$/u), ModelRateSchema),
+    usageRates: z.record(NonModelUsageCategorySchema, UnitRateSchema).optional(),
   })
   .strict()
   .refine((value) => Object.keys(value.models).length > 0, {
@@ -81,6 +90,24 @@ export interface PricedTokenUsage {
   readonly totalCredits: string;
 }
 
+const UsageEstimateInputSchema = z
+  .object({
+    category: z.enum(USAGE_CATEGORIES),
+    quantity: z.string().regex(/^\d+(?:\.\d{1,6})?$/u),
+    unit: z.string().trim().min(1),
+    provider: z.string().trim().min(1),
+    model: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+export type UsageEstimateInput = z.infer<typeof UsageEstimateInputSchema>;
+
+export interface UsageEstimate {
+  readonly quantity: string;
+  readonly costUsd: string;
+  readonly credits: string;
+}
+
 const USD_SCALE = 6;
 const CREDIT_SCALE = 4;
 const PER_MILLION = 1_000_000n;
@@ -96,8 +123,7 @@ export async function loadPricingFile(url: URL): Promise<PricingConfig> {
 export function priceTokenUsage(config: PricingConfig, input: TokenUsage): PricedTokenUsage {
   const usage = TokenUsageSchema.parse(input);
   const rate = rateFor(config, usage.provider, usage.model);
-  const uncached =
-    usage.inputTokens - usage.cacheReadInputTokens - usage.cacheWriteInputTokens;
+  const uncached = usage.inputTokens - usage.cacheReadInputTokens - usage.cacheWriteInputTokens;
   const [pricedInput, output, cacheRead, cacheWrite] = priceQuantities(config, [
     { quantity: uncached, usdPerMillion: rate.inputUsdPerMillion },
     { quantity: usage.outputTokens, usdPerMillion: rate.outputUsdPerMillion },
@@ -138,9 +164,7 @@ export function worstCaseReservation(
       rate.cacheReadUsdPerMillion,
       rate.cacheWriteUsdPerMillion,
     ].reduce((highest, candidate) =>
-      decimalUnits(candidate, USD_SCALE) > decimalUnits(highest, USD_SCALE)
-        ? candidate
-        : highest,
+      decimalUnits(candidate, USD_SCALE) > decimalUnits(highest, USD_SCALE) ? candidate : highest,
     );
     for (const part of priceQuantities(config, [
       { quantity: attempt.maxInputTokens, usdPerMillion: worstInputRate },
@@ -150,6 +174,48 @@ export function worstCaseReservation(
     }
   }
   return fixed(credits, CREDIT_SCALE);
+}
+
+export function estimateUsage(config: PricingConfig, rawInput: UsageEstimateInput): UsageEstimate {
+  const input = UsageEstimateInputSchema.parse(rawInput);
+  const quantityUnits = signedDecimalUnits(input.quantity, 6);
+  let costMicroUsd: bigint;
+  if (
+    input.category === 'model_input_tokens' ||
+    input.category === 'model_output_tokens' ||
+    input.category === 'model_cached_tokens'
+  ) {
+    if (input.model === undefined) throw new Error(`model is required for ${input.category}`);
+    const rate = rateFor(config, input.provider, input.model);
+    const usdPerMillion =
+      input.category === 'model_input_tokens'
+        ? rate.inputUsdPerMillion
+        : input.category === 'model_output_tokens'
+          ? rate.outputUsdPerMillion
+          : input.unit === 'cache_write_input_tokens'
+            ? rate.cacheWriteUsdPerMillion
+            : rate.cacheReadUsdPerMillion;
+    costMicroUsd = divideRounded(
+      quantityUnits * decimalUnits(usdPerMillion, USD_SCALE),
+      10n ** 12n,
+    );
+  } else {
+    const rate = config.usageRates?.[input.category];
+    if (rate === undefined) throw new Error(`pricing rate missing for ${input.category}`);
+    costMicroUsd = divideRounded(
+      quantityUnits * decimalUnits(rate.usdPerUnit, USD_SCALE),
+      10n ** 6n,
+    );
+  }
+  const creditUnits = divideRounded(
+    costMicroUsd * decimalUnits(config.creditsPerUsd, CREDIT_SCALE),
+    10n ** BigInt(USD_SCALE),
+  );
+  return {
+    quantity: input.quantity,
+    costUsd: fixed(costMicroUsd, USD_SCALE),
+    credits: fixed(creditUnits, CREDIT_SCALE),
+  };
 }
 
 function rateFor(config: PricingConfig, provider: string, model: string) {
@@ -189,6 +255,14 @@ function decimalUnits(value: string, scale: number): bigint {
   const [whole = '0', fraction = ''] = value.split('.');
   if (fraction.length > scale) throw new Error(`decimal has more than ${String(scale)} places`);
   return BigInt(`${whole}${fraction.padEnd(scale, '0')}`);
+}
+
+function signedDecimalUnits(value: string, scale: number): bigint {
+  const parsed = z
+    .string()
+    .regex(/^\d+(?:\.\d+)?$/u)
+    .parse(value);
+  return decimalUnits(parsed, scale);
 }
 
 function divideRounded(numerator: bigint, denominator: bigint): bigint {

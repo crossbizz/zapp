@@ -225,7 +225,19 @@ const production = vi.hoisted(() => {
   };
 });
 
-vi.mock('@zapp/db', () => ({ createDb: production.createDb }));
+vi.mock('@zapp/db', () => ({
+  createDb: production.createDb,
+  USAGE_CATEGORIES: [
+    'model_input_tokens',
+    'model_output_tokens',
+    'model_cached_tokens',
+    'sandbox_cpu_seconds',
+    'sandbox_mem_gib_seconds',
+    'storage_gib_hours',
+    'deploy_provider',
+    'artifact_storage',
+  ],
+}));
 vi.mock('@temporalio/client', () => ({
   Client: production.TemporalClient,
   Connection: { connect: production.connectTemporal },

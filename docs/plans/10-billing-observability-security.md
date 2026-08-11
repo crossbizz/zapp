@@ -41,8 +41,8 @@ Master plan §Global Constraints, plus:
 - Internal route `POST /internal/usage` (service token) for non-model emitters extends OPS-1A; model-gateway uses only ADR-0025's claim/commit/get boundary.
 **Effort:** L
 
-- [ ] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
-- [ ] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
+- [x] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
+- [x] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
 
 ### Task OPS-2 [M2]: Metering collectors completion
 
@@ -201,6 +201,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-1B done — Added atomic append-only usage/outbox persistence, allowlisted internal ingestion, exact local estimates, outage-draining Flexprice delivery, and idempotent feature/meter/plan/entitlement bootstrap; correction linkage stays in immutable outbox/Flexprice metadata because the locked PRD ledger schema has no correction column, CPU/memory rates preserve WS-8 fixtures while storage/deploy/artifact rates remain deploy-time GTM placeholders, and the OPS-3-owned plans file plus live Flexprice credentials were unavailable for the final real-provider gate (skipped, not passed); no implementation blockers or deviations.
 - 2026-08-11 OPS-13-start done — Added 25 provenance-tagged injection regressions across README, code-comment, tool-output, package-description, and error surfaces; the five-rule Semgrep pack blocks empty catches, process/Modal/model SDK boundary violations, and client secret env access, while OSV now blocks unexpected severity >= 9 findings and fails stale exceptions. Three current critical groups (fast-xml-parser via AWS SDK, test-only happy-dom, and vendored desktop build-only tar) are explicit M3 baselines whose dependency remediation remains under the M5 completion item; one capped review closed dynamic-import coverage and exact-provenance evaluation before exit.
 - 2026-08-11 OPS-12 CI parser repair done — The second clean Security run executed all 54 tenant cases but exposed ANSI-colored Vitest summary output; the wrapper now removes terminal control sequences with Node's built-in utility before enforcing passed/skipped/total counts, with a GitHub-colored regression and a fresh-DB `FORCE_COLOR=1` 4/4 wrapper proof.
 - 2026-08-11 OPS-12 CI repair done — The first clean Security run exposed a stale-`dist` dependency on `@zapp/workspace-runtime`; the permanent job now builds the four exercised workspace roots and their Turbo dependencies before typecheck/runtime, with a workflow regression assertion, forced 17/17 dependency build, 54/54 isolated tenant gate, and 12/12 permanent suite green.

@@ -1,4 +1,3 @@
-import { idSchema } from '@zapp/contracts';
 import { usageOutbox, type Database } from '@zapp/db';
 import {
   DeleteMessageCommand,
@@ -11,28 +10,14 @@ import { and, asc, eq, lte } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { UsageQueueEnv } from '../env.js';
+import { FlexpriceUsageEventSchema, type FlexpriceIngestPort } from './flexprice.js';
 
-export const FlexpriceUsageEventSchema = z
-  .object({
-    event_name: z.string().trim().min(1),
-    external_customer_id: idSchema('org'),
-    event_id: z.string().trim().min(1),
-    timestamp: z.string().datetime({ offset: true }),
-    properties: z
-      .object({
-        project_id: idSchema('proj'),
-        run_id: idSchema('run'),
-        task_id: idSchema('task').nullable(),
-        quantity: z.number().finite().nonnegative(),
-        unit: z.string().min(1),
-        provider: z.string().min(1),
-        model: z.string().min(1),
-      })
-      .strict(),
-  })
-  .strict();
-
-export type FlexpriceUsageEvent = z.infer<typeof FlexpriceUsageEventSchema>;
+export {
+  createFlexpriceIngestClient,
+  FlexpriceUsageEventSchema,
+  type FlexpriceIngestPort,
+  type FlexpriceUsageEvent,
+} from './flexprice.js';
 
 const UsageQueueMessageSchema = z
   .object({
@@ -90,9 +75,7 @@ export function createSqsUsageQueue(config: UsageQueueEnv): UsageQueuePort {
     });
   return {
     async send(body) {
-      await client.send(
-        new SendMessageCommand({ QueueUrl: await queueUrl, MessageBody: body }),
-      );
+      await client.send(new SendMessageCommand({ QueueUrl: await queueUrl, MessageBody: body }));
     },
     async receive(input) {
       const response = await client.send(
@@ -138,9 +121,7 @@ export function createUsageOutboxPublisher(options: UsageOutboxPublisherOptions)
         const rows = await tx
           .select()
           .from(usageOutbox)
-          .where(
-            and(eq(usageOutbox.status, 'pending'), lte(usageOutbox.nextAttemptAt, instant)),
-          )
+          .where(and(eq(usageOutbox.status, 'pending'), lte(usageOutbox.nextAttemptAt, instant)))
           .orderBy(asc(usageOutbox.createdAt), asc(usageOutbox.id))
           .limit(limit)
           .for('update', { skipLocked: true });
@@ -247,35 +228,6 @@ export function createUsageOutboxPublisherLifecycle(options: {
         interval = undefined;
       }
       await active;
-    },
-  };
-}
-
-export interface FlexpriceIngestPort {
-  ingest(event: FlexpriceUsageEvent): Promise<void>;
-}
-
-export function createFlexpriceIngestClient(options: {
-  readonly baseUrl: string;
-  readonly apiKey: string;
-  readonly fetch?: typeof globalThis.fetch;
-}): FlexpriceIngestPort {
-  const request = options.fetch ?? globalThis.fetch;
-  const endpoint = new URL('events', `${options.baseUrl.replace(/\/+$/u, '')}/`);
-  return {
-    async ingest(rawEvent) {
-      const event = FlexpriceUsageEventSchema.parse(rawEvent);
-      const response = await request(endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': options.apiKey,
-        },
-        body: JSON.stringify(event),
-      });
-      if (response.status !== 202) {
-        throw new Error(`Flexprice event ingestion failed with status ${String(response.status)}`);
-      }
     },
   };
 }

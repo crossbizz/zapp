@@ -36,6 +36,7 @@ import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
 import type { PricingConfig } from './usage/pricing.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
+import { createDbUsageStore, createUsageService } from './usage/ledger.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
@@ -256,6 +257,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       database,
       mirror: createRedisCreditMirror(redis),
     }),
+    usage: createUsageService({ store: createDbUsageStore(database) }),
     localAgent: {
       sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
       gateway: createModelGatewayLocalAgentClient({

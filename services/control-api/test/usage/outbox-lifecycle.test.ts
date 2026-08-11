@@ -8,7 +8,10 @@ import {
   type FlexpriceUsageEvent,
 } from '../../src/usage/outbox.js';
 
-function deferred(): { readonly promise: Promise<number>; readonly resolve: (value: number) => void } {
+function deferred(): {
+  readonly promise: Promise<number>;
+  readonly resolve: (value: number) => void;
+} {
   let resolve!: (value: number) => void;
   const promise = new Promise<number>((accept) => {
     resolve = accept;
@@ -29,7 +32,6 @@ describe('OPS-1A production usage outbox lifecycle', () => {
       quantity: 1000,
       unit: 'input_tokens',
       provider: 'anthropic',
-      model: 'claude-sonnet-5',
     },
   } satisfies FlexpriceUsageEvent;
 
@@ -93,9 +95,7 @@ describe('OPS-1A production usage outbox lifecycle', () => {
       publisher: {
         publishOnce() {
           calls += 1;
-          return calls === 2
-            ? Promise.reject(new Error('queue unavailable'))
-            : Promise.resolve(0);
+          return calls === 2 ? Promise.reject(new Error('queue unavailable')) : Promise.resolve(0);
         },
       },
       batchSize: 10,
@@ -130,11 +130,7 @@ describe('OPS-1A production usage outbox lifecycle', () => {
       apiKey,
       fetch: (input, init) => {
         const url =
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
         requests.push({ url, ...(init === undefined ? {} : { init }) });
         return Promise.resolve(new Response(null, { status: 202 }));
       },
@@ -175,13 +171,16 @@ describe('OPS-1A production usage outbox lifecycle', () => {
     const deleted: string[] = [];
     const failures: Error[] = [];
     const scheduled: (() => void)[] = [];
+    let flexpriceAvailable = false;
     const lifecycle = createUsageEventConsumerLifecycle({
       queue: {
         receive: () =>
-          Promise.resolve([
-            { body: goodBody, receiptHandle: 'receipt-good' },
-            { body: failedBody, receiptHandle: 'receipt-failed' },
-          ]),
+          Promise.resolve(
+            [
+              { body: goodBody, receiptHandle: 'receipt-good' },
+              { body: failedBody, receiptHandle: 'receipt-failed' },
+            ].filter((message) => !deleted.includes(message.receiptHandle)),
+          ),
         delete: (receiptHandle) => {
           deleted.push(receiptHandle);
           return Promise.resolve();
@@ -189,7 +188,7 @@ describe('OPS-1A production usage outbox lifecycle', () => {
       },
       consumer: createUsageEventConsumer({
         ingest: (received) =>
-          received.event_id === failedEvent.event_id
+          received.event_id === failedEvent.event_id && !flexpriceAvailable
             ? Promise.reject(new Error('Flexprice unavailable'))
             : Promise.resolve(),
       }),
@@ -215,6 +214,10 @@ describe('OPS-1A production usage outbox lifecycle', () => {
     expect(deleted).toEqual(['receipt-good']);
     expect(failures.map((failure) => failure.message)).toEqual(['Flexprice unavailable']);
     expect(scheduled).toHaveLength(1);
+    flexpriceAvailable = true;
+    scheduled[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deleted).toEqual(['receipt-good', 'receipt-failed']);
     await lifecycle.close();
   });
 });
