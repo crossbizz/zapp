@@ -60,8 +60,8 @@ jobs:
           printf 'DATABASE_URL=%s://%s:%s@localhost:5432/zapp\n'
           'postgresql' "$POSTGRES_USER" "$POSTGRES_PASSWORD" >> "$GITHUB_ENV"
 
-      - name: Build security-suite workspace dependency
-        run: pnpm --filter @zapp/workspace-runtime build
+      - name: Build permanent security suite dependencies
+        run: pnpm turbo run build --filter=@zapp/workspace-agent --filter=@zapp/sandbox-service --filter=@zapp/orchestrator-worker --filter=@zapp/control-api
 
       - name: Typecheck permanent security suite
         run: pnpm exec tsc --noEmit -p test/security/tsconfig.json
