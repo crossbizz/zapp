@@ -16,6 +16,56 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  security-suite:
+    name: permanent isolation, redaction, and sandbox boundary suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zapp
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zapp"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      TURBO_TELEMETRY_DISABLED: '1'
+      DO_NOT_TRACK: '1'
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure local PostgreSQL connection
+        run: >-
+          printf 'DATABASE_URL=%s://%s:%s@localhost:5432/zapp\n'
+          'postgresql' "$POSTGRES_USER" "$POSTGRES_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Typecheck permanent security suite
+        run: pnpm exec tsc --noEmit -p test/security/tsconfig.json
+
+      - name: Run permanent security suite
+        run: pnpm exec vitest run test/security --no-file-parallelism
+
   gitleaks:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
