@@ -169,6 +169,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] VF-11 Browser agent (exploratory)
 - [x] VF-12 Accessibility gate
 - [x] VF-13 Classified repair loop (hard budgets)
+- [x] VF-13-FIX-1 Bound the real-Git repair exhaustion integration timeout
 - [x] VF-14 Anti-slop detectors
 - [x] VF-15 Evidence manifest + report renderer
 - [x] VF-16 Dependency + migration gates

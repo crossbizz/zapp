@@ -462,7 +462,7 @@ describe('VF-13 classified repair loop', () => {
       'art_targeted_2_failed',
       'art_affected_2_failed',
     ]);
-  });
+  }, 15_000);
 
   it('retries an infrastructure failure without creating commits or consuming repair budget', async () => {
     const root = await createFixture({ contradictory: false });
