@@ -1,0 +1,78 @@
+import Stripe from 'stripe';
+{{#if isExpress}}
+import type { Request, Response, Router } from 'express';
+{{/if}}
+
+function environment(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
+  return value;
+}
+
+function stripeClient(): Stripe {
+  return new Stripe(environment('GENERATED_APP_STRIPE_RESTRICTED_KEY'));
+}
+
+function sameOriginReturnUrl(applicationUrl: string, returnPath: string): string {
+  const base = new URL(applicationUrl);
+  const resolved = new URL(returnPath, base);
+  if (resolved.origin !== base.origin) throw new Error('return URL must use the application origin');
+  return resolved.toString();
+}
+
+export async function createStripePortalSession(
+  stripe: Stripe,
+  input: { readonly customerId: string; readonly returnUrl: string },
+): Promise<{ readonly id: string; readonly url: string }> {
+  return await stripe.billingPortal.sessions.create({
+    customer: input.customerId,
+    return_url: input.returnUrl,
+  });
+}
+
+function returnPath(value: unknown): string {
+  if (typeof value !== 'object' || value === null) throw new Error('invalid portal request');
+  const candidate = (value as { readonly returnPath?: unknown }).returnPath;
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    throw new Error('invalid portal request');
+  }
+  return candidate;
+}
+
+{{#if isNext}}
+export function createStripePortalRouteHandler(input: {
+  readonly resolveAuthenticatedCustomerId: (request: Request) => Promise<string | undefined>;
+  readonly applicationUrl: string;
+}): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const customerId = await input.resolveAuthenticatedCustomerId(request);
+    if (customerId === undefined) return Response.json({ error: 'unauthorized' }, { status: 401 });
+    const session = await createStripePortalSession(stripeClient(), {
+      customerId,
+      returnUrl: sameOriginReturnUrl(input.applicationUrl, returnPath(await request.json())),
+    });
+    return Response.json({ id: session.id, url: session.url });
+  };
+}
+{{else}}
+export function registerStripePortalRoute(
+  router: Router,
+  input: {
+    readonly resolveAuthenticatedCustomerId: (request: Request) => Promise<string | undefined>;
+    readonly applicationUrl: string;
+  },
+): void {
+  router.post('/stripe/portal', async (request: Request, response: Response) => {
+    const customerId = await input.resolveAuthenticatedCustomerId(request);
+    if (customerId === undefined) {
+      response.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const session = await createStripePortalSession(stripeClient(), {
+      customerId,
+      returnUrl: sameOriginReturnUrl(input.applicationUrl, returnPath(request.body)),
+    });
+    response.status(201).json({ id: session.id, url: session.url });
+  });
+}
+{{/if}}

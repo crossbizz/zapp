@@ -1,0 +1,83 @@
+import Stripe from 'stripe';
+{{#if isExpress}}
+import { raw, type Request, type Response, type Router } from 'express';
+{{/if}}
+import {
+  createPostgresStripeSubscriptionStore,
+  StripeWebhookEventSchema,
+  syncStripeSubscriptionEvent,
+  type StripeSubscriptionStore,
+  type StripeWebhookEvent,
+} from '{{syncImport}}';
+
+interface StripeWebhookDependencies {
+  readonly stripe: {
+    readonly webhooks: {
+      constructEvent(body: string, signature: string, secret: string): unknown;
+    };
+  };
+  readonly webhookSecret: string;
+  readonly sync: (event: StripeWebhookEvent) => Promise<unknown>;
+}
+
+export async function handleStripeWebhook(
+  dependencies: StripeWebhookDependencies,
+  request: { readonly rawBody: string; readonly signature: string | undefined },
+): Promise<{ readonly status: number; readonly body: { readonly received?: true; readonly error?: string } }> {
+  if (request.signature === undefined || request.signature.length === 0) {
+    return { status: 400, body: { error: 'invalid_signature' } };
+  }
+  let event: StripeWebhookEvent;
+  try {
+    event = StripeWebhookEventSchema.parse(
+      dependencies.stripe.webhooks.constructEvent(
+        request.rawBody,
+        request.signature,
+        dependencies.webhookSecret,
+      ),
+    );
+  } catch {
+    return { status: 400, body: { error: 'invalid_signature' } };
+  }
+  await dependencies.sync(event);
+  return { status: 200, body: { received: true } };
+}
+
+function environment(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
+  return value;
+}
+
+function dependencies(): StripeWebhookDependencies {
+  const stripe = new Stripe(environment('GENERATED_APP_STRIPE_RESTRICTED_KEY'));
+  const store: StripeSubscriptionStore = createPostgresStripeSubscriptionStore(
+    environment('DATABASE_URL'),
+  );
+  return {
+    stripe,
+    webhookSecret: environment('GENERATED_APP_STRIPE_WEBHOOK_SECRET'),
+    sync: (event) => syncStripeSubscriptionEvent({ store }, event),
+  };
+}
+
+{{#if isNext}}
+export async function POST(request: Request): Promise<Response> {
+  const result = await handleStripeWebhook(dependencies(), {
+    rawBody: await request.text(),
+    signature: request.headers.get('stripe-signature') ?? undefined,
+  });
+  return Response.json(result.body, { status: result.status });
+}
+{{else}}
+export function registerStripeWebhookRoute(router: Router): void {
+  router.post('/stripe/webhook', raw({ type: 'application/json' }), async (request: Request, response: Response) => {
+    const body = Buffer.isBuffer(request.body) ? request.body.toString('utf8') : '';
+    const result = await handleStripeWebhook(dependencies(), {
+      rawBody: body,
+      signature: request.header('stripe-signature'),
+    });
+    response.status(result.status).json(result.body);
+  });
+}
+{{/if}}

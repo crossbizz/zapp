@@ -52,6 +52,10 @@ import {
   createNeonProjectManagementPort,
 } from './integrations/neon/connect.js';
 import { createNeonManagementClient, createNeonSqlFactory } from './integrations/neon/branches.js';
+import {
+  createGeneratedAppStripeIntegrationPort,
+  createStripeAccountClient,
+} from './integrations/stripe/connect.js';
 import type { IntegrationPort } from './routes/integrations.js';
 
 /**
@@ -162,11 +166,17 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       sql: createNeonSqlFactory(),
     }),
   });
+  const stripeIntegration = createGeneratedAppStripeIntegrationPort({
+    database,
+    masterKey: runtime.masterKey,
+    accounts: createStripeAccountClient(),
+  });
   const integrationPort: IntegrationPort = {
     connect: (request) => {
       if (request.provider === 'supabase') return supabaseIntegration.connect(request);
       if (request.provider === 'neon') return neonIntegration.connect(request);
-      if (request.provider === 'github' && githubIntegration !== undefined) {
+      if (request.provider === 'stripe') return stripeIntegration.connect(request);
+      if (githubIntegration !== undefined) {
         return githubIntegration.connect(request);
       }
       return Promise.reject(new Error('integration service unavailable'));

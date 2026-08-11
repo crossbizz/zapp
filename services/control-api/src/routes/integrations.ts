@@ -74,7 +74,7 @@ function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps
           organizationId: ctx.organizationId,
           action: 'integration.connected',
           target: { type: 'integration_connection', id: connection.id },
-          metadata: { provider: connection.provider, projectId: connection.projectId, operationKey },
+          metadata: { provider: connection.provider, projectId: connection.projectId, operationKey, ...(provider === 'stripe' ? { credentialScope: 'generated_app' } : {}) },
         });
       },
     });

@@ -1,0 +1,83 @@
+import {
+  createPostgresStripeSubscriptionStore,
+  type StripeSubscriptionState,
+  type StripeSubscriptionStore,
+} from '{{syncImport}}';
+
+export interface SubscriptionAccessRequest {
+  readonly stripeCustomerId: string;
+}
+
+export async function hasSubscriptionAccess(
+  store: StripeSubscriptionStore,
+  request: SubscriptionAccessRequest,
+  tier: string,
+  now = new Date(),
+): Promise<boolean> {
+  const subscription = await store.findSubscriptionByCustomer(request.stripeCustomerId);
+  if (subscription === undefined || subscription.tier !== tier) return false;
+  return (
+    (subscription.status === 'active' || subscription.status === 'trialing') &&
+    subscription.currentPeriodEnd > now
+  );
+}
+
+function environment(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
+  return value;
+}
+
+type CustomerResolver<TRequest> = (request: TRequest) => Promise<string | undefined>;
+
+{{#if isNext}}
+export function requireSubscription(
+  tier: string,
+  resolveCustomer: CustomerResolver<Request>,
+  handler: (request: Request, subscription: StripeSubscriptionState) => Promise<Response>,
+): (request: Request) => Promise<Response> {
+  const store = createPostgresStripeSubscriptionStore(environment('DATABASE_URL'));
+  return async (request) => {
+    const stripeCustomerId = await resolveCustomer(request);
+    if (stripeCustomerId === undefined) return Response.json({ error: 'unauthorized' }, { status: 401 });
+    const subscription = await store.findSubscriptionByCustomer(stripeCustomerId);
+    if (
+      subscription === undefined ||
+      subscription.tier !== tier ||
+      (subscription.status !== 'active' && subscription.status !== 'trialing') ||
+      subscription.currentPeriodEnd <= new Date()
+    ) return Response.json({ error: 'subscription_required' }, { status: 403 });
+    return await handler(request, subscription);
+  };
+}
+{{else}}
+interface ExpressRequest { stripeSubscription?: StripeSubscriptionState }
+interface ExpressResponse { status(code: number): ExpressResponse; json(body: unknown): void }
+type Next = () => void;
+
+export function requireSubscription(
+  tier: string,
+  resolveCustomer: CustomerResolver<ExpressRequest>,
+): (request: ExpressRequest, response: ExpressResponse, next: Next) => Promise<void> {
+  const store = createPostgresStripeSubscriptionStore(environment('DATABASE_URL'));
+  return async (request, response, next) => {
+    const stripeCustomerId = await resolveCustomer(request);
+    if (stripeCustomerId === undefined) {
+      response.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const subscription = await store.findSubscriptionByCustomer(stripeCustomerId);
+    if (
+      subscription === undefined ||
+      subscription.tier !== tier ||
+      (subscription.status !== 'active' && subscription.status !== 'trialing') ||
+      subscription.currentPeriodEnd <= new Date()
+    ) {
+      response.status(403).json({ error: 'subscription_required' });
+      return;
+    }
+    request.stripeSubscription = subscription;
+    next();
+  };
+}
+{{/if}}
