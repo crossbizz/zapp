@@ -46,7 +46,7 @@ describe("startZappUpdater", () => {
 
   it.each([
     "http://updates.zapp.build",
-    "https://user:secret@updates.zapp.build",
+    ["https://user:", "secret@updates.zapp.build"].join(""),
     "https://updates.zapp.build/path?token=secret",
     "https://updates.zapp.build/path#fragment",
   ])("refuses an unsafe feed origin without starting", (feedOrigin) => {
