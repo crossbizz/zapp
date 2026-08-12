@@ -245,8 +245,21 @@ be built:
 **Files:** Create `config/templates.json`; modify config schema/tests and required server loader.
 **Effort:** S. **[expand-at-execution]**
 
-- [ ] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
-- [ ] Commit: `feat(templates): approved source registry`
+- [x] RED: add config-schema tests that reject invalid or unapproved entries, duplicate slugs,
+  mutable source refs, unsafe demo URLs, and incomplete presentation metadata; run them and
+  confirm they fail because the registry contract does not exist.
+- [x] GREEN: implement the strict checked-in registry schema with approved internal repository
+  refs pinned to exact commit SHAs; run the config tests and confirm they pass.
+- [x] RED: add server-loader tests for approved slug lookup and a public projection that cannot
+  serialize `repoRef`; run them and confirm they fail because the loader does not exist.
+- [x] GREEN: implement the git-service registry loader and checked-in approved entries; run the
+  loader tests and confirm they pass.
+- [x] VERIFY: run config and git-service tests plus lint, typecheck, and build for both touched
+  packages; perform at most two local review rounds before the single final acceptance gate.
+- [x] SHIP: update the authoritative tracker and this execution log in the task commit, push,
+  and require exact-SHA GitHub Actions success before reporting completion.
+- [x] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
+- [x] Commit: `feat(templates): approved source registry`
 
 ### Task GIT-5 [M2]: Commit comparison + approved template seeding
 
@@ -309,3 +322,4 @@ be built:
 - 2026-08-11 INT-7 done — Neon API connect now vaults explicit-database app/migration URLs for default and dedicated preview branches, VF-16 validates on TTL verification branches with response-loss reconciliation and cleanup, schema SQL and real DDL denial passed, and one capped review fixed concurrent password persistence, post-create compensation, explicit database targeting, and cursor pagination; no blockers or plan deviations, while live Neon skipped because `NEON_API_KEY` and `NEON_PROJECT_ID` are unset.
 - 2026-08-11 INT-8 done — Generated-app Stripe credentials now use an audited vault scope isolated from platform billing, and the installer emits typechecked Next or Express Checkout, portal, signed webhook, atomic stale-safe sync, access-control, and migration artifacts; one capped review fixed authenticated portal ownership, current Stripe item periods, stale-event fencing, migration installation, and explicit Express/Fastify handling, while the first pre-push run exposed and bounded the compiler-heavy test's default timeout; no blockers or plan deviations, and live Stripe skipped because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
 - 2026-08-12 INT-9 done — The generated Next fixture now exercises checkout completion, signed subscription sync, real isolated Postgres state, admission, cancellation, and revocation through the discoverable integration gate; one capped review exposed and drove the provider/DB/gate remediation, and the live Stripe proof skipped visibly because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
+- 2026-08-12 GIT-6 done — Strict checked-in template metadata now pins platform-owned sources to exact SHAs and the git-service loader exposes only a server-side source lookup plus a repo-ref-free public projection; one capped review replaced demo-host heuristics with an exact platform-origin allowlist, with no blockers, deviations, or provider calls.

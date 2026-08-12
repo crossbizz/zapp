@@ -11,6 +11,10 @@
     "./flags": {
       "types": "./dist/flags.d.ts",
       "default": "./dist/flags.js"
+    },
+    "./templates": {
+      "types": "./dist/templates.d.ts",
+      "default": "./dist/templates.js"
     }
   },
   "scripts": {

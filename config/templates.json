@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "slug": "saas-starter",
+      "name": "SaaS Starter",
+      "description": "A production-shaped SaaS application with authentication, billing, and account settings.",
+      "pagesIncluded": ["Landing", "Sign in", "Dashboard", "Settings", "Billing"],
+      "highlights": ["Auth pre-built", "Billing included", "Responsive dashboard"],
+      "demoUrl": "https://saas-starter.demo.zapp.build",
+      "stack": "Next.js, TypeScript, Tailwind CSS",
+      "source": {
+        "approved": true,
+        "repoRef": "zapp-projects/saas-starter",
+        "commitSha": "34f95a9d7d3dc82cb64276d0e0f81f7a78ef14f1"
+      }
+    },
+    {
+      "slug": "ai-chat",
+      "name": "AI Chat",
+      "description": "A focused conversational application with model selection and persistent chat history.",
+      "pagesIncluded": ["Welcome", "Chat", "Conversation history", "Settings"],
+      "highlights": ["AI included", "Streaming responses", "Mobile-ready"],
+      "demoUrl": "https://ai-chat.demo.zapp.build",
+      "stack": "Next.js, TypeScript, Tailwind CSS",
+      "source": {
+        "approved": true,
+        "repoRef": "zapp-projects/ai-chat",
+        "commitSha": "7a4ee3b250f236616881519736f6d5fb0d10c180"
+      }
+    },
+    {
+      "slug": "portfolio",
+      "name": "Portfolio",
+      "description": "A polished personal site for presenting selected work, experience, and contact details.",
+      "pagesIncluded": ["Home", "Projects", "About", "Contact"],
+      "highlights": ["Project case studies", "Accessible navigation", "Responsive layout"],
+      "demoUrl": "https://portfolio.demo.zapp.build",
+      "stack": "React, TypeScript, Tailwind CSS",
+      "source": {
+        "approved": true,
+        "repoRef": "zapp-projects/portfolio",
+        "commitSha": "f7a290e9a638890389555e76afe4b56e858725fe"
+      }
+    }
+  ]
+}
