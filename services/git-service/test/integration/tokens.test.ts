@@ -342,7 +342,11 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
       await removeWorkspace(dir);
     }
 
-    expect(audit.events.filter((event) => event.action === 'git_token.revoked')).toHaveLength(1);
+    expect(
+      audit.events.filter(
+        (event) => event.action === 'git_token.revoked' && event.projectId === mine.projectId,
+      ),
+    ).toHaveLength(1);
   }, 120_000);
 
   it('records a mint in the trail, and never the token in it', async () => {
