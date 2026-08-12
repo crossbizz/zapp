@@ -8,7 +8,7 @@
 
 **Tech Stack:** Temporal TypeScript SDK, Vercel AI SDK (`ai` + provider packages, pinned), Zod, @zapp/{contracts,db,workspace-runtime,api-client}.
 
-**Milestone:** AR-1..8 (M1), AR-9..15 (M2), AR-16..21 (M3). **Depends on:** Plans 01, 02, 03. **Consumed by:** 05, 07, 08, 09.
+**Milestone:** AR-1..8 + AR-22 (M1), AR-9..15 + AR-23..24 (M2), AR-16..21 (M3). **Depends on:** Plans 01, 02, 03. **Consumed by:** 05, 07, 08, 09.
 
 ## Global Constraints
 
@@ -351,6 +351,22 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Commit: `feat: fork semantics for projects, branches, conversations, and runs`
 
 ---
+
+### Task AR-23 [M2]: Durable retry + optional-phase controls
+
+**Files:** Modify planning schema, Temporal run contract/workflows and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: rollout-compatible `optional: false` phase metadata; keyed retry only for failed tasks with satisfied dependencies; keyed skip only for explicitly optional phases before any phase task starts; durable structured transitions and replay.
+- [ ] Commit: `feat(orchestrator): durable retry and optional-phase controls`
+
+### Task AR-24 [M2]: Typed interactive conversation cards
+
+**Files:** Modify AgentEvent contracts, interview/spec/plan/redirect workflows and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: versioned question/spec/plan/approval cards, matching keyed response waits, replay-compatible histories, and no workflow decision inferred from prose.
+- [ ] Commit: `feat(orchestrator): typed interactive conversation cards`
 
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).

@@ -230,10 +230,10 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ### Task WEB-17 [M2]: Template gallery + detail with live preview & Remix
 
-**Files:** Create: `src/app/templates/{page,[slug]/page}.tsx`, `src/components/templates/*`, `config/templates.json`
+**Files:** Create: `src/app/templates/{page,[slug]/page}.tsx`, `src/components/templates/*`
 **Effort:** M
 
-- [ ] Binding behavior (benchmark screenshots 2–3; PRD §8.1 templates + community templates): template registry `config/templates.json`: `{ slug, name, description, pagesIncluded[], highlights[] (e.g. "Auth pre-built", "AI included"), demoUrl (pre-deployed static demo), repoRef (template repo in internal Git), stack }`; gallery grid from home ("Try these" chips deep-link here too); detail view mirrors the benchmark layout: left info panel (name, description paragraph, "Pages included" chips, Highlights badges), right = live demo preview iframe (`demoUrl`) with the WEB-7 toolbar pattern (device toggles centered, open-in-new-tab + refresh top-right); primary action **"Remix this template"** → creates project from `repoRef` (CP-6 template source) and opens the builder with a seeded first message ("I'm starting from the <name> template"); demo previews are pre-deployed once per template release (no live sandbox needed for browsing).
+- [ ] Binding behavior (benchmark screenshots 2–3; PRD §8.1 templates + community templates): consume CP-25's public template projection `{ slug, name, description, pagesIncluded[], highlights[] (e.g. "Auth pre-built", "AI included"), demoUrl (pre-deployed static demo), stack }`; GIT-6 keeps the internal `repoRef` server-side and it is never serialized to the browser. Gallery grid from home ("Try these" chips deep-link here too); detail view mirrors the benchmark layout: left info panel (name, description paragraph, "Pages included" chips, Highlights badges), right = live demo preview iframe (`demoUrl`) with the WEB-7 toolbar pattern (device toggles centered, open-in-new-tab + refresh top-right); primary action **"Remix this template"** → creates a project from the public template `slug`, whose approved source CP-25 resolves server-side, and opens the builder with a seeded first message ("I'm starting from the <name> template"); demo previews are pre-deployed once per template release (no live sandbox needed for browsing).
 - [ ] e2e: gallery renders registry; detail shows chips/highlights + iframe; Remix creates project and lands in builder.
 - [ ] Commit: `feat(web): template gallery + detail with demo preview and remix`
 

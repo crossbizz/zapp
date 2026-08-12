@@ -176,7 +176,9 @@ Plans: 03 (all core), 02 (CP-9..CP-16), 04 (AR-1..AR-8), 08 (WEB-1..WEB-6), 06 (
 **Exit:** in the browser: sign in → home prompt (Emergent-style) → project created from template → Modal sandbox boots `forge-node-base` → dev server runs → authenticated preview renders beside chat → a single Builder agent applies a chat-requested edit → commit lands in internal Git → sandbox killed mid-run and the project resumes from durable state (E4, E5-cloud, E6, E13; §38.2 exit).
 
 ### M2 — Agentic core: durable runs + Mission Control (Weeks 8–14)
-Plans: 04 (AR-9..AR-15), 05 (VF-1..VF-5), 08 (WEB-7..WEB-11, WEB-17), 10 (OPS-1..OPS-3), 09 (MAC-4..MAC-6).
+Plans: 04 (AR-9..AR-15, AR-23..AR-24), 05 (VF-1..VF-5, VF-17),
+02 (CP-22..CP-25), 03 (WS-16), 06 (GIT-5..GIT-6),
+08 (WEB-7..WEB-11, WEB-17), 10 (OPS-1..OPS-3), 09 (MAC-4..MAC-6).
 
 ADR-0025 pulls OPS-1A's authoritative model-completion write/reservation boundary into M1
 and orders AR-3A → OPS-1A → AR-3B before further real model traffic. OPS-1B retains the
@@ -184,15 +186,18 @@ remaining M2 Flexprice bootstrap and usage-summary acceptance.
 **Exit:** Ask/Prototype/Build modes on Temporal; task graph with per-task commits; pause/resume/redirect/cancel < 5 s ack; Mission Control renders structured events with replay/resume; capability detection produces execution contracts; dev-server + build + typecheck + smoke gates run; usage recorded per run (E7 partial, E8, E9, E19 partial; §38.4 exit).
 
 ### M3 — Verification-first: verifier, browser tests, repair, autonomous (Weeks 12–18, overlaps M2)
-Plans: 05 (VF-6..VF-16), 04 (AR-16..AR-21), 08 (WEB-12..WEB-13).
+Plans: 05 (VF-6..VF-16), 04 (AR-16..AR-21), 02 (CP-26), 06 (INT-10),
+07 (DEP-13), 08 (WEB-12..WEB-13).
 **Exit:** independent Verifier gates phases and can reject Builder output; Playwright generation + browser agent produce evidence tied to acceptance criteria; bounded repair loops; Autonomous mode runs interview → approved plan → multi-phase build surviving worker restart; Fix mode reproduces a seeded bug, writes regression test, patches, re-verifies (E7, E10, E11, E12, E21; §38.5 exit).
 
 ### M4 — Integrations & deployment (Weeks 16–22, overlaps M3)
-Plans: 06 (INT-1..INT-9), 07 (all), 08 (WEB-14..WEB-15), 09 (MAC-7..MAC-10).
+Plans: 06 (INT-1..INT-9, GIT-7), 07 (DEP-1..DEP-15), 03 (WS-17),
+08 (WEB-14..WEB-15), 09 (MAC-7..MAC-10).
 **Exit:** GitHub import/export/sync with conflict surfacing; Supabase + Neon connect/provision/migrate/typegen; Stripe adapter in generated apps passes integration tests; readiness check → deploy (Vercel or Fly) → permanent URL → release evidence manifest → rollback restores previous healthy deployment; custom domain flow (E14, E15, E16, E17, E18; §38.6 exit).
 
 ### M5 — SaaS hardening (Weeks 20–26, overlaps M4)
-Plans: 10 (OPS-4..OPS-18), 02 (CP-17..CP-18), 08 (WEB-16), 09 (MAC-11..MAC-12).
+Plans: 10 (OPS-4..OPS-18), 02 (CP-17..CP-18, CP-27), 08 (WEB-16),
+09 (MAC-11..MAC-12).
 **Exit:** Stripe platform billing + Flexprice credits + budgets enforce plan caps; OTel → Grafana Cloud across services; PostHog analytics + feature flags; generated-app observability (Faro + OTel) for Managed; synthetic checks; support dashboard + termination controls; retention/deletion pipeline; security suite green (tenant isolation, secret redaction, sandbox abuse, prompt-injection evals) (E19, E20, E22 prep; §38.7 exit).
 
 ### M6 — Private beta validation (Weeks 26–30)
@@ -288,6 +293,8 @@ Solo/small-team fallback: execute in milestone order M0→M6; within a milestone
 North star (PRD §37.1): **verified production releases per active org per month** — instrumented from day one: `release.created` + verifier decision events feed PostHog (OPS-6); activation funnel (signup → first preview → first deploy) defined in WEB-16/OPS-6; reliability metrics (verification false-pass/false-fail, repair-loop counts) emitted by VF-10/VF-13; economics (model + Modal cost per verified release) from OPS-1..OPS-3 ledger.
 
 ## Execution log
+
+- 2026-08-12 M2-M6-PLAN-2 done — Accepted ADR-0032 and expanded the remaining dependency graph around durable public builder controls/cards, tenant-safe code/evidence/settings/deployment projections, immutable OCI distribution, public Git leases, and desktop notification delivery; no provider call was required.
 
 - 2026-08-12 V-5 BLOCKED: Implemented and twice reviewed an anonymous five-slot cohort registry, four-severity/two-person current support rotation, exact-shape privacy boundary, and atomic idempotent feedback-to-`tasks/beta-feedback/` bridge; all 5 operations tests pass and the readiness command deliberately exits 2 because no real agencies, support assignment, or task-linked feedback exist yet.
 - 2026-08-12 V-4 BLOCKED: Implemented and twice reviewed a fail-closed evaluator for all eight exact PRD §37.6 thresholds and seven §40.4 invalidation signals, with typed SHA-256-bound V-2/V-5 evidence, strict boundary behavior, and complete missing-input reporting; the policy gate is 5/5 green, while the real verdict remains blocked on all eight measurements, both evidence kinds, and the agency review.

@@ -111,6 +111,18 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M2 — Agentic core + Mission Control (Weeks 8–14)
 
+- [x] M2-M6-PLAN-2 Public product completion contracts + dependency graph (ADR-0032)
+- [ ] AR-23 Durable retry/skip builder-control protocol
+- [ ] CP-22 Public builder controls + generic approval contract
+- [ ] AR-24 Typed interactive conversation-card workflow
+- [ ] CP-23 Public card responses + artifact reads
+- [ ] WS-16 Workspace file/list/read/direct-edit-commit boundary
+- [ ] GIT-6 Approved template registry source pipeline
+- [ ] GIT-5 Commit comparison + approved template seeding
+- [ ] VF-17 Test/evidence read contract
+- [ ] CP-24 Public code/diff/log/test/evidence bridge
+- [ ] CP-25 Public template APIs + template project creation
+
 - [x] AR-9 Worker/queues/idempotency hardening
 - [x] AR-10 Pause/resume/cancel/redirect signals
 - [x] AR-10-FIX-1 Bound control acknowledgements + truthful approval status query
@@ -178,6 +190,10 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
 
+- [ ] CP-26 Settings + organization directory APIs
+- [ ] INT-10 Public GitHub sync policy/state/manual-sync/export
+- [ ] DEP-13 Release list/history/active-production projection
+
 - [x] VF-6 Preview health + browser smoke gates
 - [x] VF-7 Playwright runner + evidence artifacts
 - [x] VF-8 Smoke + acceptance test generation
@@ -204,6 +220,11 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-13 Injection evals + Semgrep gates (start; complete M5)
 
 ## M4 — Integrations & deployment (Weeks 16–22)
+
+- [ ] DEP-14 Public deployment progress/actions/domains contract
+- [ ] DEP-15 Production health + rollback-preview projection
+- [ ] WS-17 Immutable public forge-node-base OCI mirror
+- [ ] GIT-7 Public short-lived repository credential lease
 
 - [x] INT-3 Sync engine (stale-base, conflicts)
 - [x] INT-4 GitHub export
@@ -236,6 +257,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] MAC-10 Local→cloud promotion
 
 ## M5 — SaaS hardening (Weeks 20–26)
+
+- [ ] CP-27 Public desktop notification projection
 
 - [x] OPS-4 Stripe platform billing
 - [x] OPS-4-FIX-1 Stripe fixture secret-scan repair

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Playwright, axe-core, gitleaks (binary in image), osv-scanner, knip (unused deps), ts-morph (AST checks), @zapp/{contracts,workspace-runtime,agent-tools}.
 
-**Milestone:** VF-1..5 (M2), VF-6..16 (M3). **Depends on:** Plans 01–04. **Consumed by:** 07 (release gates), 04 (repair loop), 08 (evidence UI).
+**Milestone:** VF-1..5 + VF-17 (M2), VF-6..16 (M3). **Depends on:** Plans 01–04. **Consumed by:** 07 (release gates), 04 (repair loop), 08 (evidence UI).
 
 ## Global Constraints
 
@@ -223,6 +223,14 @@ export function runBrowserAgentSession(
 
 - [x] Binding behavior: dependency_scan = osv-scanner on lockfile; policy: critical vulns block Verified+ unless waived, advisory for Compatible (PRD §24.2); migration_validation = plan-06 DB adapters validate pending migrations against an isolated branch/database (Neon branch or Supabase shadow), classify destructive ops (VF uses AR-5 destructive-SQL detector), record reversibility state `reversible | compensating | unavailable` for release evidence (PRD §25.4).
 - [x] Commit: `feat(verification-engine): dependency + migration gates`
+
+### Task VF-17 [M2]: Test + evidence read contract
+
+**Files:** Modify verification evidence/test-run schemas, artifact ports and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: typed run/case metadata and bounded signed artifact reads preserving organization/run/task/criterion provenance, accessibility descriptions, and trace/console/network kinds.
+- [ ] Commit: `feat(verification): public evidence read model`
 
 ---
 

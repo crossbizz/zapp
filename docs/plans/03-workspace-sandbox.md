@@ -8,7 +8,7 @@
 
 **Tech Stack:** Modal JS SDK (pinned), Fastify (service + workspace-agent), execa + node-pty (agent), http-proxy (preview proxy), tar/zstd (patch checkpoints), @zapp/contracts.
 
-**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-15). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
+**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-16), M4 distribution (WS-17). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
 
 ## Global Constraints
 
@@ -456,6 +456,22 @@ Test-only; no provider call or production behavior change.
 - [x] **Verify/ship:** run the focused regression, all 109 preview-proxy tests, and package lint/typecheck/build; append one execution-log line, commit `test(preview-proxy): make CDP serialization race deterministic`, push, and watch authoritative CI green.
 
 ---
+
+### Task WS-16 [M2]: Workspace file + attributed direct-edit boundary
+
+**Files:** Modify sandbox-service workspace routes/services and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: service-authenticated lazy list/read plus compare-token write that atomically creates commit `manual edit via web`; path guards, bounded payloads, stale-write rejection, and no partial commit.
+- [ ] Commit: `feat(sandbox): attributed workspace file edits`
+
+### Task WS-17 [M4]: Immutable public `forge-node-base` OCI mirror
+
+**Files:** Modify provider-neutral image recipe, GHCR workflow, image lock/config and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
+- [ ] Commit: `build(images): publish immutable forge node mirror`
 
 ## Testing strategy
 - Unit vs fakes for state machines/policies; env-gated integration against real Modal dev env (WS-4, WS-5, WS-7, WS-12); nightly E2E (WS-14).

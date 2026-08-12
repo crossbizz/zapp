@@ -8,7 +8,7 @@
 
 **Tech Stack:** Fastify 5, `fastify-type-provider-zod`, Stytch Node SDK (B2B), jose (JWT), Upstash Redis client, @zapp/db, @zapp/contracts, openapi-typescript for SDK generation.
 
-**Milestone:** M0 (CP-1..8) + M1 (CP-9..16) + M5 (CP-17..18). **Depends on:** Plan 01. **Consumed by:** all plans.
+**Milestone:** M0 (CP-1..8) + M1 (CP-9..16, CP-20..21) + M2 (CP-22..25) + M3 (CP-26) + M5 (CP-17..18, CP-27). **Depends on:** Plan 01. **Consumed by:** all plans.
 
 ## Global Constraints
 
@@ -276,6 +276,55 @@ Execution expansion (2026-08-12; the portable artifact is a deterministic uncomp
 - [x] **18d RED/GREEN — Git bundle port:** add a service-authenticated, tenant/project-derived git-service export boundary that mints a bounded read credential, creates and verifies a Git bundle through the existing Git command adapter, returns no credential, and cleans scratch/token state on success and failure; add fake/provider/HTTP coverage.
 - [x] **18e integration/artifacts:** compose production Git and S3 ports, generate OpenAPI/SDK, and add a PostgreSQL + MinIO integration that downloads the signed tar, verifies every required entry and exact Git bytes, and proves only environment-variable names are present.
 - [x] **18f verify/review/ship:** run deterministic generation, full touched-package tests, lint/typecheck/build, one final real-provider gate, and at most two Critical/Important review rounds (exit zero); update tracker/log and commit `feat(control-api): portable project export bundles`.
+
+### Task CP-22 [M2]: Public builder controls + generic approvals
+
+**Files:** Modify contracts, run/Mission Control routes, tenant ports, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: server-computed action eligibility/reasons; keyed retry-failed-task and skip-optional-phase routes over AR-23; strict discriminated approval decisions with stored id/kind matching and rollout-compatible budget behavior.
+- [ ] Verify generated SDK determinism, tenant/RBAC/idempotency behavior, and typed stale-state conflicts.
+- [ ] Commit: `feat(control-api): public builder controls and typed approvals`
+
+### Task CP-23 [M2]: Public conversation-card responses + artifacts
+
+**Files:** Modify message/spec/run routes and ports, contracts, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: keyed typed responses to AR-24 cards plus tenant-safe bounded specification, plan, and referenced artifact reads; no assistant-prose parsing.
+- [ ] Commit: `feat(control-api): public conversation-card responses`
+
+### Task CP-24 [M2]: Public builder artifact surfaces
+
+**Files:** Modify workspace/Mission Control routes and service clients, contracts, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: tenant/RBAC bridges to WS-16, GIT-5, and VF-17 for files, attributed edits, commit comparison, logs, test cases, evidence, downloads, and Fix-run creation; no internal credential exposure.
+- [ ] Commit: `feat(control-api): public builder artifact surfaces`
+
+### Task CP-25 [M2]: Public template registry + Remix creation
+
+**Files:** Modify project/template routes, composition, contracts, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: registry list/detail and discriminated template project source by slug; resolve approved repository refs server-side and seed through GIT-5/GIT-6 before project success; stable replay.
+- [ ] Commit: `feat(control-api): public template remix contract`
+
+### Task CP-26 [M3]: Settings + organization directory APIs
+
+**Files:** Modify org/integration/project routes and tenant views, DB where required, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: member/pending-invite directory; integration status/disconnect including Vercel; project archive/delete timeline; existing secret values stay write-only.
+- [ ] Commit: `feat(control-api): settings and member directory APIs`
+
+### Task CP-27 [M5]: Public desktop notification projection
+
+**Files:** Modify notification routes/store/composition, DB where required, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: authenticated per-user/device cursor replay and per-type preferences for approval, run, and deployment notifications; bounded reconnect; tenant isolation and secret-safe payloads.
+- [ ] Commit: `feat(control-api): desktop notification delivery API`
 
 ---
 
