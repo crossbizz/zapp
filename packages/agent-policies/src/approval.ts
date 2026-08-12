@@ -15,9 +15,36 @@ const HIGH_RISK_POLICY_TOOL_NAMES = new Set<ToolName>([
 ]);
 const HUMAN_APPROVAL_TOOL_NAMES = new Set<ToolName>(['deploy_release', 'rollback_release']);
 const RELEASE_TOOL_NAMES = new Set<ToolName>(TOOL_GROUPS.release);
+const SANDBOX_CONTAINED_TOOL_NAMES = new Set<ToolName>([
+  'write_file',
+  'apply_patch',
+  'copy_file',
+  'rename_file',
+  'delete_file',
+  'install_dependency',
+  'run_command',
+  'run_dev_server',
+  'restart_dev_server',
+  'run_build',
+  'run_typecheck',
+  'run_lint',
+  'run_unit_tests',
+  'run_integration_tests',
+  'create_branch',
+  'create_checkpoint',
+  'commit_changes',
+  'restore_file',
+  'revert_commit',
+  'merge_branch',
+]);
 
 export const EnvironmentScopeSchema = z.enum(['preview', 'staging', 'production']);
 export type EnvironmentScope = z.infer<typeof EnvironmentScopeSchema>;
+export const ExecutionBoundarySchema = z.enum([
+  'uncontained',
+  'network_profiled_sandbox',
+]);
+export type ExecutionBoundary = z.infer<typeof ExecutionBoundarySchema>;
 
 const ReleaseIdSchema = z.string().min(1);
 const DataDispositionSchema = z.enum(['preserve', 'transfer', 'reset']);
@@ -52,6 +79,7 @@ export const PolicyContextSchema = z
   .object({
     mode: RunModeSchema,
     provenance: z.array(ContentProvenanceSchema),
+    executionBoundary: ExecutionBoundarySchema.default('uncontained'),
     environmentScope: EnvironmentScopeSchema.default('production'),
     approvedReleaseId: z.string().min(1).nullable(),
     approvedDeployment: DeploymentApprovalSchema.nullable().default(null),
@@ -220,7 +248,14 @@ export function evaluateToolCall(
   const consequential = metadata.classification === 'mutating';
 
   if (consequential && policyContext.mode === 'ask') return deny('ask_mode_mutation');
-  if (consequential && hasUntrustedProvenance(policyContext)) {
+  if (
+    consequential &&
+    hasUntrustedProvenance(policyContext) &&
+    !(
+      policyContext.executionBoundary === 'network_profiled_sandbox' &&
+      SANDBOX_CONTAINED_TOOL_NAMES.has(tool)
+    )
+  ) {
     return deny('untrusted_instruction');
   }
   if (metadata.name === 'run_command' && commandIsDenied(input)) {

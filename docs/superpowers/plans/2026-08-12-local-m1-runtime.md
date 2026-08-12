@@ -242,6 +242,10 @@ git commit -m "feat(worker): add sandbox workspace runtime"
 - Create: `services/orchestrator-worker/test/model-gateway-client.test.ts`
 - Create: `services/orchestrator-worker/test/m1-session.test.ts`
 - Modify: `services/orchestrator-worker/package.json`
+- Modify: `services/orchestrator-worker/src/session/loop.ts`
+- Modify: `packages/agent-policies/src/approval.ts`
+- Modify: `packages/agent-policies/test/policies.test.ts`
+- Create: `docs/adr/0031-network-profiled-builder-provenance.md`
 
 **Interfaces:**
 

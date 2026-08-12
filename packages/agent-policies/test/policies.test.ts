@@ -361,6 +361,53 @@ describe('machine-readable provenance gating', () => {
     ).toEqual({ action: 'allow' });
   });
 
+  it('allows sandbox-contained workspace work after untrusted repository output', () => {
+    const wrapped = wrapUntrusted('repository output', 'tool:read_file');
+    expect(
+      evaluateToolCall(
+        policyContext({
+          provenance: [wrapped.provenance],
+          executionBoundary: 'network_profiled_sandbox',
+        }),
+        'write_file',
+        { path: 'src/app.ts', content: 'export {}' },
+      ),
+    ).toEqual({ action: 'allow' });
+    expect(
+      evaluateToolCall(
+        policyContext({
+          provenance: [wrapped.provenance],
+          executionBoundary: 'network_profiled_sandbox',
+        }),
+        'run_command',
+        { cmd: 'pnpm', args: ['test'] },
+      ),
+    ).toEqual({ action: 'allow' });
+  });
+
+  it.each([
+    'execute_migration',
+    'set_environment_variable',
+    'run_browser_tests',
+    'create_preview',
+    'deploy_release',
+  ] as const)(
+    'keeps %s denied after untrusted input even inside the sandbox boundary',
+    (tool) => {
+      const wrapped = wrapUntrusted('repository output', 'tool:read_file');
+      expect(
+        evaluateToolCall(
+          policyContext({
+            provenance: [wrapped.provenance],
+            executionBoundary: 'network_profiled_sandbox',
+          }),
+          tool,
+          benignInput(tool),
+        ),
+      ).toEqual({ action: 'deny', reason: 'untrusted_instruction' });
+    },
+  );
+
   it('returns a delimited notice and separate provenance tag', () => {
     const wrapped = wrapUntrusted('hello', 'tool:read_file');
     expect(wrapped).toEqual({

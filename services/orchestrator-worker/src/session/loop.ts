@@ -5,6 +5,7 @@ import {
   PolicyDecisionSchema,
   wrapUntrusted,
   type ContentProvenance,
+  type ExecutionBoundary,
 } from '@zapp/agent-policies';
 import { evaluateRunCreditBudget } from '@zapp/agent-policies/budgets';
 import {
@@ -229,6 +230,7 @@ export interface SessionLoopDependencies {
   readonly prompts: Readonly<Record<AgentRole, string>>;
   readonly redact: (value: string) => string;
   readonly countRequestTokens: (request: CompleteRequest) => number;
+  readonly executionBoundary?: ExecutionBoundary;
   readonly results?: {
     collect(input: {
       tool: ToolName;
@@ -1100,6 +1102,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               {
                 mode: input.mode,
                 provenance,
+                executionBoundary: dependencies.executionBoundary ?? 'uncontained',
                 environmentScope: 'production',
                 approvedReleaseId: null,
                 approvedDeployment: null,
