@@ -6,6 +6,7 @@ export * from './gates/dev-server.js';
 export * from './gates/dependency-scan.js';
 export * from './gates/lint.js';
 export * from './gates/migration-validation.js';
+export * from './gates/observability.js';
 export * from './gates/preview-health.js';
 export * from './gates/secret-scan.js';
 export * from './gates/typecheck.js';

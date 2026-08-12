@@ -239,7 +239,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-6 PostHog analytics + feature flags + dashboards
 - [x] OPS-7 Notification service
 - [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
-- [ ] OPS-10 Managed-app observability templates
+- [x] OPS-10 Managed-app observability templates
 - [ ] OPS-11 Incident → Fix run closed loop
 - [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
 - [ ] OPS-13 Injection evals + policy scans blocking

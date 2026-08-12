@@ -12,6 +12,8 @@ import {
 } from '@zapp/contracts';
 import { z } from 'zod';
 
+import { proposeManagedInstrumentation } from './managed-observability.js';
+
 import { GenericNodeAnalysisSchema, type GenericNodeAnalysis } from './types.js';
 
 const PackageJsonSchema = z
@@ -190,8 +192,8 @@ export const genericNodeAdapter: ProjectAdapter = {
   proposeTests(): Promise<TestPlan> {
     return Promise.resolve({ tests: [] });
   },
-  proposeInstrumentation(): Promise<InstrumentationPlan> {
-    return Promise.resolve({ steps: [] });
+  proposeInstrumentation(ctx): Promise<InstrumentationPlan> {
+    return proposeManagedInstrumentation(ctx, 'generic-node');
   },
   proposeDeployment(): Promise<DeploymentPlan | null> {
     return Promise.resolve(null);

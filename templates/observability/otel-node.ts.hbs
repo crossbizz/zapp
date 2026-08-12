@@ -1,0 +1,72 @@
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+
+export const MANAGED_OTEL_ENV = {
+  endpoint: 'ZAPP_PROJECT_OTLP_ENDPOINT',
+  token: 'ZAPP_PROJECT_OTLP_TOKEN',
+  projectId: 'ZAPP_PROJECT_ID',
+  release: 'ZAPP_RELEASE',
+} as const;
+
+export interface ManagedNodeTelemetryConfig {
+  readonly serviceName: string;
+  readonly environment: string;
+  readonly projectId: string;
+  readonly release: string;
+  /** Base OTLP/HTTP endpoint provisioned for this project. */
+  readonly otlpEndpoint: string;
+  /** Project-scoped Grafana OTLP credential. Never expose this value to browser code or logs. */
+  readonly otlpToken: string;
+}
+
+function required(value: string, name: string): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) throw new Error(`managed_otel_config_missing:${name}`);
+  return normalized;
+}
+
+function signalUrl(endpoint: string, signal: 'traces' | 'metrics' | 'logs'): string {
+  return `${endpoint.replace(/\/+$/u, '')}/v1/${signal}`;
+}
+
+/** Start this SDK before importing application modules so auto-instrumentation can patch dependencies. */
+export function startManagedNodeTelemetry(config: ManagedNodeTelemetryConfig): NodeSDK {
+  const endpoint = required(config.otlpEndpoint, MANAGED_OTEL_ENV.endpoint);
+  const token = required(config.otlpToken, MANAGED_OTEL_ENV.token);
+  const projectId = required(config.projectId, MANAGED_OTEL_ENV.projectId);
+  const release = required(config.release, MANAGED_OTEL_ENV.release);
+  const headers = { authorization: `Basic ${token}` };
+  const sdk = new NodeSDK({
+    resource: resourceFromAttributes({
+      'service.name': required(config.serviceName, 'service.name'),
+      'service.version': release,
+      'deployment.environment.name': config.environment,
+      'zapp.project.id': projectId,
+    }),
+    spanProcessors: [
+      new BatchSpanProcessor(
+        new OTLPTraceExporter({ url: signalUrl(endpoint, 'traces'), headers }),
+      ),
+    ],
+    metricReaders: [
+      new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({ url: signalUrl(endpoint, 'metrics'), headers }),
+      }),
+    ],
+    logRecordProcessors: [
+      new BatchLogRecordProcessor({
+        exporter: new OTLPLogExporter({ url: signalUrl(endpoint, 'logs'), headers }),
+      }),
+    ],
+    instrumentations: [getNodeAutoInstrumentations()],
+  });
+  sdk.start();
+  return sdk;
+}
