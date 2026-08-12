@@ -84,6 +84,15 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 
 - [x] Steps: failing tests for a `MemoryWorkspaceRuntime` test double (path traversal rejected: `../etc/passwd`, `a/../../x`, symlink target outside root; exec timeout kills process; truncation at 1 MiB output with `truncated: true`) → implement double + path guard util `resolveInRoot(root, p)` → commit: `feat(workspace-runtime): shared runtime interface + path safety`
 
+#### WS-1-FIX-1 — await Linux descendant reaping in the cold-CI proof
+
+**Files:** Modify: `packages/workspace-runtime/test/runtime.test.ts`, `docs/plans/03-workspace-sandbox.md`, `tasks/todo.md`
+
+- [x] **RED/evidence:** retain exact-SHA clean Linux CI `8396b38`, where the inherited-pipe timeout returned the expected exit 124 but an immediate PID-zero probe observed the already-killed descendant before the host reaped it.
+- [x] **GREEN:** preserve the 500 ms runtime deadline, exit-124 assertion, process-group kill, and cleanup; use the existing bounded `processIsGone` proof already shared by the neighboring process-lifecycle tests.
+- [x] **Verify/review/ship:** run the focused regression repeatedly, the full workspace-runtime test/lint/typecheck/build gate, diff hygiene, and one routing-only review; push through the normal repository gate and confirm exact-SHA Security and CI green; no provider call is required.
+- [x] Commit: `test(workspace-runtime): await descendant process reaping`
+
 ### Task WS-2: Modal images `forge-node-base` + `forge-web-test`
 
 **Files:** Create: `infra/modal/images/forge-node-base.ts`, `forge-web-test.ts`, `publish.ts`, `images.lock.json`; per ADR-0019, create the minimal `services/sandbox-service` package scaffolding and `src/provider/modal.ts` as the only Modal SDK import site, plus tests for the recipes and publication transaction
@@ -525,3 +534,4 @@ Test-only; no provider call or production behavior change.
 - 2026-08-09 WS-15-FIX-2 done — the first WS-15 smoke exposed agent/proxy concurrent-start refusal; strict preview health now retries with an exact remaining 30-second curl budget, and FIX-2's single immutable-image smoke passed for dev.
 - 2026-08-10 M1-GATE-12 done — cold/full-contention verification exposed real-Chrome SSE/browser cleanup ordering and a post-snapshot leader-exit `ps` race; focused and affected package gates, root `pnpm verify`, and one zero-Critical/Important review passed without a provider call.
 - 2026-08-10 M2-CI-PREVIEW-CDP done — exact-sha CI exposed a 25 ms loopback CDP discovery race; the test now waits for the mocked connection boundary before explicit downstream abort and proves busy-slot retention plus late-browser cleanup; focused 1/1, preview-proxy 109/109, and package lint/typecheck/build passed with no provider call.
+- 2026-08-11 WS-1-FIX-1 done — Exact-SHA clean Linux CI observed an already-killed orphan PID before host reaping; the inherited-pipe proof now uses the existing bounded lifecycle helper while preserving the 500 ms kill deadline, exit 124, process-group containment, and cleanup. The focused case passed 20 consecutive runs and workspace-runtime passed 35/35 plus lint/typecheck/build, with no provider call, blocker, or deviation.

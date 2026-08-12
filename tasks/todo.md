@@ -69,6 +69,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-20 Conversation continuation + attachments API (ADR-0027)
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
+- [x] WS-1-FIX-1 Await Linux descendant reaping in cold CI
 - [x] WS-2 Modal images (forge-node-base, forge-web-test)
 - [x] WS-3 workspace-agent daemon
 - [x] WS-4 Modal provider create/exec/terminate/attach
