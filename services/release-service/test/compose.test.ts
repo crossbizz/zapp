@@ -1,9 +1,10 @@
 import { createServiceTokenSigner } from '@zapp/config';
 import type { Database } from '@zapp/db';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { composeApp } from '../src/compose.js';
+import { composeApp, type ProductionReleaseServiceRuntime } from '../src/compose.js';
 import type { Release } from '../src/release/create.js';
+import { startReleaseServer } from '../src/server.js';
 
 const ULID = '01J00000000000000000000000';
 const ORGANIZATION_ID = `org_${ULID}`;
@@ -38,6 +39,12 @@ function releaseReadDatabase(): Database {
 }
 
 describe('release-service production composition', () => {
+  it('makes the listening entrypoint require raw production bindings', () => {
+    expectTypeOf<
+      Parameters<typeof startReleaseServer>[0]
+    >().toEqualTypeOf<ProductionReleaseServiceRuntime>();
+  });
+
   it('binds the postgres record store and lifecycle coordinator into the listening app', async () => {
     const app = composeApp({
       logger: false,

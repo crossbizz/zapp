@@ -3,15 +3,8 @@ import { EvidenceManifestSchema, type EvidenceManifest } from '@zapp/verificatio
 import { z } from 'zod';
 
 import { ReadinessReportSchema, type ReadinessReport } from './release/readiness.js';
-import {
-  DeploymentConfirmationSchema,
-  DeploymentTypeSchema,
-} from './release/types.js';
-import {
-  ReleaseServiceError,
-  type Release,
-  type ReleaseRecordService,
-} from './release/create.js';
+import { DeploymentConfirmationSchema, DeploymentTypeSchema } from './release/types.js';
+import { ReleaseServiceError, type Release, type ReleaseRecordService } from './release/create.js';
 
 export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -121,7 +114,11 @@ export function createReleaseLifecycleService(
     async deploy(rawInput) {
       const input = DeployReleaseInputSchema.parse(rawInput);
       const release = await releaseFor(dependencies, input);
-      if (release.status !== 'approved' && release.status !== 'deploying') {
+      if (
+        release.status !== 'approved' &&
+        release.status !== 'deploying' &&
+        release.status !== 'healthy'
+      ) {
         throw new ReleaseServiceError(
           'invalid_release_transition',
           409,
@@ -144,10 +141,9 @@ export function createReleaseLifecycleService(
           );
         }
       }
-      const deploying = await dependencies.records.beginDeployment(input);
-      return DeploymentResultSchema.parse(
-        await dependencies.deployments.deploy(deploying, input),
-      );
+      const deploying =
+        release.status === 'approved' ? await dependencies.records.beginDeployment(input) : release;
+      return DeploymentResultSchema.parse(await dependencies.deployments.deploy(deploying, input));
     },
 
     async rollback(rawInput) {
@@ -182,7 +178,4 @@ export function createReleaseLifecycleService(
   };
 }
 
-export {
-  EvidenceManifestSchema,
-  ReadinessReportSchema,
-};
+export { EvidenceManifestSchema, ReadinessReportSchema };

@@ -23,7 +23,7 @@
     "validation:go-no-go-policy": "node validation/go-no-go/evaluate.mjs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "test:integration": "turbo run test:integration",
+    "test:integration": "turbo run test:integration --concurrency=1",
     "modal:publish": "pnpm --filter @zapp/modal-infra modal:publish",
     "modal:smoke": "pnpm --filter @zapp/modal-infra modal:smoke",
     "db:generate": "pnpm --filter @zapp/db db:generate",

@@ -25,7 +25,8 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --root ../.. --config vitest.config.ts --project release-e2e"
   },
   "dependencies": {
     "@temporalio/workflow": "1.22.0",

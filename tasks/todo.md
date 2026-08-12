@@ -225,8 +225,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-10 Custom domains + SSL
 - [x] DEP-11 Synthetic checks
 - [x] DEP-12a Authenticated release lifecycle transport + public SDK
-- [ ] DEP-12b Production adapter composition + real synthetic/E2E journey
-- [ ] DEP-12 E2E release lifecycle + fork-to-repair (umbrella completion)
+- [x] DEP-12b Production adapter composition + real synthetic/E2E journey
+- [x] DEP-12 E2E release lifecycle + fork-to-repair (umbrella completion)
 - [x] WEB-16-FIX-1 Keep the cold web test command aligned with activation coverage
 - [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [ ] WEB-15 Production health + guarded rollback UI

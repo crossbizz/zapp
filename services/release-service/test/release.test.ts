@@ -124,14 +124,24 @@ class MemoryReleaseStore implements ReleaseStore {
 
 class RecordingGit implements ReleaseGitPort {
   commitExists = true;
-  readonly tags: Array<{ readonly projectId: string; readonly tag: string; readonly sha: string }> = [];
+  readonly tags: Array<{
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly tag: string;
+    readonly sha: string;
+  }> = [];
 
-  getCommit(input: { readonly projectId: string; readonly sha: string }): Promise<boolean> {
+  getCommit(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly sha: string;
+  }): Promise<boolean> {
     void input;
     return Promise.resolve(this.commitExists);
   }
 
   createTag(input: {
+    readonly organizationId: string;
     readonly projectId: string;
     readonly tag: string;
     readonly sha: string;
@@ -300,8 +310,8 @@ describe('release records', () => {
     expect(replay).toEqual(first);
     expect(built.store.createCalls).toBe(1);
     expect(built.git.tags).toEqual([
-      { projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
-      { projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
+      { organizationId: ORG, projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
+      { organizationId: ORG, projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
     ]);
     expect(Object.keys(first)).not.toContain('updateCommit');
     expect(built.store.audits).toEqual([

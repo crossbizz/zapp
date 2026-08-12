@@ -176,8 +176,13 @@ export interface ReleasePort {
 }
 
 export interface ReleaseGitPort {
-  getCommit(input: { readonly projectId: string; readonly sha: string }): Promise<boolean>;
+  getCommit(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly sha: string;
+  }): Promise<boolean>;
   createTag(input: {
+    readonly organizationId: string;
     readonly projectId: string;
     readonly tag: string;
     readonly sha: string;
@@ -424,9 +429,7 @@ export function createPostgresReleaseContext(database: Database): ReleaseContext
       const role = membershipRows[0]?.role;
       if (role === 'owner') return true;
       if (role !== 'builder') return false;
-      const settings = OrganizationDeploySettingsSchema.safeParse(
-        organizationRows[0]?.settings,
-      );
+      const settings = OrganizationDeploySettingsSchema.safeParse(organizationRows[0]?.settings);
       return settings.success && settings.data.builderCanDeploy;
     },
   };
@@ -436,7 +439,8 @@ function hash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-type OperationClaim = { readonly status: 'acquired' } | { readonly status: 'replay'; readonly release: Release };
+type OperationClaim =
+  { readonly status: 'acquired' } | { readonly status: 'replay'; readonly release: Release };
 
 async function claimOperation(
   transaction: Transaction,
@@ -570,10 +574,7 @@ export function createPostgresReleaseStore(database: Database): ReleaseStore {
           ownerId,
         });
         if (claim.status === 'replay') return claim.release;
-        const [created] = await transaction
-          .insert(releases)
-          .values(input.release)
-          .returning();
+        const [created] = await transaction.insert(releases).values(input.release).returning();
         const release = ReleaseSchema.parse(created);
         await transaction.insert(auditEvents).values({
           id: newId('aud'),
@@ -830,7 +831,13 @@ export function createReleaseRecordService(dependencies: {
           'Prototype-only commits must be converted to Build before release creation.',
         );
       }
-      if (!(await dependencies.git.getCommit({ projectId: input.projectId, sha: input.commitSha }))) {
+      if (
+        !(await dependencies.git.getCommit({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          sha: input.commitSha,
+        }))
+      ) {
         throw new ReleaseServiceError(
           'commit_not_found',
           422,
@@ -868,6 +875,7 @@ export function createReleaseRecordService(dependencies: {
         },
       });
       await dependencies.git.createTag({
+        organizationId: created.organizationId,
         projectId: created.projectId,
         tag: created.id,
         sha: created.commitSha,
@@ -876,17 +884,17 @@ export function createReleaseRecordService(dependencies: {
     },
 
     getRelease(organizationId, releaseId) {
-      return dependencies.store.get(idSchema('org').parse(organizationId), idSchema('rel').parse(releaseId));
+      return dependencies.store.get(
+        idSchema('org').parse(organizationId),
+        idSchema('rel').parse(releaseId),
+      );
     },
 
     transitionStatus: (input) => transitionStatusWithAudit(input),
 
     async approve(untrustedInput) {
       const input = ApproveInputSchema.parse(untrustedInput);
-      const current = await dependencies.store.get(
-        input.actor.organizationId,
-        input.releaseId,
-      );
+      const current = await dependencies.store.get(input.actor.organizationId, input.releaseId);
       if (current === undefined) {
         throw new ReleaseServiceError('release_not_found', 404, 'Release not found.');
       }

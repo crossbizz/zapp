@@ -1,16 +1,16 @@
 import { loadEnv, type ServiceEnv } from './env.js';
-import { composeApp, type ReleaseServiceRuntime } from './compose.js';
+import { composeProductionApp, type ProductionReleaseServiceRuntime } from './compose.js';
 
 /**
- * Starts the release-service process after its provider/state-machine adapters
- * have been composed. Keeping adapters explicit prevents a production boot from
- * silently replacing Fly, Temporal, verification, Git, or repair with a fake.
+ * Starts the release-service process from raw provider/state-machine bindings.
+ * Requiring production bindings here prevents the listening entrypoint from
+ * accepting a prebuilt lifecycle that bypasses DEP-2 through DEP-11.
  */
 export async function startReleaseServer(
-  runtime: ReleaseServiceRuntime,
+  runtime: ProductionReleaseServiceRuntime,
   env: ServiceEnv = loadEnv(),
 ) {
-  const app = composeApp(runtime);
+  const app = composeProductionApp(runtime);
   await app.listen({ host: env.HOST, port: env.PORT });
   return app;
 }
