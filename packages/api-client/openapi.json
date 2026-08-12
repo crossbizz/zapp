@@ -2072,7 +2072,7 @@
                 "release.deploy_requested",
                 "release.rollback_requested",
                 "incident.created",
-                "incident.fix_linked",
+                "incident.fix_run_created",
                 "incident.resolved",
                 "support.impersonation",
                 "integration.connected",
@@ -2099,7 +2099,6 @@
                 "artifact",
                 "secret",
                 "release",
-                "incident",
                 "integration_connection"
               ]
             },
@@ -2246,7 +2245,7 @@
                               "release.deploy_requested",
                               "release.rollback_requested",
                               "incident.created",
-                              "incident.fix_linked",
+                              "incident.fix_run_created",
                               "incident.resolved",
                               "support.impersonation",
                               "integration.connected",
@@ -2268,7 +2267,6 @@
                               "artifact",
                               "secret",
                               "release",
-                              "incident",
                               "integration_connection"
                             ]
                           },
@@ -7092,11 +7090,50 @@
                                     "summary"
                                   ],
                                   "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "incident_record"
+                                      ]
+                                    },
+                                    "incidentId": {
+                                      "type": "string",
+                                      "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                                    },
+                                    "summary": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2000
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "incidentId",
+                                    "summary"
+                                  ],
+                                  "additionalProperties": false
                                 }
                               ]
                             },
                             "minItems": 1,
                             "maxItems": 100
+                          },
+                          "incidentId": {
+                            "type": "string",
+                            "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "releaseId": {
+                            "type": "string",
+                            "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "errorPayload": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 10000
                           }
                         },
                         "required": [
@@ -19041,11 +19078,50 @@
                                         "summary"
                                       ],
                                       "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "incident_record"
+                                          ]
+                                        },
+                                        "incidentId": {
+                                          "type": "string",
+                                          "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                                        },
+                                        "summary": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 2000
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "incidentId",
+                                        "summary"
+                                      ],
+                                      "additionalProperties": false
                                     }
                                   ]
                                 },
                                 "minItems": 1,
                                 "maxItems": 100
+                              },
+                              "incidentId": {
+                                "type": "string",
+                                "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "releaseId": {
+                                "type": "string",
+                                "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "errorPayload": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 10000
                               }
                             },
                             "required": [
@@ -19431,11 +19507,50 @@
                                       "summary"
                                     ],
                                     "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "incident_record"
+                                        ]
+                                      },
+                                      "incidentId": {
+                                        "type": "string",
+                                        "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                                      },
+                                      "summary": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 2000
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "incidentId",
+                                      "summary"
+                                    ],
+                                    "additionalProperties": false
                                   }
                                 ]
                               },
                               "minItems": 1,
                               "maxItems": 100
+                            },
+                            "incidentId": {
+                              "type": "string",
+                              "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
+                            },
+                            "releaseId": {
+                              "type": "string",
+                              "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
+                            },
+                            "errorPayload": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 10000
                             }
                           },
                           "required": [
