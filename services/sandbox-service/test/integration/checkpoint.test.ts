@@ -1,6 +1,6 @@
 import { newId } from '@zapp/contracts';
 import { createHash } from 'node:crypto';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import {
   createCheckpointService,
@@ -158,6 +158,7 @@ function fixture(overrides: Partial<CheckpointServiceDependencies> = {}) {
           organizationId,
           projectId,
           logicalBytes: '19',
+          createdAt: '2026-08-08T12:00:00.000Z',
         });
         return Promise.resolve();
       },
@@ -325,6 +326,7 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
     ['release_evidence', 30],
   ] as const)('records the %s snapshot with the exact %i-day TTL', async (kind, days) => {
     const state = fixture();
+    const recordMeasurement = vi.spyOn(state.dependencies.snapshotMeasurements, 'record');
     const service = createCheckpointService(state.dependencies);
     const checkpoint = await service.checkpoint({
       organizationId: state.organizationId,
@@ -339,6 +341,9 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
 
     expect(checkpoint.snapshot?.expiresAt).toBe(
       new Date(Date.parse('2026-08-08T12:00:00.000Z') + days * 86_400_000).toISOString(),
+    );
+    expect(recordMeasurement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind, createdAt: '2026-08-08T12:00:00.000Z' }),
     );
   });
 

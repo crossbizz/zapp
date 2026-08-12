@@ -45,6 +45,26 @@ variable "volume_size_gb" {
   }
 }
 
+variable "cloudflare_account_id" {
+  description = "Cloudflare account that owns the private artifact R2 bucket."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_account_id))
+    error_message = "cloudflare_account_id must be a 32-character lowercase hexadecimal account id."
+  }
+}
+
+variable "artifact_bucket_name" {
+  description = "Existing private R2 bucket used by ARTIFACT_BUCKET; Terraform owns its lifecycle document, not its contents."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.artifact_bucket_name))
+    error_message = "artifact_bucket_name must be a valid 3-63 character R2 bucket name."
+  }
+}
+
 # Snapshot retention is deliberately *not* a variable. The provider's
 # `fly_volume` has no attribute for it, and a variable that is declared, defaulted
 # and then quietly unused is worse than an honest manual step: it reads like the

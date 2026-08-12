@@ -11,6 +11,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { CHECKPOINT_KINDS } from '@zapp/contracts';
 
 import { oneOf } from './columns.js';
 import { organizations, users } from './identity.js';
@@ -267,6 +268,8 @@ export const sandboxSnapshotMeasurements = pgTable(
       .references(() => organizations.id),
     projectId: text('project_id').notNull(),
     logicalBytes: numeric('logical_bytes').notNull(),
+    kind: text('kind', { enum: CHECKPOINT_KINDS }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     measuredAt: timestamp('measured_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -281,6 +284,7 @@ export const sandboxSnapshotMeasurements = pgTable(
       t.projectId,
       t.organizationId,
     ),
+    check('sandbox_snapshot_measurements_kind_check', oneOf('kind', CHECKPOINT_KINDS)),
   ],
 );
 

@@ -284,6 +284,8 @@ describe('billing tables', () => {
       'organization_id',
       'project_id',
       'logical_bytes',
+      'kind',
+      'created_at',
       'expires_at',
       'measured_at',
     ]);

@@ -8,6 +8,11 @@ interface ServerHookApp {
   addHook(name: 'onClose', hook: () => Promise<void>): void;
 }
 
+interface BackgroundLifecycle {
+  start(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export async function bootstrapControlApiServer(input: {
   readonly app: ServerHookApp;
   readonly eventPublisherLifecycle: EventPublisherLifecycle;
@@ -15,14 +20,17 @@ export async function bootstrapControlApiServer(input: {
   readonly githubWebhookLifecycle?: GitHubWebhookPublisherLifecycle;
   readonly githubImportLifecycle?: GitHubImportLifecycle;
   readonly notificationLifecycle?: NotificationWorkerLifecycle;
+  readonly archiveLifecycle?: BackgroundLifecycle;
 }): Promise<void> {
   input.app.addHook('onClose', async () => {
+    await input.archiveLifecycle?.close();
     await input.githubImportLifecycle?.close();
     await input.notificationLifecycle?.close();
     await input.githubWebhookLifecycle?.close();
     await input.usageOutboxLifecycle?.close();
     await input.eventPublisherLifecycle.close();
   });
+  await input.archiveLifecycle?.start();
   await input.githubImportLifecycle?.start();
   await input.notificationLifecycle?.start();
   await input.githubWebhookLifecycle?.start();

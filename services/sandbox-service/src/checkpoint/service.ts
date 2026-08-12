@@ -154,6 +154,8 @@ export interface CheckpointServiceDependencies {
       readonly organizationId: string;
       readonly projectId: string;
       readonly logicalBytes: string;
+      readonly kind: z.infer<typeof CheckpointKindSchema>;
+      readonly createdAt: string;
       readonly expiresAt: string;
     }): Promise<void>;
   };
@@ -368,6 +370,8 @@ export function createCheckpointService(dependencies: CheckpointServiceDependenc
             organizationId: input.organizationId,
             projectId: input.projectId,
             logicalBytes: snapshot.logicalBytes,
+            kind: input.kind,
+            createdAt: createdAt.toISOString(),
             expiresAt: snapshot.expiresAt,
           });
         }

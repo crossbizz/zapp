@@ -113,6 +113,14 @@ const production = vi.hoisted(() => {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
+  const archiveDatabase = { kind: 'archive-database' };
+  const archiveObjectStore = { kind: 'archive-object-store' };
+  const snapshotRetentionAudit = { kind: 'snapshot-retention-audit' };
+  const archiveJob = { run: vi.fn() };
+  const archiveLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
   const preview = {
     signingKey: Buffer.alloc(32, 0x44),
     keyVersion: 1,
@@ -185,6 +193,11 @@ const production = vi.hoisted(() => {
     storageLedger,
     dailyStorageCollector,
     dailyStorageLifecycle,
+    archiveDatabase,
+    archiveObjectStore,
+    snapshotRetentionAudit,
+    archiveJob,
+    archiveLifecycle,
     preview,
     artifactStorage,
     github,
@@ -276,6 +289,13 @@ const production = vi.hoisted(() => {
     createDatabaseDailyStorageClaim: vi.fn(() => ({ kind: 'storage-claim' })),
     createDatabaseMeteredProjectPort: vi.fn(() => ({ kind: 'metered-projects' })),
     createR2ArtifactStorageMeasurement: vi.fn(() => ({ kind: 'r2-measurement' })),
+    createPostgresAgentEventArchiveDatabase: vi.fn(() => archiveDatabase),
+    createS3AgentEventArchiveObjectStore: vi.fn(() => archiveObjectStore),
+    createAgentEventArchiveJob: vi.fn(() => archiveJob),
+    createAgentEventArchiveLifecycle: vi
+      .fn<(input: unknown) => typeof archiveLifecycle>()
+      .mockReturnValue(archiveLifecycle),
+    createDatabaseSnapshotRetentionAuditPort: vi.fn(() => snapshotRetentionAudit),
     createSandboxStorageMeasurementClient: vi.fn(() => ({ kind: 'sandbox-measurement' })),
     createGitHubProvider: vi.fn(() => githubProvider),
     createDbGitHubWebhookStore: vi.fn(() => ({ kind: 'github-webhook-store' })),
@@ -482,6 +502,13 @@ vi.mock('../src/usage/collectors/storage.js', () => ({
   createDatabaseMeteredProjectPort: production.createDatabaseMeteredProjectPort,
   createR2ArtifactStorageMeasurement: production.createR2ArtifactStorageMeasurement,
 }));
+vi.mock('../src/jobs/archive.js', () => ({
+  createPostgresAgentEventArchiveDatabase: production.createPostgresAgentEventArchiveDatabase,
+  createS3AgentEventArchiveObjectStore: production.createS3AgentEventArchiveObjectStore,
+  createAgentEventArchiveJob: production.createAgentEventArchiveJob,
+  createAgentEventArchiveLifecycle: production.createAgentEventArchiveLifecycle,
+  createDatabaseSnapshotRetentionAuditPort: production.createDatabaseSnapshotRetentionAuditPort,
+}));
 vi.mock('../src/sandbox/client.js', () => ({
   createSandboxStorageMeasurementClient: production.createSandboxStorageMeasurementClient,
 }));
@@ -549,6 +576,10 @@ describe('control-api production entrypoint', () => {
             readonly start: () => Promise<void>;
             readonly close: () => Promise<void>;
           };
+          readonly archiveLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
         }
       | undefined;
     expect(bootstrapInput?.app).toBe(production.app);
@@ -557,6 +588,21 @@ describe('control-api production entrypoint', () => {
     expect(bootstrapInput?.usageOutboxLifecycle?.close).toBeTypeOf('function');
     expect(bootstrapInput?.notificationLifecycle?.start).toBeTypeOf('function');
     expect(bootstrapInput?.notificationLifecycle?.close).toBeTypeOf('function');
+    expect(bootstrapInput?.archiveLifecycle).toBe(production.archiveLifecycle);
+    expect(production.createPostgresAgentEventArchiveDatabase).toHaveBeenCalledOnce();
+    expect(production.createS3AgentEventArchiveObjectStore).toHaveBeenCalledWith(
+      production.artifactStorage,
+    );
+    expect(production.createAgentEventArchiveJob).toHaveBeenCalledWith({
+      database: production.archiveDatabase,
+      objectStore: production.archiveObjectStore,
+      snapshots: production.snapshotRetentionAudit,
+    });
+    const archiveLifecycleInput = production.createAgentEventArchiveLifecycle.mock.calls[0]?.[0] as
+      | { readonly job: unknown; readonly onSnapshotViolations?: unknown }
+      | undefined;
+    expect(archiveLifecycleInput?.job).toBe(production.archiveJob);
+    expect(archiveLifecycleInput?.onSnapshotViolations).toBeTypeOf('function');
     expect(production.createFlexpriceIngestClient).toHaveBeenCalledTimes(2);
     expect(production.createUsageEventConsumer).toHaveBeenCalledWith(
       production.flexprice,
