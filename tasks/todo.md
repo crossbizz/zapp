@@ -192,7 +192,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 - [x] CP-26 Settings + organization directory APIs
 - [x] INT-10 Public GitHub sync policy/state/manual-sync/export
-- [ ] DEP-13 Release list/history/active-production projection
+- [x] DEP-13 Release list/history/active-production projection
 
 - [x] VF-6 Preview health + browser smoke gates
 - [x] VF-7 Playwright runner + evidence artifacts

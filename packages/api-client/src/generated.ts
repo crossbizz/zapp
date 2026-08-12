@@ -6688,7 +6688,113 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                activeProduction: boolean;
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                deployments: {
+                                    /** Format: date-time */
+                                    completedAt: string | null;
+                                    id: string;
+                                    provider: string;
+                                    providerDeploymentId: string | null;
+                                    rollbackOfDeploymentId: string | null;
+                                    /** Format: date-time */
+                                    startedAt: string;
+                                    status: string;
+                                    /** Format: uri */
+                                    url: string | null;
+                                }[];
+                                environmentId: string;
+                                evidence: {
+                                    artifactId: string;
+                                    href: string;
+                                } | null;
+                                id: string;
+                                projectId: string;
+                                status: string;
+                                /** @enum {string} */
+                                supportLevel: "compatible" | "verified" | "managed";
+                            }[];
+                            nextCursor: string | null;
+                            rollbackTargets: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                provider: string;
+                                providerDeploymentId: string | null;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
         put?: never;
         post: {
             parameters: {

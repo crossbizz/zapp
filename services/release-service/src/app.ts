@@ -12,6 +12,7 @@ import {
   ServiceAccessError,
 } from './internal/service-auth.js';
 import type { ReleaseLifecycleService } from './lifecycle.js';
+import type { ReleaseHistoryPort } from './history.js';
 import { ReleaseServiceError, type ReleaseRecordService } from './release/create.js';
 import { registerReleaseRoutes } from './routes.js';
 
@@ -20,6 +21,7 @@ export type LoggerConfig = NonNullable<FastifyServerOptions['logger']>;
 export interface AppDependencies {
   readonly records: ReleaseRecordService;
   readonly lifecycle: ReleaseLifecycleService;
+  readonly history?: ReleaseHistoryPort;
   readonly signer: ServiceTokenSigner;
   readonly now?: () => Date;
   readonly logger?: LoggerConfig;
@@ -82,6 +84,7 @@ export function buildApp(dependencies: AppDependencies) {
   registerReleaseRoutes(app, {
     records: dependencies.records,
     lifecycle: dependencies.lifecycle,
+    ...(dependencies.history === undefined ? {} : { history: dependencies.history }),
     requireService: createControlApiServiceAuth({
       signer: dependencies.signer,
       ...(dependencies.now === undefined ? {} : { now: dependencies.now }),

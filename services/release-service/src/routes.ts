@@ -2,6 +2,12 @@ import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import { z } from 'zod';
 
 import {
+  ReleaseHistoryInputSchema,
+  ReleaseHistoryPageSchema,
+  type ReleaseHistoryPort,
+} from './history.js';
+
+import {
   ActorSchema,
   CreateReleaseCandidateInputSchema,
   type Release,
@@ -22,6 +28,14 @@ import {
 
 const ReleaseParamsSchema = z.object({ releaseId: z.string().min(1) }).strict();
 const OrganizationQuerySchema = z.object({ organizationId: z.string().min(1) }).strict();
+const ProjectParamsSchema = z.object({ projectId: z.string().min(1) }).strict();
+const HistoryQuerySchema = z
+  .object({
+    organizationId: z.string().min(1),
+    cursor: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+  })
+  .strict();
 const ApproveBodySchema = z
   .object({
     actor: ActorSchema,
@@ -55,6 +69,7 @@ export function registerReleaseRoutes(
   dependencies: {
     readonly records: ReleaseRecordService;
     readonly lifecycle?: ReleaseLifecycleService;
+    readonly history?: ReleaseHistoryPort;
     readonly requireService: preHandlerAsyncHookHandler;
   },
 ): void {
@@ -82,6 +97,29 @@ export function registerReleaseRoutes(
       return sendError(reply, error);
     }
   });
+
+  app.get(
+    '/internal/projects/:projectId/releases',
+    { preHandler: dependencies.requireService },
+    async (request, reply) => {
+      try {
+        if (dependencies.history === undefined) throw new Error('release_history_unavailable');
+        const params = ProjectParamsSchema.parse(request.params);
+        const query = HistoryQuerySchema.parse(request.query);
+        const page = await dependencies.history.list(
+          ReleaseHistoryInputSchema.parse({
+            organizationId: query.organizationId,
+            projectId: params.projectId,
+            cursor: query.cursor ?? null,
+            limit: query.limit,
+          }),
+        );
+        return await reply.send({ page: ReleaseHistoryPageSchema.parse(page) });
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
 
   app.post('/internal/releases/:releaseId/approve', { preHandler: dependencies.requireService }, async (request, reply) => {
     try {

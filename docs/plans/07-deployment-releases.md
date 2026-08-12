@@ -198,8 +198,12 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 **Files:** Modify release/control views, DB schema/repos, OpenAPI/SDK/tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: paginated project release list, active-production marker, support badge, deploy history, healthy rollback targets, and bounded evidence artifact links.
-- [ ] Commit: `feat(releases): public release history projection`
+- [x] Binding behavior: paginated project release list, active-production marker, support badge, deploy history, healthy rollback targets, and bounded evidence artifact links.
+- [x] RED: add release-service and control-route tests for tenant-scoped cursor pagination, active production, support, deployments, rollback targets, and evidence links.
+- [x] GREEN: add the read-only Postgres projection and authenticated internal release-service route.
+- [x] GREEN: bridge the projection through `GET /v1/projects/:projectId/releases` and regenerate the public SDK.
+- [x] Verify focused release-service/control/API-client tests plus touched-package lint, typecheck, and build.
+- [x] Commit: `feat(releases): public release history projection`
 
 ### Task DEP-14 [M4]: Public deployment progress + actions
 
@@ -256,3 +260,4 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 - 2026-08-12 DEP-12a done — Added service-authenticated lifecycle HTTP transport, fail-closed control-api composition, public repair fork and generated SDK, atomic release audits/incident resolution, and readiness-revalidated keyed `approved → deploying`; the one capped review rejected final DEP-12 acceptance because concrete DEP-2–11 production adapters and the real synthetic/E2E journey are still absent, so the fixture was renamed as transport-only and DEP-12 remains unchecked for DEP-12b.
 - 2026-08-12 DEP-12 done — Bound the release process to real Postgres record/context stores and DEP-2–11 readiness, deployment, VF-15 evidence, Git repair, synthetic, and rollback implementations; the two-service public `/v1` journey proves keyed replay, synthetic success, repair branching, and prior-content restoration. The capped review found no unresolved Major; root integration was serialized to eliminate a proven shared-database reset race, and the single Fly gate skipped visibly because `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are absent.
 - 2026-08-12 DEP-12 CI fix — Exact-SHA CI exposed that its direct Turbo integration command bypassed the local serialization flag, allowing another package to truncate DEP-12's seeded organization; CI now serializes shared-database integration packages and a workflow regression test locks the gate.
+- 2026-08-12 DEP-13 done — Added a tenant-scoped cursor-paginated release history projection with support tier, active production, bounded deployment/rollback history and public evidence links; regenerated SDK and focused release/control/client gates passed with no provider calls.

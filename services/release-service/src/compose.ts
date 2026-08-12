@@ -9,6 +9,8 @@ import {
 } from '@zapp/verification-engine';
 import { z } from 'zod';
 
+import { createPostgresReleaseHistory } from './history.js';
+
 import { buildApp, type LoggerConfig } from './app.js';
 import {
   createReleaseLifecycleService,
@@ -327,6 +329,7 @@ export function composeApp(runtime: ReleaseServiceRuntime) {
   return buildApp({
     records,
     lifecycle,
+    history: createPostgresReleaseHistory(runtime.database),
     signer: createServiceTokenSigner(runtime.serviceTokens),
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -348,6 +351,7 @@ export function composeProductionApp(runtime: ProductionReleaseServiceRuntime) {
   return buildApp({
     records,
     lifecycle,
+    history: createPostgresReleaseHistory(runtime.database),
     signer: createServiceTokenSigner(runtime.serviceTokens),
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),

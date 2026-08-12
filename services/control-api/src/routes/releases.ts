@@ -14,6 +14,9 @@ import { ReleaseSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') }).strict();
+const ReleaseHistoryQuery = z
+  .object({ cursor: idSchema('rel').optional(), limit: z.coerce.number().int().min(1).max(50).default(20) })
+  .strict();
 const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
 const CommitCreatedPayloadSchema = z
   .object({
@@ -125,6 +128,31 @@ export const RollbackInputSchema = ReleaseMutationInputSchema.extend({
   reason: z.string().trim().min(1).max(2_000),
 }).strict();
 export const DeploymentResultSchema = z.object({ deploymentId: idSchema('dep') }).strict();
+const DeploymentHistorySchema = z
+  .object({
+    id: idSchema('dep'), provider: z.string().min(1), providerDeploymentId: z.string().nullable(),
+    status: z.string().min(1), url: z.string().url().nullable(), startedAt: z.string().datetime(),
+    completedAt: z.string().datetime().nullable(), rollbackOfDeploymentId: idSchema('dep').nullable(),
+  })
+  .strict();
+export const PublicReleaseHistoryPageSchema = z
+  .object({
+    items: z.array(z.object({
+      id: idSchema('rel'), projectId: idSchema('proj'), environmentId: idSchema('env'),
+      commitSha: CommitShaSchema, status: z.string().min(1),
+      supportLevel: z.enum(['compatible', 'verified', 'managed']),
+      activeProduction: z.boolean(), createdAt: z.string().datetime(),
+      deployments: z.array(DeploymentHistorySchema).max(100),
+      evidence: z.object({ artifactId: idSchema('art'), href: z.string().min(1).max(500) }).strict().nullable(),
+    }).strict()).max(50),
+    rollbackTargets: z.array(DeploymentHistorySchema.extend({ releaseId: idSchema('rel'), commitSha: CommitShaSchema }).strict()).max(100),
+    nextCursor: idSchema('rel').nullable(),
+  })
+  .strict();
+export const ReleaseHistoryInputSchema = z.object({
+  organizationId: idSchema('org'), projectId: idSchema('proj'), cursor: idSchema('rel').nullable(),
+  limit: z.number().int().min(1).max(50),
+}).strict();
 
 export type ReleaseRow = z.infer<typeof ReleaseRowSchema>;
 export type ReadinessReport = z.infer<typeof ReadinessSchema>;
@@ -135,6 +163,8 @@ export type ReleaseMutationInput = z.infer<typeof ReleaseMutationInputSchema>;
 export type DeployInput = z.infer<typeof DeployInputSchema>;
 export type RollbackInput = z.infer<typeof RollbackInputSchema>;
 export type DeploymentResult = z.infer<typeof DeploymentResultSchema>;
+export type PublicReleaseHistoryPage = z.infer<typeof PublicReleaseHistoryPageSchema>;
+export type ReleaseHistoryInput = z.infer<typeof ReleaseHistoryInputSchema>;
 export type ForkReleaseResult = z.infer<typeof ForkReleaseResultSchema>;
 export type CreateReleaseMutationInput = CreateReleaseInput;
 export type ApproveReleaseMutationInput = ReleaseMutationInput;
@@ -150,6 +180,7 @@ export interface ReleasePort {
   deploy(input: DeployReleaseMutationInput): Promise<DeploymentResult>;
   rollback(input: RollbackReleaseMutationInput): Promise<DeploymentResult>;
   getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest>;
+  listProjectHistory?(input: ReleaseHistoryInput): Promise<PublicReleaseHistoryPage>;
 }
 
 export interface ReleaseForkPort {
@@ -182,6 +213,36 @@ export function createUnavailableReleasePort(): ReleasePort {
 }
 
 export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps): void {
+  app.get(
+    '/v1/projects/:projectId/releases',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: {
+        params: ProjectParams,
+        querystring: ReleaseHistoryQuery,
+        response: { 200: PublicReleaseHistoryPageSchema },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined) throw projectNotFound();
+      authorize(ctx, 'view_project');
+      if (deps.port.listProjectHistory === undefined) throw releaseServiceFailed();
+      const page = await portResult(
+        () => deps.port.listProjectHistory?.({
+          organizationId: ctx.organizationId,
+          projectId: project.id,
+          cursor: request.query.cursor ?? null,
+          limit: request.query.limit,
+        }) as Promise<PublicReleaseHistoryPage>,
+        PublicReleaseHistoryPageSchema,
+      );
+      if (page.items.some((item) => item.projectId !== project.id)) throw releaseServiceFailed();
+      return page;
+    },
+  );
+
   app.post(
     '/v1/projects/:projectId/releases',
     {

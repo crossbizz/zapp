@@ -60,6 +60,7 @@ class RecordingReleasePort implements ReleasePort {
   approveResultOverride: Partial<ReleaseRow> | undefined;
   lookupOverrideId: string | undefined;
   evidenceResultOverride: Partial<EvidenceManifest> | undefined;
+  historyCursor: string | null = null;
   readonly releaseId = newId('rel');
   readonly releases = new Map<string, ReleaseRow>();
 
@@ -168,6 +169,21 @@ class RecordingReleasePort implements ReleasePort {
       { redact: (value) => value },
     );
     return Promise.resolve({ ...manifest, ...this.evidenceResultOverride });
+  }
+  listProjectHistory(input: { organizationId: string; projectId: string; cursor: string | null; limit: number }) {
+    this.historyCursor = input.cursor;
+    return Promise.resolve({
+      items: [...this.releases.values()]
+        .filter((release) => release.organizationId === input.organizationId && release.projectId === input.projectId)
+        .slice(0, input.limit)
+        .map((release) => ({
+          id: release.id, projectId: release.projectId, environmentId: release.environmentId,
+          commitSha: release.commitSha, status: release.status, supportLevel: 'compatible' as const,
+          activeProduction: true, createdAt: release.createdAt.toISOString(), deployments: [],
+          evidence: { artifactId: newId('art'), href: `/v1/releases/${release.id}/evidence` },
+        })),
+      rollbackTargets: [], nextCursor: null,
+    });
   }
   seed(row: ReleaseRow): void {
     this.releases.set(row.id, row);
@@ -322,6 +338,24 @@ function seedCompletedRunForCommit(
 }
 
 describe('release route shells', () => {
+  it('lists paginated project release history with public evidence links', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-history-source'), payload: candidateBody(wired),
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const response = await wired.built.app.inject({
+      method: 'GET', url: `/v1/projects/${wired.projectId}/releases?limit=10`, headers: wired.as(wired.owner),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [{ id: releaseId, activeProduction: true, supportLevel: 'compatible', evidence: {
+        href: `/v1/releases/${releaseId}/evidence`,
+      } }], rollbackTargets: [], nextCursor: null,
+    });
+  });
   it('rejects a prototype-only commit until a Build run owns the same commit', async () => {
     const wired = await wire();
     const commitSha = candidateBody(wired).commitSha;

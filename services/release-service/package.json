@@ -16,6 +16,10 @@
       "types": "./dist/lifecycle.d.ts",
       "default": "./dist/lifecycle.js"
     },
+    "./history": {
+      "types": "./dist/history.d.ts",
+      "default": "./dist/history.js"
+    },
     "./records": {
       "types": "./dist/release/create.d.ts",
       "default": "./dist/release/create.js"

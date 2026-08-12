@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { Release, ReleaseRecordService } from '../src/release/create.js';
 import type { ReleaseLifecycleService } from '../src/lifecycle.js';
+import type { ReleaseHistoryPort } from '../src/history.js';
 
 const ULID = '01J00000000000000000000000';
 const ORGANIZATION_ID = `org_${ULID}`;
@@ -89,10 +90,23 @@ const lifecycle: ReleaseLifecycleService = {
   forkRelease: () => Promise.reject(new Error('not used')),
 };
 
+const history: ReleaseHistoryPort = {
+  list(input) {
+    return Promise.resolve({
+      items: [{
+        id: RELEASE_ID, projectId: input.projectId, environmentId: ENVIRONMENT_ID,
+        commitSha: COMMIT_SHA, status: 'healthy', supportLevel: 'managed',
+        activeProduction: true, createdAt: RELEASE.createdAt.toISOString(), deployments: [],
+        evidenceArtifactId: null,
+      }], rollbackTargets: [], nextCursor: null,
+    });
+  },
+};
+
 describe('release-service application', () => {
   it('keeps health public and requires a control-api token for lifecycle reads', async () => {
     const signer = createServiceTokenSigner({ secret: SECRET });
-    const app = buildApp({ logger: false, records, lifecycle, signer });
+    const app = buildApp({ logger: false, records, lifecycle, history, signer });
     const url = `/internal/releases/${RELEASE_ID}/readiness?organizationId=${ORGANIZATION_ID}`;
 
     try {
@@ -155,6 +169,25 @@ describe('release-service application', () => {
           })
         ).statusCode,
       ).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns a bounded tenant-scoped project release history to control-api', async () => {
+    const signer = createServiceTokenSigner({ secret: SECRET });
+    const app = buildApp({ logger: false, records, lifecycle, history, signer });
+    try {
+      const valid = await signer.signServiceToken({ service: 'control-api', aud: 'release-service' });
+      const response = await app.inject({
+        method: 'GET',
+        url: `/internal/projects/${PROJECT_ID}/releases?organizationId=${ORGANIZATION_ID}&limit=10`,
+        headers: { 'x-zapp-service-token': valid.token },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        page: { items: [{ id: RELEASE_ID, activeProduction: true, supportLevel: 'managed' }], nextCursor: null },
+      });
     } finally {
       await app.close();
     }

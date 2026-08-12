@@ -9,6 +9,7 @@ import {
   RollbackReleaseInputSchema as InternalRollbackInputSchema,
 } from '@zapp/release-service/lifecycle';
 import { ReleaseSchema as InternalReleaseSchema } from '@zapp/release-service/records';
+import { ReleaseHistoryPageSchema as InternalReleaseHistoryPageSchema } from '@zapp/release-service/history';
 import { z } from 'zod';
 
 import {
@@ -18,6 +19,8 @@ import {
   ReleaseLookupInputSchema,
   ReleaseMutationInputSchema,
   ReleaseRowSchema,
+  PublicReleaseHistoryPageSchema,
+  ReleaseHistoryInputSchema,
   type ReleaseForkPort,
   type ReleasePort,
 } from '../routes/releases.js';
@@ -112,6 +115,27 @@ export function createReleaseServiceClient(
   }
 
   const release: ReleasePort = {
+    async listProjectHistory(rawInput) {
+      const input = ReleaseHistoryInputSchema.parse(rawInput);
+      const query = new URLSearchParams({
+        organizationId: input.organizationId,
+        limit: String(input.limit),
+        ...(input.cursor === null ? {} : { cursor: input.cursor }),
+      });
+      const response = z.object({ page: InternalReleaseHistoryPageSchema }).strict().parse(
+        await request(`/internal/projects/${input.projectId}/releases?${query.toString()}`),
+      );
+      return PublicReleaseHistoryPageSchema.parse({
+        ...response.page,
+        items: response.page.items.map(({ evidenceArtifactId, ...item }) => ({
+          ...item,
+          evidence: evidenceArtifactId === null ? null : {
+            artifactId: evidenceArtifactId,
+            href: `/v1/releases/${item.id}/evidence`,
+          },
+        })),
+      });
+    },
     async createReleaseCandidate(rawInput) {
       const body = CreateReleaseInputSchema.parse(rawInput);
       const response = z
