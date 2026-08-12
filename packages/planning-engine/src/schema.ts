@@ -19,6 +19,7 @@ export const PlanPhaseSchema = z
     title: z.string().min(1).max(500),
     acceptanceCriteria: uniqueStringListSchema(1),
     approvalAfter: z.boolean(),
+    optional: z.boolean().default(false),
   })
   .strict();
 export type PlanPhase = z.infer<typeof PlanPhaseSchema>;

@@ -101,9 +101,24 @@ const SignalIdentityShape = {
   operationKey: OperationKeySchema,
 } as const;
 
+const BuilderControlIdentityShape = {
+  ...SignalIdentityShape,
+  mode: z.enum(['build', 'autonomous']),
+} as const;
+
 export const SignalRunInputSchema = z.union([
   z.object({ ...SignalIdentityShape, signal: z.literal('credit_balance_exhausted') }).strict(),
   z.object({ ...SignalIdentityShape, signal: z.enum(['pause', 'resume', 'cancel']) }).strict(),
+  z.object({
+    ...BuilderControlIdentityShape,
+    signal: z.literal('retry_failed_task'),
+    taskId: idSchema('task'),
+  }).strict(),
+  z.object({
+    ...BuilderControlIdentityShape,
+    signal: z.literal('skip_optional_phase'),
+    phaseId: idSchema('phase'),
+  }).strict(),
   z.object({
     ...SignalIdentityShape,
     signal: z.literal('redirect'),
@@ -131,7 +146,7 @@ export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
 export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();
 
 export interface TemporalRunSignalProjection {
-  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'budgetApprovalResolved';
+  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'budgetApprovalResolved' | 'retryFailedTask' | 'skipOptionalPhase';
   readonly payload: Record<string, unknown>;
 }
 
@@ -161,6 +176,18 @@ export function projectTemporalRunSignal(value: unknown): TemporalRunSignalProje
     return {
       signalName: 'redirect',
       payload: { runId: input.runId, instruction: input.prompt, operationKey: input.operationKey },
+    };
+  }
+  if (input.signal === 'retry_failed_task') {
+    return {
+      signalName: 'retryFailedTask',
+      payload: { runId: input.runId, operationKey: input.operationKey, taskId: input.taskId },
+    };
+  }
+  if (input.signal === 'skip_optional_phase') {
+    return {
+      signalName: 'skipOptionalPhase',
+      payload: { runId: input.runId, operationKey: input.operationKey, phaseId: input.phaseId },
     };
   }
   return {

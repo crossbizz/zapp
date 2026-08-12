@@ -58,6 +58,7 @@ const ORIGINAL_PLAN = {
       title: 'Build the product',
       acceptanceCriteria: ['AC-1'],
       approvalAfter: false,
+      optional: false,
     },
   ],
   tasks: [

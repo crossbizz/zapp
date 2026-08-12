@@ -46,6 +46,14 @@ import {
   decodeBudgetApprovalResolution,
   immutableRunCeiling,
 } from './budget-approval.js';
+import {
+  RetryFailedTaskSignalSchema,
+  SkipOptionalPhaseSignalSchema,
+  retryFailedTaskEligibility,
+  retryFailedTaskSignal,
+  skipOptionalPhaseEligibility,
+  skipOptionalPhaseSignal,
+} from './builder-control.js';
 
 export { capabilityScanWorkflow } from './capability-scan.js';
 export {
@@ -84,6 +92,13 @@ export const BuildModePlanSchema = PlanSchema.superRefine((plan, context) => {
   }
   const phase = plan.phases[0];
   if (phase === undefined) return;
+  if (phase.optional) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'build_phase_must_be_required',
+      path: ['phases', 0, 'optional'],
+    });
+  }
   if (!workflowIdSchema('phase').safeParse(phase.id).success) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -290,6 +305,11 @@ const RunControlContinuationSchema = z
     cancelAcknowledgementDeadlineAt: z.string().datetime().nullable(),
     pendingRedirects: z.array(RunRedirectSignalSchema).max(100),
     pendingMessages: z.array(RunMessageSignalSchema).max(100).default([]),
+    pendingRetries: z.array(RetryFailedTaskSignalSchema).max(100).optional(),
+    pendingSkips: z.array(SkipOptionalPhaseSignalSchema).max(100).optional(),
+    failedTaskIds: z.array(workflowIdSchema('task')).max(10_000).optional(),
+    startedTaskIds: z.array(workflowIdSchema('task')).max(10_000).optional(),
+    taskAttempts: z.record(workflowIdSchema('task'), z.number().int().nonnegative().max(100)).optional(),
   })
   .strict();
 const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
@@ -632,6 +652,11 @@ async function executeRunWorkflow(
     input.control?.cancelAcknowledgementDeadlineAt ?? null;
   const pendingRedirects = [...(input.control?.pendingRedirects ?? [])];
   const pendingMessages = [...(input.control?.pendingMessages ?? [])];
+  const pendingRetries = [...(input.control?.pendingRetries ?? [])];
+  const pendingSkips = [...(input.control?.pendingSkips ?? [])];
+  let failedTaskIds = [...(input.control?.failedTaskIds ?? [])];
+  const startedTaskIds = [...(input.control?.startedTaskIds ?? [])];
+  const taskAttempts = { ...(input.control?.taskAttempts ?? {}) };
   let currentStatus: RunControlStatus['status'] = cancelRequested
     ? 'cancel_requested'
     : pauseRequested
@@ -673,6 +698,11 @@ async function executeRunWorkflow(
       cancelAcknowledgementDeadlineAt,
       pendingRedirects,
       pendingMessages,
+      pendingRetries,
+      pendingSkips,
+      failedTaskIds,
+      startedTaskIds,
+      taskAttempts,
     });
 
   setHandler(budgetApprovalResolvedSignal, (value) => {
@@ -735,6 +765,18 @@ async function executeRunWorkflow(
     if (!rememberOperation(signal.operationKey) || cancelRequested) return;
     if (pendingMessages.length >= 100) throw new Error('run message queue is full');
     pendingMessages.push(signal);
+  });
+  setHandler(retryFailedTaskSignal, (value) => {
+    const signal = RetryFailedTaskSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('task retry does not match workflow');
+    if (!rememberOperation(signal.operationKey) || cancelRequested) return;
+    pendingRetries.push(signal);
+  });
+  setHandler(skipOptionalPhaseSignal, (value) => {
+    const signal = SkipOptionalPhaseSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('phase skip does not match workflow');
+    if (!rememberOperation(signal.operationKey) || cancelRequested) return;
+    pendingSkips.push(signal);
   });
   setHandler(getRunStatusQuery, () =>
     RunControlStatusSchema.parse({
@@ -1432,6 +1474,26 @@ async function executeRunWorkflow(
         }
       }
 
+      while (pendingSkips.length > 0) {
+        const request = pendingSkips.shift();
+        if (request === undefined) break;
+        const eligibility = skipOptionalPhaseEligibility(
+          plan,
+          request.phaseId,
+          startedTaskIds,
+          [],
+        );
+        await events.emitEvents({
+          events: [event(input, 'task.updated', `build-skip:${request.operationKey}`, {
+            control: 'skip_optional_phase',
+            outcome: 'rejected',
+            reason: eligibility.reason,
+            operationKey: request.operationKey,
+            phaseId: request.phaseId,
+          }, { phaseId: phase.id })],
+        });
+      }
+
       const preExecuteControlResult = await honorNewWorkBoundary(workspaceId, 'session');
       if (preExecuteControlResult !== undefined) return preExecuteControlResult;
       const taskCommitById = new Map(taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]));
@@ -1512,6 +1574,8 @@ async function executeRunWorkflow(
       });
       const preChildCreditResult = await honorNewWorkBoundary(workspaceId, 'session');
       if (preChildCreditResult !== undefined) return preChildCreditResult;
+      if (!startedTaskIds.includes(nextTask.id)) startedTaskIds.push(nextTask.id);
+      const attempt = taskAttempts[nextTask.id] ?? 0;
       const taskScope = new CancellationScope();
       activeScope = taskScope;
       let result: z.infer<typeof TaskWorkflowResultSchema>;
@@ -1519,7 +1583,7 @@ async function executeRunWorkflow(
         const results = z.array(TaskWorkflowResultSchema).length(1).parse(
           await taskScope.run(async () =>
             await executeChild(runTaskBatchWorkflow, {
-              workflowId: `build:${input.runId}:${planArtifactId}:${nextTask.id}`,
+              workflowId: `build:${input.runId}:${planArtifactId}:${nextTask.id}:attempt:${String(attempt)}`,
               args: [
                 {
                   runId: input.runId,
@@ -1534,6 +1598,7 @@ async function executeRunWorkflow(
                       model: input.model,
                       prompt: buildTaskPrompt(input, planArtifactId, nextTask),
                       budget: { maxCredits: Math.max(1, nextTask.estimate.credits) },
+                      attempt,
                     },
                   ],
                 },
@@ -1570,6 +1635,45 @@ async function executeRunWorkflow(
           `Build task blocked by merge conflict: ${result.taskId}`,
           'build_task_blocked',
         );
+      }
+      if (result.status === 'failed') {
+        if (!failedTaskIds.includes(result.taskId)) failedTaskIds.push(result.taskId);
+        for (;;) {
+          const requestIndex = pendingRetries.findIndex(({ taskId }) => taskId === result.taskId);
+          if (requestIndex < 0) {
+            await condition(() => pendingRetries.some(({ taskId }) => taskId === result.taskId) || cancelRequested);
+            if (cancelRequested) return await completeCancellation(workspaceId);
+            continue;
+          }
+          const request = pendingRetries.splice(requestIndex, 1)[0];
+          if (request === undefined) continue;
+          const eligibility = retryFailedTaskEligibility(
+            plan,
+            result.taskId,
+            failedTaskIds,
+            taskCommits.map(({ taskId }) => taskId),
+          );
+          await events.emitEvents({
+            events: [event(input, 'task.updated', `build-retry:${request.operationKey}`, {
+              control: 'retry_failed_task',
+              outcome: eligibility.accepted ? 'accepted' : 'rejected',
+              reason: eligibility.reason,
+              operationKey: request.operationKey,
+              taskId: result.taskId,
+            }, { phaseId: phase.id, taskId: result.taskId })],
+          });
+          if (!eligibility.accepted) continue;
+          failedTaskIds = failedTaskIds.filter((taskId) => taskId !== result.taskId);
+          taskAttempts[result.taskId] = attempt + 1;
+          return await continueAsNew<typeof runWorkflow>({
+            ...input,
+            continuation: { phase: 'build_execute', workspaceId, planArtifactId, plan, taskCommits },
+            budgetAttempt,
+            sessionStep,
+            lastEmittedAssistantTurn,
+            control: controlContinuation(),
+          });
+        }
       }
       taskCommits.push({ taskId: result.taskId, commitSha: result.commitSha });
       return await continueAsNew<typeof runWorkflow>({
