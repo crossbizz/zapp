@@ -194,6 +194,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-19 Fix mode (reproduce-first)
 - [x] AR-19-FIX-1 Serialize Temporal Fix/Autonomous acceptance
 - [x] AR-20 Redirect + plan diff
+- [x] AR-20-FIX-1 Serialize redirect Temporal acceptance
 - [x] AR-21 Forking (project/branch/conversation/run)
 - [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
 - [ ] WEB-13 Releases + evidence viewer

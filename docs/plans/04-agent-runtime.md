@@ -333,6 +333,15 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Failing tests: mid-phase redirect adding a feature yields diff with approval; trivial copy-change redirect auto-applies; superseded tasks retain artifacts.
 - [x] Commit: `feat(orchestrator): redirect with plan diff + supersede semantics`
 
+#### AR-20-FIX-1 — isolate redirect Temporal acceptance from the parallel unit DAG
+
+**Files:** Modify: `packages/config/test/turbo.test.ts`, `services/orchestrator-worker/package.json`, `docs/plans/04-agent-runtime.md`, `tasks/todo.md`
+
+- [x] **RED/evidence:** authoritative clean Linux CI on `dadf6f6` times out the material-approval redirect case at the unchanged 30-second deadline while the focused case completes locally in 10.26 seconds; add a failing structural manifest test that requires the redirect suite to use the serial integration lane.
+- [x] **GREEN:** keep every redirect assertion and deadline intact; exclude `redirect.test.ts` from the parallel unit DAG and add it to the existing `test:integration --no-file-parallelism` lane.
+- [x] **Verify/review/ship:** run the manifest contract, focused redirect case, ordinary worker suite, and serial integration suite; run touched-package lint/typecheck/build, complete one focused review, push, and confirm exact-SHA Security and CI green; no provider call is required.
+- [x] Commit: `fix(orchestrator): serialize redirect Temporal acceptance`
+
 ### Task AR-21 [M3]: Forking (project, branch, conversation, run checkpoint)
 
 **Files:** Create: `services/control-api/src/routes/forks.ts`, `src/activities/fork.ts`, `test/fork.test.ts`
@@ -427,3 +436,4 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-11 AR-20 done — Added strict structurally classified plan diffs, dependency-closure pause/resume, exact material approval, supersede retention, affected-work revalidation, durable checkpoints, and late-boundary routing in Build and Autonomous; the single capped review's three P1 findings were resolved in one remediation pass, and required export, worker, and mode-test joins extended the terse file list without interface deviation.
 - 2026-08-11 AR-21 done — Added the public fork API and generated SDK plus destination-scoped, step-idempotent project, branch, conversation, checkpoint, and DEP-12 release boundaries; the single capped review's three Important identity, replay, and deployment-config findings were resolved in one remediation pass, and API registration, exports, OpenAPI inventory, harness, and generated artifacts were required file-list joins without interface deviation.
 - 2026-08-11 AR-3B done — Resumed the credential-blocked final acceptance on `claude-sonnet-5` with a one-token output cap: the accepted two-completion proof wrote and read 1,153 cached input tokens and carried all 1,153 through OPS-1A's authoritative committed response. A preliminary one-call harness run truthfully settled as `output_limit_exceeded` before the cache-read assertion and was corrected without production changes. Contracts passed 137/137, model-gateway 83/83, orchestrator-worker 219/219, and real PostgreSQL/Redis accounting 11/11; a disposable branch-schema database avoided unrelated shared-database drift, and the live Stytch milestone check passed 5/5 after isolating local dual-stack DNS timeout with IPv4-first resolution.
+- 2026-08-11 AR-20-FIX-1 done — Exact-SHA clean Linux CI exposed AR-20's real-Temporal redirect suite still running in the parallel unit DAG; a structural manifest contract now keeps the unchanged seven-case suite in the existing no-file-parallelism integration lane without widening its 30-second deadlines, provider calls, blockers, or deviations.

@@ -27,6 +27,12 @@ const webManifest = JSON.parse(
 const rootManifest = JSON.parse(
   readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
 ) as PackageManifest;
+const orchestratorManifest = JSON.parse(
+  readFileSync(
+    new URL('../../../services/orchestrator-worker/package.json', import.meta.url),
+    'utf8',
+  ),
+) as PackageManifest;
 
 describe('Turbo task graph', () => {
   it('runs each package build before its typecheck', () => {
@@ -54,6 +60,18 @@ describe('Turbo task graph', () => {
   it('serializes integration packages that reset the shared local database', () => {
     expect(rootManifest.scripts?.['verify']).toContain(
       'turbo run test:integration --filter=!@zapp/desktop --concurrency=1',
+    );
+  });
+
+  it('routes redirect Temporal acceptance through the serial integration lane', () => {
+    expect(orchestratorManifest.scripts?.['test']).toContain(
+      '--exclude test/integration/redirect.test.ts',
+    );
+    expect(orchestratorManifest.scripts?.['test:integration']).toContain(
+      'test/integration/redirect.test.ts',
+    );
+    expect(orchestratorManifest.scripts?.['test:integration']).toContain(
+      '--no-file-parallelism',
     );
   });
 });
