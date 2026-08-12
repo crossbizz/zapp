@@ -1325,6 +1325,9 @@ importers:
       '@zapp/project-adapters':
         specifier: workspace:*
         version: link:../../packages/project-adapters
+      '@zapp/specification-engine':
+        specifier: workspace:*
+        version: link:../../packages/specification-engine
       '@zapp/verification-engine':
         specifier: workspace:*
         version: link:../../packages/verification-engine

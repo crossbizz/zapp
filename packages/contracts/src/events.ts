@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { idSchema } from './id-schema.js';
 import { ModelIdentifierSchema } from './run-intent.js';
+import {
+  ConversationCardEventPayloadSchema,
+  ConversationResponseEventPayloadSchema,
+} from './conversation-cards.js';
 
 /** PRD §14.4, in order. Both the membership and the order are contractual. */
 export const AGENT_EVENT_TYPES = [
@@ -23,6 +27,8 @@ export const AGENT_EVENT_TYPES = [
   'agent.completed',
   'message.user',
   'message.assistant',
+  'conversation.card',
+  'conversation.response',
   'tool.started',
   'tool.output',
   'tool.completed',
@@ -204,6 +210,10 @@ function validateEventPayload(
       ? MessageUserPayloadSchema.safeParse(event.payload)
       : event.type === 'message.assistant'
         ? MessageAssistantPayloadSchema.safeParse(event.payload)
+        : event.type === 'conversation.card'
+          ? ConversationCardEventPayloadSchema.safeParse(event.payload)
+          : event.type === 'conversation.response'
+            ? ConversationResponseEventPayloadSchema.safeParse(event.payload)
         : undefined;
   if (parsed !== undefined && !parsed.success) {
     for (const issue of parsed.error.issues) {

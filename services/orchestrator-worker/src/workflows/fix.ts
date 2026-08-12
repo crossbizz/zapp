@@ -624,6 +624,15 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
       });
       await fixActivities.emitEvents({
         events: [
+          fixEvent(input, 'conversation.card', `organization-credit-card-${episodeOperationKey.slice(-12)}`, {
+            card: {
+              version: 1,
+              kind: 'approval',
+              cardId: `card_${input.runId}:organization-credit:${episodeOperationKey.slice(-12)}`,
+              approvalId: requested.approvalId,
+              approvalKind: 'budget_increase',
+            },
+          }, fixCase),
           fixEvent(input, 'approval.requested', `organization-credit-${episodeOperationKey.slice(-12)}`, {
             approvalId: requested.approvalId,
             type: 'budget_increase',

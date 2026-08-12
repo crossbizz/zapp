@@ -36,6 +36,7 @@
     "@zapp/model-gateway": "workspace:*",
     "@zapp/planning-engine": "workspace:*",
     "@zapp/project-adapters": "workspace:*",
+    "@zapp/specification-engine": "workspace:*",
     "@zapp/verification-engine": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "posthog-node": "5.48.1",

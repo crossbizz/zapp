@@ -4,17 +4,28 @@ import {
   continueAsNew,
   defineSignal,
   executeChild,
+  patched,
   proxyActivities,
   setHandler,
   workflowInfo,
   type RetryPolicy,
 } from '@temporalio/workflow';
+import {
+  ConversationCardIdSchema,
+  ConversationCardResponseSchema,
+  type ConversationCardResponse,
+} from '@zapp/contracts/conversation-cards';
 import { AutonomousWorkflowStartInputSchema } from '@zapp/contracts/temporal-run';
 import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
+import {
+  createInterviewSession,
+  InterviewCategorySchema,
+  InterviewStateSchema,
+} from '@zapp/specification-engine/interview';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
-import type { ApprovalActivities } from '../activities/approvals.js';
+import type { ApprovalActivities, RunApprovalActivities } from '../activities/approvals.js';
 import type { FeatureFlagActivities } from '../activities/feature-flags.js';
 import {
   BudgetApprovalResolutionSchema,
@@ -41,7 +52,7 @@ import {
 } from './builder-control.js';
 
 const idSchema = (
-  prefix: 'run' | 'org' | 'proj' | 'art' | 'rel' | 'phase' | 'task' | 'vr',
+  prefix: 'run' | 'org' | 'proj' | 'art' | 'rel' | 'phase' | 'task' | 'vr' | 'appr',
 ): z.ZodString =>
   z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`, 'u'));
 const CommitShaSchema = z.string().regex(/^[0-9a-f]{40,64}$/u);
@@ -132,6 +143,12 @@ const AutonomousControlStateSchema = z
     startedTaskIds: z.array(idSchema('task')).max(10_000).default([]),
     skippedPhaseIds: z.array(idSchema('phase')).max(1_000).default([]),
     taskAttempts: z.record(idSchema('task'), z.number().int().nonnegative().max(100)).default({}),
+    conversationResponses: z.array(z.object({
+      runId: idSchema('run'),
+      operationKey: OperationKeySchema,
+      cardId: ConversationCardIdSchema,
+      response: ConversationCardResponseSchema,
+    }).strict()).max(100).default([]),
   })
   .strict();
 type AutonomousControlState = z.infer<typeof AutonomousControlStateSchema>;
@@ -151,6 +168,7 @@ const EMPTY_CONTROL_STATE: AutonomousControlState = {
   startedTaskIds: [],
   skippedPhaseIds: [],
   taskAttempts: {},
+  conversationResponses: [],
 };
 
 export const AutonomousContinuationSchema = z
@@ -211,6 +229,8 @@ export const AutonomousApprovalResolutionSchema = z
   .object({
     runId: idSchema('run'),
     artifactId: ArtifactReferenceSchema,
+    approvalId: idSchema('appr').optional(),
+    approvalKind: z.enum(['specification', 'plan', 'plan_diff']).optional(),
     decision: z.enum(['approved', 'rejected']),
     operationKey: OperationKeySchema,
   })
@@ -223,6 +243,7 @@ export const autonomousSpecificationApprovalSignal = defineSignal<[unknown]>(
   'autonomousSpecificationApproval',
 );
 export const autonomousPlanApprovalSignal = defineSignal<[unknown]>('autonomousPlanApproval');
+export const conversationCardResponseSignal = defineSignal<[unknown]>('conversationCardResponse');
 export const autonomousPauseSignal = defineSignal<[unknown]>('pause');
 export const autonomousResumeSignal = defineSignal<[unknown]>('resume');
 export const autonomousCancelSignal = defineSignal<[unknown]>('cancel');
@@ -237,16 +258,31 @@ const AutonomousControlSignalSchema = z
 const AutonomousRedirectSignalSchema = AutonomousControlSignalSchema.extend({
   instruction: z.string().trim().min(1).max(20_000),
 }).strict();
+const ConversationCardResponseSignalSchema = z.object({
+  runId: idSchema('run'),
+  operationKey: OperationKeySchema,
+  cardId: ConversationCardIdSchema,
+  response: ConversationCardResponseSchema,
+}).strict().superRefine((value, context) => {
+  if (value.cardId !== value.response.cardId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'conversation_card_response_mismatch',
+      path: ['response', 'cardId'],
+    });
+  }
+});
 
-export const ConductInterviewInputSchema = z
-  .object({
+const ConductInterviewIdentity = {
     runId: idSchema('run'),
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
-    prompt: z.string().trim().min(1).max(20_000),
     idempotencyKey: ActivityKeySchema,
-  })
-  .strict();
+} as const;
+export const ConductInterviewInputSchema = z.union([
+  z.object({ ...ConductInterviewIdentity, prompt: z.string().trim().min(1).max(20_000) }).strict(),
+  z.object({ ...ConductInterviewIdentity, interviewState: InterviewStateSchema }).strict(),
+]);
 export const ConductInterviewResultSchema = z
   .object({ interviewArtifactId: idSchema('art'), status: z.literal('executable') })
   .strict();
@@ -517,6 +553,10 @@ const approvalActivities = proxyActivities<ApprovalActivities>({
   startToCloseTimeout: '2 minutes',
   retry: ACTIVITY_RETRY_POLICY,
 });
+const runApprovalActivities = proxyActivities<RunApprovalActivities>({
+  startToCloseTimeout: '2 minutes',
+  retry: ACTIVITY_RETRY_POLICY,
+});
 const featureFlagActivities = proxyActivities<FeatureFlagActivities>({
   startToCloseTimeout: '30 seconds',
   retry: ACTIVITY_RETRY_POLICY,
@@ -605,6 +645,15 @@ async function honorControlBoundary(
     });
     await emit(
       input,
+      event(input, 'conversation.card', `organization-credit-card:${operationKey.slice(-12)}`, {
+        card: {
+          version: 1,
+          kind: 'approval',
+          cardId: `card_${input.runId}:organization-credit:${operationKey.slice(-12)}`,
+          approvalId: requested.approvalId,
+          approvalKind: 'budget_increase',
+        },
+      }),
       event(input, 'approval.requested', `organization-credit:${operationKey.slice(-12)}`, {
         approvalId: requested.approvalId,
         type: 'budget_increase',
@@ -765,9 +814,15 @@ function matchingResolution(
   resolutions: readonly AutonomousApprovalResolution[],
   runId: string,
   artifactId: string,
+  approvalId?: string,
+  approvalKind?: 'specification' | 'plan' | 'plan_diff',
 ): AutonomousApprovalResolution | undefined {
   return resolutions.find(
-    (resolution) => resolution.runId === runId && resolution.artifactId === artifactId,
+    (resolution) =>
+      resolution.runId === runId &&
+      resolution.artifactId === artifactId &&
+      (approvalId === undefined || resolution.approvalId === undefined || resolution.approvalId === approvalId) &&
+      (approvalKind === undefined || resolution.approvalKind === undefined || resolution.approvalKind === approvalKind),
   );
 }
 
@@ -776,16 +831,60 @@ async function awaitApprovalResolution(
   control: AutonomousControlState,
   resolutions: readonly AutonomousApprovalResolution[],
   artifactId: string,
+  expectedApproval: {
+    readonly approvalId: string;
+    readonly approvalKind: 'specification' | 'plan' | 'plan_diff';
+  } | undefined,
   boundary: string,
 ): Promise<AutonomousApprovalResolution | AutonomousWorkflowResult> {
   for (;;) {
-    const resolution = matchingResolution(resolutions, input.runId, artifactId);
+    const resolution = matchingResolution(
+      resolutions,
+      input.runId,
+      artifactId,
+      expectedApproval?.approvalId,
+      expectedApproval?.approvalKind,
+    );
     if (resolution !== undefined) return resolution;
     const controlled = await honorControlBoundary(input, control, boundary);
     if (controlled !== undefined) return controlled;
     await condition(
       () =>
-        matchingResolution(resolutions, input.runId, artifactId) !== undefined ||
+        matchingResolution(
+          resolutions,
+          input.runId,
+          artifactId,
+          expectedApproval?.approvalId,
+          expectedApproval?.approvalKind,
+        ) !== undefined ||
+        control.pauseRequested ||
+        control.creditBalanceExhausted ||
+        control.cancelRequested,
+    );
+  }
+}
+
+function conversationCardId(input: AutonomousWorkflowInput, suffix: string): string {
+  return ConversationCardIdSchema.parse(`card_${input.runId}:${suffix}`);
+}
+
+async function awaitConversationResponse(
+  input: AutonomousWorkflowInput,
+  control: AutonomousControlState,
+  cardId: string,
+): Promise<ConversationCardResponse | AutonomousWorkflowResult> {
+  for (;;) {
+    const matched = control.conversationResponses.find(
+      (candidate) => candidate.runId === input.runId && candidate.cardId === cardId,
+    );
+    if (matched !== undefined) return matched.response;
+    const controlled = await honorControlBoundary(input, control, `conversation:${cardId}`);
+    if (controlled !== undefined) return controlled;
+    await condition(
+      () =>
+        control.conversationResponses.some(
+          (candidate) => candidate.runId === input.runId && candidate.cardId === cardId,
+        ) ||
         control.pauseRequested ||
         control.creditBalanceExhausted ||
         control.cancelRequested,
@@ -878,16 +977,55 @@ async function prepareExecution(
   );
   const interviewControl = await honorControlBoundary(input, control, 'interview');
   if (interviewControl !== undefined) return { kind: 'terminal', result: interviewControl };
+  let interviewInput: z.infer<typeof ConductInterviewInputSchema>;
+  if (input.conversationCardsVersion === 1 && patched('ar24-conversation-cards-v1')) {
+    const session = createInterviewSession();
+    let turnIndex = 0;
+    for (;;) {
+      const turn = session.nextTurn();
+      if (turn.status === 'complete') break;
+      const cardId = conversationCardId(input, `interview:${String(turnIndex)}`);
+      await emit(input, event(input, 'conversation.card', `interview-card:${String(turnIndex)}`, {
+        card: {
+          version: 1,
+          kind: 'question',
+          cardId,
+          questions: turn.questions.map((question) => ({
+            questionId: question.category,
+            prompt: question.question,
+            options: question.options,
+          })),
+        },
+      }, { agentId: 'planner' }));
+      const response = await awaitConversationResponse(input, control, cardId);
+      if ('status' in response) return { kind: 'terminal', result: response };
+      session.respond(response.answers.map((answer) => ({
+        category: InterviewCategorySchema.parse(answer.questionId),
+        answer: answer.answer,
+      })));
+      await emit(input, event(input, 'conversation.response', `interview-response:${String(turnIndex)}`, {
+        response,
+      }));
+      turnIndex += 1;
+    }
+    interviewInput = ConductInterviewInputSchema.parse({
+      runId: input.runId,
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      interviewState: session.state,
+      idempotencyKey: activityKey(input, 'interview'),
+    });
+  } else {
+    interviewInput = ConductInterviewInputSchema.parse({
+      runId: input.runId,
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      prompt: input.prompt,
+      idempotencyKey: activityKey(input, 'interview'),
+    });
+  }
   const interview = ConductInterviewResultSchema.parse(
-    await autonomousActivities.conductInterview(
-      ConductInterviewInputSchema.parse({
-        runId: input.runId,
-        organizationId: input.organizationId,
-        projectId: input.projectId,
-        prompt: input.prompt,
-        idempotencyKey: activityKey(input, 'interview'),
-      }),
-    ),
+    await autonomousActivities.conductInterview(interviewInput),
   );
   await emit(
     input,
@@ -912,6 +1050,18 @@ async function prepareExecution(
       }),
     ),
   );
+  const specificationApproval = input.conversationCardsVersion === 1
+    ? await runApprovalActivities.requestRunApproval({
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        kind: 'specification',
+        artifactId: specification.specificationVersionId,
+        artifactVersion: specification.version,
+        idempotencyKey: activityKey(input, 'specification-approval-request'),
+      })
+    : undefined;
+  const specificationCardId = conversationCardId(input, 'specification');
   await eventActivities.transitionRunStatus({
     runId: input.runId,
     status: 'waiting_for_approval',
@@ -924,8 +1074,29 @@ async function prepareExecution(
       artifactType: 'specification',
       version: specification.version,
     }, { agentId: 'planner' }),
+    ...(specificationApproval === undefined ? [] : [
+      event(input, 'conversation.card', 'specification-card', {
+        card: {
+          version: 1,
+          kind: 'specification',
+          cardId: specificationCardId,
+          approvalId: specificationApproval.approvalId,
+          artifactId: specification.specificationVersionId,
+          artifactVersion: specification.version,
+        },
+      }, { agentId: 'planner' }),
+    ]),
     event(input, 'approval.requested', 'specification-approval-requested', {
       gate: 'specification',
+      ...(specificationApproval === undefined ? {} : {
+        approvalId: specificationApproval.approvalId,
+        type: 'specification',
+        status: 'pending',
+        request: {
+          artifactId: specification.specificationVersionId,
+          artifactVersion: specification.version,
+        },
+      }),
       artifactId: specification.specificationVersionId,
       version: specification.version,
     }, { agentId: 'planner' }),
@@ -935,6 +1106,9 @@ async function prepareExecution(
     control,
     specificationResolutions,
     specification.specificationVersionId,
+    specificationApproval === undefined
+      ? undefined
+      : { approvalId: specificationApproval.approvalId, approvalKind: 'specification' },
     'specification-approval',
   );
   if ('status' in specificationResolution) {
@@ -944,6 +1118,10 @@ async function prepareExecution(
     input,
     event(input, 'approval.resolved', 'specification-approval-resolved', {
       gate: 'specification',
+      ...(specificationApproval === undefined ? {} : {
+        approvalId: specificationApproval.approvalId,
+        approvalKind: 'specification',
+      }),
       artifactId: specification.specificationVersionId,
       decision: specificationResolution.decision,
     }, { agentId: 'planner' }),
@@ -996,6 +1174,18 @@ async function prepareExecution(
       }),
     ),
   );
+  const planApproval = input.conversationCardsVersion === 1
+    ? await runApprovalActivities.requestRunApproval({
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        kind: 'plan',
+        artifactId: planned.planArtifactId,
+        artifactVersion: null,
+        idempotencyKey: activityKey(input, 'plan-approval-request'),
+      })
+    : undefined;
+  const planCardId = conversationCardId(input, 'plan');
   await eventActivities.transitionRunStatus({
     runId: input.runId,
     status: 'waiting_for_approval',
@@ -1013,8 +1203,27 @@ async function prepareExecution(
       phaseCount: planned.plan.phases.length,
       taskCount: planned.plan.tasks.length,
     }, { agentId: 'planner' }),
+    ...(planApproval === undefined ? [] : [
+      event(input, 'conversation.card', 'plan-card', {
+        card: {
+          version: 1,
+          kind: 'plan',
+          cardId: planCardId,
+          approvalId: planApproval.approvalId,
+          artifactId: planned.planArtifactId,
+          approvalKind: 'plan',
+        },
+      }, { agentId: 'planner' }),
+    ]),
     event(input, 'approval.requested', 'plan-approval-requested', {
-      gate: 'plan', artifactId: planned.planArtifactId,
+      gate: 'plan',
+      ...(planApproval === undefined ? {} : {
+        approvalId: planApproval.approvalId,
+        type: 'plan',
+        status: 'pending',
+        request: { artifactId: planned.planArtifactId },
+      }),
+      artifactId: planned.planArtifactId,
     }, { agentId: 'planner' }),
   );
   const planResolution = await awaitApprovalResolution(
@@ -1022,13 +1231,21 @@ async function prepareExecution(
     control,
     planResolutions,
     planned.planArtifactId,
+    planApproval === undefined
+      ? undefined
+      : { approvalId: planApproval.approvalId, approvalKind: 'plan' },
     'plan-approval',
   );
   if ('status' in planResolution) return { kind: 'terminal', result: planResolution };
   await emit(
     input,
     event(input, 'approval.resolved', 'plan-approval-resolved', {
-      gate: 'plan', artifactId: planned.planArtifactId, decision: planResolution.decision,
+      gate: 'plan',
+      ...(planApproval === undefined ? {} : {
+        approvalId: planApproval.approvalId,
+        approvalKind: 'plan',
+      }),
+      artifactId: planned.planArtifactId, decision: planResolution.decision,
     }, { agentId: 'planner' }),
   );
   if (planResolution.decision === 'rejected') {
@@ -1147,6 +1364,20 @@ async function executePhase(
             control,
             `${phase?.id ?? 'final-evidence'}:redirect:${boundary}`,
           );
+        },
+        async requestApproval(artifactId) {
+          return await runApprovalActivities.requestRunApproval({
+            runId: input.runId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            kind: 'plan_diff',
+            artifactId,
+            artifactVersion: null,
+            idempotencyKey: activityKey(
+              input,
+              `redirect-approval:${redirect.operationKey.slice(-12)}`,
+            ),
+          });
         },
         approvalFor(artifactId) {
           return matchingResolution(planResolutions, input.runId, artifactId);
@@ -1742,6 +1973,23 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
   });
   setHandler(autonomousPlanApprovalSignal, (value) => {
     capture(value, planResolutions);
+  });
+  setHandler(conversationCardResponseSignal, (value) => {
+    const signal = ConversationCardResponseSignalSchema.parse(value);
+    if (signal.runId !== input.runId) {
+      throw ApplicationFailure.nonRetryable(
+        'Conversation response does not match the workflow run',
+        'conversation_response_run_mismatch',
+      );
+    }
+    if (!rememberOperation(signal.operationKey)) return;
+    if (control.conversationResponses.length >= 100) {
+      throw ApplicationFailure.nonRetryable(
+        'Conversation response history is full',
+        'conversation_response_history_full',
+      );
+    }
+    control.conversationResponses.push(signal);
   });
   setHandler(autonomousPauseSignal, (value) => {
     const signal = AutonomousControlSignalSchema.parse(value);

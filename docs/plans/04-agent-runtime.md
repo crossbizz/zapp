@@ -369,8 +369,15 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 **Files:** Modify AgentEvent contracts, interview/spec/plan/redirect workflows and tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: versioned question/spec/plan/approval cards, matching keyed response waits, replay-compatible histories, and no workflow decision inferred from prose.
-- [ ] Commit: `feat(orchestrator): typed interactive conversation cards`
+- [x] Binding behavior: versioned question/spec/plan/approval cards, matching keyed response waits, replay-compatible histories, and no workflow decision inferred from prose.
+- [x] Commit: `feat(orchestrator): typed interactive conversation cards`
+
+Execution expansion (2026-08-12):
+
+- [x] **24a RED/GREEN — shared cards:** add a strict versioned conversation-card and keyed response union to AgentEvent/Temporal contracts; reject wrong card ids, duplicate answers, and prose-only decisions.
+- [x] **24b RED/GREEN — interactive interview:** drive the deterministic specification-engine interview in the workflow, emit question cards, wait for the matching keyed response, and pass only the resulting durable interview state to persistence.
+- [x] **24c RED/GREEN — typed approvals:** persist specification, plan, build-plan, and redirect approvals with stable ids; emit typed specification/plan/approval cards and wait on matching approval id, kind, and artifact identity.
+- [x] **24d replay/verification:** prove duplicate response keys do not advance twice and old continuation histories default safely; run focused contracts and real Temporal tests plus worker lint/typecheck/build and architecture checks, then record and commit once.
 
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
@@ -384,6 +391,8 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - Policy evaluation is code-side (Global Constraint 15); model sees redacted, delimited tool output only; approval-gated tools enumerated in AR-4 table; all activities carry org/project context for ledger + audit attribution.
 
 ## Execution log
+
+- 2026-08-12 AR-24 done — Added opt-in v1 structured interview and approval cards with keyed durable responses, stable approval persistence, exact typed signal identities, and replay-compatible legacy branches; no provider calls.
 
 - 2026-08-04 AR-1 done — Added the authenticated provider-neutral streaming gateway and four AI SDK adapters with primary-only role selection; fallback execution remains AR-2.
 - 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, with controller/human resolution tracked in external ADR-0005.

@@ -169,6 +169,8 @@ const redirectActivities = proxyActivities<RedirectActivities>({
 export interface RedirectApprovalResolution {
   readonly decision: 'approved' | 'rejected';
   readonly operationKey: string;
+  readonly approvalId?: string | undefined;
+  readonly approvalKind?: 'specification' | 'plan' | 'plan_diff' | undefined;
 }
 
 export type RedirectPaidBoundary = 'produce_plan_diff' | 'revalidate';
@@ -182,6 +184,7 @@ export interface RedirectPlanChangeHooks<ControlResult = never> {
   ): Promise<void>;
   transitionRunStatus(status: 'paused' | 'waiting_for_approval' | 'running', suffix: string): Promise<void>;
   beforePaidBoundary(boundary: RedirectPaidBoundary): Promise<ControlResult | undefined>;
+  requestApproval(artifactId: string): Promise<{ readonly approvalId: string }>;
   approvalFor(artifactId: string): RedirectApprovalResolution | undefined;
   cancellationRequested(): boolean;
 }
@@ -370,19 +373,44 @@ export async function processRedirectPlanChange<ControlResult = never>(
   const effectiveImpact = derivePlanDiffImpact(currentPlan, produced.planDiff);
   const material = Object.values(effectiveImpact).some(Boolean);
   if (material) {
+    const requestedApproval = await hooks.requestApproval(produced.planDiffArtifactId);
     await hooks.transitionRunStatus('waiting_for_approval', `redirect-waiting:${suffix}`);
+    await hooks.emit('conversation.card', `redirect-card:${suffix}`, {
+      card: {
+        version: 1,
+        kind: 'plan',
+        cardId: `card_${scope.runId}:plan-diff:${suffix}`,
+        approvalId: requestedApproval.approvalId,
+        artifactId: produced.planDiffArtifactId,
+        approvalKind: 'plan_diff',
+      },
+    });
     await hooks.emit('approval.requested', `redirect-approval-requested:${suffix}`, {
       gate: 'plan_diff',
+      approvalId: requestedApproval.approvalId,
+      type: 'plan_diff',
+      status: 'pending',
+      request: { artifactId: produced.planDiffArtifactId, impact: effectiveImpact },
       artifactId: produced.planDiffArtifactId,
       impact: effectiveImpact,
     });
+    const matchingApproval = (): RedirectApprovalResolution | undefined => {
+      const resolution = hooks.approvalFor(produced.planDiffArtifactId);
+      if (
+        resolution === undefined ||
+        (resolution.approvalId !== undefined &&
+          resolution.approvalId !== requestedApproval.approvalId) ||
+        (resolution.approvalKind !== undefined && resolution.approvalKind !== 'plan_diff')
+      ) return undefined;
+      return resolution;
+    };
     await condition(
       () =>
-        hooks.approvalFor(produced.planDiffArtifactId) !== undefined ||
+        matchingApproval() !== undefined ||
         hooks.cancellationRequested(),
     );
     if (hooks.cancellationRequested()) return { status: 'cancelled' };
-    const resolution = hooks.approvalFor(produced.planDiffArtifactId);
+    const resolution = matchingApproval();
     if (resolution === undefined) {
       throw ApplicationFailure.nonRetryable(
         'Redirect approval disappeared after its condition resolved',
@@ -391,6 +419,8 @@ export async function processRedirectPlanChange<ControlResult = never>(
     }
     await hooks.emit('approval.resolved', `redirect-approval-resolved:${suffix}`, {
       gate: 'plan_diff',
+      approvalId: requestedApproval.approvalId,
+      approvalKind: 'plan_diff',
       artifactId: produced.planDiffArtifactId,
       decision: resolution.decision,
       resolution: 'human',

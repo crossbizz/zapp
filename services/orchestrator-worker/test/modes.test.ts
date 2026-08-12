@@ -1,6 +1,6 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
-import { TOOL_GROUPS } from '@zapp/contracts';
+import { ConversationCardSchema, TOOL_GROUPS } from '@zapp/contracts';
 import { applyPlanDiff, type PlanDiff } from '@zapp/planning-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -688,6 +688,9 @@ describe('AR-18 Build mode', () => {
       resolveApprovalRequested = resolve;
     });
     let taskSessions = 0;
+    const emitted: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const approvalId = 'appr_01J00000000000000000000007';
+    const approvalRequests: unknown[] = [];
 
     const mainWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -696,6 +699,7 @@ describe('AR-18 Build mode', () => {
       activities: {
         transitionRunStatus: () => Promise.resolve(),
         emitEvents: ({ events }: { events: Array<{ type: string; payload: Record<string, unknown> }> }) => {
+          emitted.push(...events);
           if (
             events.some(
               ({ type, payload }) =>
@@ -712,6 +716,10 @@ describe('AR-18 Build mode', () => {
         commitAndPush: () => Promise.reject(new Error('not expected')),
         estimateRunCost: () => Promise.resolve({ estimatedCredits: '10.0000' }),
         requestBudgetIncrease: () => Promise.reject(new Error('not expected')),
+        requestRunApproval: (request: unknown) => {
+          approvalRequests.push(request);
+          return Promise.resolve({ approvalId });
+        },
         checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'checkpoint-build-approval' }),
         producePlan: () => Promise.resolve({ planArtifactId, plan }),
         assessBuildPlanApproval: () =>
@@ -779,6 +787,8 @@ describe('AR-18 Build mode', () => {
         await handle?.signal(autonomousPlanApprovalSignal, {
           runId: workflowInput.runId,
           artifactId: planArtifactId,
+          approvalId,
+          approvalKind: 'plan',
           decision: 'approved',
           operationKey: `op_${'7'.repeat(64)}`,
         });
@@ -792,5 +802,17 @@ describe('AR-18 Build mode', () => {
       await verificationRun;
     }
     expect(taskSessions).toBe(1);
+    expect(approvalRequests).toEqual([expect.objectContaining({
+      kind: 'plan', artifactId: planArtifactId,
+    })]);
+    const cardEvent = emitted.find(({ type }) => type === 'conversation.card');
+    expect(ConversationCardSchema.parse(cardEvent?.payload['card'])).toEqual({
+      version: 1,
+      kind: 'plan',
+      cardId: `card_${workflowInput.runId}:build-plan`,
+      approvalId,
+      artifactId: planArtifactId,
+      approvalKind: 'plan',
+    });
   }, 40_000);
 });

@@ -19,7 +19,7 @@ import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
 import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
-import type { ApprovalActivities } from '../activities/approvals.js';
+import type { ApprovalActivities, RunApprovalActivities } from '../activities/approvals.js';
 import type { SessionActivities } from '../activities/session.js';
 import type { VerifyPhaseActivities } from '../activities/verify-phase.js';
 import type { WorkspaceActivities } from '../activities/workspace.js';
@@ -384,6 +384,10 @@ const assistantContent = proxyActivities<{
   retry: ACTIVITY_RETRY_POLICY,
 });
 const approvals = proxyActivities<ApprovalActivities>({
+  startToCloseTimeout: '2 minutes',
+  retry: ACTIVITY_RETRY_POLICY,
+});
+const runApprovals = proxyActivities<RunApprovalActivities>({
   startToCloseTimeout: '2 minutes',
   retry: ACTIVITY_RETRY_POLICY,
 });
@@ -942,6 +946,15 @@ async function executeRunWorkflow(
     });
     await events.emitEvents({
       events: [
+        event(input, 'conversation.card', `organization-credit-card-${episodeOperationKey.slice(-12)}`, {
+          card: {
+            version: 1,
+            kind: 'approval',
+            cardId: `card_${input.runId}:organization-credit:${episodeOperationKey.slice(-12)}`,
+            approvalId: requested.approvalId,
+            approvalKind: 'budget_increase',
+          },
+        }),
         event(input, 'approval.requested', `organization-credit-${episodeOperationKey.slice(-12)}`, {
           approvalId: requested.approvalId,
           type: 'budget_increase',
@@ -1244,6 +1257,15 @@ async function executeRunWorkflow(
 
       let approvalOperationKey = input.operationKey;
       if (!autoApproved) {
+        const requestedApproval = await runApprovals.requestRunApproval({
+          runId: input.runId,
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          kind: 'plan',
+          artifactId: produced.planArtifactId,
+          artifactVersion: null,
+          idempotencyKey: operationKey(input, 'build-plan-approval-request'),
+        });
         currentStatus = 'waiting_for_approval';
         await events.transitionRunStatus({
           runId: input.runId,
@@ -1252,8 +1274,22 @@ async function executeRunWorkflow(
         });
         await events.emitEvents({
           events: [
+            event(input, 'conversation.card', 'build-plan-card', {
+              card: {
+                version: 1,
+                kind: 'plan',
+                cardId: `card_${input.runId}:build-plan`,
+                approvalId: requestedApproval.approvalId,
+                artifactId: produced.planArtifactId,
+                approvalKind: 'plan',
+              },
+            }),
             event(input, 'approval.requested', 'build-plan-approval-requested', {
               gate: 'build_plan',
+              approvalId: requestedApproval.approvalId,
+              type: 'plan',
+              status: 'pending',
+              request: { artifactId: produced.planArtifactId },
               artifactId: produced.planArtifactId,
               plannedDiffFiles: assessment.diffFiles,
               risk: assessment.risk,
@@ -1263,15 +1299,30 @@ async function executeRunWorkflow(
           ],
         });
         await condition(
-          () => buildPlanResolutions.has(produced.planArtifactId) || cancelRequested,
+          () => {
+            const resolution = buildPlanResolutions.get(produced.planArtifactId);
+            return (
+              resolution !== undefined &&
+              (resolution.approvalId === undefined ||
+                resolution.approvalId === requestedApproval.approvalId) &&
+              (resolution.approvalKind === undefined || resolution.approvalKind === 'plan')
+            ) || cancelRequested;
+          },
         );
         if (cancelRequested) return await completeCancellation(workspaceId);
         const resolution = buildPlanResolutions.get(produced.planArtifactId);
-        if (resolution === undefined) throw new Error('build_plan_approval_disappeared');
+        if (
+          resolution === undefined ||
+          (resolution.approvalId !== undefined &&
+            resolution.approvalId !== requestedApproval.approvalId) ||
+          (resolution.approvalKind !== undefined && resolution.approvalKind !== 'plan')
+        ) throw new Error('build_plan_approval_disappeared');
         await events.emitEvents({
           events: [
             event(input, 'approval.resolved', 'build-plan-approval-resolved', {
               gate: 'build_plan',
+              approvalId: requestedApproval.approvalId,
+              approvalKind: 'plan',
               artifactId: produced.planArtifactId,
               decision: resolution.decision,
               resolution: 'human',
@@ -1423,6 +1474,20 @@ async function executeRunWorkflow(
           },
           async beforePaidBoundary() {
             return await honorOrganizationCreditBoundary(workspaceId, 'session');
+          },
+          async requestApproval(artifactId) {
+            return await runApprovals.requestRunApproval({
+              runId: input.runId,
+              organizationId: input.organizationId,
+              projectId: input.projectId,
+              kind: 'plan_diff',
+              artifactId,
+              artifactVersion: null,
+              idempotencyKey: operationKey(
+                input,
+                `build-redirect-approval:${pending.operationKey.slice(-12)}`,
+              ),
+            });
           },
           approvalFor(artifactId) {
             return buildPlanResolutions.get(artifactId);
@@ -1971,6 +2036,15 @@ async function executeRunWorkflow(
           });
           await events.emitEvents({
             events: [
+              event(input, 'conversation.card', `budget-card-${String(budgetAttempt)}`, {
+                card: {
+                  version: 1,
+                  kind: 'approval',
+                  cardId: `card_${input.runId}:budget:${String(budgetAttempt)}`,
+                  approvalId: requested.approvalId,
+                  approvalKind: 'budget_increase',
+                },
+              }),
               event(input, 'approval.requested', `budget-approval-${String(budgetAttempt)}`, {
                 approvalId: requested.approvalId,
                 type: 'budget_increase',

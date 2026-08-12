@@ -15,7 +15,7 @@ import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 import { z } from 'zod';
 
 import type { EventActivities } from './activities/events.js';
-import type { ApprovalActivities } from './activities/approvals.js';
+import type { ApprovalActivities, RunApprovalActivities } from './activities/approvals.js';
 import type { CapabilityScanActivities } from './activities/capability-scan.js';
 import {
   createActivityIdempotencyInterceptor,
@@ -53,6 +53,7 @@ export type RunActivities = EventActivities &
   WorkspaceActivities &
   ApprovalActivities;
 export type ProductionRunActivities = RunActivities &
+  RunApprovalActivities &
   TaskWorkflowActivities &
   AutonomousActivities &
   FeatureFlagActivities &

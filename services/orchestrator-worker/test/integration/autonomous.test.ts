@@ -1,6 +1,6 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
-import { newId } from '@zapp/contracts';
+import { ConversationCardSchema, newId, type ConversationCard } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
@@ -10,6 +10,7 @@ import { createTemporalOrchestrator, TASK_QUEUES } from '../../src/worker.js';
 import {
   autonomousCancelSignal,
   autonomousCreditBalanceExhaustedSignal,
+  conversationCardResponseSignal,
   autonomousPlanApprovalSignal,
   autonomousResumeSignal,
   autonomousSpecificationApprovalSignal,
@@ -103,6 +104,93 @@ describe('AR-17 autonomous workflow', () => {
     workers.length = 0;
     workerRuns.length = 0;
     environment = undefined;
+  });
+
+  it('waits for matching keyed question cards and typed specification approval', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar24-cards-${Date.now().toString(36)}`;
+    const runId = newId('run');
+    const specificationVersionId = newId('spec');
+    const approvalId = newId('appr');
+    const queuedCards: ConversationCard[] = [];
+    let wakeCards: (() => void) | undefined;
+    const nextCard = async (): Promise<ConversationCard> => {
+      while (queuedCards.length === 0) {
+        await new Promise<void>((resolve) => { wakeCards = resolve; });
+      }
+      const card = queuedCards.shift();
+      if (card === undefined) throw new Error('card queue disappeared');
+      return card;
+    };
+    const conductStates: unknown[] = [];
+    const activities = {
+      emitEvents(input: { events: PendingAgentEvent[] }) {
+        for (const emitted of input.events) {
+          if (emitted.type !== 'conversation.card') continue;
+          queuedCards.push(ConversationCardSchema.parse(emitted.payload['card']));
+          wakeCards?.();
+          wakeCards = undefined;
+        }
+        return Promise.resolve();
+      },
+      transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('cards are structured events')),
+      conductInterview(input: { interviewState: unknown }) {
+        conductStates.push(input.interviewState);
+        return Promise.resolve({ interviewArtifactId: newId('art'), status: 'executable' as const });
+      },
+      createSpecificationDraft: () => Promise.resolve({
+        specificationVersionId, version: 1, contentEtag: `sha256:${'a'.repeat(64)}`,
+      }),
+      requestRunApproval: () => Promise.resolve({ approvalId }),
+      approveSpecification: () => Promise.reject(new Error('rejected specification must not be approved')),
+    };
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+      activities: { ...activities, ...allowAllFeatureFlags },
+    });
+    workers.push(worker);
+    workerRuns.push(worker.run());
+    const handle = await environment.client.workflow.start(autonomousWorkflow, {
+      taskQueue, workflowId: runId,
+      args: [{
+        workflowId: runId, runId, organizationId: newId('org'), projectId: newId('proj'),
+        prompt: 'Build an app interactively.', model: null, budget: { maxCredits: 100 },
+        planMaxCredits: 1000, maxConcurrency: 1, conversationCardsVersion: 1,
+      } satisfies AutonomousWorkflowInput],
+    });
+
+    let questionTurn = 0;
+    for (;;) {
+      const card = await nextCard();
+      if (card.kind !== 'question') {
+        expect(card).toMatchObject({
+          kind: 'specification', approvalId, artifactId: specificationVersionId,
+        });
+        await handle.signal(autonomousSpecificationApprovalSignal, {
+          runId, approvalId, approvalKind: 'specification',
+          artifactId: specificationVersionId, decision: 'rejected',
+          operationKey: `op_${'b'.repeat(64)}`,
+        });
+        break;
+      }
+      questionTurn += 1;
+      await handle.signal(conversationCardResponseSignal, {
+        runId,
+        operationKey: `op_${questionTurn.toString(16).padStart(64, '0')}`,
+        cardId: card.cardId,
+        response: {
+          version: 1, kind: 'question_answers', cardId: card.cardId,
+          answers: card.questions.map(({ questionId }) => ({ questionId, answer: 'decide for me' })),
+        },
+      });
+    }
+
+    await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'specification' });
+    expect(questionTurn).toBeGreaterThan(1);
+    expect(conductStates).toHaveLength(1);
   });
 
   async function runPreparationCreditInterleaving(
@@ -873,6 +961,7 @@ describe('AR-17 autonomous workflow', () => {
           startedTaskIds: [],
           skippedPhaseIds: [],
           taskAttempts: {},
+          conversationResponses: [],
         },
       },
     };

@@ -188,6 +188,15 @@ describe('AR-14 durable run budget approval loop', () => {
     expect(statuses).toEqual(['running', 'waiting_for_approval', 'running', 'completed']);
     expect(events.map(({ type }) => type)).toContain('approval.requested');
     expect(events.map(({ type }) => type)).toContain('approval.resolved');
+    expect(events.find(({ type }) => type === 'conversation.card')?.payload).toEqual({
+      card: {
+        version: 1,
+        kind: 'approval',
+        cardId: `card_${id('run')}:budget:0`,
+        approvalId: 'appr_01J00000000000000000000000',
+        approvalKind: 'budget_increase',
+      },
+    });
     expect(events.find(({ type }) => type === 'run.started')?.payload).toMatchObject({
       estimatedCredits: '12.0000',
       maxCredits: 100,

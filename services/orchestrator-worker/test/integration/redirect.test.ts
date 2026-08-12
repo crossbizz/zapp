@@ -4,7 +4,10 @@ import { newId } from '@zapp/contracts';
 import { applyPlanDiff, type PlanDiff } from '@zapp/planning-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ApprovalActivities } from '../../src/activities/approvals.js';
+import type {
+  ApprovalActivities,
+  RunApprovalActivities,
+} from '../../src/activities/approvals.js';
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
 import type { FeatureFlagActivities } from '../../src/activities/feature-flags.js';
 import type { TaskWorkflowActivities } from '../../src/activities/merge.js';
@@ -340,6 +343,13 @@ describe('AR-20 redirect + plan change', () => {
         return Promise.reject(new Error('AR-20 organization-credit approval must resume'));
       },
     };
+    const runApprovalActivities: RunApprovalActivities = {
+      requestRunApproval(input) {
+        expect(input.kind).toBe('plan_diff');
+        expect(input.artifactId).toBe(DIFF_ARTIFACT_ID);
+        return Promise.resolve({ approvalId: 'appr_01J00000000000000000000024' });
+      },
+    };
 
     const commitByTask = new Map([
       [TASK_A, '1'.repeat(40)],
@@ -394,6 +404,7 @@ describe('AR-20 redirect + plan change', () => {
         ...eventActivities,
         ...autonomousActivities,
         ...approvalActivities,
+        ...runApprovalActivities,
         ...redirectActivities,
         ...taskActivities,
         ...allowAllFeatureFlags,
@@ -553,6 +564,17 @@ describe('AR-20 redirect + plan change', () => {
           type === 'approval.requested' &&
           payload['gate'] === 'plan_diff' &&
           payload['artifactId'] === DIFF_ARTIFACT_ID,
+      ),
+    ).toBe(true);
+    expect(
+      result.events.some(
+        ({ type, payload }) =>
+          type === 'conversation.card' &&
+          payload['card'] !== null &&
+          typeof payload['card'] === 'object' &&
+          (payload['card'] as Record<string, unknown>)['approvalKind'] === 'plan_diff' &&
+          (payload['card'] as Record<string, unknown>)['approvalId'] ===
+            'appr_01J00000000000000000000024',
       ),
     ).toBe(true);
     expect(result.taskPrompts.has(TASK_FEATURE)).toBe(true);

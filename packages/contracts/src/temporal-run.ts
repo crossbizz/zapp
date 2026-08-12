@@ -5,6 +5,10 @@ import { BudgetApprovalReasonSchema } from './budget-approval.js';
 import { idSchema } from './id-schema.js';
 import { AppTypeSchema, FixRequestSchema, ModelIdentifierSchema } from './run-intent.js';
 import { RunModeSchema } from './run.js';
+import {
+  ConversationCardIdSchema,
+  ConversationCardResponseSchema,
+} from './conversation-cards.js';
 
 export const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 export const WorkflowCreditCapSchema = z.number().int().min(1).max(1_000_000);
@@ -51,6 +55,7 @@ export const AutonomousWorkflowStartInputSchema = z
     budget: RunBudgetSchema.nullable(),
     planMaxCredits: WorkflowCreditCapSchema,
     maxConcurrency: z.number().int().min(1).max(100),
+    conversationCardsVersion: z.literal(1).optional(),
   })
   .strict();
 
@@ -85,6 +90,7 @@ export function projectTemporalRunStart(value: unknown): TemporalRunStartProject
         budget: input.budget,
         planMaxCredits: input.planMaxCredits,
         maxConcurrency: 3,
+        conversationCardsVersion: 1,
       },
     });
   }
@@ -133,6 +139,21 @@ export const SignalRunInputSchema = z.union([
   }).strict(),
   z.object({ ...SignalIdentityShape, signal: z.literal('message'), message: MessageUserPayloadSchema }).strict(),
   z.object({
+    ...SignalIdentityShape,
+    mode: z.literal('autonomous'),
+    signal: z.literal('conversation_card_response'),
+    cardId: ConversationCardIdSchema,
+    response: ConversationCardResponseSchema,
+  }).strict().superRefine((input, context) => {
+    if (input.cardId !== input.response.cardId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'conversation_card_response_mismatch',
+        path: ['response', 'cardId'],
+      });
+    }
+  }),
+  z.object({
     ...ApprovalDecisionShape,
     approvalKind: z.enum(['specification', 'plan', 'plan_diff']),
     artifactId: idSchema('art'),
@@ -162,7 +183,7 @@ export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
 export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();
 
 export interface TemporalRunSignalProjection {
-  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'budgetApprovalResolved' | 'retryFailedTask' | 'skipOptionalPhase' | 'autonomousSpecificationApproval' | 'autonomousPlanApproval' | 'approvalDecision';
+  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'conversationCardResponse' | 'budgetApprovalResolved' | 'retryFailedTask' | 'skipOptionalPhase' | 'autonomousSpecificationApproval' | 'autonomousPlanApproval' | 'approvalDecision';
   readonly payload: Record<string, unknown>;
 }
 
@@ -188,6 +209,8 @@ export function projectTemporalRunSignal(value: unknown): TemporalRunSignalProje
         signalName: 'autonomousSpecificationApproval',
         payload: {
           runId: input.runId,
+          approvalId: input.approvalId,
+          approvalKind: input.approvalKind,
           artifactId: input.artifactId,
           decision: input.decision,
           operationKey: input.operationKey,
@@ -199,6 +222,8 @@ export function projectTemporalRunSignal(value: unknown): TemporalRunSignalProje
         signalName: 'autonomousPlanApproval',
         payload: {
           runId: input.runId,
+          approvalId: input.approvalId,
+          approvalKind: input.approvalKind,
           artifactId: input.artifactId,
           decision: input.decision,
           operationKey: input.operationKey,
@@ -220,6 +245,17 @@ export function projectTemporalRunSignal(value: unknown): TemporalRunSignalProje
     return {
       signalName: 'message',
       payload: { runId: input.runId, message: input.message, operationKey: input.operationKey },
+    };
+  }
+  if (input.signal === 'conversation_card_response') {
+    return {
+      signalName: 'conversationCardResponse',
+      payload: {
+        runId: input.runId,
+        operationKey: input.operationKey,
+        cardId: input.cardId,
+        response: input.response,
+      },
     };
   }
   if (input.signal === 'redirect') {

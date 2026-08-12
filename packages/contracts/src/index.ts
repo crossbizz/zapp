@@ -6,6 +6,15 @@ export {
   type RunApprovalKind,
 } from './budget-approval.js';
 export {
+  ConversationCardEventPayloadSchema,
+  ConversationCardIdSchema,
+  ConversationCardResponseSchema,
+  ConversationCardSchema,
+  ConversationResponseEventPayloadSchema,
+  type ConversationCard,
+  type ConversationCardResponse,
+} from './conversation-cards.js';
+export {
   IntegralCreditDecimalSchema,
   PlanLimitSchema,
   PlanLimitsConfigSchema,

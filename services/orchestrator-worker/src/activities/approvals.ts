@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   BudgetApprovalReasonSchema,
   CreditDecimalSchema,
+  RunApprovalKindSchema,
   RunModeSchema,
   idSchema,
 } from '@zapp/contracts';
@@ -63,6 +64,31 @@ export const BudgetIncreaseRequestSchema = z
   })
   .strict();
 
+export const RequestRunApprovalInputSchema = z
+  .object({
+    runId: idSchema('run'),
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    kind: RunApprovalKindSchema.exclude(['budget_increase']),
+    artifactId: z.string().min(1).max(512).nullable(),
+    artifactVersion: z.number().int().positive().nullable(),
+    idempotencyKey: IdempotencyKeySchema,
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      ['specification', 'plan', 'plan_diff'].includes(input.kind) &&
+      input.artifactId === null
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'artifact approval requires an artifact id',
+        path: ['artifactId'],
+      });
+    }
+  });
+export const RunApprovalRequestSchema = z.object({ approvalId: idSchema('appr') }).strict();
+
 export const CheckpointBudgetStopInputSchema = z
   .object({
     runId: idSchema('run'),
@@ -79,6 +105,7 @@ export const BudgetStopCheckpointSchema = z
 
 export type EstimateRunCostInput = z.infer<typeof EstimateRunCostInputSchema>;
 export type RequestBudgetIncreaseInput = z.infer<typeof RequestBudgetIncreaseInputSchema>;
+export type RequestRunApprovalInput = z.infer<typeof RequestRunApprovalInputSchema>;
 export type CheckpointBudgetStopInput = z.infer<typeof CheckpointBudgetStopInputSchema>;
 
 function decodeRequestBudgetIncreaseActivityInput(value: unknown): RequestBudgetIncreaseInput {
@@ -99,6 +126,7 @@ function decodeRequestBudgetIncreaseActivityInput(value: unknown): RequestBudget
 export interface ApprovalActivityPort {
   estimateRunCost(input: EstimateRunCostInput): Promise<unknown>;
   requestBudgetIncrease(input: RequestBudgetIncreaseInput): Promise<unknown>;
+  requestRunApproval?(input: RequestRunApprovalInput): Promise<unknown>;
   checkpointBudgetStop(input: CheckpointBudgetStopInput): Promise<unknown>;
 }
 
@@ -112,7 +140,15 @@ export interface ApprovalActivities {
   ): Promise<z.infer<typeof BudgetStopCheckpointSchema>>;
 }
 
-export function createApprovalActivities(port: ApprovalActivityPort): ApprovalActivities {
+export interface RunApprovalActivities {
+  requestRunApproval(
+    input: RequestRunApprovalInput,
+  ): Promise<z.infer<typeof RunApprovalRequestSchema>>;
+}
+
+export function createApprovalActivities(
+  port: ApprovalActivityPort,
+): ApprovalActivities & RunApprovalActivities {
   return {
     async estimateRunCost(inputValue) {
       const input = EstimateRunCostInputSchema.parse(inputValue);
@@ -121,6 +157,13 @@ export function createApprovalActivities(port: ApprovalActivityPort): ApprovalAc
     async requestBudgetIncrease(inputValue) {
       const input = decodeRequestBudgetIncreaseActivityInput(inputValue);
       return BudgetIncreaseRequestSchema.parse(await port.requestBudgetIncrease(input));
+    },
+    async requestRunApproval(inputValue) {
+      const input = RequestRunApprovalInputSchema.parse(inputValue);
+      if (port.requestRunApproval === undefined) {
+        throw new Error('run approval persistence is not configured');
+      }
+      return RunApprovalRequestSchema.parse(await port.requestRunApproval(input));
     },
     async checkpointBudgetStop(inputValue) {
       const input = CheckpointBudgetStopInputSchema.parse(inputValue);
@@ -152,10 +195,56 @@ export function createDatabaseApprovalActivities(options: {
   readonly database: Database;
   readonly estimateRunCost: ApprovalActivityPort['estimateRunCost'];
   readonly checkpointBudgetStop: ApprovalActivityPort['checkpointBudgetStop'];
-}): ApprovalActivities {
+}): ApprovalActivities & RunApprovalActivities {
   return createApprovalActivities({
     estimateRunCost: options.estimateRunCost,
     checkpointBudgetStop: options.checkpointBudgetStop,
+    async requestRunApproval(input) {
+      const approvalId = stableApprovalId(input.idempotencyKey);
+      const requestJson = {
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+      };
+      return await options.database.transaction(async (tx) => {
+        const [run] = await tx
+          .select({ id: agentRuns.id })
+          .from(agentRuns)
+          .where(
+            and(
+              eq(agentRuns.id, input.runId),
+              eq(agentRuns.organizationId, input.organizationId),
+              eq(agentRuns.projectId, input.projectId),
+            ),
+          )
+          .limit(1);
+        if (run === undefined) throw new Error('run was not found in the approval tenant scope');
+        await tx.insert(approvals).values({
+          id: approvalId,
+          organizationId: input.organizationId,
+          runId: input.runId,
+          taskId: null,
+          type: input.kind,
+          status: 'pending',
+          requestJson,
+          responseJson: null,
+          resolvedAt: null,
+          resolvedBy: null,
+        }).onConflictDoNothing();
+        const [row] = await tx.select().from(approvals).where(and(
+          eq(approvals.id, approvalId),
+          eq(approvals.organizationId, input.organizationId),
+          eq(approvals.runId, input.runId),
+        )).limit(1);
+        if (
+          row === undefined ||
+          row.type !== input.kind ||
+          JSON.stringify(row.requestJson) !== JSON.stringify(requestJson)
+        ) {
+          throw new Error('approval idempotency key conflicts with another request');
+        }
+        return { approvalId };
+      });
+    },
     async requestBudgetIncrease(input) {
       const approvalId = stableApprovalId(input.idempotencyKey);
       const requestJson = {

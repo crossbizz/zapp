@@ -88,7 +88,14 @@ describe('typed approval Temporal signals', () => {
       decision: 'approved',
     })).toEqual({
       signalName,
-      payload: { runId, artifactId, decision: 'approved', operationKey },
+      payload: {
+        runId,
+        approvalId,
+        approvalKind,
+        artifactId,
+        decision: 'approved',
+        operationKey,
+      },
     });
   });
 

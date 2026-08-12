@@ -63,6 +63,7 @@ describe('production Temporal run adapter', () => {
         budget: identity.budget,
         planMaxCredits: identity.planMaxCredits,
         maxConcurrency: 3,
+        conversationCardsVersion: 1,
       });
     } else {
       expect(options.args[0]).toMatchObject({ mode, planMaxCredits: identity.planMaxCredits });

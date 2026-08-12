@@ -31,6 +31,10 @@
     "./budget-approval": {
       "types": "./dist/budget-approval.d.ts",
       "default": "./dist/budget-approval.js"
+    },
+    "./conversation-cards": {
+      "types": "./dist/conversation-cards.d.ts",
+      "default": "./dist/conversation-cards.js"
     }
   },
   "scripts": {
