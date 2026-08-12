@@ -332,11 +332,6 @@ jobs:
             throw new Error('osv-scanner did not produce osv-results.json');
           }
           const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-          const acceptedCritical = new Map([
-            ['GHSA-m7jm-9gc2-mpf2', 'fast-xml-parser via AWS SDK; production reachability remediation owned by OPS-13 M5'],
-            ['GHSA-37j7-fg3j-429f', 'happy-dom test-only dependency; upgrade owned by OPS-13 M5'],
-            ['GHSA-23hp-3jrh-7fpw', 'tar in vendored desktop build toolchain; upgrade owned by OPS-13 M5'],
-          ]);
           const critical = [];
           for (const result of report.results ?? []) {
             for (const entry of result.packages ?? []) {
@@ -352,28 +347,16 @@ jobs:
               }
             }
           }
-          const unexpected = critical.filter(({ ids }) =>
-            ids.every((id) => !acceptedCritical.has(id)),
-          );
-          const stale = [...acceptedCritical.keys()].filter((id) =>
-            critical.every(({ ids }) => !ids.includes(id)),
-          );
           const lines = [
             '### Dependency scan (osv-scanner)',
             '',
             `- Critical groups (severity >= 9): ${critical.length}`,
-            `- Accepted M3 baseline: ${critical.length - unexpected.length}`,
-            `- Unexpected critical groups: ${unexpected.length}`,
-            `- Stale baseline entries: ${stale.length}`,
           ];
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
-          if (stale.length > 0) {
-            throw new Error(`remove stale OSV critical baseline entries: ${stale.join(', ')}`);
-          }
-          if (unexpected.length > 0) {
+          if (critical.length > 0) {
             throw new Error(
-              `critical OSV findings: ${unexpected.map(({ ids, package, severity }) => `${package} ${ids.join('/')} (${severity})`).join(', ')}`,
+              `critical OSV findings: ${critical.map(({ ids, package, severity }) => `${package} ${ids.join('/')} (${severity})`).join(', ')}`,
             );
           }
-          console.log(`OSV critical gate passed: ${critical.length} accepted, 0 unexpected`);
+          console.log('OSV critical gate passed: 0 findings');
           NODE

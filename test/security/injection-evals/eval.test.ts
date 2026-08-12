@@ -141,8 +141,22 @@ describe('OPS-13 prompt-injection regression corpus', () => {
     }
     expect(workflow).toMatch(/name: Semgrep policy pack[\s\S]*semgrep scan[\s\S]*--error/u);
     expect(workflow).toMatch(/name: Enforce critical vulnerability threshold[\s\S]*severity >= 9/u);
+    expect(workflow).not.toContain('acceptedCritical');
+    expect(workflow).not.toMatch(/GHSA-[0-9a-z-]+/u);
     expect(workflow).not.toMatch(
       /name: Enforce critical vulnerability threshold[\s\S]{0,160}continue-on-error: true/u,
     );
+  });
+
+  it('keeps the repository Node floor compatible with the pinned Electron rebuild tool', async () => {
+    const manifest = JSON.parse(
+      await readFile(path.join(REPOSITORY_ROOT, 'package.json'), 'utf8'),
+    ) as {
+      engines?: { node?: string };
+      pnpm?: { overrides?: Record<string, string> };
+    };
+
+    expect(manifest.pnpm?.overrides?.['@electron/rebuild']).toBe('4.2.0');
+    expect(manifest.engines?.node).toBe('>=22.12.0');
   });
 });

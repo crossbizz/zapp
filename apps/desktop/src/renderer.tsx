@@ -1,6 +1,6 @@
 import { StrictMode, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { clientFeatureFlagDefaults } from "@zapp/config";
+import { clientFeatureFlagDefaults } from "@zapp/config/flags";
 import { router } from "./router";
 import { RouterProvider } from "@tanstack/react-router";
 import { PostHogProvider } from "posthog-js/react";

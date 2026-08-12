@@ -2,7 +2,7 @@ import { createZappClient, type FetchImplementation } from "@zapp/api-client";
 import {
   ClientFeatureFlagsResponseSchema,
   type ClientFeatureFlagsResponse,
-} from "@zapp/config";
+} from "@zapp/config/flags";
 import { z } from "zod";
 
 import type { PlatformAuthSession } from "../auth/session";
