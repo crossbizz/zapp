@@ -68,6 +68,11 @@ export {
 } from './env.js';
 export { GIT_SERVICE_AUDIENCE, SERVICE_TOKEN_HEADER } from './internal/service-auth.js';
 export { GIT_CALLERS } from './routes.js';
+export {
+  createTemplateRegistry,
+  loadTemplateRegistry,
+  type ApprovedTemplateRegistry,
+} from './template-registry.js';
 export { DEFAULT_SWEEP_INTERVAL_MS, scheduleTokenSweep, type TokenSweep } from './sweep.js';
 export {
   DEFAULT_TOKEN_TTL_SECONDS,

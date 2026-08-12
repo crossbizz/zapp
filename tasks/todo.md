@@ -117,7 +117,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] AR-24 Typed interactive conversation-card workflow
 - [ ] CP-23 Public card responses + artifact reads
 - [x] WS-16 Workspace file/list/read/direct-edit-commit boundary
-- [ ] GIT-6 Approved template registry source pipeline
+- [x] GIT-6 Approved template registry source pipeline
 - [ ] GIT-5 Commit comparison + approved template seeding
 - [ ] VF-17 Test/evidence read contract
 - [ ] CP-24 Public code/diff/log/test/evidence bridge
