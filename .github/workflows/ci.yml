@@ -183,7 +183,7 @@ jobs:
       - name: Integration suites
         env:
           FORGEJO_ADMIN_TOKEN: ${{ steps.forgejo.outputs.token }}
-        run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }}
+        run: pnpm turbo run test:integration ${{ steps.filters.outputs.desktop }} --concurrency=1
 
       # Named directly rather than through turbo: these are the multi-tenant
       # guarantees (M0 exit criterion + repository-scoped token isolation), and
