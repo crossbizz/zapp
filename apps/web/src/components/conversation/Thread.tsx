@@ -1,6 +1,6 @@
 'use client';
 
-import { ZappApiError, type RunEvent } from '@zapp/api-client';
+import { ZappApiError, type ConversationCard, type RunEvent } from '@zapp/api-client';
 import { EmptyState } from '@zapp/ui';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
@@ -14,6 +14,10 @@ import { Composer, type ConversationImageInput, type ConversationSubmission } fr
 import { MessageBubble } from './MessageBubble';
 import { ProgressCard } from './ProgressCard';
 import { ToolActivityLine, type ToolActivity } from './ToolActivityLine';
+import { QuestionCard } from './QuestionCard';
+import { SpecSummaryCard } from './SpecSummaryCard';
+import { PlanReviewCard } from './PlanReviewCard';
+import { ApprovalCard } from './ApprovalCard';
 
 const activeRunStatuses = new Set(['paused', 'queued', 'running', 'waiting_for_approval']);
 
@@ -65,7 +69,14 @@ interface CommitItem {
   readonly sha: string;
 }
 
-type ThreadItem = ActivityItem | CommitItem | MessageItem | PhaseItem;
+interface CardItem {
+  readonly card: ConversationCard;
+  readonly key: string;
+  readonly kind: 'card';
+  readonly sequence: number;
+}
+
+type ThreadItem = ActivityItem | CardItem | CommitItem | MessageItem | PhaseItem;
 
 interface PendingSend {
   readonly attachmentKeys: readonly string[];
@@ -147,6 +158,12 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
       continue;
     }
     flushActivities();
+
+    if (event.type === 'conversation.card') {
+      const card = event.data.payload['card'] as ConversationCard;
+      items.push({ card, key: card.cardId, kind: 'card', sequence: event.data.sequence });
+      continue;
+    }
 
     if (event.type === 'message.user' || event.type === 'message.assistant') {
       const content = payloadString(event, 'content');
@@ -655,6 +672,14 @@ export function Thread({
           }
           if (item.kind === 'activity') {
             return <ToolActivityLine activities={item.activities} key={item.key} />;
+          }
+          if (item.kind === 'card') {
+            if (currentRun === undefined) return null;
+            const props = { organizationId, runId: currentRun.id } as const;
+            if (item.card.kind === 'question') return <QuestionCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'specification') return <SpecSummaryCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'plan') return <PlanReviewCard card={item.card} key={item.key} {...props} />;
+            return <ApprovalCard card={item.card} key={item.key} {...props} />;
           }
           if (item.kind === 'phase') {
             return (

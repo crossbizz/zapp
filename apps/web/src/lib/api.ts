@@ -30,6 +30,12 @@ export type MissionControlData =
   paths['/v1/runs/{runId}/mission-control']['get']['responses'][200]['content']['application/json'];
 export type ResolveApprovalInput =
   paths['/v1/runs/{runId}/approvals/{approvalId}']['post']['requestBody']['content']['application/json'];
+export type ConversationCardResponseInput =
+  paths['/v1/runs/{runId}/conversation-responses']['post']['requestBody']['content']['application/json'];
+export type RunSpecificationData =
+  paths['/v1/runs/{runId}/specifications/{specificationId}']['get']['responses'][200]['content']['application/json'];
+export type RunPlanData =
+  paths['/v1/runs/{runId}/plans/{artifactId}']['get']['responses'][200]['content']['application/json'];
 export type ListIncidentsQuery =
   paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
 export type UsageSummaryQuery = paths['/v1/usage/summary']['get']['parameters']['query'];
@@ -445,6 +451,31 @@ export function createControlPlaneClient(organizationId?: string) {
         path: { runId, approvalId },
         headers: headers(true, true, idempotencyKey),
         body,
+      }),
+    answerConversationCard: (
+      runId: string,
+      body: ConversationCardResponseInput,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/runs/{runId}/conversation-responses', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+        body,
+      }),
+    getRunSpecification: (runId: string, specificationId: string, signal?: AbortSignal) =>
+      client.request('/v1/runs/{runId}/specifications/{specificationId}', {
+        method: 'GET',
+        path: { runId, specificationId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getRunPlan: (runId: string, artifactId: string, signal?: AbortSignal) =>
+      client.request('/v1/runs/{runId}/plans/{artifactId}', {
+        method: 'GET',
+        path: { runId, artifactId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
       }),
     readDevServerLogs: (workspaceId: string, after = 0, signal?: AbortSignal) =>
       client.request('/v1/workspaces/{workspaceId}/dev-server/logs', {

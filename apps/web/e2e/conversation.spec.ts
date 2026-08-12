@@ -44,6 +44,7 @@ interface EventInput {
   readonly sequence: number;
   readonly type:
     | 'commit.created'
+    | 'conversation.card'
     | 'message.assistant'
     | 'message.user'
     | 'phase.completed'
@@ -180,6 +181,55 @@ test('renders Mission Control state and reconciles pause and approval actions', 
   await page.getByRole('tab', { name: 'Approvals' }).click();
   await page.getByRole('button', { name: 'Approve' }).click();
   await expect(page.getByText(/plan — approved/u)).toBeVisible();
+});
+
+test('submits typed interview answers and resolves specification and plan cards', async ({ page }) => {
+  const specificationId = 'spec_01K27Q9C2W85CMN1V9S6Q3D4FA';
+  const specificationApprovalId = 'appr_01K27Q9C2W85CMN1V9S6Q3D4FB';
+  const planArtifactId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FC';
+  const planApprovalId = 'appr_01K27Q9C2W85CMN1V9S6Q3D4FD';
+  const frames = [
+    eventFrame({ payload: { card: { version: 1, cardId: 'card_interview', kind: 'question', questions: [{ questionId: 'audience', prompt: 'Who is this for?', options: [{ label: 'Teams', tradeoff: 'Supports collaboration.', recommended: true }, { label: 'Individuals', tradeoff: 'Simpler permissions.', recommended: false }] }] } }, sequence: 1, type: 'conversation.card' }),
+    eventFrame({ payload: { card: { version: 1, cardId: 'card_specification', kind: 'specification', approvalId: specificationApprovalId, artifactId: specificationId, artifactVersion: 1 } }, sequence: 2, type: 'conversation.card' }),
+    eventFrame({ payload: { card: { version: 1, cardId: 'card_plan', kind: 'plan', approvalId: planApprovalId, artifactId: planArtifactId, approvalKind: 'plan_diff' } }, sequence: 3, type: 'conversation.card' }),
+  ].join('');
+  let submittedAnswers: unknown;
+  const approvalBodies: unknown[] = [];
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({ body: frames, headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/conversation-responses`, async (route) => {
+    submittedAnswers = route.request().postDataJSON();
+    await route.fulfill({ body: JSON.stringify({ operationKey: `op_${'a'.repeat(64)}` }), headers: corsHeaders(), status: 202 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/specifications/${specificationId}`, async (route) => {
+    const content = {
+      problem: 'Teams need a reliable release workspace.', targetUsers: ['Product teams'], goals: ['Ship safely'], nonGoals: ['Native mobile'], journeys: ['Create and deploy'], pagesRoutes: ['/'], rolesPermissions: ['Owner approves'], dataModel: ['Project'], integrations: ['GitHub'], functionalRequirements: ['Build project'], nonfunctionalRequirements: ['Accessible'], acceptanceCriteria: [{ id: 'AC-1', text: 'A release can be approved', priority: 'critical', criticalFlow: true }], assumptions: ['Authenticated user'], risks: ['Deployment failure'], definitionOfDone: ['Evidence attached'],
+    };
+    await route.fulfill({ body: JSON.stringify({ specification: { id: specificationId, organizationId, projectId, version: 1, status: 'draft', content, createdBy: 'user-ada', approvedBy: null, approvedAt: null } }), headers: corsHeaders(), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/plans/${planArtifactId}`, async (route) => {
+    await route.fulfill({ body: JSON.stringify({ plan: { artifactId: planArtifactId, approvalId: planApprovalId, approvalKind: 'plan_diff', phaseCount: 1, taskCount: 1, truncated: false, phases: [{ id: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', sequence: 1, title: 'Checkout', status: 'queued', acceptanceCriteria: ['AC-1'], optional: false }], tasks: [{ id: 'task_01K27Q9C2W85CMN1V9S6Q3D4FF', phaseId: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', title: 'Build checkout', status: 'queued', riskLevel: 'medium', acceptanceCriteria: ['AC-1'], dependencies: [], assignedAgentRole: 'builder' }] } }), headers: corsHeaders(), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/*`, async (route) => {
+    approvalBodies.push(route.request().postDataJSON());
+    await route.fulfill({ body: JSON.stringify({ approval: { approvalId: route.request().url().split('/').at(-1), kind: approvalBodies.length === 1 ? 'specification' : 'plan_diff', status: 'approved' } }), headers: corsHeaders(), status: 200 });
+  });
+
+  await openBuilder(page);
+  await page.getByLabel('Agent questions').getByLabel(/Teams/u).check();
+  await page.getByRole('button', { name: 'Submit answers' }).click();
+  await expect(page.getByText('Answers submitted.')).toBeVisible();
+  expect(submittedAnswers).toMatchObject({ kind: 'question_answers', cardId: 'card_interview', answers: [{ questionId: 'audience', answer: 'Teams' }] });
+  await expect(page.getByRole('article', { name: 'Specification summary' })).toContainText('Teams need a reliable release workspace.');
+  await page.getByRole('button', { name: 'Start building' }).click();
+  await expect(page.getByText('Specification approved.')).toBeVisible();
+  const plan = page.getByRole('article', { name: 'Plan review' });
+  await expect(plan).toContainText('1 phases · 1 tasks');
+  await expect(plan).toContainText('medium risk');
+  await page.getByRole('button', { name: 'Approve plan' }).click();
+  await expect(page.getByText('Plan approved.')).toBeVisible();
+  expect(approvalBodies).toEqual([{ kind: 'specification', decision: 'approved' }, { kind: 'plan_diff', decision: 'approved' }]);
 });
 
 test('reduces the seeded stream into messages, grouped activity, progress, and a commit link', async ({

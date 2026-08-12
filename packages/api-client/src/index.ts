@@ -20,4 +20,4 @@ export {
   type ZappClientOptions,
 } from './client.js';
 export type { components, operations, paths, webhooks } from './generated.js';
-export type { BuilderPreviewEvent } from '@zapp/contracts';
+export type { BuilderPreviewEvent, ConversationCard } from '@zapp/contracts';
