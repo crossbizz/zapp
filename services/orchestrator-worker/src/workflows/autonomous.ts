@@ -1006,6 +1006,10 @@ async function prepareExecution(
     event(input, 'artifact.created', 'plan-artifact', {
       artifactId: planned.planArtifactId,
       artifactType: 'implementation_plan',
+      phases: planned.plan.phases.map((phase) => ({
+        phaseId: phase.id,
+        optional: phase.optional,
+      })),
       phaseCount: planned.plan.phases.length,
       taskCount: planned.plan.tasks.length,
     }, { agentId: 'planner' }),

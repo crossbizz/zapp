@@ -1229,6 +1229,10 @@ async function executeRunWorkflow(
           event(input, 'artifact.created', 'build-plan-created', {
             artifactId: produced.planArtifactId,
             artifactType: 'implementation_plan',
+            phases: plan.phases.map((planPhase) => ({
+              phaseId: planPhase.id,
+              optional: planPhase.optional,
+            })),
             phaseCount: 1,
             taskCount: plan.tasks.length,
             plannedDiffFiles: assessment.diffFiles,

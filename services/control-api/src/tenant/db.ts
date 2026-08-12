@@ -5,6 +5,7 @@ import {
   type ModelIdentifier,
   newId,
   type ResourceProfile,
+  type RunApprovalKind,
   type RunMode,
   type SupportLevel,
   type WorkspaceStatus,
@@ -658,7 +659,7 @@ export interface TenantMissionControlRepository {
 export interface ResolveRunApprovalInput {
   readonly runId: string;
   readonly approvalId: string;
-  readonly type: 'budget_increase';
+  readonly type: RunApprovalKind;
   readonly decision: 'approved' | 'rejected';
   readonly reason: string | null;
   readonly resolvedBy: string;

@@ -3,7 +3,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
-import type { AgentRun, Approval, Branch, Project, Workspace } from '@zapp/db';
+import type { AgentEventRow, AgentRun, Approval, Branch, Project, Workspace } from '@zapp/db';
 import type { ModelCompletionRepository } from '../src/usage/model-completions.js';
 import {
   CreditBalanceExhaustedError,
@@ -75,6 +75,10 @@ class FakeOrchestratorPort {
     readonly decision?: string;
     readonly absoluteCeiling?: string;
     readonly reason?: string;
+    readonly taskId?: string;
+    readonly phaseId?: string;
+    readonly approvalKind?: string;
+    readonly artifactId?: string;
   }[] = [];
   failStarts = 0;
   ambiguousStarts = 0;
@@ -101,6 +105,10 @@ class FakeOrchestratorPort {
     readonly decision?: string;
     readonly absoluteCeiling?: string;
     readonly reason?: string;
+    readonly taskId?: string;
+    readonly phaseId?: string;
+    readonly approvalKind?: string;
+    readonly artifactId?: string;
   }): Promise<{ applied: boolean }> {
     this.signals.push({
       runId: input.runId,
@@ -110,6 +118,10 @@ class FakeOrchestratorPort {
       ...(input.decision === undefined ? {} : { decision: input.decision }),
       ...(input.absoluteCeiling === undefined ? {} : { absoluteCeiling: input.absoluteCeiling }),
       ...(input.reason === undefined ? {} : { reason: input.reason }),
+      ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+      ...(input.phaseId === undefined ? {} : { phaseId: input.phaseId }),
+      ...(input.approvalKind === undefined ? {} : { approvalKind: input.approvalKind }),
+      ...(input.artifactId === undefined ? {} : { artifactId: input.artifactId }),
     });
     return Promise.resolve(this.signalResult as { applied: boolean });
   }
@@ -1724,6 +1736,16 @@ describe('workspace passthrough routes', () => {
       });
       expect(response.statusCode, response.body).toBe(404);
     }
+    for (const [index, url] of [
+      `/v1/runs/${foreignRun.id}/tasks/${newId('task')}/retry`,
+      `/v1/runs/${foreignRun.id}/phases/${newId('phase')}/skip`,
+    ].entries()) {
+      const response = await wired.built.app.inject({
+        method: 'POST', url,
+        headers: { ...wired.as(viewer), 'idempotency-key': `foreign-builder-control-${String(index)}` },
+      });
+      expect(response.statusCode, response.body).toBe(404);
+    }
     for (const [action, payload] of [
       ['start', undefined], ['checkpoint', { kind: 'active' }], ['terminate', undefined], ['preview', { port: 3000, ttlSeconds: 60 }],
     ] as const) {
@@ -1736,6 +1758,172 @@ describe('workspace passthrough routes', () => {
     expect(wired.orchestrator.starts).toEqual([]);
     expect(wired.orchestrator.signals).toEqual([]);
     expect(sandbox.calls).toEqual([]);
+  });
+
+  it('signals eligible retry/skip controls once and returns a typed stale conflict without signalling', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'builder-control-run' },
+      payload: { mode: 'autonomous', prompt: 'Exercise builder controls' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const run = wired.data.runs.find((row) => row.id === runId);
+    if (run === undefined) throw new Error('builder-control run missing');
+    run.status = 'running';
+    const taskPhaseId = newId('phase');
+    const skipPhaseId = newId('phase');
+    const taskId = newId('task');
+    const event = (
+      type: AgentEventRow['type'],
+      payloadJson: Record<string, unknown>,
+      sequence: number,
+      phaseId: string | null,
+      eventTaskId: string | null = null,
+    ): AgentEventRow => ({
+      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
+      sequence, type, payloadJson, visibility: 'user', occurredAt: wired.built.now(),
+      phaseId, taskId: eventTaskId, agentId: null,
+    });
+    wired.data.events.push(
+      event('artifact.created', {
+        artifactId: newId('art'), artifactType: 'implementation_plan',
+        phases: [
+          { phaseId: taskPhaseId, optional: false },
+          { phaseId: skipPhaseId, optional: true },
+        ],
+      }, 1, null),
+      event('phase.created', {
+        phaseId: taskPhaseId, sequence: 1, title: 'Required work', status: 'running',
+      }, 2, taskPhaseId),
+      event('task.created', {
+        taskId, phaseId: taskPhaseId, title: 'Build', status: 'failed', riskLevel: 'low', dependencies: [],
+      }, 3, taskPhaseId, taskId),
+    );
+
+    const viewer = await joinViewer(wired);
+    const forbidden = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      headers: { ...wired.as(viewer), 'idempotency-key': 'retry-viewer-forbidden' },
+    });
+    expect(forbidden.statusCode, forbidden.body).toBe(403);
+    const missingCsrf = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      headers: {
+        cookie: wired.owner.cookie,
+        [ORGANIZATION_HEADER]: wired.organizationId,
+        'idempotency-key': 'retry-missing-csrf',
+      },
+    });
+    expect(missingCsrf.statusCode, missingCsrf.body).toBe(403);
+    expect(missingCsrf.json<{ error: { code: string } }>().error.code).toBe('csrf_required');
+
+    const retryHeaders = { ...wired.as(wired.owner), 'idempotency-key': 'retry-failed-task-01' };
+    const retry = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`, headers: retryHeaders,
+    });
+    const replay = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`, headers: retryHeaders,
+    });
+    const skip = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/phases/${skipPhaseId}/skip`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'skip-optional-phase-01' },
+    });
+
+    expect(retry.statusCode, retry.body).toBe(202);
+    expect(replay.statusCode, replay.body).toBe(202);
+    expect(skip.statusCode, skip.body).toBe(202);
+    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task')).toEqual([
+      expect.objectContaining({ runId, taskId }),
+    ]);
+    expect(wired.orchestrator.signals).toContainEqual(expect.objectContaining({
+      runId, signal: 'skip_optional_phase', phaseId: skipPhaseId,
+    }));
+
+    const replayAfterAnotherControl = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`, headers: retryHeaders,
+    });
+    expect(replayAfterAnotherControl.statusCode, replayAfterAnotherControl.body).toBe(202);
+    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task'))
+      .toHaveLength(1);
+
+    wired.data.events.push(event(
+      'task.updated', { taskId, status: 'running' }, 4, taskPhaseId, taskId,
+    ));
+    const stale = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'retry-stale-task-01' },
+    });
+    expect(stale.statusCode, stale.body).toBe(409);
+    expect(stale.json<{ error: { code: string } }>().error.code).toBe('builder_control_task_not_failed');
+    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task')).toHaveLength(1);
+  });
+
+  it('resolves a matching non-budget approval kind and rejects a stale kind without mutation', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-run' },
+      payload: { mode: 'autonomous', prompt: 'Wait for plan approval' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const approvalId = newId('appr');
+    const artifactId = newId('art');
+    wired.data.approvals.push({
+      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
+      type: 'plan', status: 'pending', requestJson: { artifactId }, responseJson: null,
+      requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+    });
+
+    const mismatch = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-mismatch' },
+      payload: { kind: 'specification', decision: 'approved' },
+    });
+    expect(mismatch.statusCode, mismatch.body).toBe(404);
+    expect(wired.data.approvals.find(({ id }) => id === approvalId)?.status).toBe('pending');
+
+    const approved = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-plan' },
+      payload: { kind: 'plan', decision: 'approved' },
+    });
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(approved.json()).toEqual({ approval: { approvalId, kind: 'plan', status: 'approved' } });
+    expect(wired.orchestrator.signals.at(-1)).toMatchObject({
+      runId, signal: 'approval_decision', approvalKind: 'plan', artifactId, decision: 'approved',
+    });
+  });
+
+  it('uses the production-deploy permission for deploy approval decisions', async () => {
+    const wired = await wire();
+    const builder = await joinBuilder(wired);
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'deploy-approval-run' },
+      payload: { mode: 'build', prompt: 'Prepare a production release' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const approvalId = newId('appr');
+    wired.data.approvals.push({
+      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
+      type: 'deploy', status: 'pending', requestJson: {}, responseJson: null,
+      requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      headers: { ...wired.as(builder), 'idempotency-key': 'deploy-approval-forbidden' },
+      payload: { kind: 'deploy', decision: 'approved' },
+    });
+
+    expect(response.statusCode, response.body).toBe(403);
+    expect(wired.data.approvals.find(({ id }) => id === approvalId)?.status).toBe('pending');
+    expect(wired.orchestrator.signals).not.toContainEqual(expect.objectContaining({ approvalId }));
   });
 
   it.each(['approved', 'rejected'] as const)(
@@ -1792,6 +1980,7 @@ describe('workspace passthrough routes', () => {
         approval: {
           approvalId,
           status: decision,
+          kind: 'budget_increase',
           absoluteCeiling: '200.0000',
         },
       });
