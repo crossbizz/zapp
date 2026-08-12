@@ -114,6 +114,7 @@ export {
 export {
   CheckpointInputSchema,
   CheckpointKindSchema,
+  CHECKPOINT_KINDS,
   CheckpointRefSchema,
   CleanupFailureResponseSchema,
   CleanupFailureStageSchema,

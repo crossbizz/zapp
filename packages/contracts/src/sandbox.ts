@@ -144,7 +144,8 @@ export const ExecHandleSchema = z.object({
 export type ExecHandle = z.infer<typeof ExecHandleSchema>;
 
 /** PRD §18.8 retention classes: 30 days for active work and release evidence, 7 for diagnostics. */
-export const CheckpointKindSchema = z.enum(['active', 'diagnostic', 'release_evidence']);
+export const CHECKPOINT_KINDS = ['active', 'diagnostic', 'release_evidence'] as const;
+export const CheckpointKindSchema = z.enum(CHECKPOINT_KINDS);
 
 export type CheckpointKind = z.infer<typeof CheckpointKindSchema>;
 

@@ -19,6 +19,10 @@ terraform {
       source  = "fly-apps/fly"
       version = "~> 0.0.23"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.19"
+    }
   }
 
   # State lives in Terraform Cloud / an S3-compatible backend per environment.
@@ -31,6 +35,12 @@ terraform {
 
 provider "fly" {
   # FLY_API_TOKEN from the environment. Never a variable, never a tfvars file —
-  # a token in state is a token in every backup of that state.
-  useinternaltunnel = false
+  # a token in state is a token in every backup of that state. The pinned
+  # provider exposes no useinternaltunnel setting; keeping that obsolete field
+  # made even `terraform validate` fail before inspecting any resource.
+}
+
+provider "cloudflare" {
+  # CLOUDFLARE_API_TOKEN is read from the environment. It is never a Terraform
+  # variable, so the credential cannot be serialized into a tfvars file.
 }

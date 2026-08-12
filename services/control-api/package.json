@@ -18,6 +18,7 @@
     "test:gate5": "node --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo ./node_modules/vitest/vitest.mjs run --config vitest.gate5.config.ts --no-file-parallelism",
     "test:isolation": "vitest run --dir test/integration --no-file-parallelism tenant-isolation",
     "billing:bootstrap": "tsx src/billing/stripe.ts",
+    "archive:restore": "tsx --env-file-if-exists=../../.env src/jobs/archive.ts",
     "dev": "tsx watch --env-file-if-exists=../../.env --import ./src/instrumentation.ts src/server.ts",
     "start": "node --enable-source-maps --import ./dist/instrumentation.js dist/server.js"
   },

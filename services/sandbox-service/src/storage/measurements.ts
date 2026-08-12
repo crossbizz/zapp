@@ -1,4 +1,4 @@
-import { idSchema } from '@zapp/contracts';
+import { CheckpointKindSchema, idSchema } from '@zapp/contracts';
 import { sandboxSnapshotMeasurements, type Database } from '@zapp/db';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -14,6 +14,8 @@ export interface SnapshotMeasurementStore {
     readonly organizationId: string;
     readonly projectId: string;
     readonly logicalBytes: string;
+    readonly kind: z.infer<typeof CheckpointKindSchema>;
+    readonly createdAt: string;
     readonly expiresAt: string;
   }): Promise<void>;
   sumActiveBytes(scope: z.infer<typeof ProjectScopeSchema>, at: Date): Promise<unknown>;
@@ -34,6 +36,8 @@ export function createDatabaseSnapshotMeasurementStore(
           organizationId: idSchema('org'),
           projectId: idSchema('proj'),
           logicalBytes: BytesSchema,
+          kind: CheckpointKindSchema,
+          createdAt: z.string().datetime({ offset: true }),
           expiresAt: z.string().datetime({ offset: true }),
         })
         .strict()
@@ -42,6 +46,7 @@ export function createDatabaseSnapshotMeasurementStore(
         .insert(sandboxSnapshotMeasurements)
         .values({
           ...input,
+          createdAt: new Date(input.createdAt),
           expiresAt: new Date(input.expiresAt),
         })
         .onConflictDoNothing({ target: sandboxSnapshotMeasurements.providerSnapshotId })
@@ -56,6 +61,8 @@ export function createDatabaseSnapshotMeasurementStore(
         existing.organizationId !== input.organizationId ||
         existing.projectId !== input.projectId ||
         existing.logicalBytes !== input.logicalBytes ||
+        existing.kind !== input.kind ||
+        existing.createdAt.toISOString() !== input.createdAt ||
         existing.expiresAt.toISOString() !== input.expiresAt
       ) {
         throw new Error('snapshot measurement identity conflicts with persisted logical bytes');

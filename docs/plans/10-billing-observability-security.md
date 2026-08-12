@@ -219,8 +219,9 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `services/control-api/src/jobs/archive.ts` (with CP-17), R2 lifecycle Terraform
 **Effort:** M
 
-- [ ] Binding behavior (PRD §31.4, master §5.2): monthly `agent_events` partitions > 90 d → R2 JSONL archive (readable by support tooling) → partition drop; artifact TTLs by class via R2 lifecycle rules (test 30 d, diagnostics 7 d, evidence retained); Modal snapshot TTL enforcement audit (WS-7 classes); restore-from-archive utility (support tool: rehydrate a run's events read-only).
-- [ ] Commit: `feat(ops): retention archival with rehydration tooling`
+- [x] Binding behavior (PRD §31.4, master §5.2): monthly `agent_events` partitions > 90 d → R2 JSONL archive (readable by support tooling) → partition drop; artifact TTLs by class via R2 lifecycle rules (test 30 d, diagnostics 7 d, evidence retained); Modal snapshot TTL enforcement audit (WS-7 classes); restore-from-archive utility (support tool: rehydrate a run's events read-only).
+- Approved provider deviation (ADR-0031): R2 can match only a key prefix, while master §5.2 locks class after dynamic tenant/project segments. CP-17's structurally classified nightly worker therefore owns 30 d/7 d deletion; Terraform owns only lifecycle hygiene expressible without risking release evidence.
+- [x] Commit: `feat(ops): retention archival with rehydration tooling`
 
 ### Task OPS-15 [Deferred post-P0 — ADR-0022]: Backup/DR + drills
 
@@ -270,6 +271,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-12 OPS-14 done — Added strict crash-resumable monthly event partition archival, immutable checksum-verified R2/MinIO JSONL, a read-only run rehydration CLI, persisted WS-7 snapshot class/creation metadata with production retention audit, and validated Cloudflare lifecycle Terraform; the real PostgreSQL→MinIO archive/drop/restore gate passed, while ADR-0031 moves class TTL deletion to CP-17 because Cloudflare can match only a leading key prefix and the locked tenant-first layout makes a broad rule unsafe for release evidence.
 - 2026-08-12 OPS-13 done — Removed all three temporary critical OSV baselines by aligning control-plane AWS clients, upgrading desktop happy-dom, and pinning Electron rebuild 4; the single capped review raised the repository Node floor to 22.12 to match the pinned tool's engine, and task-owned injection, Semgrep, OSV, dependency, static, unit, browser-bundle, and native-rebuild gates passed. Forge's final macOS copy remains unverified because the pre-existing standalone packaging installer cannot resolve later-added `workspace:*` dependencies; no provider call or behavioral deviation.
 - 2026-08-12 OPS-11 done — Added tenant-scoped encrypted incident ingestion, explicit web and notification Fix creation, and transactional incident→run→release resolution links; the single capped review closed identity, seed-bounding, notification, plaintext-diagnostic, and environment-boundary gaps, and the cold gate's cross-package Zod compatibility defect was repaired with a composability regression. Task-owned tests and the real Neon incident lifecycle passed; the root integration rail used the remote us-east-2 Neon database, where one unrelated build-run recovery case completed correctly in 5.15 s under a 15 s process allowance but exceeded its fixed 5 s local-docker timeout, and a later SSE worker wedged in teardown, so exact-head GitHub Actions remains the authoritative clean-machine gate; Forgejo, live Stripe, and live GitHub provider cases skipped for missing credentials, with no provider call, blocker, or behavioral deviation.
 - 2026-08-12 OPS-10 CI repair done — Exact-head Security rejected the generated observability checker's empty JSON-parse catch; made its existing fail-closed empty-manifest fallback explicit and retained the same structural gate behavior.

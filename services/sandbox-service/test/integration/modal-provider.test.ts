@@ -1711,6 +1711,8 @@ describe('create status terminate and idempotency', () => {
       organizationId: IDS.organizationId,
       projectId: IDS.projectId,
       logicalBytes: '4096',
+      kind: 'active',
+      createdAt: '2026-08-08T12:00:00.000Z',
       expiresAt: '2026-09-07T12:00:00.000Z',
     });
   });

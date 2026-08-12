@@ -34,7 +34,7 @@ and the community provider — Fly publishes no official one — then proposes t
 recreate the machine when it drifts. For a single-volume app that is a detached
 volume and a Git host that is down.
 
-**Does not own:** any secret. `FLY_API_TOKEN` comes from the environment, the
+**Does not own:** any secret. `FLY_API_TOKEN` and `CLOUDFLARE_API_TOKEN` come from the environment, the
 database password and the Forgejo admin token are `fly secrets`, and neither
 appears in an output. A secret in state is a secret in every backup of state.
 
@@ -43,8 +43,10 @@ appears in an output. A secret in state is a secret in every backup of state.
 ```sh
 cd infra/terraform
 terraform init -backend-config=env/staging.backend.hcl   # backend is not committed
-terraform plan  -var environment=staging -var fly_org=zapp -var git_domain=git-staging.zapp.build
-terraform apply -var environment=staging -var fly_org=zapp -var git_domain=git-staging.zapp.build
+terraform plan  -var environment=staging -var fly_org=zapp -var git_domain=git-staging.zapp.build \
+  -var cloudflare_account_id=… -var artifact_bucket_name=zapp-artifacts-staging
+terraform apply -var environment=staging -var fly_org=zapp -var git_domain=git-staging.zapp.build \
+  -var cloudflare_account_id=… -var artifact_bucket_name=zapp-artifacts-staging
 ```
 
 Then, in order:
@@ -128,15 +130,22 @@ with `fly volumes extend` does not show up as drift.
 Removing that block is a deliberate act. It belongs in the same change as a
 restore plan, not in a hurry.
 
+## R2 retention
+
+Terraform owns the artifact bucket lifecycle document and aborts incomplete
+multipart uploads after seven days. It intentionally does not install a delete
+transition: Cloudflare can match only a key prefix, while the locked object
+layout puts the retention class after tenant/project segments. CP-17 enforces
+the 30-day test and 7-day diagnostic TTLs from structurally classified database
+rows; release evidence is retained. See ADR-0031.
+
 ## Verification status
 
-`terraform validate` has **not** been run against this configuration: terraform
-is not installed on the machine these files were authored on, and `validate`
-requires `terraform init` to download the provider first. The configuration is
-therefore syntax-reviewed but unverified. Run
+Terraform 1.9.8 `fmt -check`, provider initialization, and `validate` were run
+against the full configuration on 2026-08-12. Re-run before every apply:
 
 ```sh
 terraform init -backend=false && terraform validate
 ```
 
-before the first apply, and treat any diagnostic as this file's bug.
+Treat any diagnostic as this configuration's bug.

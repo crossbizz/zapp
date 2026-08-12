@@ -33,6 +33,13 @@ import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl, resolveGitService } from './git/client.js';
 import { loggerOptions } from './logging.js';
+import {
+  createAgentEventArchiveJob,
+  createAgentEventArchiveLifecycle,
+  createPostgresAgentEventArchiveDatabase,
+  createS3AgentEventArchiveObjectStore,
+  createDatabaseSnapshotRetentionAuditPort,
+} from './jobs/archive.js';
 import { createRedisConnection } from './redis/client.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
@@ -293,6 +300,26 @@ const eventPublisherLifecycle = createEventPublisherLifecycle({
   },
   database,
   redis,
+});
+const archiveLifecycle = createAgentEventArchiveLifecycle({
+  job: createAgentEventArchiveJob({
+    database: createPostgresAgentEventArchiveDatabase({
+      async query(statement) {
+        return await database.sql.unsafe(statement);
+      },
+    }),
+    objectStore: createS3AgentEventArchiveObjectStore(artifactStorage),
+    snapshots: createDatabaseSnapshotRetentionAuditPort(database.db),
+  }),
+  onError: (error) => {
+    app.log.error({ err: error }, 'agent event archival failed');
+  },
+  onSnapshotViolations: (violations) => {
+    app.log.error(
+      { snapshotIds: violations.map((violation) => violation.snapshotId) },
+      'sandbox snapshot retention policy violation',
+    );
+  },
 });
 const usageQueue = createSqsUsageQueue(usageQueueConfig);
 const usageCounter = createRedisUsageLedgerCounter(redis);
@@ -566,6 +593,7 @@ try {
     githubWebhookLifecycle,
     githubImportLifecycle,
     notificationLifecycle,
+    archiveLifecycle,
   });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
