@@ -1070,6 +1070,40 @@ const FileEntrySchema = z
   .object({ path: z.string(), type: z.enum(['file', 'directory', 'symlink']) })
   .strict();
 const FileListSchema = z.array(FileEntrySchema);
+const FileStatSchema = FileEntrySchema.extend({
+  size: z.number().int().nonnegative(),
+  mtimeMs: z.number().finite().nonnegative(),
+}).strict();
+const WorkspaceRelativePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      !posix.isAbsolute(value)
+      && !value.includes('\\')
+      && !value.includes('\0')
+      && !value.split('/').includes('..'),
+    'Expected a workspace-relative path',
+  );
+const GitMergeRefSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((ref) => {
+    const components = ref.split('/');
+    return !(
+      ref.startsWith('-')
+      || ref.endsWith('.')
+      || ref.endsWith('/')
+      || ref.includes('..')
+      || ref.includes('@{')
+      || /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref)
+      || components.some(
+        (component) =>
+          component.length === 0 || component.startsWith('.') || component.endsWith('.lock'),
+      )
+    );
+  }, 'Expected a safe Git ref');
 const GitInputSchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -1083,6 +1117,10 @@ const GitInputSchema = z.discriminatedUnion('operation', [
       paths: z.array(z.string()).min(1),
       message: z.string().min(1),
     })
+    .strict(),
+  z.object({ operation: z.literal('merge'), ref: GitMergeRefSchema }).strict(),
+  z
+    .object({ operation: z.literal('revert'), commit: z.string().regex(/^[0-9a-f]{7,64}$/iu) })
     .strict(),
 ]);
 const GitResultSchema = z
@@ -2189,8 +2227,51 @@ export class ModalSandboxProvider {
     return FileListSchema.parse(jsonAgentBody(response));
   }
 
+  async statFile(providerWorkspaceId: string, path: string) {
+    const relativePath = WorkspaceRelativePathSchema.parse(path);
+    const script = [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const root = fs.realpathSync('.');",
+      'const requested = process.argv[1];',
+      'const target = path.resolve(root, requested);',
+      'const parent = target === root ? root : fs.realpathSync(path.dirname(target));',
+      "if (target !== root && parent !== root && !parent.startsWith(root + path.sep)) throw new Error('unsafe path');",
+      'const value = fs.lstatSync(target === root ? root : path.resolve(parent, path.basename(requested)));',
+      "const type = value.isDirectory() ? 'directory' : value.isSymbolicLink() ? 'symlink' : 'file';",
+      'process.stdout.write(JSON.stringify({ path: requested, type, size: value.size, mtimeMs: value.mtimeMs }));',
+    ].join('');
+    const result = await this.exec({
+      providerWorkspaceId,
+      command: 'node',
+      args: ['-e', script, relativePath],
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.truncated) {
+      throw new Error('Workspace file metadata could not be read');
+    }
+    return FileStatSchema.parse(JSON.parse(result.stdout) as unknown);
+  }
+
   async git(providerWorkspaceId: string, untrustedInput: unknown, idempotencyKey = randomUUID()) {
     const input = GitInputSchema.parse(untrustedInput);
+    if (input.operation === 'merge' || input.operation === 'revert') {
+      const argument = input.operation === 'merge' ? input.ref : input.commit;
+      const result = await this.exec(
+        {
+          providerWorkspaceId,
+          command: 'git',
+          args: [input.operation, '--no-edit', '--', argument],
+          timeoutMs: 30_000,
+        },
+        idempotencyKey,
+      );
+      return GitResultSchema.parse({
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      });
+    }
     const response = await this.requestAgent(providerWorkspaceId, {
       method: 'POST',
       path: '/git',

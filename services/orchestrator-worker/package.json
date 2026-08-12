@@ -38,6 +38,7 @@
     "@zapp/project-adapters": "workspace:*",
     "@zapp/specification-engine": "workspace:*",
     "@zapp/verification-engine": "workspace:*",
+    "@zapp/workspace-runtime": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "posthog-node": "5.48.1",
     "zod": "^3.23.8",
@@ -46,7 +47,6 @@
   "devDependencies": {
     "@temporalio/testing": "1.22.0",
     "@types/node": "^22.9.0",
-    "@zapp/workspace-runtime": "workspace:*",
     "postgres": "^3.4.9",
     "vitest": "^3.2.7"
   }

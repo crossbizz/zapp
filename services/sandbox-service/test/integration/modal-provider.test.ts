@@ -408,9 +408,24 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
         body: Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n'),
       };
     }
+    const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
+      cmd?: string;
+      args?: string[];
+    };
+    const stdout =
+      body.cmd === 'node'
+        ? JSON.stringify({
+            path: body.args?.at(-1),
+            type: 'file',
+            size: 12,
+            mtimeMs: NOW.getTime(),
+          })
+        : body.cmd === 'git'
+          ? 'clean'
+          : 'hello';
     return jsonResponse({
       exitCode: 0,
-      stdout: 'hello',
+      stdout,
       stderr: '',
       durationMs: 1,
       truncated: false,
@@ -1321,6 +1336,26 @@ describe('attach reattach recovery and ownership', () => {
       headers,
     });
     expect(unsafeEditorRead.statusCode, unsafeEditorRead.body).toBe(400);
+    const fileStat = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/files/stat?path=src%2Findex.ts`,
+      headers,
+    });
+    expect(fileStat.statusCode).toBe(200);
+    expect(fileStat.json()).toEqual({
+      path: 'src/index.ts',
+      type: 'file',
+      size: 12,
+      mtimeMs: NOW.getTime(),
+    });
+    const merge = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/git`,
+      headers,
+      payload: { operation: 'merge', ref: 'task/feature' },
+    });
+    expect(merge.statusCode).toBe(200);
+    expect(merge.json()).toEqual({ exitCode: 0, stdout: 'clean', stderr: '' });
   });
 
   it('reconciles unknown, terminated, unready, disappeared, and mismatched provider state without replacement', async () => {
@@ -3447,6 +3482,12 @@ describe('agent proxy and unguarded conformance', () => {
     await expect(
       provider.listFiles(providerWorkspaceId, '.', { glob: '*.ts', maxDepth: 2 }),
     ).resolves.toEqual([{ path: 'src/index.ts', type: 'file' }]);
+    await expect(provider.statFile(providerWorkspaceId, 'src/index.ts')).resolves.toEqual({
+      path: 'src/index.ts',
+      type: 'file',
+      size: 12,
+      mtimeMs: NOW.getTime(),
+    });
     await expect(
       provider.git(providerWorkspaceId, { operation: 'status', args: ['--short'] }),
     ).resolves.toEqual({
@@ -3454,6 +3495,15 @@ describe('agent proxy and unguarded conformance', () => {
       stdout: 'clean',
       stderr: '',
     });
+    await expect(
+      provider.git(providerWorkspaceId, { operation: 'merge', ref: 'task/feature' }),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'clean', stderr: '' });
+    await expect(
+      provider.git(providerWorkspaceId, { operation: 'revert', commit: 'a'.repeat(40) }),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'clean', stderr: '' });
+    await expect(
+      provider.git(providerWorkspaceId, { operation: 'merge', ref: '../escape' }),
+    ).rejects.toThrow();
     await expect(provider.health(providerWorkspaceId)).resolves.toMatchObject({ ok: true });
     await expect(provider.metrics(providerWorkspaceId)).resolves.toMatchObject({
       activeChildren: 0,
@@ -4899,6 +4949,7 @@ interface AgentProxyProvider {
     path: string,
     options?: { glob?: string; maxDepth?: number },
   ): Promise<unknown>;
+  statFile(providerWorkspaceId: string, path: string): Promise<unknown>;
   git(providerWorkspaceId: string, input: unknown): Promise<unknown>;
   health(providerWorkspaceId: string): Promise<unknown>;
   metrics(providerWorkspaceId: string): Promise<unknown>;

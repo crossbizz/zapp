@@ -180,7 +180,9 @@ git commit -m "feat(sandbox): add deployable local service"
 - Create: `services/orchestrator-worker/src/runtime/sandbox-client.ts`
 - Create: `services/orchestrator-worker/test/sandbox-client.test.ts`
 - Modify: `services/sandbox-service/src/routes/workspaces.ts`
+- Modify: `services/sandbox-service/src/provider/modal.ts`
 - Modify: `services/sandbox-service/test/integration/modal-provider.test.ts`
+- Modify: `services/sandbox-service/test/integration/git-clone.test.ts`
 - Modify: `services/orchestrator-worker/package.json`
 
 **Interfaces:**
@@ -189,6 +191,9 @@ git commit -m "feat(sandbox): add deployable local service"
 export interface SandboxWorkspaceClientOptions {
   baseUrl: string;
   serviceTokens: ServiceTokenConfig;
+  organizationId: string;
+  projectId: string;
+  workspaceId: string;
   fetch?: typeof fetch;
 }
 

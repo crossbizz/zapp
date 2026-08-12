@@ -378,6 +378,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       execStream: () => ({ [Symbol.asyncIterator]: async function* () {} }),
       killExec: unused,
       readFile: unused,
+      statFile: unused,
       writeFile: unused,
       listFiles: unused,
       git: unused,

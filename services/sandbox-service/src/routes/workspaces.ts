@@ -200,6 +200,10 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
     idempotencyKey?: string,
   ): Promise<z.infer<typeof KillResponseSchema>>;
   readFile(providerWorkspaceId: string, path: string): Promise<Uint8Array>;
+  statFile(
+    providerWorkspaceId: string,
+    path: string,
+  ): Promise<z.infer<typeof FileStatResponseSchema>>;
   writeFile(
     providerWorkspaceId: string,
     path: string,
@@ -371,6 +375,25 @@ const EditorEditResponseSchema = z.object({
   commitRef: z.string().regex(/^[0-9a-f]{7,64}$/u),
   compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
 }).strict();
+const GitMergeRefSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((ref) => {
+    const components = ref.split('/');
+    return !(
+      ref.startsWith('-')
+      || ref.endsWith('.')
+      || ref.endsWith('/')
+      || ref.includes('..')
+      || ref.includes('@{')
+      || /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref)
+      || components.some(
+        (component) =>
+          component.length === 0 || component.startsWith('.') || component.endsWith('.lock'),
+      )
+    );
+  }, 'Expected a safe Git ref');
 const GitBodySchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -384,6 +407,10 @@ const GitBodySchema = z.discriminatedUnion('operation', [
       paths: z.array(z.string()).min(1),
       message: z.string().min(1),
     })
+    .strict(),
+  z.object({ operation: z.literal('merge'), ref: GitMergeRefSchema }).strict(),
+  z
+    .object({ operation: z.literal('revert'), commit: z.string().regex(/^[0-9a-f]{7,64}$/iu) })
     .strict(),
 ]);
 const AtomicWriteBodySchema = z
@@ -458,6 +485,14 @@ const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const FileListResponseSchema = z.array(
   z.object({ path: z.string(), type: z.enum(['file', 'directory', 'symlink']) }).strict(),
 );
+const FileStatResponseSchema = z
+  .object({
+    path: z.string(),
+    type: z.enum(['file', 'directory', 'symlink']),
+    size: z.number().int().nonnegative(),
+    mtimeMs: z.number().finite().nonnegative(),
+  })
+  .strict();
 const GitResponseSchema = z
   .object({ exitCode: z.number().int(), stdout: z.string(), stderr: z.string() })
   .strict();
@@ -1763,6 +1798,21 @@ export function registerWorkspaceRoutes(
             ...(query.glob === undefined ? {} : { glob: query.glob }),
             ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
           },
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/internal/workspaces/:workspaceId/files/stat',
+    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const { path } = FileQuerySchema.parse(request.query);
+      return FileStatResponseSchema.parse(
+        await deps.provider.statFile(
+          await resolveProviderWorkspaceId(workspaceId, request),
+          path,
         ),
       );
     },
