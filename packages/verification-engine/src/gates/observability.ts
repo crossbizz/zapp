@@ -17,7 +17,7 @@ const read = async (path) => {
 };
 const manifestSource = await read('package.json');
 let manifest = {};
-try { manifest = JSON.parse(manifestSource); } catch {}
+try { manifest = JSON.parse(manifestSource); } catch { manifest = {}; }
 const dependencies = { ...(manifest.dependencies ?? {}), ...(manifest.devDependencies ?? {}) };
 const faro = await read('src/observability/faro-web.ts');
 const otel = await read('src/observability/otel-node.ts');
