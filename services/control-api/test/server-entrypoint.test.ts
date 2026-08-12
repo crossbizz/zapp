@@ -35,6 +35,7 @@ const production = vi.hoisted(() => {
   const temporalEnv = { address: 'temporal.test:7233', namespace: 'zapp-test' };
   const temporalConnection = { close: vi.fn(() => Promise.resolve()) };
   const temporal = { workflow: { kind: 'production-temporal-client' } };
+  const runOrchestrator = { kind: 'production-run-orchestrator' };
   const app = {
     listen: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
@@ -216,6 +217,7 @@ const production = vi.hoisted(() => {
     gitService,
     redis,
     temporal,
+    runOrchestrator,
     temporalConnection,
     temporalEnv,
     usageConsumer,
@@ -234,6 +236,7 @@ const production = vi.hoisted(() => {
       .fn<(input: unknown) => Promise<void>>()
       .mockResolvedValue(undefined),
     composeApp: vi.fn<(input: unknown) => typeof app>().mockReturnValue(app),
+    composeRunOrchestrator: vi.fn(() => runOrchestrator),
     createDb: vi.fn<(url: string) => typeof database>().mockReturnValue(database),
     createEventPublisher: vi
       .fn<(dependencies: unknown, options: unknown) => typeof eventPublisher>()
@@ -318,6 +321,7 @@ const production = vi.hoisted(() => {
       LOG_LEVEL: 'silent',
       NODE_ENV: 'test',
       PORT: 4_321,
+      RUN_WORKFLOW_PROFILE: 'default',
     })),
     loadGitServiceUrl: vi.fn(() => 'http://git-service.test:4500'),
     loadReleaseServiceUrl: vi.fn(() => 'http://release-service.test:4300'),
@@ -387,7 +391,10 @@ vi.mock('@temporalio/client', () => ({
   Connection: { connect: production.connectTemporal },
 }));
 vi.mock('../src/auth/config.js', () => ({ loadAuthEnv: production.loadAuthEnv }));
-vi.mock('../src/compose.js', () => ({ composeApp: production.composeApp }));
+vi.mock('../src/compose.js', () => ({
+  composeApp: production.composeApp,
+  composeRunOrchestrator: production.composeRunOrchestrator,
+}));
 vi.mock('../src/config/rate-limits.js', () => ({
   loadRateLimitSettings: production.loadRateLimitSettings,
 }));
@@ -555,6 +562,7 @@ describe('control-api production entrypoint', () => {
         modelGatewayUrl: 'http://model-gateway.test:4100',
         releaseServiceUrl: 'http://release-service.test:4300',
         temporal: production.temporal,
+        orchestrator: production.runOrchestrator,
         artifactStorage: production.artifactStorage,
         admin: {
           enabled: true,
@@ -562,6 +570,11 @@ describe('control-api production entrypoint', () => {
         },
       }),
     );
+    expect(production.composeRunOrchestrator).toHaveBeenCalledWith({
+      temporal: production.temporal,
+      nodeEnv: 'test',
+      workflowProfile: 'default',
+    });
     expect(production.connectTemporal).toHaveBeenCalledWith({
       address: production.temporalEnv.address,
     });

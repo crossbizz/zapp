@@ -237,6 +237,7 @@ describe('environment', () => {
       HOST: '0.0.0.0',
       PORT: 4000,
       LOG_LEVEL: 'info',
+      RUN_WORKFLOW_PROFILE: 'default',
     });
   });
 

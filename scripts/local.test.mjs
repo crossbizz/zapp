@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { loadLocalConfig, LocalPreflightError } from './local/config.mjs';
 import { createProcessSupervisor } from './local/process.mjs';
-import { runLocal } from './local/supervisor.mjs';
+import { defaultWaitForHttp, runLocal } from './local/supervisor.mjs';
 
 const COMPLETE_ENV = {
   STYTCH_PROJECT_ID: 'project-test-configured',
@@ -275,6 +275,24 @@ test('reports the exact occupied application port before starting infrastructure
     calls.some((call) => call.includes('scripts/dev-up.sh')),
     false,
   );
+});
+
+test('aborts an in-flight HTTP readiness retry on shutdown', async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+
+  const readiness = defaultWaitForHttp('http://127.0.0.1:65535/healthz', {
+    signal: controller.signal,
+    fetchImpl: () => {
+      attempts += 1;
+      controller.abort();
+      return Promise.reject(new Error('service is still starting'));
+    },
+    wait: () => assert.fail('an aborted readiness check must not schedule another retry'),
+  });
+
+  await assert.rejects(readiness, (error) => error.name === 'AbortError');
+  assert.equal(attempts, 1);
 });
 
 test('runs preflight and startup in dependency order, opens the UI, and exits zero on Ctrl-C', async () => {

@@ -94,6 +94,10 @@ const NON_PRD_TABLES = new Map([
     'the durable logical-byte inventory captured at snapshot creation because Modal 0.9.0 exposes no authoritative snapshot size API, required by ADR-0030 and plan 10 OPS-2',
   ],
   [
+    'sandbox_capacity_admissions',
+    'the durable admission decision, expiry fence, and replay record required by M1-GATE-16 so sandbox capacity remains bounded across sandbox-service restarts',
+  ],
+  [
     'usage_reconciliation_corrections',
     'the idempotent durable Flexprice correction journal required by plan 10 OPS-2 so reconciliation retries cannot double-adjust vendor aggregates',
   ],

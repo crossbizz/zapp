@@ -11,7 +11,7 @@ import { TEST_AUTH_CONFIG, TEST_MASTER_KEY, TEST_PRICING } from './support/harne
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
 const appCapture = vi.hoisted(() => {
-  const app = { kind: 'composed-app' };
+  const app = { kind: 'composed-app', register: vi.fn() };
   return {
     app,
     buildApp: vi.fn<(dependencies: AppDeps) => typeof app>().mockReturnValue(app),
@@ -68,6 +68,7 @@ const PLAN_LIMITS = loadPlanLimitsConfig({
 describe('control-api event stream composition', () => {
   beforeEach(() => {
     appCapture.buildApp.mockClear();
+    appCapture.app.register.mockClear();
   });
 
   it('hands the injected wakeup source to the composed SSE route', () => {

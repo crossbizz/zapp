@@ -343,8 +343,7 @@ export async function runM1Live(options = {}) {
 async function createPlaywrightSession({ cwd, env, output, artifactRoot, timestamp }) {
   const requireFromWeb = createRequire(resolve(cwd, 'apps/web/package.json'));
   const { chromium } = requireFromWeb('@playwright/test');
-  const apiModuleUrl = pathToFileURL(resolve(cwd, 'packages/api-client/dist/index.js')).href;
-  const { createZappClient } = await import(apiModuleUrl);
+  const { createZappClient } = await import('../packages/api-client/dist/index.js');
   const userDataDir = resolve(artifactRoot, 'browser-profile');
   await mkdir(userDataDir, { recursive: true });
   const context = await chromium.launchPersistentContext(userDataDir, {

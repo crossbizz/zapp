@@ -1,9 +1,8 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
-import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
 
 import { loadLocalConfig, LocalPreflightError } from './config.mjs';
 import { createProcessSupervisor } from './process.mjs';
@@ -38,28 +37,35 @@ function defaultCheckPort(port) {
   });
 }
 
-async function defaultWaitForHttp(url, { timeoutMs = 90_000, wait } = {}) {
-  const pause =
-    wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+export async function defaultWaitForHttp(
+  url,
+  { timeoutMs = 90_000, wait, signal, fetchImpl = fetch } = {},
+) {
+  const pause = wait ?? ((milliseconds, options) => delay(milliseconds, undefined, options));
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     try {
-      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(2_000) });
+      const requestSignal =
+        signal === undefined
+          ? AbortSignal.timeout(2_000)
+          : AbortSignal.any([signal, AbortSignal.timeout(2_000)]);
+      const response = await fetchImpl(url, { redirect: 'manual', signal: requestSignal });
       await response.body?.cancel().catch(() => undefined);
       if (response.status >= 200 && response.status < 400) return;
     } catch {
+      signal?.throwIfAborted();
       // A dependency that is still starting is expected; retry until the deadline.
     }
-    await pause(250);
+    await pause(250, { signal });
   }
   throw new Error(`Readiness timed out: ${url}`);
 }
 
 async function defaultVerifyImages(config) {
-  const moduleUrl = pathToFileURL(
-    join(config.cwd, 'services/sandbox-service/dist/provider/modal.js'),
-  ).href;
-  const { createModalImagePublisher } = await import(moduleUrl);
+  const { createModalImagePublisher } = await import(
+    '../../services/sandbox-service/dist/provider/modal.js'
+  );
   const provider = createModalImagePublisher({
     credentials: {
       tokenId: config.env.MODAL_TOKEN_ID,
@@ -151,7 +157,7 @@ export async function runLocal(options = {}) {
   const raceReady = (promise) => controlled(promise);
   const startHttp = async (spec, url) => {
     supervisor.start(spec);
-    await raceReady(waitForHttp(url));
+    await raceReady(waitForHttp(url, { signal: commandController.signal }));
   };
 
   try {
