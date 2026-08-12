@@ -16,6 +16,8 @@
     "lint": "pnpm lint:architecture && turbo run lint",
     "lint:architecture": "pnpm test:architecture && node scripts/check-model-provider-boundary.mjs",
     "test:architecture": "node --test scripts/model-provider-boundary.test.mjs",
+    "test:validation": "node --test validation/benchmarks/*.test.mjs",
+    "validation:benchmarks": "node validation/benchmarks/validate.mjs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:integration": "turbo run test:integration",

@@ -289,6 +289,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 
 ## Execution log
 
+- 2026-08-12 V-1 done — Added and twice reviewed the deterministic 10-app/50-change PRD §40.2–40.3 catalog over checked-in VF fixtures, with fail-closed path, symlink, environment-file, metadata, and overwrite controls plus an isolated materializer; no provider credentials were used.
 - 2026-08-09 M1-PLAN-2 done — Split capped AR-3 into stable completion identity, Temporal-durable transcript replay, pre-dispatch OPS-1A reservations with append-only approved ceiling increases and fixed local run-rate snapshots, and final gateway wiring so retries do not rebill or bypass SQS/Flexprice; both review rounds were consumed and the final concrete plan findings were resolved without a third round (ADR-0025).
 
 ### M1-GATE-7 — Serialize shared-database integration suites
