@@ -3940,13 +3940,13 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_linked" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
                     limit?: number;
                     targetId?: string;
-                    targetType?: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "incident" | "integration_connection";
+                    targetType?: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "integration_connection";
                     to?: string;
                 };
                 header?: never;
@@ -4002,7 +4002,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_linked" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -4015,7 +4015,7 @@ export interface paths {
                                 organizationId: string;
                                 targetId: string | null;
                                 /** @enum {string} */
-                                targetType: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "incident" | "integration_connection";
+                                targetType: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "integration_connection";
                             }[];
                             nextCursor: string | null;
                         };
@@ -5613,6 +5613,7 @@ export interface paths {
                                 errorPayload: string;
                                 evidenceArtifactId: string | null;
                                 fixRequest: {
+                                    errorPayload?: string;
                                     evidence: ({
                                         artifactId: string;
                                         /** @enum {string} */
@@ -5624,7 +5625,14 @@ export interface paths {
                                         summary: string;
                                         /** Format: uri */
                                         url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
                                     })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
                                     relevantCommitSha: string;
                                     reproductionRef: string;
                                     /** @enum {string} */
@@ -5729,6 +5737,7 @@ export interface paths {
                                 errorPayload: string;
                                 evidenceArtifactId: string | null;
                                 fixRequest: {
+                                    errorPayload?: string;
                                     evidence: ({
                                         artifactId: string;
                                         /** @enum {string} */
@@ -5740,7 +5749,14 @@ export interface paths {
                                         summary: string;
                                         /** Format: uri */
                                         url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
                                     })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
                                     relevantCommitSha: string;
                                     reproductionRef: string;
                                     /** @enum {string} */
@@ -6067,6 +6083,7 @@ export interface paths {
                             maxCredits: number;
                         };
                         fixRequest: {
+                            errorPayload?: string;
                             evidence: ({
                                 artifactId: string;
                                 /** @enum {string} */
@@ -6078,7 +6095,14 @@ export interface paths {
                                 summary: string;
                                 /** Format: uri */
                                 url: string;
+                            } | {
+                                incidentId: string;
+                                /** @enum {string} */
+                                kind: "incident_record";
+                                summary: string;
                             })[];
+                            incidentId?: string;
+                            releaseId?: string;
                             relevantCommitSha: string;
                             reproductionRef: string;
                             /** @enum {string} */
