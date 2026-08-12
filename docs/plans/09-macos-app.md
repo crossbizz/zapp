@@ -185,16 +185,16 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/{notifications,updater}/*`
 **Effort:** M
 
-- [ ] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch.
-- [ ] Commit: `feat(desktop): approval/run notifications + auto-update channel`
+- [ ] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch. *(Phased implementation is complete; production run attachment remains blocked on MAC-8.)*
+- [x] Commit: `feat(desktop): approval/run notifications + auto-update channel` (`5fc6741`)
 
 ### Task MAC-12 [M5]: Dyad local project migration
 
 **Files:** Create: `apps/desktop/src/zapp/migrate-dyad.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state).
-- [ ] Commit: `feat(desktop): dyad project migration path`
+- [ ] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state). *(Phased implementation is complete; user-facing composition and promotion remain blocked on MAC-10.)*
+- [x] Commit: `feat(desktop): dyad project migration path` (`1155e94`)
 
 ---
 
@@ -230,5 +230,5 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-11 MAC-8 BLOCKED — The binding parity source does not exist yet: WEB-7 and WEB-9 remain unchecked, the current web Mission Control renders only `MissionControlEmpty`, and neither `packages/ui` nor another shared package exports the web conversation/Mission Control components or a shared SSE event reducer. A desktop-only reducer or copied state protocol would violate the task and Global Constraint, so the task remains unchecked pending those shared web surfaces.
 - 2026-08-11 MAC-9 BLOCKED — API-first audit found no public session-authenticated internal-Git credential or sync API in the generated SDK; the only git-service credentials are internal service/repository-scoped boundaries. Without the prescribed user-scoped token, desktop cannot safely fetch/push or exercise the divergence/merge contract, so the task remains unchecked and no alternate credential path was introduced.
 - 2026-08-11 MAC-10 BLOCKED — Promotion depends on MAC-9's missing authenticated Git push path: project creation and capability scan APIs exist, but the desktop cannot push the local repository to the new internal repository through any public SDK operation. The task remains unchecked; no direct git-service backdoor or local-only linked marker was added.
-- 2026-08-12 MAC-11 phased — Added schema-validated, deduplicated approval/run/deployment native-notification projection with server-backed per-type desktop preferences, stale-delivery rejection, and deep-link validation; replaced the legacy public-update host with failure-isolated signed Squirrel static feeds at `desktop-updates/{stable|beta}`. Focused acceptance is 26/26 with desktop lint/typecheck green; final production run attachment remains blocked on MAC-8, and the full desktop suite retains eight unrelated current-main failures in M4 chat-stream/compaction tests, so the tracker stays unchecked.
-- 2026-08-12 MAC-12 phased — Added direct-child Dyad project detection, keyed copy/adopt and Git/registration boundaries, a bounded symlink-safe read-only transcript archive, and an optional cloud-promotion handoff. Focused acceptance is 9/9 with desktop main-process typecheck and file-scoped lint/format checks green; user-facing composition and promotion remain blocked on MAC-10/M4, so the tracker stays unchecked.
+- 2026-08-12 MAC-11 BLOCKED — Commit `5fc6741` added schema-validated, deduplicated approval/run/deployment native-notification projection with server-backed per-type desktop preferences, stale-delivery rejection, and deep-link validation; it also replaced the legacy public-update host with failure-isolated signed Squirrel static feeds at `desktop-updates/{stable|beta}`. Focused acceptance is 26/26 with desktop lint/typecheck green; final production run attachment remains blocked on MAC-8, and the full desktop suite retains eight unrelated current-main failures in M4 chat-stream/compaction tests, so the tracker stays unchecked.
+- 2026-08-12 MAC-12 BLOCKED — Commit `1155e94` added direct-child Dyad project detection, keyed copy/adopt and Git/registration boundaries, a bounded symlink-safe read-only transcript archive, and an optional cloud-promotion handoff. Focused acceptance is 9/9 with desktop main-process typecheck and file-scoped lint/format checks green; user-facing composition and promotion remain blocked on MAC-10/M4, so the tracker stays unchecked.

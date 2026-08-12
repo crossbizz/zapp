@@ -252,16 +252,16 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-17 Retention & deletion pipeline
 - [x] CP-18 Export APIs
 - [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
-- [ ] MAC-11 Notifications + auto-update
-- [ ] MAC-12 Dyad project migration
+- [ ] MAC-11 Notifications + auto-update *(phased implementation landed in `5fc6741`; production attachment remains blocked on MAC-8)*
+- [ ] MAC-12 Dyad project migration *(phased implementation landed in `1155e94`; user-facing promotion remains blocked on MAC-10)*
 
 ## M6 — Private beta validation (Weeks 26–30)
 
 - [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
-- [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics
-- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links
-- [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4)
-- [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/
+- [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics *(10-app/50-change corpus validated; execution waits for the blocked product paths)*
+- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links *(evidence refreshed in `441259b`: 15 verified, 3 candidates, 4 blocked, 0 failed)*
+- [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4) *(fail-closed evaluator is green; real measurements and V-2/V-5 evidence remain absent)*
+- [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/ *(tooling is green; real agencies, support assignment, and task-linked feedback remain absent)*
 
 ## Deferred post-P0 (ADR-0022) — return before public beta
 
