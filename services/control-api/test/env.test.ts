@@ -167,6 +167,7 @@ describe('the shipped .env.example', () => {
       'PREVIEW_SHARE_SIGNING_KEY',
       'PREVIEW_SHARE_KEY_VERSION',
       'SANDBOX_SERVICE_URL',
+      'VERIFICATION_SERVICE_URL',
       'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',

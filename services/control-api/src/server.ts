@@ -29,6 +29,7 @@ import {
   requireStripeBillingForEnvironment,
   loadUsageQueueEnv,
   loadTemporalEnv,
+  loadVerificationServiceUrl,
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
@@ -166,6 +167,7 @@ const modelGatewayUrl = loadModelGatewayUrl();
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
 const gitServiceUrl = loadGitServiceUrl();
+const verificationServiceUrl = loadVerificationServiceUrl();
 const releaseServiceUrl = loadReleaseServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
@@ -257,6 +259,7 @@ const app = composeApp({
   modelGatewayUrl,
   preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
+  ...(verificationServiceUrl === undefined ? {} : { verificationServiceUrl }),
   ...(releaseServiceUrl === undefined ? {} : { releaseServiceUrl }),
   rateLimits,
   pricing,

@@ -120,7 +120,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] GIT-6 Approved template registry source pipeline
 - [x] GIT-5 Commit comparison + approved template seeding
 - [x] VF-17 Test/evidence read contract
-- [ ] CP-24 Public code/diff/log/test/evidence bridge
+- [x] CP-24 Public code/diff/log/test/evidence bridge
 - [ ] CP-25 Public template APIs + template project creation
 
 - [x] AR-9 Worker/queues/idempotency hardening

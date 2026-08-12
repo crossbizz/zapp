@@ -143,6 +143,11 @@ import type {
 } from './local-agent/port.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import {
+  createUnavailableBuilderArtifactPort,
+  registerBuilderArtifactRoutes,
+  type BuilderArtifactPort,
+} from './routes/builder-artifacts.js';
+import {
   createUnavailableBuilderPreviewScreenshotStore,
   createUnavailableBuilderPreviewProxy,
   registerBuilderPreviewRoutes,
@@ -277,6 +282,8 @@ export interface TenantDeps {
   readonly projectDeletions?: ProjectDeletionRequestStore;
   /** CP-18 tenant projection, verified Git bundle, and artifact storage boundary. */
   readonly projectExport?: ProjectExportDeps;
+  /** CP-24 service-authenticated bridge to workspace, Git, and verification reads. */
+  readonly builderArtifacts?: BuilderArtifactPort;
 }
 
 export interface LocalAgentDeps {
@@ -766,6 +773,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             storage: tenant.attachmentStorage ?? createUnavailableAttachmentStorage(),
           });
           registerMissionControlRoutes(app);
+          registerBuilderArtifactRoutes(
+            app,
+            tenant.builderArtifacts ?? createUnavailableBuilderArtifactPort(),
+          );
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),

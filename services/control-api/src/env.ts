@@ -533,6 +533,18 @@ export function loadModelGatewayUrl(source: unknown = process.env): string {
   return defineEnv(ModelGatewayEnvSchema, source).MODEL_GATEWAY_URL.replace(/\/+$/u, '');
 }
 
+const VerificationServiceEnvSchema = z.object({
+  VERIFICATION_SERVICE_URL: z.string().url().refine(
+    (value) => /^https?:\/\//u.test(value),
+    'VERIFICATION_SERVICE_URL must use HTTP(S)',
+  ).optional(),
+});
+
+/** CP-24's internal evidence/test read destination; no credential is returned to clients. */
+export function loadVerificationServiceUrl(source: unknown = process.env): string | undefined {
+  return defineEnv(VerificationServiceEnvSchema, source).VERIFICATION_SERVICE_URL?.replace(/\/+$/u, '');
+}
+
 /**
  * The master key that wraps every secret's data key (CP-7), and the one
  * variable in this service that *is* a secret.

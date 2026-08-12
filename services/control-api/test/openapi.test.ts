@@ -131,6 +131,13 @@ describe('GET /v1/openapi.json', () => {
       '/v1/runs/{runId}/specifications/{specificationId}',
       '/v1/runs/{runId}/plans/{artifactId}',
       '/v1/runs/{runId}/artifacts/{artifactId}',
+      '/v1/projects/{projectId}/workspaces',
+      '/v1/workspaces/{workspaceId}/files',
+      '/v1/workspaces/{workspaceId}/file',
+      '/v1/workspaces/{workspaceId}/edits',
+      '/v1/projects/{projectId}/compare',
+      '/v1/runs/{runId}/tests',
+      '/v1/runs/{runId}/evidence/{artifactId}',
       '/v1/projects/{projectId}/attachments',
       '/v1/projects/{projectId}/export',
       '/v1/attachments/{attachmentId}',
@@ -154,7 +161,7 @@ describe('GET /v1/openapi.json', () => {
       '/v1/admin/organizations/{organizationId}/terminate-all',
       '/v1/releases/{releaseId}/fork',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(89);
+    expect(Object.keys(document.paths)).toHaveLength(95);
     expect(document.paths).toHaveProperty('/v1/projects/{projectId}/deletion');
     expect(document.paths['/v1/projects/{projectId}']).toHaveProperty('delete');
     expect(document.paths['/v1/organizations/{orgId}']).toHaveProperty('delete');

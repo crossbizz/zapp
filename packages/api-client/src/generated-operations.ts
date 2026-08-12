@@ -1157,6 +1157,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/projects/{projectId}/compare": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/projects/{projectId}/contract": {
     "get": {
       "security": [
@@ -1578,6 +1599,25 @@ export const PUBLIC_API_OPERATIONS = {
     }
   },
   "/v1/projects/{projectId}/workspaces": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    },
     "post": {
       "security": [
         {
@@ -1858,6 +1898,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/runs/{runId}/evidence/{artifactId}": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/runs/{runId}/messages": {
     "post": {
       "security": [
@@ -2095,6 +2156,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/runs/{runId}/tests": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/usage/summary": {
     "get": {
       "security": [
@@ -2231,6 +2313,70 @@ export const PUBLIC_API_OPERATIONS = {
         {
           "sessionCookie": [],
           "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/edits": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/file": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/workspaces/{workspaceId}/files": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
         }
       ],
       "successResponses": {

@@ -1443,7 +1443,7 @@ describe('workspace passthrough routes', () => {
     expect(sandbox.calls).toEqual(['create', 'start', 'checkpoint', 'terminate']);
   });
 
-  it('returns a tenant-safe 404, denies Viewers, replays creation, and never exposes raw fs or command routes', async () => {
+  it('returns a tenant-safe 404, denies Viewers, replays creation, and exposes no raw command route', async () => {
     const sandbox = new FakeSandboxServicePort();
     const wired = await wire({ sandbox });
     const project = await createProject(wired);
@@ -1483,7 +1483,7 @@ describe('workspace passthrough routes', () => {
     expect(sandbox.calls).toEqual(['create']);
     expect(
       wired.built.app.hasRoute({ method: 'GET', url: '/v1/workspaces/:workspaceId/files' }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       wired.built.app.hasRoute({ method: 'POST', url: '/v1/workspaces/:workspaceId/exec' }),
     ).toBe(false);

@@ -314,8 +314,15 @@ Execution expansion (2026-08-12):
 **Files:** Modify workspace/Mission Control routes and service clients, contracts, OpenAPI/SDK and tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: tenant/RBAC bridges to WS-16, GIT-5, and VF-17 for files, attributed edits, commit comparison, logs, test cases, evidence, downloads, and Fix-run creation; no internal credential exposure.
-- [ ] Commit: `feat(control-api): public builder artifact surfaces`
+- [x] Binding behavior: tenant/RBAC bridges to WS-16, GIT-5, and VF-17 for files, attributed edits, commit comparison, logs, test cases, evidence, downloads, and Fix-run creation; no internal credential exposure.
+- [x] Commit: `feat(control-api): public builder artifact surfaces`
+
+Execution expansion (2026-08-12):
+
+- [x] **24a RED/GREEN — workspace artifacts:** add bounded project workspace discovery and tenant/RBAC file list/read plus keyed Owner/Builder edits attributed to the authenticated user.
+- [x] **24b RED/GREEN — comparisons:** bridge exact before/after SHAs through the service-authenticated GIT-5 comparison boundary without returning internal refs or credentials.
+- [x] **24c RED/GREEN — verification:** bridge VF-17 run/case and exact-provenance signed evidence reads; keep downloads short-lived and storage refs private.
+- [x] **24d SDK/verification:** retain the existing public logs and Fix-run creation surfaces, regenerate OpenAPI/SDK, run focused contracts/control/client plus touched lint/typecheck/build and commit once.
 
 ### Task CP-25 [M2]: Public template registry + Remix creation
 
@@ -362,6 +369,7 @@ Execution expansion (2026-08-12):
 
 ## Execution log
 - 2026-08-04: CP-1 done pending review (9bc70a8). DEFERRED INTO CP-2 SCOPE: migration revoking UPDATE/DELETE on usage_ledger + audit_events from the app role (was CP-1 note; FND-6 was mid-flight). Forward flags: fastify-type-provider-zod pinned ^4 (Zod-3 API — revisit at Zod 4 migration); no direct pino dep (fastify bundles it).
+- 2026-08-12 CP-24 done — Added tenant/RBAC workspace discovery, bounded file reads and attributed keyed edits, exact commit comparison, typed tests/evidence with short-lived downloads, production service-token clients, and regenerated SDK; 801/811 control tests passed before one stale route-absence assertion was corrected and focused green, plus 56/56 API-client tests.
 - 2026-08-12 CP-17 done — shipped classified TTL retention plus leased, absence-verified project/org deletion; required schema, generated SDK, git-service, sandbox-service, verification-service, and composition files beyond the terse task list. Two review rounds fixed durable post-delete replay, fail-closed composition/provider proof, and a row-locked organization deletion fence.
 - 2026-08-12 CP-17 integration fix — removed cascading run/approval foreign keys from append-only credit-ceiling history so deletion retains immutable attribution without firing a forbidden ledger delete; schema regression, DB 157/157, and orchestrator integration 43/43 verify the correction.
 - 2026-08-12 CP-18 done — shipped deterministic Owner-only tar exports with durable fresh-URL replay, bounded PostgreSQL/Git/S3 paths, deletion fencing/cleanup, generated SDK, and immediate Git credential revocation; expanded the terse Files list for required service/SDK composition, and corrected one provider-test-only strict-input fixture before the focused real Forgejo pass.

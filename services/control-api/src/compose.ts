@@ -2,6 +2,7 @@ import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config'
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
+import { createBuilderArtifactClient } from './builder-artifacts/client.js';
 import type { AuthEnv } from './auth/config.js';
 import { createRedisTokenDenylist } from './auth/denylist.js';
 import { createRedisDeviceStore } from './auth/device.js';
@@ -147,6 +148,8 @@ export interface ServiceRuntime {
    * an undefined value is a refusal to start.
    */
   readonly gitServiceUrl?: string;
+  /** CP-24 verification read service. Undefined only in local/test development. */
+  readonly verificationServiceUrl?: string;
   /** Plan 07 release plane. Undefined only for local/test development. */
   readonly releaseServiceUrl?: string;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
@@ -414,6 +417,16 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
               }),
               storage: createS3AttachmentStorage(runtime.artifactStorage),
             },
+          }),
+      ...(previewRuntime === undefined || runtime.gitServiceUrl === undefined || runtime.verificationServiceUrl === undefined
+        ? {}
+        : {
+            builderArtifacts: createBuilderArtifactClient({
+              sandboxBaseUrl: previewRuntime.config.sandboxServiceUrl,
+              gitBaseUrl: runtime.gitServiceUrl,
+              verificationBaseUrl: runtime.verificationServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
           }),
       releasePort: releaseService.release,
       releaseFork: releaseService.fork,
