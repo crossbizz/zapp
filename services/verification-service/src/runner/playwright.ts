@@ -593,7 +593,7 @@ async function evidenceForCases(
       type,
       storageRef: object.storageRef,
       contentHash: object.contentHash,
-      metadataJson,
+      metadataJson: { ...metadataJson, contentType, byteSize: safeBody.byteLength },
     };
     artifactsRows.push(row);
     return row;
@@ -631,10 +631,14 @@ async function evidenceForCases(
       const filename = posix
         .basename(path ?? `${redactor.redact(attachment.name)}.bin`)
         .replace(/[^A-Za-z0-9._-]/gu, '_');
+      const titleCriterion = /^\[([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\](?:\s|$)/u.exec(testCase.name)?.[1];
+      const description = redactedLabel(attachment.name, redactor);
       const artifact = await store(type, filename, attachment.contentType, body, {
         testRunId: input.testRunId,
         testCaseId,
-        attachmentName: redactor.redact(attachment.name),
+        attachmentName: description,
+        description,
+        criterionIds: titleCriterion === undefined ? [] : [titleCriterion],
         secretScanEvidenceArtifactId: input.secretScan.evidenceArtifactId,
       });
       evidenceIds.push(artifact.id);

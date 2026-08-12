@@ -1454,6 +1454,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: 3.1103.0
         version: 3.1103.0
+      '@aws-sdk/s3-request-presigner':
+        specifier: 3.1103.0
+        version: 3.1103.0
       '@zapp/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -1466,6 +1469,9 @@ importers:
       '@zapp/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@zapp/verification-engine':
+        specifier: workspace:*
+        version: link:../../packages/verification-engine
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.3)(better-sqlite3@12.11.1)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)

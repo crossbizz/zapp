@@ -13,6 +13,7 @@ export * from './gates/typecheck.js';
 export * from './gates/unit-tests.js';
 export * from './criteria.js';
 export * from './evidence.js';
+export * from './read-model.js';
 export * from './generate/acceptance.js';
 export * from './generate/smoke.js';
 export * from './policy-matrix.js';

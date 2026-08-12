@@ -1,4 +1,12 @@
 import type { ServiceName, ServiceTokenSigner } from '@zapp/config';
+import { idSchema } from '@zapp/contracts';
+import {
+  MAX_PUBLIC_TEST_RUNS,
+  SignedVerificationArtifactSchema,
+  VerificationEvidenceNotFoundError,
+  VerificationTestRunSchema,
+  type VerificationReadModel,
+} from '@zapp/verification-engine';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -25,7 +33,7 @@ const HeadersSchema = z
   })
   .passthrough();
 
-function error(reply: FastifyReply, status: 400 | 401 | 403 | 409, code: string, message: string) {
+function error(reply: FastifyReply, status: 400 | 401 | 403 | 404 | 409, code: string, message: string) {
   return reply.code(status).send({ error: { code, message } });
 }
 
@@ -66,12 +74,16 @@ export function registerVerificationRoutes(
   options: {
     readonly signer: ServiceTokenSigner;
     readonly callers: readonly ServiceName[];
+    readonly readCallers: readonly ServiceName[];
     readonly browserRuns: BrowserRunService;
+    readonly readModel: VerificationReadModel;
     readonly now: () => Date;
   },
 ): void {
   const callers = new Set(options.callers);
+  const readCallers = new Set(options.readCallers);
   if (callers.size === 0) throw new Error('Verification routes need at least one caller');
+  if (readCallers.size === 0) throw new Error('Verification read routes need at least one caller');
 
   app.post(
     '/internal/verification/browser-run',
@@ -106,6 +118,86 @@ export function registerVerificationRoutes(
         );
       }
       return await options.browserRuns.run(request.body);
+    },
+  );
+
+  const ReadParamsSchema = z.object({
+    organizationId: idSchema('org'),
+    runId: idSchema('run'),
+  }).strict();
+  const ArtifactParamsSchema = ReadParamsSchema.extend({
+    artifactId: idSchema('art'),
+  }).strict();
+  const ArtifactQuerySchema = z.object({ taskId: idSchema('task').optional() }).strict();
+
+  app.get(
+    '/internal/verification/organizations/:organizationId/runs/:runId/tests',
+    {
+      schema: {
+        params: ReadParamsSchema,
+        response: {
+          200: z.object({
+            runs: z.array(VerificationTestRunSchema).max(MAX_PUBLIC_TEST_RUNS),
+          }).strict(),
+          401: ErrorSchema,
+          403: ErrorSchema,
+        },
+      },
+      preHandler: async (request, reply) => {
+        await authorize(request, reply, {
+          signer: options.signer,
+          callers: readCallers,
+          now: options.now,
+        });
+      },
+    },
+    async (request, reply) => {
+      if (reply.sent) return reply;
+      return {
+        runs: [...await options.readModel.listForRun(request.params)],
+      };
+    },
+  );
+
+  app.get(
+    '/internal/verification/organizations/:organizationId/runs/:runId/artifacts/:artifactId',
+    {
+      schema: {
+        params: ArtifactParamsSchema,
+        querystring: ArtifactQuerySchema,
+        response: {
+          200: SignedVerificationArtifactSchema,
+          401: ErrorSchema,
+          403: ErrorSchema,
+          404: ErrorSchema,
+        },
+      },
+      preHandler: async (request, reply) => {
+        await authorize(request, reply, {
+          signer: options.signer,
+          callers: readCallers,
+          now: options.now,
+        });
+      },
+    },
+    async (request, reply) => {
+      if (reply.sent) return reply;
+      try {
+        return await options.readModel.signArtifact({
+          ...request.params,
+          taskId: request.query.taskId ?? null,
+        });
+      } catch (cause) {
+        if (cause instanceof VerificationEvidenceNotFoundError) {
+          return await error(
+            reply,
+            404,
+            cause.code,
+            'Verification evidence was not found.',
+          );
+        }
+        throw cause;
+      }
     },
   );
 }

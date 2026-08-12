@@ -20,6 +20,7 @@ import { z } from 'zod';
 
 import { registerVerificationRoutes } from './routes.js';
 import type { BrowserRunService } from './runner/playwright.js';
+import type { VerificationReadModel } from '@zapp/verification-engine';
 
 const httpServerTelemetry = createHttpServerTelemetry();
 
@@ -34,7 +35,9 @@ export type VerificationServiceApp = FastifyInstance<
 export interface VerificationServiceDependencies {
   readonly signer: ServiceTokenSigner;
   readonly browserRuns: BrowserRunService;
+  readonly readModel: VerificationReadModel;
   readonly callers?: readonly ServiceName[];
+  readonly readCallers?: readonly ServiceName[];
   readonly logger?: false;
   readonly now?: () => Date;
 }
@@ -65,7 +68,9 @@ export function buildApp(options: VerificationServiceDependencies): Verification
   registerVerificationRoutes(app, {
     signer: options.signer,
     browserRuns: options.browserRuns,
+    readModel: options.readModel,
     callers: options.callers ?? ['orchestrator-worker'],
+    readCallers: options.readCallers ?? ['control-api'],
     now: options.now ?? (() => new Date()),
   });
   return app;
