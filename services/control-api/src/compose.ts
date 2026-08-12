@@ -1,4 +1,4 @@
-import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
+import { createServiceTokenSigner, type ServiceTokenConfig, type TemplateRegistry } from '@zapp/config';
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
@@ -148,6 +148,7 @@ export interface ServiceRuntime {
    * an undefined value is a refusal to start.
    */
   readonly gitServiceUrl?: string;
+  readonly templates?: TemplateRegistry;
   /** CP-24 verification read service. Undefined only in local/test development. */
   readonly verificationServiceUrl?: string;
   /** Plan 07 release plane. Undefined only for local/test development. */
@@ -371,6 +372,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     // absent.
     tenant: {
       tenantDb,
+      ...(runtime.templates === undefined ? {} : { templates: runtime.templates }),
       integrationPort,
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,

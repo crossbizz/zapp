@@ -6,6 +6,7 @@ import {
   type FeatureFlagEvaluator,
   type ProductAnalytics,
   type ServiceName,
+  type TemplateRegistry,
 } from '@zapp/config';
 import {
   createUnavailableCapabilityScanPort,
@@ -241,6 +242,8 @@ export interface TenantDeps {
    * in `src/compose.ts`, and a test binds one that fails on demand.
    */
   readonly git?: GitServicePort;
+  /** CP-25 server-owned public presentation fields plus private approved source lookup. */
+  readonly templates?: TemplateRegistry;
   /** CP-9's durable-workflow boundary. Omitted only where mutations must fail closed. */
   readonly orchestrator?: OrchestratorPort;
   /** VF-3's Temporal workspace activity client. Missing deployments fail closed. */
@@ -729,6 +732,12 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
+            templates:
+              tenant.templates ?? {
+                listPublic: () => [],
+                getPublic: () => undefined,
+                getApproved: () => undefined,
+              },
             ...(deps.productAnalytics === undefined
               ? {}
               : { productAnalytics: deps.productAnalytics }),

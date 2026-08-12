@@ -1,4 +1,4 @@
-import type { FeatureFlagEvaluator, ProductAnalytics, ServiceName } from '@zapp/config';
+import { createTemplateRegistry, type FeatureFlagEvaluator, type ProductAnalytics, type ServiceName, type TemplateRegistry } from '@zapp/config';
 import { capabilityScanArtifactStorageRef, type CapabilityScanPort } from '@zapp/project-adapters';
 
 import type { AuthIdentity } from '../../src/auth/port.js';
@@ -133,6 +133,20 @@ export const TEST_AUTH_CONFIG: AuthConfig = {
   apiBaseUrl: 'https://api.zapp.test',
 };
 
+const TEST_TEMPLATE_REGISTRY = createTemplateRegistry([
+  {
+    slug: 'next-starter',
+    name: 'Next.js Starter',
+    description: 'A clean starter for product apps.',
+    pagesIncluded: ['Home'],
+    highlights: ['Responsive shell'],
+    demoUrl: 'https://templates.zapp.build/next-starter/a57bb2926674/',
+    stack: ['Next.js', 'TypeScript'],
+    repoRef: 'https://github.com/dyad-sh/nextjs-template.git',
+    commitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+  },
+]);
+
 /**
  * Limits high enough to be out of the way, because every request a suite makes
  * comes from one address and — for the auth class — the shipped ceiling of ten
@@ -257,6 +271,7 @@ export interface HarnessOptions {
    * the shipping record-only implementation.
    */
   readonly git?: GitServicePort;
+  readonly templates?: TemplateRegistry;
   /** CP-9's workflow boundary, normally a recording fake in route tests. */
   readonly orchestrator?: OrchestratorPort;
   readonly capabilityScan?: CapabilityScanPort;
@@ -352,6 +367,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               ? {}
               : { creditBalance: options.creditBalance }),
             ...(options.git === undefined ? {} : { git: options.git }),
+            templates: options.templates ?? TEST_TEMPLATE_REGISTRY,
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.attachmentStorage === undefined
               ? {}

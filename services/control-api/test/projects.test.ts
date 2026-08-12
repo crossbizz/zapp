@@ -184,6 +184,99 @@ async function create(
 }
 
 describe('creating a project', () => {
+  it('publishes presentation-only templates and stable detail misses', async () => {
+    const wired = await wire();
+
+    const listed = await wired.built.app.inject({ method: 'GET', url: '/v1/templates' });
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(listed.json<{ templates: Array<{ slug: string }> }>().templates).toEqual(
+      expect.arrayContaining([expect.objectContaining({ slug: 'next-starter' })]),
+    );
+    expect(listed.body).not.toContain('repoRef');
+    expect(listed.body).not.toContain('commitSha');
+    expect(listed.body).not.toContain('github.com');
+
+    const detail = await wired.built.app.inject({
+      method: 'GET',
+      url: '/v1/templates/next-starter',
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json<{ template: { slug: string } }>().template.slug).toBe('next-starter');
+
+    const missing = await wired.built.app.inject({
+      method: 'GET',
+      url: '/v1/templates/not-approved',
+    });
+    expect(missing.statusCode, missing.body).toBe(404);
+    expect(errorOf(missing)).toBe('template_not_found');
+  });
+
+  it('seeds an approved template before success and only once across replay', async () => {
+    const seedCalls: Array<{ templateSlug: string; operationKey: string }> = [];
+    const git = {
+      createRepository: (input: { organizationId: string; projectId: string }) =>
+        Promise.resolve({
+          internalRepoRef: `${input.organizationId.toLowerCase()}/${input.projectId.toLowerCase()}`,
+        }),
+      seedTemplate: (input: { templateSlug: string; operationKey: string }) => {
+        seedCalls.push(input);
+        return Promise.resolve({
+          templateSlug: input.templateSlug,
+          branch: 'main' as const,
+          headCommitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+        });
+      },
+    };
+    const wired = await wire({ git });
+    const headers = {
+      ...wired.as(wired.owner),
+      [IdempotencyHeader]: 'template-remix-0001',
+    };
+    const payload = {
+      name: 'Remixed Starter',
+      sourceType: 'template',
+      templateSlug: 'next-starter',
+    };
+
+    const first = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers,
+      payload,
+    });
+    const replay = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers,
+      payload,
+    });
+
+    expect(first.statusCode, first.body).toBe(201);
+    expect(replay.statusCode, replay.body).toBe(201);
+    expect(replay.headers[IDEMPOTENT_REPLAY_HEADER]).toBe('true');
+    expect(seedCalls).toHaveLength(1);
+    expect(seedCalls[0]?.templateSlug).toBe('next-starter');
+    expect(seedCalls[0]?.operationKey).toMatch(/^op_/u);
+
+    const arbitrarySource = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { ...payload, name: 'Unsafe', repoRef: 'https://github.com/example/unsafe.git' },
+    });
+    expect(arbitrarySource.statusCode, arbitrarySource.body).toBe(400);
+
+    const unknown = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { ...payload, name: 'Unknown', templateSlug: 'not-approved' },
+    });
+    expect(unknown.statusCode, unknown.body).toBe(404);
+    expect(errorOf(unknown)).toBe('template_not_found');
+    expect(seedCalls).toHaveLength(1);
+  });
+
   it('rejects creation after organization deletion has established its durable fence', async () => {
     const wired = await wire();
     wired.data.organizationDeleting = true;
@@ -416,7 +509,7 @@ describe('creating a project', () => {
   it('accepts only the source types plan 02 owns', async () => {
     const wired = await wire();
 
-    for (const sourceType of ['prompt', 'blank', 'template', 'github_import']) {
+    for (const sourceType of ['prompt', 'blank', 'github_import']) {
       const response = await wired.built.app.inject({
         method: 'POST',
         url: '/v1/projects',
@@ -425,6 +518,14 @@ describe('creating a project', () => {
       });
       expect(response.statusCode, response.body).toBe(201);
     }
+
+    const template = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { name: 'From template', sourceType: 'template', templateSlug: 'next-starter' },
+    });
+    expect(template.statusCode, template.body).toBe(502);
 
     // CP-4's placeholder spellings. `github_import` is what plan 06's import
     // task writes, and one column with two spellings of one thing is a column

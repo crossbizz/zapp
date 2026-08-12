@@ -1,4 +1,7 @@
-import { IdempotencyHeader, PageSchema, idSchema, newId } from '@zapp/contracts';
+import { createHash } from 'node:crypto';
+
+import { PublicTemplateSchema, type TemplateRegistry } from '@zapp/config';
+import { IdempotencyHeader, OperationKeySchema, PageSchema, idSchema, newId } from '@zapp/contracts';
 import {
   CapabilityScanOutputSchema,
   CapabilityScanUnavailableError,
@@ -17,7 +20,6 @@ import { authorize, tenantOf } from '../plugins/tenant.js';
 import { DEFAULT_PAGE_SIZE } from '../pagination.js';
 import { redactCredentials } from '../secrets/redaction.js';
 import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
-import { SOURCE_TYPES } from '../tenant/vocabulary.js';
 import {
   BranchSchema,
   EnvironmentSchema,
@@ -70,8 +72,7 @@ const ProjectParams = z.object({ projectId: idSchema('proj') });
 const NameSchema = z.string().trim().min(1).max(80);
 const DescriptionSchema = z.string().trim().max(2000);
 
-const CreateProjectBody = z
-  .object({
+const CreateProjectBase = z.object({
     name: NameSchema,
     /** Optional: derived from the name when absent, which is the common path. */
     slug: SlugSchema.optional(),
@@ -85,7 +86,14 @@ const CreateProjectBody = z
      * could declare its own project `verified` would be declaring which
      * verification gates it is exempt from. Every project starts `compatible`.
      */
-    sourceType: z.enum(SOURCE_TYPES).default('prompt'),
+  });
+const CreateProjectBody = z.union([
+  CreateProjectBase.extend({
+    sourceType: z.literal('template'),
+    templateSlug: PublicTemplateSchema.shape.slug,
+  }).strict(),
+  CreateProjectBase.extend({
+    sourceType: z.enum(['prompt', 'blank', 'github_import']).default('prompt'),
   })
   /**
    * Strict, and it is the field above that makes it matter: a body carrying
@@ -95,7 +103,8 @@ const CreateProjectBody = z
    * defaulting to `prompt`. A 400 naming the unrecognised key is the answer to
    * both (plan 02 CP-6 review).
    */
-  .strict();
+    .strict(),
+]);
 
 const UpdateProjectBody = z
   .object({
@@ -166,11 +175,31 @@ export interface ProjectRoutesDeps {
   readonly git: GitServicePort;
   /** Starts VF-3's tenant-bound Temporal scan activity. */
   readonly capabilityScan: CapabilityScanPort;
+  readonly templates: TemplateRegistry;
   readonly productAnalytics?: ProductAnalytics;
 }
 
 export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps): void {
-  const { now, git, capabilityScan } = deps;
+  const { now, git, capabilityScan, templates } = deps;
+
+  app.get('/v1/templates', {
+    schema: {
+      response: { 200: z.object({ templates: z.array(PublicTemplateSchema).max(100) }) },
+    },
+  }, () => ({ templates: [...templates.listPublic()] }));
+
+  app.get('/v1/templates/:slug', {
+    schema: {
+      params: z.object({ slug: PublicTemplateSchema.shape.slug }),
+      response: { 200: z.object({ template: PublicTemplateSchema }) },
+    },
+  }, (request) => {
+    const template = templates.getPublic(request.params.slug);
+    if (template === undefined) {
+      throw new ApiError('template_not_found', 404, 'That template does not exist.');
+    }
+    return { template };
+  });
 
   app.post(
     '/v1/projects',
@@ -186,6 +215,12 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
     async (request, reply) => {
       const ctx = tenantOf(request);
       authorize(ctx, 'create_project');
+
+      const templateSlug =
+        request.body.sourceType === 'template' ? request.body.templateSlug : undefined;
+      if (templateSlug !== undefined && templates.getApproved(templateSlug) === undefined) {
+        throw new ApiError('template_not_found', 404, 'That template does not exist.');
+      }
 
       const requested = request.body.slug;
       // A name that does not reduce to a valid slug — punctuation, a single
@@ -214,7 +249,7 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
            */
           repository: async ({ project, defaultBranch }) => {
             try {
-              return await git.createRepository({
+              const repository = await git.createRepository({
                 organizationId: ctx.organizationId,
                 projectId: project.id,
                 // The slug the store actually wrote, not `base`: a collision
@@ -222,6 +257,24 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
                 projectSlug: project.slug,
                 defaultBranch,
               });
+              if (templateSlug !== undefined) {
+                if (git.seedTemplate === undefined) {
+                  throw new GitServiceError('template seeding is unavailable');
+                }
+                const identity = request.idempotency;
+                const operationKey = OperationKeySchema.parse(
+                  `op_${createHash('sha256')
+                    .update(identity === undefined ? request.id : `${identity.key}\n${identity.fingerprint}`)
+                    .digest('hex')}`,
+                );
+                await git.seedTemplate({
+                  organizationId: ctx.organizationId,
+                  projectId: project.id,
+                  templateSlug,
+                  operationKey,
+                });
+              }
+              return repository;
             } catch (error) {
               request.log.warn(
                 {

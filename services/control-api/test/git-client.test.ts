@@ -41,6 +41,13 @@ const IMPORT_INPUT = {
   sourceBranch: 'feature/import',
 };
 
+const TEMPLATE_INPUT = {
+  organizationId: ORGANIZATION,
+  projectId: PROJECT,
+  templateSlug: 'next-starter',
+  operationKey: `op_${'b'.repeat(64)}`,
+};
+
 const imported = (overrides: Record<string, unknown> = {}, status = 200): Response =>
   new Response(
     JSON.stringify({
@@ -159,6 +166,40 @@ describe('the record-only stand-in', () => {
 });
 
 describe('the git service client', () => {
+  it('seeds only a server-approved template slug with a stable operation key', async () => {
+    const stub = stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            templateSlug: TEMPLATE_INPUT.templateSlug,
+            branch: 'main',
+            headCommitSha: 'a'.repeat(40),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const client = createGitServiceClient({
+      baseUrl: 'http://git-service:4500',
+      serviceTokens: SERVICE_TOKENS,
+      fetch: stub.fetch,
+    });
+
+    if (client.seedTemplate === undefined) throw new Error('shipping client omitted template seeding');
+    await expect(client.seedTemplate(TEMPLATE_INPUT)).resolves.toMatchObject({
+      templateSlug: 'next-starter',
+      branch: 'main',
+    });
+    expect(stub.calls[0]?.url).toBe(
+      `http://git-service:4500/internal/git/repositories/${ORGANIZATION}/${PROJECT}/seed-template`,
+    );
+    expect(stub.calls[0]?.init.headers).toMatchObject({
+      'idempotency-key': TEMPLATE_INPUT.operationKey,
+    });
+    expect(JSON.parse(stub.calls[0]?.init.body as string)).toEqual({
+      templateSlug: 'next-starter',
+    });
+  });
+
   it('presents a control-api token minted for the git service', async () => {
     const stub = stubFetch(created);
 

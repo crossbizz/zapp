@@ -2177,6 +2177,34 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/templates": {
+    "get": {
+      "security": [],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/templates/{slug}": {
+    "get": {
+      "security": [],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/usage/summary": {
     "get": {
       "security": [

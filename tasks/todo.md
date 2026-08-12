@@ -121,7 +121,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] GIT-5 Commit comparison + approved template seeding
 - [x] VF-17 Test/evidence read contract
 - [x] CP-24 Public code/diff/log/test/evidence bridge
-- [ ] CP-25 Public template APIs + template project creation
+- [x] CP-25 Public template APIs + template project creation
 
 - [x] AR-9 Worker/queues/idempotency hardening
 - [x] AR-10 Pause/resume/cancel/redirect signals

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createDb } from '@zapp/db';
+import { loadTemplateRegistryFile } from '@zapp/config';
 import { Client, Connection } from '@temporalio/client';
 import { OpenTelemetryWorkflowClientInterceptor } from '@temporalio/interceptors-opentelemetry';
 
@@ -171,6 +172,7 @@ const verificationServiceUrl = loadVerificationServiceUrl();
 const releaseServiceUrl = loadReleaseServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
+const templates = await loadTemplateRegistryFile(new URL('../../../config/templates.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
 const notificationConfig = loadNotificationEnv();
 const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
@@ -264,6 +266,7 @@ const app = composeApp({
   rateLimits,
   pricing,
   planLimits,
+  templates,
   orchestrator: runOrchestrator,
   ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
   ...(stripeBillingConfig === undefined ? {} : { billing: stripeBillingConfig }),

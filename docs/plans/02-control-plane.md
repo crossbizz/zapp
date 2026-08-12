@@ -329,8 +329,15 @@ Execution expansion (2026-08-12):
 **Files:** Modify project/template routes, composition, contracts, OpenAPI/SDK and tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: registry list/detail and discriminated template project source by slug; resolve approved repository refs server-side and seed through GIT-5/GIT-6 before project success; stable replay.
-- [ ] Commit: `feat(control-api): public template remix contract`
+- [x] Binding behavior: registry list/detail and discriminated template project source by slug; resolve approved repository refs server-side and seed through GIT-5/GIT-6 before project success; stable replay.
+- [x] Commit: `feat(control-api): public template remix contract`
+
+Execution expansion (2026-08-12):
+
+- [x] **25a RED/GREEN — public registry:** expose bounded list/detail responses containing presentation fields only; unknown slugs return a stable 404 and private repository refs/SHAs never serialize.
+- [x] **25b RED/GREEN — typed Remix source:** make template creation require `sourceType: "template"` plus an approved `templateSlug`; reject arbitrary source refs and validate the slug against the server registry.
+- [x] **25c RED/GREEN — seed and replay:** create the internal repository, seed its exact approved template through GIT-6 before returning project success, and prove one stable seed call across an idempotent replay.
+- [x] **25d SDK/verification:** bind the registry in production composition, regenerate OpenAPI/SDK, run focused route/client and touched lint/typecheck/build gates, then record and commit once.
 
 ### Task CP-26 [M3]: Settings + organization directory APIs
 
@@ -423,3 +430,4 @@ Execution expansion (2026-08-12):
 - 2026-08-10 CP-21-FIX-1 done — Fenced screenshot capture with a durable conditional artifact-store reservation, bounded replay reads, retry-safe completion audits, final round-2 PASS, and no provider call.
 - 2026-08-12 CP-22 done — Added server-derived builder eligibility, keyed retry/skip routes, typed stored-kind approvals, deterministic SDK output, and rollout-compatible budget decisions; no provider call.
 - 2026-08-12 CP-23 done — Added keyed typed card responses, run-scoped specification/plan projections, SHA-verified 64-KiB artifact reads, and deterministic SDK routes; no provider call.
+- 2026-08-12 CP-25 done — Added presentation-only template APIs and exact-slug Remix creation with server-owned seeding and idempotent replay; no provider call.
