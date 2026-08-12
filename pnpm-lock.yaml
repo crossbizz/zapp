@@ -590,6 +590,9 @@ importers:
       '@zapp/control-api':
         specifier: workspace:*
         version: link:../../services/control-api
+      axe-playwright:
+        specifier: ^2.1.0
+        version: 2.2.2(playwright@1.62.1)
       tsx:
         specifier: ^4.23.5
         version: 4.23.5

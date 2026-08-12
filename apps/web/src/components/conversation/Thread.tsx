@@ -349,7 +349,8 @@ function ThreadStyles(): ReactElement {
         font-size: var(--zapp-text-14);
       }
       .zapp-conversation-error {
-        color: var(--zapp-status-danger);
+        border: 1px solid var(--zapp-status-danger);
+        color: var(--zapp-text-primary);
         background: var(--zapp-danger-surface);
       }
       .zapp-conversation-composer {

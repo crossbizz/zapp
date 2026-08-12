@@ -103,7 +103,13 @@ export type BillingDunningState = z.infer<typeof DunningStateSchema>;
 
 const BillingSettingsSchema = z
   .object({
-    billing: z.object({ dunning: DunningStateSchema }).strict().optional(),
+    billing: z
+      .object({
+        dunning: DunningStateSchema.optional(),
+        seats: z.number().int().positive().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -112,6 +118,7 @@ export interface BillingStatus {
   readonly customerId: string | null;
   readonly subscriptionId: string | null;
   readonly subscriptionStatus: string | null;
+  readonly seats: number | null;
   readonly dunning: BillingDunningState;
 }
 
@@ -123,6 +130,7 @@ export interface BillingStore {
     readonly stripeSubscriptionId: string;
     readonly planId: string;
     readonly status: string;
+    readonly seats: number;
     readonly currentPeriodStart: Date;
     readonly currentPeriodEnd: Date;
     readonly terminal: boolean;
@@ -154,9 +162,14 @@ function ledgerId(organizationId: string, operationKey: string): string {
 
 function dunningFromSettings(settings: unknown): BillingDunningState {
   const parsed = BillingSettingsSchema.safeParse(settings);
-  return parsed.success && parsed.data.billing !== undefined
+  return parsed.success && parsed.data.billing?.dunning !== undefined
     ? parsed.data.billing.dunning
     : { state: 'current' };
+}
+
+function seatsFromSettings(settings: unknown): number | null {
+  const parsed = BillingSettingsSchema.safeParse(settings);
+  return parsed.success ? (parsed.data.billing?.seats ?? null) : null;
 }
 
 export function createDbBillingStore(options: { readonly database: Database }): BillingStore {
@@ -189,6 +202,7 @@ export function createDbBillingStore(options: { readonly database: Database }): 
         customerId: organization.customerId,
         subscriptionId: subscription?.subscriptionId ?? null,
         subscriptionStatus: subscription?.status ?? null,
+        seats: seatsFromSettings(organization.settings),
         dunning: dunningFromSettings(organization.settings),
       };
     },
@@ -261,6 +275,13 @@ export function createDbBillingStore(options: { readonly database: Database }): 
           .set({
             billingCustomerId: input.customerId,
             plan: input.terminal ? 'trial' : input.planId,
+            settingsJson: sql`jsonb_set(
+              ${organizations.settingsJson},
+              '{billing}',
+              coalesce(${organizations.settingsJson} -> 'billing', '{}'::jsonb)
+                || jsonb_build_object('seats', cast(${input.seats} as integer)),
+              true
+            )`,
           })
           .where(eq(organizations.id, input.organizationId));
       });
@@ -285,7 +306,13 @@ export function createDbBillingStore(options: { readonly database: Database }): 
       await database
         .update(organizations)
         .set({
-          settingsJson: sql`jsonb_set(${organizations.settingsJson}, '{billing}', ${JSON.stringify({ dunning })}::jsonb, true)`,
+          settingsJson: sql`jsonb_set(
+              ${organizations.settingsJson},
+              '{billing}',
+              coalesce(${organizations.settingsJson} -> 'billing', '{}'::jsonb)
+                || ${JSON.stringify({ dunning })}::jsonb,
+              true
+            )`,
         })
         .where(eq(organizations.id, input.organizationId));
     },
@@ -306,7 +333,13 @@ export function createDbBillingStore(options: { readonly database: Database }): 
             ),
             ${organizations.plan}
           )`,
-          settingsJson: sql`jsonb_set(${organizations.settingsJson}, '{billing}', ${JSON.stringify({ dunning })}::jsonb, true)`,
+          settingsJson: sql`jsonb_set(
+            ${organizations.settingsJson},
+            '{billing}',
+            coalesce(${organizations.settingsJson} -> 'billing', '{}'::jsonb)
+              || ${JSON.stringify({ dunning })}::jsonb,
+            true
+          )`,
         })
         .where(eq(organizations.id, organizationId));
     },
@@ -593,6 +626,7 @@ export function createBillingWebhookProcessor(options: {
         stripeSubscriptionId: subscription.id,
         planId,
         status: subscription.status,
+        seats: subscription.items.data[0]?.quantity ?? 1,
         currentPeriodStart: new Date(subscription.current_period_start * 1_000),
         currentPeriodEnd: new Date(subscription.current_period_end * 1_000),
         terminal:

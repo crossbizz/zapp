@@ -19261,6 +19261,280 @@
         }
       }
     },
+    "/v1/usage/summary": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "from",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "to",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "from": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "to": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "from",
+                        "to"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "credits": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                        },
+                        "wallet": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                        },
+                        "reserved": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "wallet",
+                            "cache",
+                            "grace"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "wallet",
+                        "reserved",
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "byCategory": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "category": {
+                                "type": "string",
+                                "enum": [
+                                  "model_input_tokens",
+                                  "model_output_tokens",
+                                  "model_cached_tokens",
+                                  "sandbox_cpu_seconds",
+                                  "sandbox_mem_gib_seconds",
+                                  "storage_gib_hours",
+                                  "deploy_provider",
+                                  "artifact_storage",
+                                  "credit_grant"
+                                ]
+                              },
+                              "credits": {
+                                "type": "string",
+                                "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                              }
+                            },
+                            "required": [
+                              "category",
+                              "credits"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "byProject": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "projectId": {
+                                "type": "string",
+                                "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$",
+                                "nullable": true
+                              },
+                              "credits": {
+                                "type": "string",
+                                "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                              }
+                            },
+                            "required": [
+                              "projectId",
+                              "credits"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "byRun": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "runId": {
+                                "type": "string",
+                                "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$",
+                                "nullable": true
+                              },
+                              "credits": {
+                                "type": "string",
+                                "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                              }
+                            },
+                            "required": [
+                              "runId",
+                              "credits"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "byCategory",
+                        "byProject",
+                        "byRun"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "window",
+                    "credits",
+                    "usage"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/billing/status": {
       "get": {
         "security": [
@@ -19295,6 +19569,12 @@
                         },
                         "subscriptionStatus": {
                           "type": "string",
+                          "nullable": true
+                        },
+                        "seats": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0,
                           "nullable": true
                         },
                         "dunning": {
@@ -19370,6 +19650,7 @@
                         "customerId",
                         "subscriptionId",
                         "subscriptionStatus",
+                        "seats",
                         "dunning"
                       ],
                       "additionalProperties": false

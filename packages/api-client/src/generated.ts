@@ -1022,6 +1022,7 @@ export interface paths {
                                     state: "downgraded";
                                 };
                                 planId: string;
+                                seats: number | null;
                                 subscriptionId: string | null;
                                 subscriptionStatus: string | null;
                             };
@@ -7957,6 +7958,109 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/usage/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            credits: {
+                                available: string;
+                                reserved: string;
+                                /** @enum {string} */
+                                source: "wallet" | "cache" | "grace";
+                                wallet: string;
+                            };
+                            usage: {
+                                byCategory: {
+                                    /** @enum {string} */
+                                    category: "model_input_tokens" | "model_output_tokens" | "model_cached_tokens" | "sandbox_cpu_seconds" | "sandbox_mem_gib_seconds" | "storage_gib_hours" | "deploy_provider" | "artifact_storage" | "credit_grant";
+                                    credits: string;
+                                }[];
+                                byProject: {
+                                    credits: string;
+                                    projectId: string | null;
+                                }[];
+                                byRun: {
+                                    credits: string;
+                                    runId: string | null;
+                                }[];
+                            };
+                            window: {
+                                /** Format: date-time */
+                                from: string;
+                                /** Format: date-time */
+                                to: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;

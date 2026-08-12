@@ -1731,6 +1731,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/usage/summary": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/webhooks/github": {
     "post": {
       "security": [],

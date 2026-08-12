@@ -4,6 +4,7 @@ import type { RunEvent } from '@zapp/api-client';
 import { useEffect, useState } from 'react';
 
 import { createControlPlaneClient } from '../lib/api';
+import { captureRunActivation } from '../lib/activation';
 
 const maximumCachedEvents = 1_000;
 
@@ -93,6 +94,7 @@ export function useRunEvents(runId: string | undefined, organizationId: string):
       },
       onEvent(event) {
         if (!current || event.data.visibility !== 'user') return;
+        captureRunActivation(event);
         currentEvents = mergeEvent(currentEvents, event);
         writeCache(runId, currentEvents);
         setEvents(currentEvents);

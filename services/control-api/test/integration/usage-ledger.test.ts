@@ -20,7 +20,10 @@ import { createDatabaseDailyStorageClaim } from '../../src/usage/collectors/stor
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 const APPEND_ONLY_GRANT_MIGRATION = fileURLToPath(
-  new URL('../../../../packages/db/drizzle/0004_append_only_truncate_and_app_role.sql', import.meta.url),
+  new URL(
+    '../../../../packages/db/drizzle/0004_append_only_truncate_and_app_role.sql',
+    import.meta.url,
+  ),
 );
 
 describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
@@ -449,9 +452,50 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
         to: '2026-08-12T00:00:00.000Z',
       }),
     ).resolves.toEqual({
-      byCategory: [{ category: 'sandbox_cpu_seconds', quantity: '0.000000' }],
-      byProject: [{ projectId: original.row.projectId, quantity: '0.000000' }],
-      byRun: [{ runId: original.row.runId, quantity: '0.000000' }],
+      byCategory: [{ category: 'sandbox_cpu_seconds', credits: '0.0000' }],
+      byProject: [{ projectId: original.row.projectId, credits: '0.0000' }],
+      byRun: [{ runId: original.row.runId, credits: '0.0000' }],
+    });
+  });
+
+  it('denominates project and run burn-down in credits across heterogeneous usage units', async () => {
+    const ledger = createUsageLedgerRepository({ database: database.db });
+    const projectId = newId('proj');
+    const runId = newId('run');
+    await ledger.recordUsage(
+      entry({
+        operationKey: 'mixed-model-tokens',
+        projectId,
+        runId,
+        category: 'model_input_tokens',
+        provider: 'anthropic',
+        quantity: '1200.000000',
+        unit: 'tokens',
+        creditsCharged: '1.2000',
+      }),
+    );
+    await ledger.recordUsage(
+      entry({
+        operationKey: 'mixed-sandbox-cpu',
+        projectId,
+        runId,
+        quantity: '30.000000',
+        creditsCharged: '0.3000',
+      }),
+    );
+
+    await expect(
+      ledger.getUsageSummary(organizationId, {
+        from: '2026-08-11T00:00:00.000Z',
+        to: '2026-08-12T00:00:00.000Z',
+      }),
+    ).resolves.toEqual({
+      byCategory: [
+        { category: 'model_input_tokens', credits: '1.2000' },
+        { category: 'sandbox_cpu_seconds', credits: '0.3000' },
+      ],
+      byProject: [{ projectId, credits: '1.5000' }],
+      byRun: [{ runId, credits: '1.5000' }],
     });
   });
 
@@ -631,9 +675,9 @@ describe.skipIf(!hasDatabase)('OPS-1B append-only usage ledger', () => {
     expect(claim).toMatchObject({ status: 'acquired' });
     if (claim.status !== 'acquired') throw new Error('expected first replica to own the bucket');
     await expect(second.claim(bucket)).resolves.toEqual({ status: 'busy' });
-    await expect(first.runFenced(bucket, claim.leaseToken, () => Promise.resolve('safe'))).resolves.toBe(
-      'safe',
-    );
+    await expect(
+      first.runFenced(bucket, claim.leaseToken, () => Promise.resolve('safe')),
+    ).resolves.toBe('safe');
     await first.complete(bucket, claim.leaseToken);
     await expect(second.claim(bucket)).resolves.toEqual({ status: 'completed' });
   });

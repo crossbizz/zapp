@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { BillingDeps } from '../src/app.js';
-import {
-  createStripeBillingClient,
-  type StripeCreditCheckoutPort,
-} from '../src/billing/stripe.js';
+import { createStripeBillingClient, type StripeCreditCheckoutPort } from '../src/billing/stripe.js';
 import { loadPricingConfig } from '../src/usage/pricing.js';
 import { buildHarness, signIn, type Harness } from './support/harness.js';
 
@@ -59,6 +56,7 @@ function billing(stripeCalls: CreditCheckoutInput[], trialCalls: unknown[] = [])
           customerId: null,
           subscriptionId: null,
           subscriptionStatus: null,
+          seats: null,
           dunning: { state: 'current' },
         }),
       syncSubscription: () => Promise.reject(new Error('subscription sync not expected')),
@@ -84,7 +82,10 @@ function billing(stripeCalls: CreditCheckoutInput[], trialCalls: unknown[] = [])
       stripe: {
         createCreditCheckout(input) {
           stripeCalls.push(input);
-          return Promise.resolve({ id: 'cs_test_topup', url: 'https://checkout.stripe.test/topup' });
+          return Promise.resolve({
+            id: 'cs_test_topup',
+            url: 'https://checkout.stripe.test/topup',
+          });
         },
       },
       packs: pricing.creditPacks ?? {},

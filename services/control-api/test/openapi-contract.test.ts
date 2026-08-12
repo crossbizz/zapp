@@ -62,6 +62,14 @@ function documentedHarness(): Harness {
     incidentStore: createInMemoryIncidentStore(),
     incidentWebhookSecret: 'openapi-grafana-secret-that-is-long-enough',
     notificationState: createInMemoryNotificationState(),
+    usageLedger: {
+      recordUsage: () => Promise.reject(new Error('OpenAPI must not record usage.')),
+      getUsageSummary: () => Promise.reject(new Error('OpenAPI must not read usage.')),
+    },
+    creditBalance: {
+      availableCredits: () => Promise.reject(new Error('OpenAPI must not read credits.')),
+      requireRunAdmission: () => Promise.reject(new Error('OpenAPI must not admit runs.')),
+    },
     tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
     },
@@ -255,6 +263,21 @@ describe('generated API types', () => {
 
     expect(paths['/v1/notification-preferences']?.['get']?.responses?.['200']).toBeDefined();
     expect(paths['/v1/notification-preferences/{type}']?.['put']?.requestBody).toBeDefined();
+  });
+
+  it('publishes the versioned usage summary read model', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+
+    const operation = paths['/v1/usage/summary']?.['get'];
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'query', name: 'from', required: true }),
+        expect.objectContaining({ in: 'query', name: 'to', required: true }),
+      ]),
+    );
   });
 
   it('projects validated model choices through the public membership schema', async () => {

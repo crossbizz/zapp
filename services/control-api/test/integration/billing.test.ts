@@ -139,9 +139,7 @@ describe('Flexprice billing adapter', () => {
         ],
         pagination: { total: 1, limit: 100, offset: 100 },
       }),
-      Response.json([
-        { id: 'wallet_active', wallet_type: 'PRE_PAID', wallet_status: 'active' },
-      ]),
+      Response.json([{ id: 'wallet_active', wallet_type: 'PRE_PAID', wallet_status: 'active' }]),
       Response.json({ id: 'transaction_grant' }),
       Response.json({ total_cost: '12.340000', items: [] }),
     ];
@@ -250,8 +248,12 @@ describe('Stripe platform billing adapter', () => {
       url: 'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
     });
 
-    expect(requestBody(calls[1]?.init)).toContain('metadata%5Bflexprice_customer_id%5D=org_01J00000000000000000000000');
-    expect(requestBody(calls[2]?.init)).toContain('subscription_data%5Bmetadata%5D%5Borganization_id%5D=org_01J00000000000000000000000');
+    expect(requestBody(calls[1]?.init)).toContain(
+      'metadata%5Bflexprice_customer_id%5D=org_01J00000000000000000000000',
+    );
+    expect(requestBody(calls[2]?.init)).toContain(
+      'subscription_data%5Bmetadata%5D%5Borganization_id%5D=org_01J00000000000000000000000',
+    );
     expect(requestBody(calls[4]?.init)).toContain('proration_behavior=create_prorations');
     expect(calls[4]?.init?.headers).toMatchObject({ 'idempotency-key': 'billing-seats:test' });
   });
@@ -396,36 +398,39 @@ if (!stripeTopupProviderGate.present) {
   );
 }
 
-describe.skipIf(!stripeTopupProviderGate.present)('Stripe credit top-up provider acceptance', () => {
-  it('creates a test-mode one-time checkout with the deployed starter pack price', async () => {
-    const platformSecretKey = process.env['PLATFORM_BILLING_STRIPE_SECRET_KEY'] ?? '';
-    expect(platformSecretKey).toMatch(/^sk_test_/u);
-    const prices = StripeCreditPackPriceCatalogSchema.parse(
-      JSON.parse(process.env['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] ?? ''),
-    );
-    const deployedPricing = await loadPricingFile(
-      new URL('../../../../config/pricing.json', import.meta.url),
-    );
-    const starter = deployedPricing.creditPacks?.starter;
-    if (starter === undefined) throw new Error('starter credit pack is not configured');
-    const checkout = await createStripeBillingClient({
-      platformSecretKey,
-    }).createCreditCheckout({
-      organizationId: 'org_01J00000000000000000000000',
-      packId: 'starter',
-      priceId: prices.starter ?? '',
-      credits: starter.credits,
-      amountUsd: starter.amountUsd,
-      pricingVersion: deployedPricing.version,
-      customerId: null,
-      successUrl: 'https://app.zapp.build/settings/billing?topup=success',
-      cancelUrl: 'https://app.zapp.build/settings/billing?topup=cancelled',
-      operationKey: 'ops5-provider-topup-v1',
+describe.skipIf(!stripeTopupProviderGate.present)(
+  'Stripe credit top-up provider acceptance',
+  () => {
+    it('creates a test-mode one-time checkout with the deployed starter pack price', async () => {
+      const platformSecretKey = process.env['PLATFORM_BILLING_STRIPE_SECRET_KEY'] ?? '';
+      expect(platformSecretKey).toMatch(/^sk_test_/u);
+      const prices = StripeCreditPackPriceCatalogSchema.parse(
+        JSON.parse(process.env['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] ?? ''),
+      );
+      const deployedPricing = await loadPricingFile(
+        new URL('../../../../config/pricing.json', import.meta.url),
+      );
+      const starter = deployedPricing.creditPacks?.starter;
+      if (starter === undefined) throw new Error('starter credit pack is not configured');
+      const checkout = await createStripeBillingClient({
+        platformSecretKey,
+      }).createCreditCheckout({
+        organizationId: 'org_01J00000000000000000000000',
+        packId: 'starter',
+        priceId: prices.starter ?? '',
+        credits: starter.credits,
+        amountUsd: starter.amountUsd,
+        pricingVersion: deployedPricing.version,
+        customerId: null,
+        successUrl: 'https://app.zapp.build/settings/billing?topup=success',
+        cancelUrl: 'https://app.zapp.build/settings/billing?topup=cancelled',
+        operationKey: 'ops5-provider-topup-v1',
+      });
+      expect(checkout.id).toMatch(/^cs_test_/u);
+      expect(checkout.url).toMatch(/^https:\/\/checkout\.stripe\.com\//u);
     });
-    expect(checkout.id).toMatch(/^cs_test_/u);
-    expect(checkout.url).toMatch(/^https:\/\/checkout\.stripe\.com\//u);
-  });
-});
+  },
+);
 
 const routeHarnesses: Harness[] = [];
 afterEach(async () => {
@@ -457,15 +462,18 @@ describe('billing API', () => {
           verifyWebhookEndpoint: () => Promise.reject(new Error('route must not inspect webhooks')),
         },
         store: {
-          status: () => Promise.resolve({
-            planId: 'builder',
-            customerId: 'cus_route',
-            subscriptionId: 'sub_route',
-            subscriptionStatus: 'active',
-            dunning: { state: 'current' },
-          }),
+          status: () =>
+            Promise.resolve({
+              planId: 'builder',
+              customerId: 'cus_route',
+              subscriptionId: 'sub_route',
+              subscriptionStatus: 'active',
+              seats: 4,
+              dunning: { state: 'current' },
+            }),
           syncSubscription: () => Promise.reject(new Error('route must not sync subscriptions')),
-          findOrganizationByCustomer: () => Promise.reject(new Error('route must not find customers')),
+          findOrganizationByCustomer: () =>
+            Promise.reject(new Error('route must not find customers')),
           markPaymentFailed: () => Promise.reject(new Error('route must not mark dunning')),
           clearDunning: () => Promise.reject(new Error('route must not clear dunning')),
           mirrorCreditGrant: () => Promise.reject(new Error('route must not grant credits')),
@@ -502,6 +510,11 @@ describe('billing API', () => {
       headers,
       payload: { planId: 'builder', seats: 4 },
     });
+    const status = await built.app.inject({
+      method: 'GET',
+      url: '/v1/billing/status',
+      headers,
+    });
     const portal = await built.app.inject({
       method: 'POST',
       url: '/v1/billing/portal',
@@ -516,6 +529,8 @@ describe('billing API', () => {
 
     expect(checkout.statusCode).toBe(201);
     expect(checkout.json()).toEqual({ url: 'https://checkout.stripe.test/session' });
+    expect(status.statusCode, status.body).toBe(200);
+    expect(status.json()).toMatchObject({ billing: { seats: 4 } });
     expect(portal.statusCode).toBe(201);
     expect(seats.statusCode).toBe(202);
     expect(stripeCalls.map(({ operation }) => operation)).toEqual(['checkout', 'portal', 'seats']);
@@ -645,13 +660,13 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       `evt_subscription_created_${organizationId.slice(4)}`,
       'customer.subscription.created',
       {
-      id: 'sub_lifecycle',
-      customer: 'cus_lifecycle',
-      status: 'active',
-      current_period_start: 1_754_308_800,
-      current_period_end: 1_756_987_200,
-      metadata: { organization_id: organizationId, plan_id: 'studio' },
-      items: { data: [{ id: 'si_lifecycle', quantity: 7, price: { product: 'prod_studio' } }] },
+        id: 'sub_lifecycle',
+        customer: 'cus_lifecycle',
+        status: 'active',
+        current_period_start: 1_754_308_800,
+        current_period_end: 1_756_987_200,
+        metadata: { organization_id: organizationId, plan_id: 'studio' },
+        items: { data: [{ id: 'si_lifecycle', quantity: 7, price: { product: 'prod_studio' } }] },
       },
     );
     await processor().handle(created, signature(created, NOW));
@@ -670,18 +685,21 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       status: 'active',
       plan_id: 'studio',
     });
+    await expect(
+      createDbBillingStore({ database: database.db }).status(organizationId),
+    ).resolves.toMatchObject({ seats: 7 });
 
     const deleted = event(
       `evt_subscription_deleted_${organizationId.slice(4)}`,
       'customer.subscription.deleted',
       {
-      id: 'sub_lifecycle',
-      customer: 'cus_lifecycle',
-      status: 'canceled',
-      current_period_start: 1_754_308_800,
-      current_period_end: 1_756_987_200,
-      metadata: { organization_id: organizationId, plan_id: 'studio' },
-      items: { data: [{ id: 'si_lifecycle', quantity: 7, price: { product: 'prod_studio' } }] },
+        id: 'sub_lifecycle',
+        customer: 'cus_lifecycle',
+        status: 'canceled',
+        current_period_start: 1_754_308_800,
+        current_period_end: 1_756_987_200,
+        metadata: { organization_id: organizationId, plan_id: 'studio' },
+        items: { data: [{ id: 'si_lifecycle', quantity: 7, price: { product: 'prod_studio' } }] },
       },
     );
     await processor().handle(deleted, signature(deleted, NOW));
@@ -696,13 +714,13 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       `evt_grant_subscription_${organizationId.slice(4)}`,
       'customer.subscription.created',
       {
-      id: 'sub_grant',
-      customer: 'cus_grant',
-      status: 'active',
-      current_period_start: 1_754_308_800,
-      current_period_end: 1_756_987_200,
-      metadata: { organization_id: organizationId, plan_id: 'builder' },
-      items: { data: [{ id: 'si_grant', quantity: 3, price: { product: 'prod_builder' } }] },
+        id: 'sub_grant',
+        customer: 'cus_grant',
+        status: 'active',
+        current_period_start: 1_754_308_800,
+        current_period_end: 1_756_987_200,
+        metadata: { organization_id: organizationId, plan_id: 'builder' },
+        items: { data: [{ id: 'si_grant', quantity: 3, price: { product: 'prod_builder' } }] },
       },
     );
     await processor().handle(subscription, signature(subscription, NOW));
@@ -781,22 +799,26 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       `evt_dunning_subscription_${organizationId.slice(4)}`,
       'customer.subscription.created',
       {
-      id: 'sub_dunning',
-      customer: 'cus_dunning',
-      status: 'active',
-      current_period_start: 1_754_308_800,
-      current_period_end: 1_756_987_200,
-      metadata: { organization_id: organizationId, plan_id: 'builder' },
-      items: { data: [{ id: 'si_dunning', quantity: 3, price: { product: 'prod_builder' } }] },
+        id: 'sub_dunning',
+        customer: 'cus_dunning',
+        status: 'active',
+        current_period_start: 1_754_308_800,
+        current_period_end: 1_756_987_200,
+        metadata: { organization_id: organizationId, plan_id: 'builder' },
+        items: { data: [{ id: 'si_dunning', quantity: 3, price: { product: 'prod_builder' } }] },
       },
     );
     await processor().handle(subscription, signature(subscription, NOW));
 
-    const failed = event(`evt_invoice_failed_${organizationId.slice(4)}`, 'invoice.payment_failed', {
-      id: 'in_failed',
-      customer: 'cus_dunning',
-      subscription: 'sub_dunning',
-    });
+    const failed = event(
+      `evt_invoice_failed_${organizationId.slice(4)}`,
+      'invoice.payment_failed',
+      {
+        id: 'in_failed',
+        customer: 'cus_dunning',
+        subscription: 'sub_dunning',
+      },
+    );
     await processor().handle(failed, signature(failed, NOW));
     const store = createDbBillingStore({ database: database.db });
 
@@ -823,18 +845,14 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
     `;
     expect(organization?.count).toBe('1');
 
-    const recovered = event(
-      `evt_invoice_recovered_${organizationId.slice(4)}`,
-      'invoice.paid',
-      {
-        id: 'in_recovered',
-        customer: 'cus_dunning',
-        subscription: 'sub_dunning',
-        billing_reason: 'subscription_cycle',
-        period_start: 1_754_308_800,
-        period_end: 1_756_987_200,
-      },
-    );
+    const recovered = event(`evt_invoice_recovered_${organizationId.slice(4)}`, 'invoice.paid', {
+      id: 'in_recovered',
+      customer: 'cus_dunning',
+      subscription: 'sub_dunning',
+      billing_reason: 'subscription_cycle',
+      period_start: 1_754_308_800,
+      period_end: 1_756_987_200,
+    });
     await processor().handle(recovered, signature(recovered, NOW));
     expect(await store.status(organizationId)).toMatchObject({
       planId: 'builder',

@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 
 import { Hero } from './home/Hero';
 import { createControlPlaneClient, type MeResponse } from '../lib/api';
+import { captureSignup } from '../lib/activation';
 import {
   bootstrapHomeFeatureFlags,
   homeFeatureFlags,
@@ -54,6 +55,10 @@ export function SessionHome(): ReactElement {
         ]);
         if (!isCurrent()) return;
         bootstrapHomeFeatureFlags(selected.membership.organization.id, flags);
+        captureSignup({
+          organizationId: selected.membership.organization.id,
+          userId: me.user.id,
+        });
         setProfile(me);
         setInvalidOrganization(selected.invalidOverride);
         setOrganizationId(selected.membership.organization.id);
@@ -93,7 +98,11 @@ export function SessionHome(): ReactElement {
 
   if (profile === undefined) return <main>Loading session…</main>;
 
-  if (organizationId === undefined || organizationName === undefined || featureFlags === undefined) {
+  if (
+    organizationId === undefined ||
+    organizationName === undefined ||
+    featureFlags === undefined
+  ) {
     return (
       <main>
         <h1>{profile.user.displayName}</h1>

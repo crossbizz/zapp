@@ -20,8 +20,8 @@ import { FakeAuthPort } from '../../../../services/control-api/test/support/fake
 
 import { resetNextDevOutput } from './next-dev-output.js';
 
-const appPort = 3100;
-const apiPort = 4100;
+const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
+const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
 const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
 

@@ -45,6 +45,7 @@ const BillingStatusResponseSchema = z
         customerId: z.string().nullable(),
         subscriptionId: z.string().nullable(),
         subscriptionStatus: z.string().nullable(),
+        seats: z.number().int().positive().nullable(),
         dunning: DunningResponseSchema,
       })
       .strict(),

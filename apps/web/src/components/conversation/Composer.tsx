@@ -279,38 +279,38 @@ export function Composer({
 
   return (
     <form className="zapp-conversation-composer" onSubmit={(event) => void submit(event)}>
-      <div aria-label="Attached images" className="zapp-conversation-images">
+      <div aria-label="Attached images" className="zapp-conversation-images" role="list">
         {images
           .filter((image) => image.selection === undefined)
           .map((image) => (
-          <span className="zapp-conversation-image-chip" key={image.id}>
-            {image.file.name}
-            {image.capture === undefined ? null : ` · ${captureDescription(image.capture)}`}
-            <button
-              aria-label={`Remove ${image.file.name}`}
-              onClick={() => {
-                const nextImages = imagesRef.current.filter(
-                  (candidate) => candidate.id !== image.id,
-                );
-                imagesRef.current = nextImages;
-                setImages(nextImages);
-                setImageError(undefined);
-              }}
-              type="button"
-            >
-              ×
-            </button>
-          </span>
+            <span className="zapp-conversation-image-chip" key={image.id} role="listitem">
+              {image.file.name}
+              {image.capture === undefined ? null : ` · ${captureDescription(image.capture)}`}
+              <button
+                aria-label={`Remove ${image.file.name}`}
+                onClick={() => {
+                  const nextImages = imagesRef.current.filter(
+                    (candidate) => candidate.id !== image.id,
+                  );
+                  imagesRef.current = nextImages;
+                  setImages(nextImages);
+                  setImageError(undefined);
+                }}
+                type="button"
+              >
+                ×
+              </button>
+            </span>
           ))}
       </div>
-      <div aria-label="Attached selections" className="zapp-conversation-images">
+      <div aria-label="Attached selections" className="zapp-conversation-images" role="list">
         {images
           .filter((image) => image.selection !== undefined)
           .map((image) => {
             const selection = image.selection;
             if (selection === undefined) return null;
             return (
-              <span className="zapp-conversation-image-chip" key={image.id}>
+              <span className="zapp-conversation-image-chip" key={image.id} role="listitem">
                 {`Selected: <${selection.componentHint}> '${selection.text}' on ${selection.path}`}
                 <button
                   aria-label={`Remove selected ${selection.componentHint} ${selection.text}`}

@@ -12,6 +12,7 @@ import {
 } from 'react';
 
 import { createControlPlaneClient } from '../../lib/api';
+import { captureProjectCreated } from '../../lib/activation';
 import styles from './projects.module.css';
 
 type Client = ReturnType<typeof createControlPlaneClient>;
@@ -296,12 +297,7 @@ export function GitHubImportDialog({
     if (repositoryId.length === 0 || installationId === undefined) return;
     const repository = repositories.find((candidate) => candidate.id === repositoryId);
     if (repository === undefined) return;
-    void loadBranchPage(
-      repositoryId,
-      installationId,
-      repository.defaultBranch,
-      generation,
-    );
+    void loadBranchPage(repositoryId, installationId, repository.defaultBranch, generation);
   };
 
   const pollImport = useCallback(
@@ -391,6 +387,7 @@ export function GitHubImportDialog({
         pending.projectOperationKey,
         controller.signal,
       );
+      captureProjectCreated({ organizationId, projectId: created.project.id });
       if (controller.signal.aborted) return;
       pending = { ...pending, projectId: created.project.id };
       pendingImportRef.current = pending;
@@ -449,7 +446,8 @@ export function GitHubImportDialog({
                 <option value="">Choose a repository</option>
                 {repositories.map((repository) => (
                   <option key={repository.id} value={repository.id}>
-                    {repository.fullName}{repository.private ? ' (private)' : ''}
+                    {repository.fullName}
+                    {repository.private ? ' (private)' : ''}
                   </option>
                 ))}
               </select>

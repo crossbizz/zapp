@@ -15,6 +15,7 @@ import { FlexpriceUsageEventSchema, type FlexpriceUsageEvent } from './outbox.js
 
 const DecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,6})?$/u);
 const CreditDecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,4})?$/u);
+export const UsageCategorySchema = z.enum(USAGE_CATEGORIES);
 
 const UsageMetadataSchema = z
   .object({
@@ -82,10 +83,10 @@ export type UsageWindow = z.infer<typeof UsageWindowSchema>;
 export interface UsageSummary {
   readonly byCategory: readonly {
     readonly category: (typeof USAGE_CATEGORIES)[number];
-    readonly quantity: string;
+    readonly credits: string;
   }[];
-  readonly byProject: readonly { readonly projectId: string | null; readonly quantity: string }[];
-  readonly byRun: readonly { readonly runId: string | null; readonly quantity: string }[];
+  readonly byProject: readonly { readonly projectId: string | null; readonly credits: string }[];
+  readonly byRun: readonly { readonly runId: string | null; readonly credits: string }[];
 }
 
 export interface RecordedUsage {
@@ -295,6 +296,7 @@ export function createUsageLedgerRepository(options: {
       const window = UsageWindowSchema.parse(rawWindow);
       const where = and(
         eq(usageLedger.organizationId, organizationId),
+        ne(usageLedger.category, 'credit_grant'),
         gte(usageLedger.occurredAt, new Date(window.from)),
         lt(usageLedger.occurredAt, new Date(window.to)),
       );
@@ -302,7 +304,7 @@ export function createUsageLedgerRepository(options: {
         options.database
           .select({
             category: usageLedger.category,
-            quantity: sql<string>`sum(${usageLedger.quantity})::text`,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
           })
           .from(usageLedger)
           .where(where)
@@ -311,7 +313,7 @@ export function createUsageLedgerRepository(options: {
         options.database
           .select({
             projectId: usageLedger.projectId,
-            quantity: sql<string>`sum(${usageLedger.quantity})::text`,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
           })
           .from(usageLedger)
           .where(where)
@@ -320,7 +322,7 @@ export function createUsageLedgerRepository(options: {
         options.database
           .select({
             runId: usageLedger.runId,
-            quantity: sql<string>`sum(${usageLedger.quantity})::text`,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
           })
           .from(usageLedger)
           .where(where)

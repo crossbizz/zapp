@@ -198,7 +198,7 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-sync-pill[data-sync-state='unavailable'] {
-        color: var(--zapp-text-muted);
+        color: var(--zapp-text-secondary);
         background: var(--zapp-surface-subtle);
       }
 

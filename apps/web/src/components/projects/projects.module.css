@@ -32,7 +32,7 @@
 
 .eyebrow {
   margin: 0 0 0.25rem;
-  color: var(--zapp-text-muted);
+  color: var(--zapp-text-secondary);
   font-size: var(--zapp-text-12);
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -131,17 +131,17 @@
   color: var(--zapp-text-primary);
 }
 
-.environmentStatuses [data-state='ready'],
-.environmentStatuses [data-state='healthy'] {
+.environmentStatuses [data-state='ready'] [data-status-icon],
+.environmentStatuses [data-state='healthy'] [data-status-icon] {
   color: var(--zapp-status-success);
 }
 
-.environmentStatuses [data-state='starting'],
-.environmentStatuses [data-state='deploying'] {
+.environmentStatuses [data-state='starting'] [data-status-icon],
+.environmentStatuses [data-state='deploying'] [data-status-icon] {
   color: var(--zapp-status-info);
 }
 
-.environmentStatuses [data-state='failed'] {
+.environmentStatuses [data-state='failed'] [data-status-icon] {
   color: var(--zapp-status-danger);
 }
 

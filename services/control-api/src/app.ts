@@ -119,6 +119,7 @@ import {
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerPublicUsageRoutes } from './routes/usage.js';
 import { registerIncidentRoutes, type IncidentStore } from './routes/incidents.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
 import { registerLocalAgentRoutes } from './routes/local-agent.js';
@@ -784,6 +785,12 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                     stateStore: deps.github.stateStore,
                   })),
           });
+          if (deps.usageLedger !== undefined && tenant.creditBalance !== undefined) {
+            registerPublicUsageRoutes(app, {
+              ledger: deps.usageLedger,
+              credits: tenant.creditBalance,
+            });
+          }
           if (deps.billing !== undefined) {
             registerBillingRoutes(app, deps.billing);
             if (deps.billing.topups !== undefined) {

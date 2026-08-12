@@ -28,6 +28,13 @@ export type CreateRunMessageInput =
   paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
 export type ListIncidentsQuery =
   paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
+export type UsageSummaryQuery = paths['/v1/usage/summary']['get']['parameters']['query'];
+export type NotificationPreferenceType =
+  paths['/v1/notification-preferences/{type}']['put']['parameters']['path']['type'];
+export type NotificationPreferenceChannels =
+  paths['/v1/notification-preferences/{type}']['put']['requestBody']['content']['application/json'];
+export type AuditEventsQuery =
+  paths['/v1/organizations/{orgId}/audit-events']['get']['parameters']['query'];
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -213,6 +220,68 @@ export function createControlPlaneClient(organizationId?: string) {
       client.request('/v1/projects/{projectId}/incidents', {
         method: 'GET',
         path: { projectId },
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getUsageSummary: (query: UsageSummaryQuery, signal?: AbortSignal) =>
+      client.request('/v1/usage/summary', {
+        method: 'GET',
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getNotificationPreferences: (signal?: AbortSignal) =>
+      client.request('/v1/notification-preferences', {
+        method: 'GET',
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    setNotificationPreference: (
+      type: NotificationPreferenceType,
+      body: NotificationPreferenceChannels,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/notification-preferences/{type}', {
+        method: 'PUT',
+        path: { type },
+        headers: headers(true, false),
+        body,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getBillingStatus: (signal?: AbortSignal) =>
+      client.request('/v1/billing/status', {
+        method: 'GET',
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    updateBillingSeats: (seats: number, idempotencyKey?: string) =>
+      client.request('/v1/billing/subscription', {
+        method: 'PATCH',
+        headers: headers(true, true, idempotencyKey),
+        body: { seats },
+      }),
+    createBillingPortal: (idempotencyKey?: string) =>
+      client.request('/v1/billing/portal', {
+        method: 'POST',
+        headers: headers(true, true, idempotencyKey),
+      }),
+    listCreditPacks: (signal?: AbortSignal) =>
+      client.request('/v1/billing/topups', {
+        method: 'GET',
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    createTopupCheckout: (packId: string, idempotencyKey?: string) =>
+      client.request('/v1/billing/topups/checkout', {
+        method: 'POST',
+        headers: headers(true, true, idempotencyKey),
+        body: { packId },
+      }),
+    listAuditEvents: (organizationId: string, query: AuditEventsQuery = {}, signal?: AbortSignal) =>
+      client.request('/v1/organizations/{orgId}/audit-events', {
+        method: 'GET',
+        path: { orgId: organizationId },
         headers: headers(),
         query,
         ...(signal === undefined ? {} : { signal }),
