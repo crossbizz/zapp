@@ -253,7 +253,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M6 — Private beta validation (Weeks 26–30)
 
-- [ ] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
+- [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
 - [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics
 - [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links
 - [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4)
