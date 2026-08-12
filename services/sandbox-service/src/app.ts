@@ -13,6 +13,7 @@ import {
 } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { Database } from '@zapp/db';
+import { createHttpServerTelemetry, tenantSafePinoOptions } from '@zapp/config';
 
 import {
   createGitTokenClient,
@@ -32,14 +33,12 @@ import type { NetworkPolicyRecorder } from './network/profiles.js';
 import { createFetchPreviewTransport, type PreviewTransport } from './preview/transport.js';
 import type { ScopedSecretInjector } from './secrets/injector.js';
 import { registerPreviewRoutes } from './routes/preview.js';
+import { registerSandboxTelemetryRoute, type SandboxTelemetryRelay } from './routes/telemetry.js';
 import {
   createControlPlanePreviewEventClient,
   type ControlPlanePreviewEventClientOptions,
 } from './events/client.js';
-import {
-  SandboxQuotaExceededError,
-  type RunawayComputeGovernor,
-} from './lifecycle/governor.js';
+import { SandboxQuotaExceededError, type RunawayComputeGovernor } from './lifecycle/governor.js';
 import {
   createCostRecorder,
   type CostRecorderDependencies,
@@ -62,6 +61,8 @@ import {
   createCheckpointService,
   type CheckpointServiceDependencies,
 } from './checkpoint/service.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -109,6 +110,7 @@ interface BuildAppCommonOptions {
   readonly previewFailurePollIntervalMs?: number;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
+  readonly telemetryRelay?: SandboxTelemetryRelay;
   readonly storageMeasurements?: {
     measureProjectBytes(input: {
       readonly organizationId: string;
@@ -130,16 +132,17 @@ interface BuildAppCommonOptions {
   } & (
     | { readonly state: CostRecordingStateStore; readonly database?: never }
     | { readonly state?: never; readonly database: Database }
-  ) & (
-    | {
-        readonly ledger: CostRecorderDependencies['ledger'];
-        readonly controlPlane?: never;
-      }
-    | {
-        readonly ledger?: never;
-        readonly controlPlane: ControlPlaneUsageLedgerClientOptions;
-      }
-  );
+  ) &
+    (
+      | {
+          readonly ledger: CostRecorderDependencies['ledger'];
+          readonly controlPlane?: never;
+        }
+      | {
+          readonly ledger?: never;
+          readonly controlPlane: ControlPlaneUsageLedgerClientOptions;
+        }
+    );
 }
 
 export type BuildAppOptions = BuildAppCommonOptions &
@@ -170,8 +173,7 @@ export function buildApp(options: BuildAppOptions) {
       tokens: createGitTokenClient(options.gitService),
       commands: options.provider,
     });
-  const events =
-    options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
+  const events = options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
   const snapshotMeasurements =
     options.snapshotMeasurements ??
     (options.storageMetering === undefined
@@ -198,21 +200,21 @@ export function buildApp(options: BuildAppOptions) {
       ? undefined
       : createCostRecorder({
           nowMs: options.usageMetering.nowMs ?? Date.now,
-          metrics: { sample: (providerWorkspaceId) => options.provider.metrics(providerWorkspaceId) },
+          metrics: {
+            sample: (providerWorkspaceId) => options.provider.metrics(providerWorkspaceId),
+          },
           ledger:
             options.usageMetering.ledger ??
             createControlPlaneUsageLedgerClient(options.usageMetering.controlPlane),
           state:
             options.usageMetering.state ??
             createDatabaseCostRecordingStateStore(options.usageMetering.database),
-          scheduler:
-            options.usageMetering.scheduler ??
-            {
-              setInterval: (callback, intervalMs) => setInterval(() => void callback(), intervalMs),
-              clearInterval: (handle) => {
-                clearInterval(handle as ReturnType<typeof setInterval>);
-              },
+          scheduler: options.usageMetering.scheduler ?? {
+            setInterval: (callback, intervalMs) => setInterval(() => void callback(), intervalMs),
+            clearInterval: (handle) => {
+              clearInterval(handle as ReturnType<typeof setInterval>);
             },
+          },
         });
   const checkpointService =
     options.checkpointing === undefined
@@ -255,10 +257,23 @@ export function buildApp(options: BuildAppOptions) {
           },
         });
   const app = Fastify({
-    logger: options.logger ?? false,
+    logger: options.logger ?? tenantSafePinoOptions({ serviceName: 'sandbox-service' }),
     requestIdHeader: false,
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
+
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -348,16 +363,13 @@ export function buildApp(options: BuildAppOptions) {
     ...(options.previewMonitorStandbyPollIntervalMs === undefined
       ? {}
       : {
-          previewMonitorStandbyPollIntervalMs:
-            options.previewMonitorStandbyPollIntervalMs,
+          previewMonitorStandbyPollIntervalMs: options.previewMonitorStandbyPollIntervalMs,
         }),
     ...(options.previewFailurePollIntervalMs === undefined
       ? {}
       : { previewFailurePollIntervalMs: options.previewFailurePollIntervalMs }),
     now,
-    ...(storageMeasurements === undefined
-      ? {}
-      : { storageMeasurements }),
+    ...(storageMeasurements === undefined ? {} : { storageMeasurements }),
     ...(checkpointService === undefined ? {} : { checkpointService }),
     ...(rawCostRecorder === undefined || options.usageMetering === undefined
       ? {}
@@ -382,5 +394,8 @@ export function buildApp(options: BuildAppOptions) {
     registerPreviewRoutes(previewApp, { rows: options.rows, transport: previewTransport });
     done();
   });
+  if (options.telemetryRelay !== undefined) {
+    registerSandboxTelemetryRoute(app, { relay: options.telemetryRelay });
+  }
   return app;
 }

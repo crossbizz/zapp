@@ -1,3 +1,4 @@
+export { openTelemetry } from './instrumentation.js';
 export * from './annotations/grafana.js';
 export * from './annotations/posthog.js';
 export * from './domains/service.js';

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createDb } from '@zapp/db';
 import { Client, Connection } from '@temporalio/client';
+import { OpenTelemetryWorkflowClientInterceptor } from '@temporalio/interceptors-opentelemetry';
 
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
@@ -167,6 +168,7 @@ const temporalConnection = await Connection.connect({ address: temporalEnv.addre
 const temporal = new Client({
   connection: temporalConnection,
   namespace: temporalEnv.namespace,
+  interceptors: { workflow: [new OpenTelemetryWorkflowClientInterceptor()] },
 });
 const notificationQueue = createSqsNotificationQueue(notificationConfig);
 const notificationState = createRedisNotificationState(redis);

@@ -7,6 +7,14 @@ interface LifecycleInput {
   readonly redis: unknown;
 }
 
+interface TemporalClientInput {
+  readonly connection: unknown;
+  readonly namespace: string;
+  readonly interceptors?: {
+    readonly workflow?: readonly unknown[];
+  };
+}
+
 const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
 const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
 
@@ -224,7 +232,8 @@ const production = vi.hoisted(() => {
       .fn<(url: string, options: unknown) => typeof redis>()
       .mockReturnValue(redis),
     connectTemporal: vi.fn(() => Promise.resolve(temporalConnection)),
-    TemporalClient: vi.fn(function TemporalClient() {
+    TemporalClient: vi.fn(function TemporalClient(options: TemporalClientInput) {
+      void options;
       return temporal;
     }),
     createSqsUsageQueue: vi.fn(() => usageQueue),
@@ -511,10 +520,13 @@ describe('control-api production entrypoint', () => {
     expect(production.connectTemporal).toHaveBeenCalledWith({
       address: production.temporalEnv.address,
     });
-    expect(production.TemporalClient).toHaveBeenCalledWith({
+    expect(production.TemporalClient).toHaveBeenCalledOnce();
+    const temporalClientInput = production.TemporalClient.mock.calls[0]?.[0];
+    expect(temporalClientInput).toMatchObject({
       connection: production.temporalConnection,
       namespace: production.temporalEnv.namespace,
     });
+    expect(temporalClientInput?.interceptors?.workflow).toHaveLength(1);
     expect(production.app.listen).not.toHaveBeenCalled();
     expect(production.createEventPublisherLifecycle).toHaveBeenCalledOnce();
     const lifecycleInput = production.createEventPublisherLifecycle.mock.calls[0]?.[0];

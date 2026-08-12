@@ -197,8 +197,30 @@ jobs:
           APPLE_ID: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_ID || '' }}
           APPLE_TEAM_ID: ${{ steps.creds.outputs.sign == 'true' && secrets.APPLE_TEAM_ID || '' }}
           APPLE_APP_PASSWORD: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_APP_PASSWORD || '' }}
+          VITE_FARO_URL: ${{ vars.GRAFANA_FARO_DESKTOP_URL }}
+          VITE_ZAPP_ENV: production
+          VITE_ZAPP_RELEASE: ${{ github.sha }}
+          VITE_FARO_BUNDLE_ID: ${{ github.sha }}
         # `--` so pnpm forwards the flag to the script instead of parsing it.
         run: pnpm run make:mac -- --skip-restore
+
+      - name: Upload private desktop source maps to Grafana Faro
+        env:
+          FARO_ENDPOINT: ${{ vars.GRAFANA_FARO_SOURCEMAP_ENDPOINT }}
+          FARO_APP_ID: ${{ vars.GRAFANA_FARO_DESKTOP_APP_ID }}
+          FARO_STACK_ID: ${{ vars.GRAFANA_FARO_STACK_ID }}
+          FARO_API_KEY: ${{ secrets.GRAFANA_FARO_SOURCEMAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FARO_ENDPOINT" ] || [ -z "$FARO_APP_ID" ] || [ -z "$FARO_STACK_ID" ] || [ -z "$FARO_API_KEY" ]; then
+            echo "::notice title=Faro source maps skipped::Grafana Faro source-map variables or token are not configured."
+            exit 0
+          fi
+          pnpm exec faro-cli upload \
+            --endpoint "$FARO_ENDPOINT" --app-id "$FARO_APP_ID" \
+            --api-key "$FARO_API_KEY" --stack-id "$FARO_STACK_ID" \
+            --bundle-id "$GITHUB_SHA" --app-name zapp-desktop \
+            --output-path .vite/renderer --recursive --gzip-contents
 
       # Identity is the deliverable of MAC-2, so it is asserted rather than
       # eyeballed: a later upstream merge that resurrects Dyad's bundle id,

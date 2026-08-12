@@ -1,4 +1,4 @@
-import type { ServiceName, ServiceTokenSigner } from '@zapp/config';
+import { createHttpServerTelemetry, type ServiceName, type ServiceTokenSigner } from '@zapp/config';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -20,6 +20,8 @@ import type { GitProvider } from './provider/types.js';
 import type { GitMirror } from './import/mirror.js';
 import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -81,6 +83,19 @@ export function buildApp(deps: AppDeps): AppInstance {
      */
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
+
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);

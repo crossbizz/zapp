@@ -21,7 +21,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && mkdir -p dist/inject && cp src/inject/zapp-client.js dist/inject/zapp-client.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "pnpm build && vitest run"
+    "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
     "@zapp/contracts": "workspace:*",

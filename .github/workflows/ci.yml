@@ -83,6 +83,10 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/zapp
       REDIS_URL: redis://localhost:6379
       FORGEJO_URL: http://localhost:3000
+      NEXT_PUBLIC_FARO_URL: ${{ github.event_name == 'push' && vars.GRAFANA_FARO_WEB_URL || '' }}
+      NEXT_PUBLIC_ZAPP_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'test' }}
+      NEXT_PUBLIC_ZAPP_RELEASE: ${{ github.sha }}
+      NEXT_PUBLIC_FARO_BUNDLE_ID: ${{ github.sha }}
 
     steps:
       # persist-credentials: false -- this job runs repo code and package
@@ -156,6 +160,25 @@ jobs:
       # one CI round-trip reports every failure instead of the first.
       - name: Lint, typecheck, build, test
         run: pnpm turbo run lint typecheck build test --continue ${{ steps.filters.outputs.desktop }}
+
+      - name: Upload private web source maps to Grafana Faro
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          FARO_ENDPOINT: ${{ vars.GRAFANA_FARO_SOURCEMAP_ENDPOINT }}
+          FARO_APP_ID: ${{ vars.GRAFANA_FARO_WEB_APP_ID }}
+          FARO_STACK_ID: ${{ vars.GRAFANA_FARO_STACK_ID }}
+          FARO_API_KEY: ${{ secrets.GRAFANA_FARO_SOURCEMAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FARO_ENDPOINT" ] || [ -z "$FARO_APP_ID" ] || [ -z "$FARO_STACK_ID" ] || [ -z "$FARO_API_KEY" ]; then
+            echo "::notice title=Faro source maps skipped::Grafana Faro source-map variables or token are not configured."
+            exit 0
+          fi
+          pnpm --filter @zapp/web exec faro-cli upload \
+            --endpoint "$FARO_ENDPOINT" --app-id "$FARO_APP_ID" \
+            --api-key "$FARO_API_KEY" --stack-id "$FARO_STACK_ID" \
+            --bundle-id "$GITHUB_SHA" --app-name zapp-web \
+            --output-path .next/static --recursive --gzip-contents
 
       - name: Integration suites
         env:

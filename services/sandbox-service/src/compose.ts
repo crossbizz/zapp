@@ -4,6 +4,7 @@ import { PlanLimitsConfigSchema, type PlanLimitsConfig } from '@zapp/contracts';
 import { organizations, type Database } from '@zapp/db';
 import { eq } from 'drizzle-orm';
 
+import './instrumentation.js';
 import {
   createRunawayComputeGovernor,
   type RunawayComputeGovernor,
@@ -11,8 +12,12 @@ import {
 } from './lifecycle/governor.js';
 import { createSandboxPlanLimitsAdapter } from './lifecycle/plan-limits.js';
 import { buildApp, type BuildAppOptions } from './app.js';
+import type { SandboxTelemetryRelay } from './routes/telemetry.js';
 
 type WithoutGovernor<T> = T extends unknown ? Omit<T, 'governor'> : never;
+type DeployableSandboxAppOptions = WithoutGovernor<BuildAppOptions> & {
+  readonly telemetryRelay: SandboxTelemetryRelay;
+};
 
 /**
  * Deployment composition for the durable sandbox governor. Keeping this join in
@@ -45,7 +50,8 @@ export async function loadSandboxPlanLimits(
 export function createDatabaseSandboxOrganizationSource(database: Database) {
   return {
     async findById(organizationId: string) {
-      const [organization] = await database.select({ plan: organizations.plan })
+      const [organization] = await database
+        .select({ plan: organizations.plan })
         .from(organizations)
         .where(eq(organizations.id, organizationId))
         .limit(1);
@@ -56,7 +62,7 @@ export function createDatabaseSandboxOrganizationSource(database: Database) {
 
 /** Deployable sandbox assembly: strict local policy + database tenant plan + durable governor. */
 export async function composeSandboxApp(options: {
-  readonly app: WithoutGovernor<BuildAppOptions>;
+  readonly app: DeployableSandboxAppOptions;
   readonly database: Database;
   readonly governor: Omit<RunawayComputeGovernorDependencies, 'limits'>;
   readonly plansUrl?: URL;

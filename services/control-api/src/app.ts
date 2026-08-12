@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import {
+  createHttpServerTelemetry,
   createFeatureFlagEvaluator,
   type FeatureFlagEvaluator,
   type ProductAnalytics,
@@ -151,6 +152,8 @@ import {
   type GitHubWebhookDependencies,
 } from './integrations/github/webhooks.js';
 import { registerGitHubImportRoutes } from './integrations/github/import.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -448,6 +451,20 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             ),
         }),
   }).withTypeProvider<ZodTypeProvider>();
+
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+      ...(request.tenant === undefined ? {} : { organizationId: request.tenant.organizationId }),
+    });
+    done();
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);

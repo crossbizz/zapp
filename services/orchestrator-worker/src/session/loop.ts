@@ -12,6 +12,7 @@ import {
   type ToolRegistry,
   type ToolExecutionWithAudit,
 } from '@zapp/agent-tools';
+import { startObservabilitySpan, withObservabilitySpan } from '@zapp/config';
 import {
   MessageUserPayloadSchema,
   RunModeSchema,
@@ -395,9 +396,7 @@ function yielded(
   });
 }
 
-function conversationMessageContent(
-  message: z.infer<typeof MessageUserPayloadSchema>,
-): string {
+function conversationMessageContent(message: z.infer<typeof MessageUserPayloadSchema>): string {
   if (message.attachments.length === 0) return message.content;
   const attachments = message.attachments.map(
     (attachment) =>
@@ -549,9 +548,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       let messageApplied = false;
       const conversationMessage = input.control?.message;
       if (conversationMessage !== null && conversationMessage !== undefined) {
-        if (
-          transcript.appliedMessageOperationKeys.includes(conversationMessage.operationKey)
-        ) {
+        if (transcript.appliedMessageOperationKeys.includes(conversationMessage.operationKey)) {
           messageApplied = true;
         } else if (
           transcript.pendingToolCalls.length === 0 &&
@@ -784,7 +781,11 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                   .safe()
                   .parse(dependencies.countRequestTokens(requestBase));
               } catch {
-                return await finish('failed', 'Request token counting failed.', 'token_count_failed');
+                return await finish(
+                  'failed',
+                  'Request token counting failed.',
+                  'token_count_failed',
+                );
               }
               const remainingOutputBudget =
                 input.budgets.maxTokens - transcript.tokensUsed - requestTokens;
@@ -822,7 +823,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               request = structuredClone(transcript.inFlightCompletion.request);
               requestTokens = transcript.inFlightCompletion.requestTokens;
               reservedTurnTokens = transcript.inFlightCompletion.reservedTokens;
-              if (requestFingerprint(request) !== transcript.inFlightCompletion.requestFingerprint) {
+              if (
+                requestFingerprint(request) !== transcript.inFlightCompletion.requestFingerprint
+              ) {
                 throw new Error('Durable completion request fingerprint does not match');
               }
             }
@@ -832,6 +835,12 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             let pendingTokenCutoff = false;
             let streamCompleted = false;
             let iterator: AsyncIterator<GatewayStreamEvent> | undefined;
+            const stepSpan = startObservabilitySpan('agent.step:model', {
+              'zapp.organization.id': input.context.scope.organizationId,
+              'zapp.project.id': input.context.scope.projectId,
+              'zapp.run.id': input.runId,
+              'zapp.task.id': taskId,
+            });
             try {
               iterator = dependencies.gateway
                 .stream(request, controller.signal)
@@ -871,7 +880,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 }
                 if (event.type === 'usage.recorded') {
                   if (event.completionId !== request.completionId) {
-                    throw new Error('Recorded usage completion identity does not match the request');
+                    throw new Error(
+                      'Recorded usage completion identity does not match the request',
+                    );
                   }
                   const budget = evaluateRunCreditBudget(event.credits);
                   enqueue(
@@ -913,10 +924,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 }
                 if (event.type === 'error') {
                   closeIterator(iterator);
-                  if (
-                    event.code === 'completion_leased' ||
-                    event.code === 'completion_retryable'
-                  ) {
+                  if (event.code === 'completion_leased' || event.code === 'completion_retryable') {
                     throw new SessionCompletionRetryableError(event.code);
                   }
                   if (event.code === 'budget_exceeded') {
@@ -933,11 +941,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                       event.code,
                     );
                   }
-                  return await finish(
-                    'failed',
-                    dependencies.redact(event.message),
-                    event.code,
-                  );
+                  return await finish('failed', dependencies.redact(event.message), event.code);
                 }
                 if (pendingTokenCutoff) continue;
                 if (event.type === 'tool-call') {
@@ -990,6 +994,8 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               }
               const message = error instanceof Error ? error.message : 'Gateway stream failed.';
               return await finish('failed', dependencies.redact(message), 'gateway_stream_failed');
+            } finally {
+              stepSpan.end(streamCompleted ? 'ok' : 'error');
             }
             if (isAborted(controller.signal)) {
               const wallClockExceeded = now() - startedAt >= input.budgets.maxWallClockMs;
@@ -1180,16 +1186,27 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           let executionOutcome: ToolExecutionWithAudit | typeof ABORTED | undefined;
           let executionError: unknown;
           try {
-            const execution = dependencies.tools.get(call.toolName).executeWithAudit(
-              rawInput,
+            const execution = withObservabilitySpan(
+              `agent.tool:${call.toolName}`,
               {
-                organizationId: input.context.scope.organizationId,
-                projectId: input.context.scope.projectId,
-                runId: input.runId,
-                taskId,
-                step: `tool:${call.toolCallId}`,
+                'zapp.organization.id': input.context.scope.organizationId,
+                'zapp.project.id': input.context.scope.projectId,
+                'zapp.run.id': input.runId,
+                'zapp.task.id': taskId,
+                'zapp.tool.name': call.toolName,
               },
-              controller.signal,
+              async () =>
+                dependencies.tools.get(call.toolName).executeWithAudit(
+                  rawInput,
+                  {
+                    organizationId: input.context.scope.organizationId,
+                    projectId: input.context.scope.projectId,
+                    runId: input.runId,
+                    taskId,
+                    step: `tool:${call.toolCallId}`,
+                  },
+                  controller.signal,
+                ),
             );
             executionOutcome = await raceWithAbort(execution, controller.signal);
           } catch (error: unknown) {

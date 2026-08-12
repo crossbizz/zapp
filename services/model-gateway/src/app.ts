@@ -1,4 +1,8 @@
-import type { ServiceTokenSigner } from '@zapp/config';
+import {
+  createHttpServerTelemetry,
+  tenantSafePinoOptions,
+  type ServiceTokenSigner,
+} from '@zapp/config';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import {
   serializerCompiler,
@@ -16,10 +20,9 @@ import {
   type GatewayStreamEvent,
 } from './schemas.js';
 import { ModelTerminalError } from './providers/types.js';
-import {
-  CompletionCommitIndeterminateError,
-  CompletionControlError,
-} from './usage-client.js';
+import { CompletionCommitIndeterminateError, CompletionControlError } from './usage-client.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 export { ChatMessageSchema, CompleteRequestSchema, NeutralToolSchema } from './schemas.js';
 export type { ChatMessage, CompleteRequest, GatewayStreamEvent, NeutralTool } from './schemas.js';
@@ -81,8 +84,11 @@ function loggerFor(config: BuildAppOptions['logger']): NonNullable<FastifyServer
   if (config === false) return false;
   const supplied = typeof config === 'object' ? config : {};
   return {
-    level: 'info',
     ...supplied,
+    ...tenantSafePinoOptions({
+      serviceName: 'model-gateway',
+      level: 'level' in supplied && typeof supplied.level === 'string' ? supplied.level : 'info',
+    }),
     serializers: logSerializers,
     redact: { paths: REDACTED_LOG_PATHS, remove: true },
   };
@@ -186,12 +192,27 @@ export function buildApp(options: BuildAppOptions) {
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
 
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
+
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.setErrorHandler((error, _request, reply) => {
     const fastifyError = error as { readonly statusCode?: number; readonly validation?: unknown };
     if (fastifyError.validation !== undefined) {
-      void reply.status(400).send({ code: 'invalid_request', message: 'Request validation failed.' });
+      void reply
+        .status(400)
+        .send({ code: 'invalid_request', message: 'Request validation failed.' });
       return;
     }
     const statusCode = fastifyError.statusCode ?? 500;
@@ -217,9 +238,10 @@ export function buildApp(options: BuildAppOptions) {
             { errorCode: 'service_unauthenticated', reason: 'user_credential' },
             'service token refused',
           );
-          await reply
-            .status(401)
-            .send({ code: 'service_unauthenticated', message: 'A valid service token is required.' });
+          await reply.status(401).send({
+            code: 'service_unauthenticated',
+            message: 'A valid service token is required.',
+          });
           return reply;
         }
 
@@ -229,9 +251,10 @@ export function buildApp(options: BuildAppOptions) {
             { errorCode: 'service_unauthenticated', reason: 'absent' },
             'service token refused',
           );
-          await reply
-            .status(401)
-            .send({ code: 'service_unauthenticated', message: 'A valid service token is required.' });
+          await reply.status(401).send({
+            code: 'service_unauthenticated',
+            message: 'A valid service token is required.',
+          });
           return reply;
         }
 
@@ -241,9 +264,10 @@ export function buildApp(options: BuildAppOptions) {
             { errorCode: 'service_unauthenticated', reason: verdict.reason },
             'service token refused',
           );
-          await reply
-            .status(401)
-            .send({ code: 'service_unauthenticated', message: 'A valid service token is required.' });
+          await reply.status(401).send({
+            code: 'service_unauthenticated',
+            message: 'A valid service token is required.',
+          });
           return reply;
         }
         if (!MODEL_GATEWAY_CALLERS.has(verdict.claims.service)) {
@@ -251,9 +275,10 @@ export function buildApp(options: BuildAppOptions) {
             { errorCode: 'service_not_allowed', service: verdict.claims.service },
             'service not allowed on model completion route',
           );
-          await reply
-            .status(403)
-            .send({ code: 'service_not_allowed', message: 'That service may not call this endpoint.' });
+          await reply.status(403).send({
+            code: 'service_not_allowed',
+            message: 'That service may not call this endpoint.',
+          });
           return reply;
         }
       },
@@ -320,8 +345,8 @@ export function buildApp(options: BuildAppOptions) {
                     message: 'The completion accounting result must be retried.',
                   }
                 : error instanceof ModelTerminalError
-              ? { type: 'error' as const, code: error.code, message: error.message }
-              : SAFE_PROVIDER_ERROR;
+                  ? { type: 'error' as const, code: error.code, message: error.message }
+                  : SAFE_PROVIDER_ERROR;
           request.log.warn({ errorCode: terminalEvent.code }, 'provider completion failed');
           if (await writeSse(reply.raw, terminalEvent, responseAbortController.signal)) {
             reply.raw.end();

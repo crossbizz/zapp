@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { ApplicationFailure } from '@temporalio/activity';
 import { WorkflowExecutionAlreadyStartedError, type Client } from '@temporalio/client';
 import { Worker, type NativeConnection, type WorkerOptions } from '@temporalio/worker';
+import { OpenTelemetryPlugin } from '@temporalio/interceptors-opentelemetry';
+import { getOpenTelemetryRuntime } from '@zapp/config';
 import {
   TEMPORAL_RUN_WORKFLOW_TYPES,
   projectTemporalRunSignal,
@@ -46,24 +48,21 @@ import {
 } from './workflows/run.js';
 import type { RedirectActivities } from './workflows/redirect.js';
 
-export type RunActivities =
-  & EventActivities
-  & SessionActivities
-  & WorkspaceActivities
-  & ApprovalActivities;
-export type ProductionRunActivities =
-  & RunActivities
-  & TaskWorkflowActivities
-  & AutonomousActivities
-  & FeatureFlagActivities
-  & RedirectActivities
-  & BuildModeActivities
-  & FixModeActivities;
-export type ProductionVerificationActivities =
-  & CapabilityScanActivities
-  & VerifyPhaseActivities
-  & RepairActivities
-  & FixVerificationActivities;
+export type RunActivities = EventActivities &
+  SessionActivities &
+  WorkspaceActivities &
+  ApprovalActivities;
+export type ProductionRunActivities = RunActivities &
+  TaskWorkflowActivities &
+  AutonomousActivities &
+  FeatureFlagActivities &
+  RedirectActivities &
+  BuildModeActivities &
+  FixModeActivities;
+export type ProductionVerificationActivities = CapabilityScanActivities &
+  VerifyPhaseActivities &
+  RepairActivities &
+  FixVerificationActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -83,6 +82,17 @@ interface CommonRunWorkerOptions {
   readonly activities: RunActivities;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
   readonly maxHeartbeatThrottleInterval?: WorkerOptions['maxHeartbeatThrottleInterval'];
+}
+
+function openTelemetryPlugins(): NonNullable<WorkerOptions['plugins']> {
+  const runtime = getOpenTelemetryRuntime('orchestrator-worker');
+  if (runtime?.spanProcessor === undefined) return [];
+  const options = {
+    tracer: runtime.tracer,
+    resource: runtime.resource,
+    spanProcessor: runtime.spanProcessor,
+  } as unknown as ConstructorParameters<typeof OpenTelemetryPlugin>[0];
+  return [new OpenTelemetryPlugin(options)];
 }
 
 export type RunWorkerOptions = CommonRunWorkerOptions &
@@ -116,12 +126,14 @@ export function createRunWorker(options: RunWorkerOptions): Promise<Worker> {
     'idempotencyStore' in options
       ? { activity: [createActivityIdempotencyInterceptor({ store: options.idempotencyStore })] }
       : undefined;
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: options.taskQueue,
     workflowsPath: workflowPath(),
     activities: options.activities,
     ...(interceptors === undefined ? {} : { interceptors }),
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -161,6 +173,7 @@ export function createProductionCapabilityScanWorker(options: {
   readonly database: Database;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
 }): Promise<Worker> {
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: TASK_QUEUES.verification,
@@ -173,6 +186,7 @@ export function createProductionCapabilityScanWorker(options: {
         }),
       ],
     },
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -186,6 +200,7 @@ export function createProductionVerificationWorker(options: {
   readonly database: Database;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
 }): Promise<Worker> {
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: TASK_QUEUES.verification,
@@ -198,6 +213,7 @@ export function createProductionVerificationWorker(options: {
         }),
       ],
     },
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -206,7 +222,10 @@ export function createProductionVerificationWorker(options: {
 
 /** Business outcomes are explicit Temporal failures and are never retried. */
 export function createBusinessFailure(type: string, message: string): ApplicationFailure {
-  const parsedType = z.string().regex(/^[a-z][a-z0-9_]{1,127}$/u).parse(type);
+  const parsedType = z
+    .string()
+    .regex(/^[a-z][a-z0-9_]{1,127}$/u)
+    .parse(type);
   const parsedMessage = z.string().min(1).max(1_024).parse(message);
   return ApplicationFailure.nonRetryable(parsedMessage, parsedType);
 }
@@ -225,8 +244,7 @@ function createTemporalOrchestratorForQueue(
     async startRun(inputValue) {
       const projected = projectTemporalRunStart(inputValue);
       const workflowType =
-        projected.workflowType === TEMPORAL_RUN_WORKFLOW_TYPES.build &&
-        !useDedicatedBuildWorkflow
+        projected.workflowType === TEMPORAL_RUN_WORKFLOW_TYPES.build && !useDedicatedBuildWorkflow
           ? TEMPORAL_RUN_WORKFLOW_TYPES.ask
           : projected.workflowType;
       const workflow = {
@@ -252,7 +270,8 @@ function createTemporalOrchestratorForQueue(
           error instanceof WorkflowExecutionAlreadyStartedError &&
           error.workflowId === input.workflowId &&
           error.workflowType === workflowType
-        ) return;
+        )
+          return;
         throw error;
       }
     },
@@ -279,7 +298,10 @@ function createTemporalOrchestratorForQueue(
       } else if (special.signal === 'autonomous_plan_approval') {
         await handle.signal(autonomousPlanApprovalSignal, {
           runId: special.runId,
-          artifactId: z.string().regex(/^art_[0-9A-HJKMNP-TV-Z]{26}$/u).parse(special.artifactId),
+          artifactId: z
+            .string()
+            .regex(/^art_[0-9A-HJKMNP-TV-Z]{26}$/u)
+            .parse(special.artifactId),
           decision: z.enum(['approved', 'rejected']).parse(special.decision),
           operationKey: special.operationKey,
         });

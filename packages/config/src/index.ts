@@ -1,5 +1,35 @@
 export { defineEnv } from './env.js';
 export {
+  OBSERVABILITY_METRICS,
+  buildOpenTelemetryConfig,
+  createHttpServerTelemetry,
+  createObservabilityInstruments,
+  createSpanMetricsProcessor,
+  getOpenTelemetryRuntime,
+  publicOpenTelemetryConfig,
+  startObservabilitySpan,
+  startOpenTelemetry,
+  startOpenTelemetryFromEnv,
+  tenantSafeTelemetryAttributes,
+  withObservabilitySpan,
+  type DeploymentEnvironment,
+  type HttpServerTelemetry,
+  type HttpServerTelemetryFinish,
+  type ObservabilityInstruments,
+  type ObservabilityMetric,
+  type ObservabilitySpan,
+  type OpenTelemetryConfig,
+  type OpenTelemetryRuntime,
+  type PublicOpenTelemetryConfig,
+} from './otel.js';
+export {
+  createTenantSafeLogger,
+  redactLogValue,
+  tenantSafePinoOptions,
+  type LogSecretValue,
+  type TenantSafeLoggerOptions,
+} from './logger.js';
+export {
   ANALYTICS_EVENT_NAMES,
   AnalyticsCaptureInputSchema,
   AnalyticsEventNameSchema,

@@ -1,8 +1,5 @@
-import {
-  WorkspaceStatusSchema,
-  idSchema,
-  type WorkspaceStatus,
-} from '@zapp/contracts';
+import { WorkspaceStatusSchema, idSchema, type WorkspaceStatus } from '@zapp/contracts';
+import { withObservabilitySpan } from '@zapp/config';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -174,9 +171,7 @@ const CreationNoticeSchema = z
   })
   .strict();
 
-const ProvisionSuccessSchema = z
-  .object({ providerWorkspaceId: z.string().min(1) })
-  .strict();
+const ProvisionSuccessSchema = z.object({ providerWorkspaceId: z.string().min(1) }).strict();
 
 const ProvisionResultSchema = z.discriminatedUnion('outcome', [
   z
@@ -215,42 +210,52 @@ export function createLifecycleManager(dependencies: LifecycleManagerDependencie
   return {
     async provision(scopeInput, create) {
       const scope = LifecycleScopeSchema.parse(scopeInput);
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        let untrustedCreated: unknown;
-        try {
-          untrustedCreated = await create({ attempt, operationKey: scope.operationKey });
-        } catch {
-          untrustedCreated = undefined;
-        }
-        const created = ProvisionSuccessSchema.safeParse(untrustedCreated);
-        if (created.success) {
-          return ProvisionResultSchema.parse({
-            outcome: 'started',
-            attempts: attempt,
-            workspaceStatus: 'started',
-            providerWorkspaceId: created.data.providerWorkspaceId,
-          });
-        }
-        if (attempt === 3) {
-          await dependencies.forceTerminal(scope, true);
-          await dependencies.emit(
-            CreationNoticeSchema.parse({
-              kind: 'creation_failed',
-              ...scope,
-              attempts: 3,
-              abnormal: true,
-            }),
-          );
-          return ProvisionResultSchema.parse({
-            outcome: 'failed',
-            attempts: 3,
-            workspaceStatus: 'terminated',
-          });
-        }
-        const delay = z.number().int().nonnegative().parse(dependencies.jitterDelayMs(attempt));
-        await dependencies.sleep(delay);
-      }
-      throw new Error('Unreachable workspace provisioning state');
+      return withObservabilitySpan(
+        'sandbox.lifecycle:provision',
+        {
+          'zapp.organization.id': scope.organizationId,
+          'zapp.project.id': scope.projectId,
+          'zapp.sandbox.id': scope.workspaceId,
+        },
+        async () => {
+          for (let attempt = 1; attempt <= 3; attempt += 1) {
+            let untrustedCreated: unknown;
+            try {
+              untrustedCreated = await create({ attempt, operationKey: scope.operationKey });
+            } catch {
+              untrustedCreated = undefined;
+            }
+            const created = ProvisionSuccessSchema.safeParse(untrustedCreated);
+            if (created.success) {
+              return ProvisionResultSchema.parse({
+                outcome: 'started',
+                attempts: attempt,
+                workspaceStatus: 'started',
+                providerWorkspaceId: created.data.providerWorkspaceId,
+              });
+            }
+            if (attempt === 3) {
+              await dependencies.forceTerminal(scope, true);
+              await dependencies.emit(
+                CreationNoticeSchema.parse({
+                  kind: 'creation_failed',
+                  ...scope,
+                  attempts: 3,
+                  abnormal: true,
+                }),
+              );
+              return ProvisionResultSchema.parse({
+                outcome: 'failed',
+                attempts: 3,
+                workspaceStatus: 'terminated',
+              });
+            }
+            const delay = z.number().int().nonnegative().parse(dependencies.jitterDelayMs(attempt));
+            await dependencies.sleep(delay);
+          }
+          throw new Error('Unreachable workspace provisioning state');
+        },
+      );
     },
   };
 }

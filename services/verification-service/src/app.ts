@@ -1,4 +1,9 @@
-import type { ServiceName, ServiceTokenSigner } from '@zapp/config';
+import {
+  createHttpServerTelemetry,
+  tenantSafePinoOptions,
+  type ServiceName,
+  type ServiceTokenSigner,
+} from '@zapp/config';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -15,6 +20,8 @@ import { z } from 'zod';
 
 import { registerVerificationRoutes } from './routes.js';
 import type { BrowserRunService } from './runner/playwright.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 export type VerificationServiceApp = FastifyInstance<
   RawServerDefault,
@@ -33,7 +40,21 @@ export interface VerificationServiceDependencies {
 }
 
 export function buildApp(options: VerificationServiceDependencies): VerificationServiceApp {
-  const app = Fastify({ logger: options.logger ?? false }).withTypeProvider<ZodTypeProvider>();
+  const app = Fastify({
+    logger: options.logger ?? tenantSafePinoOptions({ serviceName: 'verification-service' }),
+  }).withTypeProvider<ZodTypeProvider>();
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.get(

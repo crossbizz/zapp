@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import { createServer, ServerResponse, type Server } from 'node:http';
 import {
   createConnection,
@@ -525,6 +526,19 @@ async function abortBrowserEventUpload(proxy: PreviewProxy): Promise<void> {
 }
 
 describe('preview proxy acceptance contract', () => {
+  test('keeps the browser-heavy cold-gate proof serialized with CI headroom', async () => {
+    const [manifestText, configText] = await Promise.all([
+      readFile(new URL('../package.json', import.meta.url), 'utf8'),
+      readFile(new URL('../vitest.config.ts', import.meta.url), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+
+    expect(manifest.scripts?.['test']).toBe('vitest run --maxWorkers=1');
+    expect(configText).toContain('testTimeout: 30_000');
+  });
+
   test('serves the built client as a classic script with capture hooks installed', async () => {
     const builtModuleUrl = new URL('../dist/main.js', import.meta.url);
     const builtModule = (await import(builtModuleUrl.href)) as {
@@ -582,9 +596,9 @@ describe('preview proxy acceptance contract', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(dom.window.document.body.textContent).toContain('ready');
     expect(response.headers.get('content-length')).toBeNull();
     expect(response.headers.get('content-md5')).toBeNull();
@@ -597,10 +611,7 @@ describe('preview proxy acceptance contract', () => {
       app.get('/', (_request, response) => {
         response.status(200).type('html');
         response.write('<html><HEAD><style>.fixture::after { content: "</he');
-        setTimeout(
-          () => response.end('ad>"; }</style></HEAD><body>chunked</body></html>'),
-          5,
-        );
+        setTimeout(() => response.end('ad>"; }</style></HEAD><body>chunked</body></html>'), 5);
       });
     });
     const proxy = await startProxy({ target: origin.url });
@@ -612,9 +623,9 @@ describe('preview proxy acceptance contract', () => {
       return Promise.resolve();
     });
 
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(dom.window.document.querySelector('style')?.textContent).toContain('</head>');
     expect(dom.window.document.body.textContent).toContain('chunked');
   });
@@ -634,9 +645,9 @@ describe('preview proxy acceptance contract', () => {
       return Promise.resolve();
     });
 
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(dom.window.document.body.firstElementChild?.id).toBe('app');
   });
 
@@ -658,9 +669,9 @@ describe('preview proxy acceptance contract', () => {
       return Promise.resolve();
     });
 
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(dom.window.document.body.firstElementChild?.id).toBe('app');
   });
 
@@ -682,9 +693,9 @@ describe('preview proxy acceptance contract', () => {
       return Promise.resolve();
     });
 
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
   });
 
   test.each([
@@ -732,9 +743,9 @@ describe('preview proxy acceptance contract', () => {
     });
     const template = dom.window.document.querySelector('template');
 
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(template?.content.querySelector('script[src="/__zapp/client.js"]')).toBeNull();
     expect(
       template?.content.querySelector('script[type="application/x-zapp-neutralized"]'),
@@ -761,7 +772,9 @@ describe('preview proxy acceptance contract', () => {
       return Promise.resolve();
     });
 
-    expect(dom.window.document.querySelectorAll('script[src^="/__zapp/client.js"]')).toHaveLength(1);
+    expect(dom.window.document.querySelectorAll('script[src^="/__zapp/client.js"]')).toHaveLength(
+      1,
+    );
     expect(
       dom.window.document.querySelectorAll('script[type="application/x-zapp-neutralized"]'),
     ).toHaveLength(1);
@@ -959,10 +972,7 @@ describe('preview proxy acceptance contract', () => {
     expect(() => {
       browserConsole.error(
         hostile,
-        fixtureCredentialUrl(
-          'example.test',
-          '/logs?access_token=URL_SENTINEL&tab=preview',
-        ),
+        fixtureCredentialUrl('example.test', '/logs?access_token=URL_SENTINEL&tab=preview'),
         'x'.repeat(10_000),
       );
     }).not.toThrow();
@@ -2018,9 +2028,9 @@ describe('preview proxy acceptance contract', () => {
       dom.window.close();
       return Promise.resolve();
     });
-    expect(dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]')).toHaveLength(
-      1,
-    );
+    expect(
+      dom.window.document.head.querySelectorAll('script[src="/__zapp/client.js"]'),
+    ).toHaveLength(1);
     expect(dom.window.document.body.textContent).toContain('too late to inject');
     expect(responseBeforeTail.headers.get('x-zapp-capture-degraded')).toBeNull();
   });
@@ -2195,25 +2205,22 @@ describe('preview proxy acceptance contract', () => {
   test.each([
     "script-src 'nonce-preview' 'strict-dynamic' 'self'",
     "script-src 'sha256-YWJj' 'strict-dynamic' 'self'",
-  ])(
-    'fix round 1 strict-dynamic passes through an unauthorized %s policy',
-    async (policy) => {
-      const original = '<html><head><title>restricted</title></head><body>ready</body></html>';
-      const origin = await startOrigin((app) => {
-        app.get('/', (_request, response) => {
-          response.status(200).set('content-security-policy', policy).type('html').send(original);
-        });
+  ])('fix round 1 strict-dynamic passes through an unauthorized %s policy', async (policy) => {
+    const original = '<html><head><title>restricted</title></head><body>ready</body></html>';
+    const origin = await startOrigin((app) => {
+      app.get('/', (_request, response) => {
+        response.status(200).set('content-security-policy', policy).type('html').send(original);
       });
-      const proxy = await startProxy({ target: origin.url });
+    });
+    const proxy = await startProxy({ target: origin.url });
 
-      if (!proxy) return;
-      const response = await fetch(`${proxy.url}/`);
+    if (!proxy) return;
+    const response = await fetch(`${proxy.url}/`);
 
-      expect(response.headers.get('content-security-policy')).toBe(policy);
-      expect(response.headers.get('x-zapp-capture-degraded')).toBe('csp');
-      expect(await response.text()).toBe(original);
-    },
-  );
+    expect(response.headers.get('content-security-policy')).toBe(policy);
+    expect(response.headers.get('x-zapp-capture-degraded')).toBe('csp');
+    expect(await response.text()).toBe(original);
+  });
 
   test('returns 501 rather than faking a screenshot without a capture capability', async () => {
     const origin = await startOrigin((app) => {

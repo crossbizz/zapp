@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AgentEventSchema, idSchema, type AgentEvent } from '@zapp/contracts';
+import { createObservabilityInstruments } from '@zapp/config';
 import { memberships, users, type Database } from '@zapp/db';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
@@ -290,6 +291,7 @@ export function createNotificationProducer(input: {
 
 const DELIVERY_LEASE_MS = 60_000;
 const EMAIL_BATCH_WINDOW_MS = 15 * 60_000;
+const notificationInstruments = createObservabilityInstruments();
 
 export function createNotificationWorker(options: {
   readonly queue: NotificationQueuePort;
@@ -384,6 +386,16 @@ export function createNotificationWorker(options: {
       let processed = 0;
       for (const message of messages) {
         const trigger = NotificationTriggerSchema.parse(JSON.parse(message.body) as unknown);
+        notificationInstruments.record(
+          'queueDelay',
+          Math.max(0, now().getTime() - Date.parse(trigger.occurredAt)),
+          {
+            queue: 'notifications',
+            'zapp.organization.id': trigger.organizationId,
+            ...(trigger.projectId === undefined ? {} : { 'zapp.project.id': trigger.projectId }),
+            ...(trigger.runId === undefined ? {} : { 'zapp.run.id': trigger.runId }),
+          },
+        );
         if (
           options.fanout !== undefined &&
           (trigger.type === 'deploy_succeeded' || trigger.type === 'deploy_failed')

@@ -68,6 +68,8 @@
     "benchmark:code-explorer:full": "node benchmarks/code-explorer/suite.mjs --mode full"
   },
   "dependencies": {
+    "@grafana/faro-web-sdk": "2.9.0",
+    "@grafana/faro-web-tracing": "2.9.0",
     "@zapp/agent-tools": "workspace:*",
     "@zapp/api-client": "workspace:*",
     "@zapp/contracts": "workspace:*",
@@ -178,6 +180,7 @@
     "dyad-keychain-reader": "file:native/keychain-reader"
   },
   "devDependencies": {
+    "@grafana/faro-cli": "0.11.0",
     "@electron-forge/cli": "^7.11.1",
     "@electron-forge/maker-base": "^7.11.1",
     "@electron-forge/maker-deb": "^7.11.1",

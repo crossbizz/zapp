@@ -51,6 +51,11 @@ it('rejects a real workspace create through production composition before provid
       scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
     },
     app: {
+      logger: false,
+      telemetryRelay: {
+        authorized: () => true,
+        forwardMetrics: () => Promise.resolve(),
+      },
       provider: {
         lockedImageTag: 'forge-node-base:test',
         attachmentEnvironment: 'zapp-dev',
@@ -65,12 +70,16 @@ it('rejects a real workspace create through production composition before provid
       } as never,
       previewMonitors: {} as never,
       serviceTokens: {
-        verifyServiceToken: () => Promise.resolve({
-          ok: true as const,
-          claims: { service: 'control-api', audience: 'sandbox-service' },
-        }),
+        verifyServiceToken: () =>
+          Promise.resolve({
+            ok: true as const,
+            claims: { service: 'control-api', audience: 'sandbox-service' },
+          }),
       },
-      workspaceGit: { bootstrap: () => Promise.resolve(), push: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' }) },
+      workspaceGit: {
+        bootstrap: () => Promise.resolve(),
+        push: () => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' }),
+      },
       secrets: { resolve: () => Promise.resolve([]) } as never,
       networkPolicies: { record: () => Promise.resolve() },
       events: { emit: () => Promise.resolve() },
