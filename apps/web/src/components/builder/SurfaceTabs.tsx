@@ -1,12 +1,15 @@
 'use client';
 
 import type { BuilderPreviewEvent } from '@zapp/api-client';
-import { EmptyState, Tabs } from '@zapp/ui';
+import { Tabs } from '@zapp/ui';
 import { useEffect, useRef, type ReactElement } from 'react';
 
 import type { BuilderRun } from '../../lib/api';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
+import { CodeView } from '../code/CodeView';
+import { LogView } from '../logs/LogView';
+import { TestRuns } from '../tests/TestRuns';
 
 export type SurfaceTab = 'preview' | 'code' | 'logs' | 'tests';
 
@@ -71,32 +74,17 @@ export function SurfaceTabs({
             value: 'preview',
           },
           {
-            content: (
-              <EmptyState
-                description="Code will appear after the first build starts."
-                title="No generated code yet"
-              />
-            ),
+            content: <CodeView organizationId={organizationId} projectId={projectId} />,
             label: 'Code',
             value: 'code',
           },
           {
-            content: (
-              <EmptyState
-                description="Runtime output will appear after work begins."
-                title="No logs yet"
-              />
-            ),
+            content: <LogView organizationId={organizationId} projectId={projectId} />,
             label: 'Logs',
             value: 'logs',
           },
           {
-            content: (
-              <EmptyState
-                description="Verification results will appear after tests run."
-                title="No test results yet"
-              />
-            ),
+            content: <TestRuns onRunCreated={onRunCreated} organizationId={organizationId} projectId={projectId} {...(runId === undefined ? {} : { runId })} />,
             label: 'Tests',
             value: 'tests',
           },

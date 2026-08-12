@@ -36,6 +36,16 @@ export type RunSpecificationData =
   paths['/v1/runs/{runId}/specifications/{specificationId}']['get']['responses'][200]['content']['application/json'];
 export type RunPlanData =
   paths['/v1/runs/{runId}/plans/{artifactId}']['get']['responses'][200]['content']['application/json'];
+export type WorkspaceFilesData =
+  paths['/v1/workspaces/{workspaceId}/files']['get']['responses'][200]['content']['application/json'];
+export type WorkspaceFileData =
+  paths['/v1/workspaces/{workspaceId}/file']['get']['responses'][200]['content']['application/json'];
+export type CommitComparisonData =
+  paths['/v1/projects/{projectId}/compare']['get']['responses'][200]['content']['application/json'];
+export type RunTestsData =
+  paths['/v1/runs/{runId}/tests']['get']['responses'][200]['content']['application/json'];
+export type RunEvidenceData =
+  paths['/v1/runs/{runId}/evidence/{artifactId}']['get']['responses'][200]['content']['application/json'];
 export type ListIncidentsQuery =
   paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
 export type UsageSummaryQuery = paths['/v1/usage/summary']['get']['parameters']['query'];
@@ -475,6 +485,64 @@ export function createControlPlaneClient(organizationId?: string) {
         method: 'GET',
         path: { runId, artifactId },
         headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listProjectWorkspaces: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/workspaces', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query: { limit: 25 },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listWorkspaceFiles: (workspaceId: string, path = '.', signal?: AbortSignal) =>
+      client.request('/v1/workspaces/{workspaceId}/files', {
+        method: 'GET',
+        path: { workspaceId },
+        headers: headers(),
+        query: { path, maxDepth: 1 },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    readWorkspaceFile: (workspaceId: string, path: string, signal?: AbortSignal) =>
+      client.request('/v1/workspaces/{workspaceId}/file', {
+        method: 'GET',
+        path: { workspaceId },
+        headers: headers(),
+        query: { path },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    editWorkspaceFile: (
+      workspaceId: string,
+      body: { readonly path: string; readonly dataBase64: string; readonly expectedCompareToken: string },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/workspaces/{workspaceId}/edits', {
+        method: 'POST',
+        path: { workspaceId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
+    compareProjectCommits: (projectId: string, before: string, after: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/compare', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query: { before, after },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listRunTests: (runId: string, signal?: AbortSignal) =>
+      client.request('/v1/runs/{runId}/tests', {
+        method: 'GET',
+        path: { runId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getRunEvidence: (runId: string, artifactId: string, taskId?: string, signal?: AbortSignal) =>
+      client.request('/v1/runs/{runId}/evidence/{artifactId}', {
+        method: 'GET',
+        path: { runId, artifactId },
+        headers: headers(),
+        query: taskId === undefined ? {} : { taskId },
         ...(signal === undefined ? {} : { signal }),
       }),
     readDevServerLogs: (workspaceId: string, after = 0, signal?: AbortSignal) =>

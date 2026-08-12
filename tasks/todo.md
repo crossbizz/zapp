@@ -167,7 +167,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-COLD-FIX-2 Align the repository test contract with isolated E2E startup
 - [x] WEB-9 Mission Control drawer
 - [x] WEB-10 Interview/spec/plan approval cards
-- [ ] WEB-11 Code/Logs/Tests surfaces
+- [x] WEB-11 Code/Logs/Tests surfaces
 - [ ] WEB-17 Template gallery + detail with demo preview & Remix
 - [x] OPS-1B Flexprice bootstrap + usage summaries + complete metering acceptance
 - [x] OPS-1B-FIX-1 Application-role correction serialization
