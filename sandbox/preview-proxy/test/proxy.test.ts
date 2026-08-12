@@ -100,7 +100,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
     await cleanup();
   }
-});
+}, 30_000);
 
 async function startOrigin(
   configure: (app: Express) => void,
@@ -1008,6 +1008,8 @@ describe('preview proxy acceptance contract', () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
     cleanups[eventCleanupIndex] = async () => {
       try {
+        // Cancel the proxy's streaming request before asking Chrome to close.
+        // Closing them concurrently can keep both transports waiting forever.
         await events.close();
       } finally {
         await browser.close();

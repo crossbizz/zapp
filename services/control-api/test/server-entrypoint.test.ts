@@ -680,5 +680,5 @@ describe('control-api production entrypoint', () => {
     expect(production.app.listen).toHaveBeenCalledWith({ host: '127.0.0.1', port: 4_321 });
     expect(processOnce).toHaveBeenCalledTimes(2);
     expect(processExit).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

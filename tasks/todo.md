@@ -56,6 +56,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-13 Await server-side SSE Accept-probe cleanup before connection reuse
 - [x] M1-GATE-14 Restore awaited SSE CancelRequest barrier before connection reuse
 - [x] M1-GATE-15 Bound the real PostgreSQL append-only reset proof
+- [x] M1-GATE-16 Track only committed sources and bound lifecycle cleanup under full cold-gate contention
 
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 
@@ -1792,29 +1792,25 @@ jq() {
   });
 });
 
-async function findTypeScriptFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const paths = await Promise.all(
-    entries.map(async (entry) => {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (['node_modules', 'dist', '.next', '.turbo'].includes(entry.name)) {
-          return [];
-        }
-        return findTypeScriptFiles(path);
-      }
-      return entry.isFile() && /\.[cm]?ts$/u.test(entry.name) ? [path] : [];
-    }),
+function trackedTypeScriptFiles(repositoryRoot: string): string[] {
+  const result = spawnSync(
+    'git',
+    ['-C', repositoryRoot, 'ls-files', '-z', '--', 'apps', 'infra', 'packages', 'sandbox', 'services'],
+    { encoding: 'utf8' },
   );
-  return paths.flat();
+  if (result.status !== 0) {
+    throw new Error(`Could not enumerate tracked TypeScript sources: ${result.stderr}`);
+  }
+
+  return result.stdout
+    .split('\0')
+    .filter((path) => /\.[cm]?ts$/u.test(path))
+    .map((path) => resolve(repositoryRoot, path));
 }
 
 test('the Modal SDK is imported only by the sandbox-service provider boundary', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../..');
-  const roots = ['apps', 'infra', 'packages', 'sandbox', 'services'];
-  const files = (
-    await Promise.all(roots.map((root) => findTypeScriptFiles(resolve(repositoryRoot, root))))
-  ).flat();
+  const files = trackedTypeScriptFiles(repositoryRoot);
   const packageName = ['mo', 'dal'].join('');
   const staticImport = new RegExp(`\\bfrom\\s*['\"]${packageName}['\"]`, 'u');
   const dynamicImport = new RegExp(`\\bimport\\s*\\(\\s*['\"]${packageName}['\"]`, 'u');
