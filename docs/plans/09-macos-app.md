@@ -210,7 +210,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 
 ## Execution log
 
-- (empty)
+- 2026-08-12 MAC-11 phased — Added schema-validated, deduplicated approval/run/deployment native-notification projection with server-backed per-type desktop preferences, stale-delivery rejection, and deep-link validation; replaced the legacy public-update host with failure-isolated signed Squirrel static feeds at `desktop-updates/{stable|beta}`. Focused acceptance is 26/26 with desktop lint/typecheck green; final production run attachment remains blocked on MAC-8, and the full desktop suite retains eight unrelated current-main failures in M4 chat-stream/compaction tests, so the tracker stays unchecked.
 
 ## Execution log
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
