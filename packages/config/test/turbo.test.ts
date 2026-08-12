@@ -27,6 +27,10 @@ const webManifest = JSON.parse(
 const rootManifest = JSON.parse(
   readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
 ) as PackageManifest;
+const ciWorkflow = readFileSync(
+  new URL('../../../.github/workflows/ci.yml', import.meta.url),
+  'utf8',
+);
 const orchestratorManifest = JSON.parse(
   readFileSync(
     new URL('../../../services/orchestrator-worker/package.json', import.meta.url),
@@ -60,6 +64,10 @@ describe('Turbo task graph', () => {
   it('serializes integration packages that reset the shared local database', () => {
     expect(rootManifest.scripts?.['verify']).toContain(
       'turbo run test:integration --filter=!@zapp/desktop --concurrency=1',
+    );
+    expect(rootManifest.scripts?.['test:integration']).toContain('--concurrency=1');
+    expect(ciWorkflow).toMatch(
+      /name: Integration suites[\s\S]*run: pnpm turbo run test:integration[^\n]*--concurrency=1/u,
     );
   });
 
