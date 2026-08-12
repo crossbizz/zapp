@@ -369,6 +369,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       attachWorkspace: unused,
       terminateWorkspace: () => Promise.resolve(),
       getStatus: () => Promise.resolve('ready'),
+      updateNetworkPolicy: () => Promise.resolve(),
       exec: async (input, idempotencyKey) =>
         (await commands.exec(
           input,

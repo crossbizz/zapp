@@ -14,6 +14,7 @@ import {
   type CreateWorkspaceInput,
   type ExecutionContract,
   type ExecInput,
+  type NetworkPolicyInput,
   type PreviewLifecycleEvent,
   type WorkspaceHandle,
   type WorkspacePurpose,
@@ -166,6 +167,7 @@ export interface WorkspaceLifecycleProvider {
   ): Promise<WorkspaceHandle>;
   terminateWorkspace(providerWorkspaceId: string): Promise<void>;
   getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus>;
+  updateNetworkPolicy(input: NetworkPolicyInput): Promise<void>;
 }
 
 export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
@@ -1062,7 +1064,7 @@ export function registerWorkspaceRoutes(
           projectId: scope.projectId,
           workspaceId: body.workspace.id,
           policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
-          providerEnforced: false,
+          providerEnforced: true,
           recordedAt: deps.now(),
         }),
       );
@@ -1148,6 +1150,11 @@ export function registerWorkspaceRoutes(
               providerWorkspaceId,
               'provisioning',
             );
+            await deps.provider.updateNetworkPolicy({
+              providerWorkspaceId,
+              profile: body.networkProfile,
+              allowedDomains: body.integrationDomains,
+            });
           },
         );
       } catch (error) {

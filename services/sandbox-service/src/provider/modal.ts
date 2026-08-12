@@ -11,16 +11,19 @@ import {
   ExecutionContractSchema,
   ExecInputSchema,
   idSchema,
+  NetworkPolicyInputSchema,
   RESOURCE_PROFILES,
   ResourceProfileSchema,
   WorkspaceHandleSchema,
   type CreateWorkspaceInput,
   type ExecutionContract,
   type ExecInput,
+  type NetworkPolicyInput,
   type WorkspaceHandle,
   type WorkspacePurpose,
   type WorkspaceStatus,
 } from '@zapp/contracts';
+import { resolveNetworkPolicy } from '../network/profiles.js';
 import {
   AgentHealthSchema,
   ImageDigestSchema,
@@ -82,6 +85,10 @@ const ExplicitKillProbeDiagnosticSchema = z
 type ExplicitKillProbeFailurePhase = z.infer<typeof ExplicitKillProbeFailurePhaseSchema>;
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+// Modal 0.9 treats an empty creation allowlist as OPEN and then refuses later
+// policy updates. A reserved, non-resolving domain keeps creation in ALLOWLIST
+// mode without granting egress; the exact policy replaces it before readiness.
+const EMPTY_EGRESS_SENTINEL_DOMAIN = 'zapp.invalid';
 const HEALTH_PROBE_INTERVAL_MS = 250;
 const SCRIPTED_EXECUTION_TIMEOUT_MS = 30_000;
 const EXPLICIT_KILL_START_POLL_INTERVAL_MS = 25;
@@ -904,6 +911,8 @@ export interface ModalWorkspaceCreateOptions {
   readonly command: readonly string[];
   readonly encryptedPorts: readonly [8877, 8080];
   readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
+  readonly outboundCidrAllowlist: readonly string[];
+  readonly outboundDomainAllowlist: readonly string[];
   readonly timeoutMs: number;
 }
 
@@ -919,6 +928,10 @@ export interface ModalWorkspaceSandbox {
     readonly timeoutMs: number;
     readonly ttlMs: number;
   }): Promise<string>;
+  updateNetworkPolicy(input: {
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }): Promise<void>;
   terminate(): Promise<void>;
 }
 
@@ -1412,6 +1425,12 @@ function createModalWorkspaceSdk(
       async terminate() {
         await sandbox.terminate();
       },
+      async updateNetworkPolicy(input) {
+        await sandbox.updateNetworkPolicy({
+          outboundCidrAllowlist: [...input.outboundCidrAllowlist],
+          outboundDomainAllowlist: [...input.outboundDomainAllowlist],
+        });
+      },
     };
   }
 
@@ -1446,6 +1465,8 @@ function createModalWorkspaceSdk(
           readinessProbe: Probe.withTcp(input.readinessProbe.port, {
             intervalMs: input.readinessProbe.intervalMs,
           }),
+          outboundCidrAllowlist: [...input.outboundCidrAllowlist],
+          outboundDomainAllowlist: [...input.outboundDomainAllowlist],
           timeoutMs: input.timeoutMs,
           experimentalOptions: { vm_runtime: true },
         });
@@ -1700,6 +1721,7 @@ export class ModalSandboxProvider {
     onAllocated?: (providerWorkspaceId: string) => Promise<void>,
   ): Promise<WorkspaceHandle> {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
+    const initialNetworkPolicy = resolveNetworkPolicy(input.networkProfile, []);
     const image =
       input.purpose === 'verifier'
         ? this.images['forge-web-test']
@@ -1746,6 +1768,13 @@ export class ModalSandboxProvider {
         command: workspaceBootCommand(volume, input.purpose === 'verifier'),
         encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: HEALTH_PROBE_INTERVAL_MS },
+        // Creation applies the named baseline immediately. The service adds any
+        // project integration domains during onAllocated, before readiness.
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist:
+          initialNetworkPolicy.outboundDomains.length === 0
+            ? [EMPTY_EGRESS_SENTINEL_DOMAIN]
+            : initialNetworkPolicy.outboundDomains,
         timeoutMs: WORKSPACE_TIMEOUT_MS,
       });
       sandbox = await new Promise<ModalWorkspaceSandbox>((resolveCreation, rejectCreation) => {
@@ -1815,6 +1844,22 @@ export class ModalSandboxProvider {
       throw error;
     } finally {
       if (sdkOwnership.closeHere) sdk.close();
+    }
+  }
+
+  async updateNetworkPolicy(untrustedInput: NetworkPolicyInput): Promise<void> {
+    const input = NetworkPolicyInputSchema.strict().parse(untrustedInput);
+    const policy = resolveNetworkPolicy(input.profile, input.allowedDomains);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(input.providerWorkspaceId);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      await sandbox.updateNetworkPolicy({
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: policy.blockAll ? [] : policy.outboundDomains,
+      });
+    } finally {
+      sdk.close();
     }
   }
 
@@ -2393,6 +2438,7 @@ export function createModalNightlyE2eDriver(
         throw new Error('Workspace image must match the immutable image lock');
       }
       const resources = RESOURCE_PROFILES[input.workspace.resourceProfile];
+      const networkPolicy = resolveNetworkPolicy(input.workspace.networkProfile, []);
       const volume = createProjectVolumePlan({
         organizationId: input.workspace.organizationId,
         projectId: input.workspace.projectId,
@@ -2434,6 +2480,11 @@ export function createModalNightlyE2eDriver(
         memoryLimitMiB: resources.memLimitGiB * 1_024,
         encryptedPorts: [8877, 8080],
         readinessProbe: Probe.withTcp(8877, { intervalMs: HEALTH_PROBE_INTERVAL_MS }),
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist:
+          networkPolicy.outboundDomains.length === 0
+            ? [EMPTY_EGRESS_SENTINEL_DOMAIN]
+            : [...networkPolicy.outboundDomains],
         timeoutMs: WORKSPACE_TIMEOUT_MS,
         experimentalOptions: { vm_runtime: true },
       });

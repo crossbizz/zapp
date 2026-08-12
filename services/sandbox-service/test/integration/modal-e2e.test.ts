@@ -170,6 +170,94 @@ describe('WS-14 nightly Modal journey wiring', () => {
   });
 });
 
+describe('OPS-12 real Modal abuse containment', () => {
+  it.skipIf(!hasModalCredentials)(
+    'blocks non-allowlisted egress and survives bounded process and memory exhaustion [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as ModalImageLock;
+      const locked = lock.environments.dev;
+      if (locked === undefined) throw new Error('The dev Modal image lock is missing');
+
+      const ids = {
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+        branchId: newId('br'),
+        runId: newId('run'),
+        taskId: newId('task'),
+      } as const;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ops12-${crypto.randomUUID()}`,
+      });
+      let providerWorkspaceId: string | undefined;
+      try {
+        const handle = await provider.createWorkspace(
+          {
+            ...ids,
+            purpose: 'builder',
+            resourceProfile: 'small',
+            imageTag: locked.images['forge-node-base'].publishedName,
+            env: {},
+            networkProfile: 'build_test',
+          },
+          async (allocatedId) => {
+            providerWorkspaceId = allocatedId;
+            await provider.updateNetworkPolicy({
+              providerWorkspaceId: allocatedId,
+              profile: 'build_test',
+              allowedDomains: ['github.com'],
+            });
+          },
+        );
+        providerWorkspaceId = handle.providerWorkspaceId;
+
+        const blockedEgress = await provider.exec({
+          providerWorkspaceId,
+          command: 'node',
+          args: [
+            '-e',
+            "fetch('https://example.com', { signal: AbortSignal.timeout(5000) }).then(() => process.exit(9), () => process.exit(0))",
+          ],
+          timeoutMs: 10_000,
+        });
+        expect(blockedEgress.exitCode).toBe(0);
+
+        const processFanout = await provider.exec({
+          providerWorkspaceId,
+          command: '/bin/bash',
+          args: ['-lc', 'for _ in $(seq 1 256); do (while :; do :; done) & done; wait'],
+          timeoutMs: 2_000,
+        });
+        expect(processFanout.exitCode).not.toBe(0);
+
+        const memoryBalloon = await provider.exec({
+          providerWorkspaceId,
+          command: 'node',
+          args: [
+            '--max-old-space-size=32',
+            '-e',
+            'const held=[]; for (;;) held.push(new Array(250000).fill(1));',
+          ],
+          timeoutMs: 15_000,
+        });
+        expect(memoryBalloon.exitCode).not.toBe(0);
+        await expect(provider.getStatus(providerWorkspaceId)).resolves.toBe('ready');
+      } finally {
+        if (providerWorkspaceId !== undefined) {
+          await provider.terminateWorkspace(providerWorkspaceId).catch(() => undefined);
+        }
+      }
+    },
+    180_000,
+  );
+});
+
 describe('WS-14 real Modal E2E', () => {
   it.skipIf(!hasModalCredentials)(
     'creates, caches, serves, snapshots, kills, restores, and terminates in zapp-dev [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
