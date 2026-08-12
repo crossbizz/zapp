@@ -9,6 +9,7 @@ import {
   MessageUserPayloadSchema,
   idSchema,
   ModelIdentifierSchema,
+  RunApprovalKindSchema,
 } from '@zapp/contracts';
 import { z } from 'zod';
 
@@ -33,6 +34,11 @@ import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { RunSchema, toRun } from '../tenant/view.js';
+import {
+  BuilderRetryReasonSchema,
+  BuilderSkipReasonSchema,
+  deriveBuilderActions,
+} from './mission-control.js';
 import type { PricingConfig } from '../usage/pricing.js';
 import type { ModelCompletionRepository } from '../usage/model-completions.js';
 import {
@@ -83,12 +89,20 @@ const ContinueRunResponse = z
   })
   .strict();
 const ApprovalParams = z.object({ runId: idSchema('run'), approvalId: idSchema('appr') }).strict();
-const ResolveBudgetApprovalBody = z
-  .object({
-    decision: z.enum(['approved', 'rejected']),
-    reason: z.string().trim().min(1).max(2_000).optional(),
+const ApprovalDecisionShape = {
+  decision: z.enum(['approved', 'rejected']),
+  reason: z.string().trim().min(1).max(2_000).optional(),
+} as const;
+const ResolveApprovalBody = z.union([
+  z.object({
+    ...ApprovalDecisionShape,
+    kind: z.literal('budget_increase').optional().default('budget_increase'),
   })
-  .strict();
+  .strict(),
+  z.object({ ...ApprovalDecisionShape, kind: z.enum([
+    'specification', 'plan', 'plan_diff', 'migration', 'deploy',
+  ]) }).strict(),
+]);
 const ApprovalRequestPayload = z
   .object({
     currentCeiling: CreditDecimalSchema,
@@ -118,12 +132,25 @@ const ResolvedBudgetApprovalResponse = z
     approval: z
       .object({
         approvalId: idSchema('appr'),
+        kind: z.literal('budget_increase'),
         status: z.enum(['approved', 'rejected']),
         absoluteCeiling: CreditDecimalSchema,
       })
       .strict(),
   })
   .strict();
+const ResolvedTypedApprovalResponse = z
+  .object({
+    approval: z.object({
+      approvalId: idSchema('appr'),
+      kind: RunApprovalKindSchema.exclude(['budget_increase']),
+      status: z.enum(['approved', 'rejected']),
+    }).strict(),
+  })
+  .strict();
+const BuilderTaskParams = RunParams.extend({ taskId: idSchema('task') }).strict();
+const BuilderPhaseParams = RunParams.extend({ phaseId: idSchema('phase') }).strict();
+const BuilderControlResponse = z.object({ operationKey: OperationKeySchema }).strict();
 
 const SIGNALS = {
   pause: {
@@ -493,6 +520,168 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
   }
 
   app.post(
+    '/v1/runs/:runId/tasks/:taskId/retry',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: BuilderTaskParams, response: { 202: BuilderControlResponse } },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'start_run');
+      const operationKey = operationOf(request);
+      const claim = await ctx.db.runs.claimOperation({
+        runId: run.id,
+        operationKey,
+        allowedStatuses: ['queued', 'running', 'paused', 'waiting_for_approval'],
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.task_retry_requested',
+            target: { type: 'run', id: row.id },
+            metadata: { operationKey, operationState: 'requested', taskId: request.params.taskId },
+          });
+        },
+      });
+      if (claim === undefined) throw runNotFound();
+      if (claim.outcome === 'completed') {
+        return await reply.status(202).send({ operationKey });
+      }
+      if (claim.outcome !== 'dispatch') throw invalidRunState();
+      const [events, rows] = await Promise.all([
+        ctx.db.events.byRun(run.id),
+        ctx.db.missionControl.forRun(run.id),
+      ]);
+      const action = deriveBuilderActions(claim.entity, events, rows).retryFailedTasks.find(
+        ({ taskId }) => taskId === request.params.taskId,
+      );
+      const reason = action?.reason ?? BuilderRetryReasonSchema.parse('task_not_found');
+      if (reason !== 'eligible') {
+        await ctx.db.runs.rejectOperation({
+          runId: claim.entity.id,
+          operationKey,
+          audit: async (tx, row) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'run.task_retry_rejected',
+              target: { type: 'run', id: row.id },
+              metadata: { operationKey, operationState: 'rejected', taskId: request.params.taskId, reason },
+            });
+          },
+        });
+        throw builderControlConflict(reason);
+      }
+      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
+        runId: claim.entity.id,
+        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+        mode: claim.entity.mode,
+        signal: 'retry_failed_task',
+        taskId: request.params.taskId,
+        operationKey,
+      }));
+      const completed = await ctx.db.runs.completeOperation({
+        runId: claim.entity.id,
+        operationKey,
+        expectedStatus: claim.entity.status,
+        status: claim.entity.status,
+        completedAt: claim.entity.completedAt,
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.task_retry_signalled',
+            target: { type: 'run', id: row.id },
+            metadata: { operationKey, operationState: 'completed', taskId: request.params.taskId },
+          });
+        },
+      });
+      if (completed === undefined) throw invalidRunState();
+      return await reply.status(202).send({ operationKey });
+    },
+  );
+
+  app.post(
+    '/v1/runs/:runId/phases/:phaseId/skip',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: BuilderPhaseParams, response: { 202: BuilderControlResponse } },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'start_run');
+      const operationKey = operationOf(request);
+      const claim = await ctx.db.runs.claimOperation({
+        runId: run.id,
+        operationKey,
+        allowedStatuses: ['queued', 'running', 'paused', 'waiting_for_approval'],
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.phase_skip_requested',
+            target: { type: 'run', id: row.id },
+            metadata: { operationKey, operationState: 'requested', phaseId: request.params.phaseId },
+          });
+        },
+      });
+      if (claim === undefined) throw runNotFound();
+      if (claim.outcome === 'completed') {
+        return await reply.status(202).send({ operationKey });
+      }
+      if (claim.outcome !== 'dispatch') throw invalidRunState();
+      const [events, rows] = await Promise.all([
+        ctx.db.events.byRun(run.id),
+        ctx.db.missionControl.forRun(run.id),
+      ]);
+      const action = deriveBuilderActions(claim.entity, events, rows).skipOptionalPhases.find(
+        ({ phaseId }) => phaseId === request.params.phaseId,
+      );
+      const reason = action?.reason ?? BuilderSkipReasonSchema.parse('phase_not_found');
+      if (reason !== 'eligible') {
+        await ctx.db.runs.rejectOperation({
+          runId: claim.entity.id,
+          operationKey,
+          audit: async (tx, row) => {
+            await request.audit(tx, {
+              organizationId: ctx.organizationId,
+              action: 'run.phase_skip_rejected',
+              target: { type: 'run', id: row.id },
+              metadata: { operationKey, operationState: 'rejected', phaseId: request.params.phaseId, reason },
+            });
+          },
+        });
+        throw builderControlConflict(reason);
+      }
+      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
+        runId: claim.entity.id,
+        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+        mode: claim.entity.mode,
+        signal: 'skip_optional_phase',
+        phaseId: request.params.phaseId,
+        operationKey,
+      }));
+      const completed = await ctx.db.runs.completeOperation({
+        runId: claim.entity.id,
+        operationKey,
+        expectedStatus: claim.entity.status,
+        status: claim.entity.status,
+        completedAt: claim.entity.completedAt,
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.phase_skip_signalled',
+            target: { type: 'run', id: row.id },
+            metadata: { operationKey, operationState: 'completed', phaseId: request.params.phaseId },
+          });
+        },
+      });
+      if (completed === undefined) throw invalidRunState();
+      return await reply.status(202).send({ operationKey });
+    },
+  );
+
+  app.post(
     '/v1/runs/:runId/messages',
     {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
@@ -610,37 +799,51 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
       schema: {
         params: ApprovalParams,
-        body: ResolveBudgetApprovalBody,
-        response: { 200: ResolvedBudgetApprovalResponse },
+        body: ResolveApprovalBody,
+        response: { 200: z.union([ResolvedBudgetApprovalResponse, ResolvedTypedApprovalResponse]) },
       },
     },
     async (request) => {
       const ctx = tenantOf(request);
       const run = await ctx.db.runs.getById(request.params.runId);
       if (run === undefined) throw runNotFound();
-      authorize(ctx, 'start_run');
       const operationKey = operationOf(request);
-      let pendingRequest: ApprovalRequest | undefined;
-      if (request.body.decision === 'approved') {
-        const approval = await ctx.db.approvals.get(run.id, request.params.approvalId);
-        if (approval === undefined || approval.type !== 'budget_increase') throw approvalNotFound();
-        pendingRequest = decodeApprovalRequestPayload(approval.requestJson);
-        const proposed = pendingRequest.absoluteCeiling;
-        if (Number(proposed) > Number(run.planMaxCredits)) {
-          throw planBudgetExceeded();
+      const approval = await ctx.db.approvals.get(run.id, request.params.approvalId);
+      if (approval === undefined || approval.type !== request.body.kind) throw approvalNotFound();
+      if (request.body.kind === 'deploy') {
+        const settings = await deps.organizations.getSettings(ctx.organizationId);
+        authorize(ctx, 'approve_production_deploy', {
+          builderCanDeploy: settings?.builderCanDeploy ?? false,
+        });
+      } else {
+        authorize(ctx, 'start_run');
+      }
+      let budgetRequest: ApprovalRequest | undefined;
+      let artifactId: string | undefined;
+      if (request.body.kind === 'budget_increase') {
+        budgetRequest = decodeApprovalRequestPayload(approval.requestJson);
+        if (request.body.decision === 'approved') {
+          const proposed = budgetRequest.absoluteCeiling;
+          if (Number(proposed) > Number(run.planMaxCredits)) throw planBudgetExceeded();
+          const current = creditUnits(budgetRequest.currentCeiling);
+          const requested = creditUnits(proposed);
+          if (
+            (budgetRequest.reason === 'run_budget_exhausted' && requested <= current) ||
+            (budgetRequest.reason === 'organization_credit_exhausted' && requested !== current)
+          ) throw planBudgetExceeded();
         }
-        const current = creditUnits(pendingRequest.currentCeiling);
-        const requested = creditUnits(proposed);
-        if (
-          (pendingRequest.reason === 'run_budget_exhausted' && requested <= current) ||
-          (pendingRequest.reason === 'organization_credit_exhausted' && requested !== current)
-        )
-          throw planBudgetExceeded();
+      } else if (
+        request.body.kind === 'specification' ||
+        request.body.kind === 'plan' ||
+        request.body.kind === 'plan_diff'
+      ) {
+        artifactId = z.object({ artifactId: idSchema('art') }).passthrough()
+          .parse(approval.requestJson).artifactId;
       }
       const resolved = await ctx.db.approvals.resolve({
         runId: run.id,
         approvalId: request.params.approvalId,
-        type: 'budget_increase',
+        type: request.body.kind,
         decision: request.body.decision,
         reason: request.body.reason ?? null,
         resolvedBy: actorOf(request),
@@ -653,54 +856,70 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             metadata: {
               runId: run.id,
               approvalId: approval.id,
+              kind: request.body.kind,
               decision: request.body.decision,
               operationKey,
             },
           });
         },
       });
-      if (resolved === undefined || resolved.approval.type !== 'budget_increase') {
+      if (resolved === undefined || resolved.approval.type !== request.body.kind)
         throw approvalNotFound();
-      }
       if (resolved.outcome === 'conflict') throw approvalConflict();
-      const approvalRequest = decodeApprovalRequestPayload(resolved.approval.requestJson);
-      if (
-        request.body.decision === 'approved' &&
-        approvalRequest.reason === 'run_budget_exhausted'
-      ) {
-        if (deps.modelCompletions === undefined) throw accountingUnavailable();
-        await deps.modelCompletions.increaseCeiling({
-          organizationId: ctx.organizationId,
-          projectId: run.projectId,
+      if (request.body.kind === 'budget_increase') {
+        const approvalRequest = budgetRequest ?? decodeApprovalRequestPayload(resolved.approval.requestJson);
+        if (
+          request.body.decision === 'approved' &&
+          approvalRequest.reason === 'run_budget_exhausted'
+        ) {
+          if (deps.modelCompletions === undefined) throw accountingUnavailable();
+          await deps.modelCompletions.increaseCeiling({
+            organizationId: ctx.organizationId,
+            projectId: run.projectId,
+            runId: run.id,
+            approvalId: resolved.approval.id,
+            operationKey,
+            absoluteCeiling: approvalRequest.absoluteCeiling,
+          });
+        }
+        await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
           runId: run.id,
+          workflowId: run.temporalWorkflowId ?? run.id,
+          mode: run.mode,
+          signal: 'budget_approval',
           approvalId: resolved.approval.id,
+          decision: request.body.decision,
+          reason: approvalRequest.reason,
+          ...(request.body.decision === 'approved'
+            ? { absoluteCeiling: approvalRequest.absoluteCeiling }
+            : {}),
           operationKey,
-          absoluteCeiling: approvalRequest.absoluteCeiling,
+        }));
+        return ResolvedBudgetApprovalResponse.parse({
+          approval: {
+            approvalId: resolved.approval.id,
+            kind: request.body.kind,
+            status: request.body.decision,
+            absoluteCeiling: approvalRequest.absoluteCeiling,
+          },
         });
       }
-      const signalled = SignalRunResultSchema.parse(
-        await deps.orchestrator.signalRun(
-          SignalRunInputSchema.parse({
-            runId: run.id,
-            workflowId: run.temporalWorkflowId ?? run.id,
-            mode: run.mode,
-            signal: 'budget_approval',
-            approvalId: resolved.approval.id,
-            decision: request.body.decision,
-            reason: approvalRequest.reason,
-            ...(request.body.decision === 'approved'
-              ? { absoluteCeiling: approvalRequest.absoluteCeiling }
-              : {}),
-            operationKey,
-          }),
-        ),
-      );
-      if (!signalled.applied) throw invalidRunState();
-      return ResolvedBudgetApprovalResponse.parse({
+      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
+        runId: run.id,
+        workflowId: run.temporalWorkflowId ?? run.id,
+        mode: run.mode,
+        signal: 'approval_decision',
+        approvalId: resolved.approval.id,
+        approvalKind: request.body.kind,
+        decision: request.body.decision,
+        ...(artifactId === undefined ? {} : { artifactId }),
+        operationKey,
+      }));
+      return ResolvedTypedApprovalResponse.parse({
         approval: {
           approvalId: resolved.approval.id,
+          kind: request.body.kind,
           status: request.body.decision,
-          absoluteCeiling: approvalRequest.absoluteCeiling,
         },
       });
     },
@@ -805,6 +1024,28 @@ function idempotencyConflict(): ApiError {
 }
 function invalidRunState(): ApiError {
   return new ApiError('invalid_run_state', 409, 'That run cannot accept this action.');
+}
+function builderControlConflict(
+  reason: z.infer<typeof BuilderRetryReasonSchema> | z.infer<typeof BuilderSkipReasonSchema>,
+): ApiError {
+  return new ApiError(
+    `builder_control_${reason}`,
+    409,
+    'That builder control is not eligible in the current run state.',
+  );
+}
+async function signalBuilderControl(
+  orchestrator: OrchestratorPort,
+  input: z.infer<typeof SignalRunInputSchema>,
+): Promise<void> {
+  try {
+    const result = SignalRunResultSchema.parse(await orchestrator.signalRun(input));
+    if (!result.applied) throw invalidRunState();
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (error instanceof OrchestratorError || error instanceof z.ZodError) throw workflowFailed();
+    throw error;
+  }
 }
 function workflowFailed(): ApiError {
   return new ApiError(
