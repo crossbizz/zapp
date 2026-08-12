@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "sourceArtifacts": [],
+  "metrics": {
+    "templatePreviewRate": null,
+    "importedPreviewRate": null,
+    "scopedBuildWithinOneRepairRate": null,
+    "criticalBrowserFlowPassRate": null,
+    "exactRollbackRate": null,
+    "escapedCriticalRegressionRate": null,
+    "modelModalCostShare": null,
+    "agencyWillingToPay": null
+  },
+  "invalidationSignals": [
+    {
+      "id": "I1",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I2",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I3",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I4",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I5",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I6",
+      "observed": null,
+      "evidence": []
+    },
+    {
+      "id": "I7",
+      "observed": null,
+      "evidence": []
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "sources": ["PRD-37.6", "PRD-40.4"],
+  "thresholds": [
+    {
+      "id": "T1",
+      "metric": "templatePreviewRate",
+      "label": "Supported template reaches preview",
+      "operator": ">",
+      "target": 0.9
+    },
+    {
+      "id": "T2",
+      "metric": "importedPreviewRate",
+      "label": "Imported compatible project reaches preview",
+      "operator": ">",
+      "target": 0.7
+    },
+    {
+      "id": "T3",
+      "metric": "scopedBuildWithinOneRepairRate",
+      "label": "Scoped Build tasks pass after at most one repair loop",
+      "operator": ">",
+      "target": 0.75
+    },
+    {
+      "id": "T4",
+      "metric": "criticalBrowserFlowPassRate",
+      "label": "Critical browser flows pass before Verified release",
+      "operator": "=",
+      "target": 1
+    },
+    {
+      "id": "T5",
+      "metric": "exactRollbackRate",
+      "label": "Verified releases with exact rollback target",
+      "operator": "=",
+      "target": 1
+    },
+    {
+      "id": "T6",
+      "metric": "escapedCriticalRegressionRate",
+      "label": "Escaped critical regression in declared critical flows",
+      "operator": "<",
+      "target": 0.05
+    },
+    {
+      "id": "T7",
+      "metric": "modelModalCostShare",
+      "label": "Model plus Modal cost",
+      "operator": "<",
+      "target": 0.25
+    },
+    {
+      "id": "T8",
+      "metric": "agencyWillingToPay",
+      "label": "Private-beta agencies willing to pay",
+      "operator": ">=",
+      "target": 3,
+      "denominatorExact": 5
+    }
+  ],
+  "invalidationSignals": [
+    {
+      "id": "I1",
+      "signal": "Most users bypass specification and verification."
+    },
+    {
+      "id": "I2",
+      "signal": "Human code edits are required for most tasks."
+    },
+    {
+      "id": "I3",
+      "signal": "Verification cost exceeds user willingness to pay."
+    },
+    {
+      "id": "I4",
+      "signal": "Modal setup and restore latency makes the product feel slower than alternatives without improving reliability."
+    },
+    {
+      "id": "I5",
+      "signal": "Broad framework support causes unsustainable support load."
+    },
+    {
+      "id": "I6",
+      "signal": "Generated tests produce high false confidence."
+    },
+    {
+      "id": "I7",
+      "signal": "Each deployed application becomes a bespoke services engagement."
+    }
+  ]
+}
