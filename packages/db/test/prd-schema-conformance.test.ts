@@ -97,6 +97,10 @@ const NON_PRD_TABLES = new Map([
     'usage_reconciliation_corrections',
     'the idempotent durable Flexprice correction journal required by plan 10 OPS-2 so reconciliation retries cannot double-adjust vendor aggregates',
   ],
+  [
+    'trial_credit_grants',
+    'the durable organization trial delivery journal and structural per-user abuse guard required by plan 10 OPS-5',
+  ],
 ]);
 
 /**

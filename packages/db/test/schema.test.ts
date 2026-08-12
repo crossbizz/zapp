@@ -33,6 +33,7 @@ import {
   secretMetadata,
   specifications,
   subscriptions,
+  trialCreditGrants,
   syntheticChecks,
   testCases,
   testRuns,
@@ -129,6 +130,26 @@ describe('billing tables', () => {
       'current_period_start',
       'current_period_end',
     ]);
+  });
+
+  it('makes the OPS-5 trial claim unique by both organization and user', () => {
+    expect(tableName(trialCreditGrants)).toBe('trial_credit_grants');
+    expect(columnNames(trialCreditGrants)).toEqual([
+      'organization_id',
+      'user_id',
+      'state',
+      'created_at',
+      'delivered_at',
+    ]);
+    expect(indexNames(trialCreditGrants)).toEqual([
+      'trial_credit_grants_user_idx',
+      'trial_credit_grants_pending_idx',
+    ]);
+    expect(foreignKeys(trialCreditGrants)).toEqual([
+      'organization_id -> organizations.id',
+      'user_id -> users.id',
+    ]);
+    expect(checkNames(trialCreditGrants)).toEqual(['trial_credit_grants_state_check']);
   });
 
   it('gives usage_ledger exactly the PRD §23.1 columns, in order', () => {

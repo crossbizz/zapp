@@ -150,6 +150,9 @@ export const TEST_PRICING: PricingConfig = loadPricingConfig({
   version: 'm1-test',
   defaultRunCreditCeiling: '1000.0000',
   creditsPerUsd: '100.0000',
+  creditPacks: {
+    starter: { credits: '500.0000', amountUsd: '5.00' },
+  },
   models: {
     'anthropic/claude-sonnet-5': {
       inputUsdPerMillion: '3.000000',

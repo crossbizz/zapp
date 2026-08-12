@@ -7,6 +7,10 @@ import {
   StripeWebhookSecretSchema,
   type StripePriceCatalog,
 } from './billing/stripe.js';
+import {
+  StripeCreditPackPriceCatalogSchema,
+  type StripeCreditPackPriceCatalog,
+} from './billing/topup.js';
 
 import { LOG_LEVELS } from './logging.js';
 import { KEY_BYTES, createEnvMasterKey, type MasterKeyPort } from './secrets/crypto.js';
@@ -317,6 +321,7 @@ const StripeBillingEnvSchema = z.object({
   PLATFORM_BILLING_STRIPE_SECRET_KEY: OptionalBillingValueSchema,
   PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: OptionalBillingValueSchema,
   STRIPE_PLAN_PRICE_IDS_JSON: OptionalBillingValueSchema,
+  STRIPE_CREDIT_PACK_PRICE_IDS_JSON: OptionalBillingValueSchema,
   FLEXPRICE_STRIPE_WEBHOOK_URL: z
     .union([
       z.string().url().refine((value) => /^https:\/\//u.test(value), 'must use HTTPS'),
@@ -329,7 +334,16 @@ export interface StripeBillingEnv {
   readonly platformSecretKey: string;
   readonly webhookSecret: string;
   readonly prices: StripePriceCatalog;
+  readonly creditPackPrices: StripeCreditPackPriceCatalog;
   readonly flexpriceStripeWebhookUrl: string;
+}
+
+function parseJsonEnvironmentValue(value: string | undefined, name: string): unknown {
+  try {
+    return JSON.parse(value ?? '');
+  } catch {
+    throw new Error(`${name} must be valid JSON`);
+  }
 }
 
 export function loadStripeBillingEnv(source: unknown = process.env): StripeBillingEnv | undefined {
@@ -338,6 +352,7 @@ export function loadStripeBillingEnv(source: unknown = process.env): StripeBilli
     env.PLATFORM_BILLING_STRIPE_SECRET_KEY,
     env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET,
     env.STRIPE_PLAN_PRICE_IDS_JSON,
+    env.STRIPE_CREDIT_PACK_PRICE_IDS_JSON,
     env.FLEXPRICE_STRIPE_WEBHOOK_URL,
   ];
   if (values.every((value) => value === undefined || value === '' || value.includes('replace-me'))) {
@@ -353,8 +368,15 @@ export function loadStripeBillingEnv(source: unknown = process.env): StripeBilli
       { path: ['PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET'] },
     ),
     prices: StripePriceCatalogSchema.parse(
-      JSON.parse(env.STRIPE_PLAN_PRICE_IDS_JSON ?? ''),
+      parseJsonEnvironmentValue(env.STRIPE_PLAN_PRICE_IDS_JSON, 'STRIPE_PLAN_PRICE_IDS_JSON'),
       { path: ['STRIPE_PLAN_PRICE_IDS_JSON'] },
+    ),
+    creditPackPrices: StripeCreditPackPriceCatalogSchema.parse(
+      parseJsonEnvironmentValue(
+        env.STRIPE_CREDIT_PACK_PRICE_IDS_JSON,
+        'STRIPE_CREDIT_PACK_PRICE_IDS_JSON',
+      ),
+      { path: ['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] },
     ),
     flexpriceStripeWebhookUrl: z.string().url().parse(
       env.FLEXPRICE_STRIPE_WEBHOOK_URL,

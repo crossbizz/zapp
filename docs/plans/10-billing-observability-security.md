@@ -144,8 +144,8 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `src/billing/topup.ts`
 **Effort:** M
 
-- [ ] Binding behavior: one-time checkout for credit packs (config-defined), grant on payment success = Flexprice wallet top-up + mirror ledger entry (idempotent by checkout session id); trial: signup grants `plans.trial.monthlyCredits` as a Flexprice trial wallet once per org with abuse guard (domain+card heuristics deferred; simple per-user-one-trial in P0); estimated-cost display API for pre-run UX (AR-14/WEB) from local pricing config.
-- [ ] Commit: `feat(billing): credit top-ups + trial grants`
+- [x] Binding behavior: one-time checkout for credit packs (config-defined), grant on payment success = Flexprice wallet top-up + mirror ledger entry (idempotent by checkout session id); trial: signup grants `plans.trial.monthlyCredits` as a Flexprice trial wallet once per org with abuse guard (domain+card heuristics deferred; simple per-user-one-trial in P0); estimated-cost display API for pre-run UX (AR-14/WEB) from local pricing config.
+- [x] Commit: `feat(billing): credit top-ups + trial grants`
 
 ### Task OPS-6 [M5]: Product analytics + feature flags (PostHog)
 
@@ -270,6 +270,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-5 done — Added config-defined one-time Stripe checkout, signed paid-amount validation, idempotent Flexprice wallet delivery and ledger mirrors, structurally unique durable per-user trial claims with recovery, exact estimate APIs, and generated SDK surfaces; the terse create-only file list required API, migration, configuration, composition, and generated-client joins, with no behavioral deviation, and the one review round's two provider-boundary findings were closed.
 - 2026-08-11 OPS-4-FIX-1 done — GitHub Security caught seven synthetic provider-shaped Stripe literals in OPS-4 tests; kept the scanner and allowlist strict, constructed the same boundary-test values only at runtime, and verified Gitleaks 8.24.3 plus focused control-api static/unit/integration gates with no provider calls, blockers, or deviations.
 - 2026-08-11 OPS-4 done — Shipped versioned Stripe subscription, portal, and prorated-seat APIs; signed replay-safe webhooks; code-owned Flexprice plan linking, monthly wallet grants, ledger mirroring/reconciliation, and seven-day dunning without data deletion. Commercial Stripe unit amounts remain validated deploy-time input because `config/plans.json` owns plan identity and entitlements but contains no prices; the real Stripe test-mode gate skipped because platform credentials and deployed price IDs were unavailable, with no implementation blocker or plan deviation.
 - 2026-08-11 OPS-3-FIX-3 done — Closed Build's workspace scheduling credit race and defaulted only legacy reason-less budget-approval activity payloads; no provider calls, blockers, or deviations.

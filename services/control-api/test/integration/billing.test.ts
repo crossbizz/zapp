@@ -18,10 +18,12 @@ import {
   StripePriceCatalogSchema,
   type BillingPlanCatalog,
 } from '../../src/billing/stripe.js';
+import { StripeCreditPackPriceCatalogSchema } from '../../src/billing/topup.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 import { buildHarness, signIn, type Harness } from '../support/harness.js';
 import { credentialGate } from '../support/credentials.js';
 import { UsageEntrySchema } from '../../src/usage/ledger.js';
+import { loadPricingFile } from '../../src/usage/pricing.js';
 
 const WEBHOOK_SECRET = ['whsec', 'platform', 'billing', 'fixture'].join('_');
 const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
@@ -213,6 +215,8 @@ describe('Stripe platform billing adapter', () => {
               'customer.subscription.deleted',
               'invoice.paid',
               'invoice.payment_failed',
+              'checkout.session.completed',
+              'checkout.session.async_payment_succeeded',
             ],
           },
         ],
@@ -376,6 +380,47 @@ describe.skipIf(!stripeProviderGate.present)('Stripe test-mode provider acceptan
       successUrl: 'https://app.zapp.build/settings/billing?checkout=success',
       cancelUrl: 'https://app.zapp.build/settings/billing?checkout=cancelled',
       operationKey: 'ops4-provider-checkout-v1',
+    });
+    expect(checkout.id).toMatch(/^cs_test_/u);
+    expect(checkout.url).toMatch(/^https:\/\/checkout\.stripe\.com\//u);
+  });
+});
+
+const stripeTopupProviderGate = credentialGate([
+  'PLATFORM_BILLING_STRIPE_SECRET_KEY',
+  'STRIPE_CREDIT_PACK_PRICE_IDS_JSON',
+]);
+if (!stripeTopupProviderGate.present) {
+  console.warn(
+    `[@zapp/control-api] OPS-5 Stripe top-up provider test SKIPPED — not run, not passed: ${stripeTopupProviderGate.reason}`,
+  );
+}
+
+describe.skipIf(!stripeTopupProviderGate.present)('Stripe credit top-up provider acceptance', () => {
+  it('creates a test-mode one-time checkout with the deployed starter pack price', async () => {
+    const platformSecretKey = process.env['PLATFORM_BILLING_STRIPE_SECRET_KEY'] ?? '';
+    expect(platformSecretKey).toMatch(/^sk_test_/u);
+    const prices = StripeCreditPackPriceCatalogSchema.parse(
+      JSON.parse(process.env['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] ?? ''),
+    );
+    const deployedPricing = await loadPricingFile(
+      new URL('../../../../config/pricing.json', import.meta.url),
+    );
+    const starter = deployedPricing.creditPacks?.starter;
+    if (starter === undefined) throw new Error('starter credit pack is not configured');
+    const checkout = await createStripeBillingClient({
+      platformSecretKey,
+    }).createCreditCheckout({
+      organizationId: 'org_01J00000000000000000000000',
+      packId: 'starter',
+      priceId: prices.starter ?? '',
+      credits: starter.credits,
+      amountUsd: starter.amountUsd,
+      pricingVersion: deployedPricing.version,
+      customerId: null,
+      successUrl: 'https://app.zapp.build/settings/billing?topup=success',
+      cancelUrl: 'https://app.zapp.build/settings/billing?topup=cancelled',
+      operationKey: 'ops5-provider-topup-v1',
     });
     expect(checkout.id).toMatch(/^cs_test_/u);
     expect(checkout.url).toMatch(/^https:\/\/checkout\.stripe\.com\//u);
@@ -549,6 +594,50 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       select count(*)::text as count from subscriptions where organization_id = ${organizationId}
     `;
     expect(subscription?.count).toBe('1');
+  });
+
+  it('delivers a paid credit checkout once under Stripe event replay', async () => {
+    const sessions: Array<{ session: unknown; occurredAt: Date }> = [];
+    const billing = createBillingWebhookProcessor({
+      webhookSecret: WEBHOOK_SECRET,
+      store: createDbBillingStore({ database: database.db }),
+      idempotency: createActivityIdempotencyRepository(database.db),
+      flexprice,
+      plans,
+      topups: {
+        grantPaidCheckout(session, occurredAt) {
+          sessions.push({ session, occurredAt });
+          return Promise.resolve();
+        },
+      },
+      now: () => NOW,
+    });
+    const body = event(
+      `evt_checkout_topup_${organizationId.slice(4)}`,
+      'checkout.session.async_payment_succeeded',
+      {
+        id: 'cs_test_credit_pack',
+        mode: 'payment',
+        payment_status: 'paid',
+        metadata: {
+          checkout_kind: 'credit_topup',
+          organization_id: organizationId,
+          credit_pack_id: 'starter',
+        },
+      },
+    );
+
+    await expect(billing.handle(body, signature(body, NOW))).resolves.toEqual({
+      accepted: true,
+      replayed: false,
+    });
+    await expect(billing.handle(body, signature(body, NOW))).resolves.toEqual({
+      accepted: true,
+      replayed: true,
+    });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.session).toMatchObject({ id: 'cs_test_credit_pack' });
+    expect(sessions[0]?.occurredAt).toEqual(NOW);
   });
 
   it('syncs active and deleted subscription lifecycle transitions to the organization plan', async () => {
@@ -752,5 +841,5 @@ describe.skipIf(!hasDatabase)('Stripe platform billing, on PostgreSQL', () => {
       dunning: { state: 'current' },
     });
     expect(flexprice.grants.at(-1)).toMatchObject({ credits: '100.0000' });
-  });
+  }, 15_000);
 });

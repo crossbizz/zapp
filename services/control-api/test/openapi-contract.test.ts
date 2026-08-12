@@ -11,7 +11,13 @@ import {
   createInMemoryPreviewSessionStore,
   createInMemoryPreviewShareStore,
 } from '../src/routes/preview.js';
-import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
+import {
+  buildHarness,
+  cookieJar,
+  cookiesOf,
+  TEST_PRICING,
+  type Harness,
+} from './support/harness.js';
 import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
 import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 import type { paths as GeneratedPaths } from '../../../packages/api-client/src/generated.js';
@@ -109,6 +115,15 @@ function documentedHarness(): Harness {
       appBaseUrl: 'https://app.zapp.test',
       webhook: {
         handle: () => Promise.reject(new Error('OpenAPI must not process Stripe webhooks.')),
+      },
+      topups: {
+        stripe: {
+          createCreditCheckout: () =>
+            Promise.reject(new Error('OpenAPI must not create credit checkout sessions.')),
+        },
+        packs: TEST_PRICING.creditPacks ?? {},
+        prices: { starter: 'price_starter123' },
+        pricing: TEST_PRICING,
       },
     },
   });

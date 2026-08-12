@@ -35,7 +35,7 @@ import type { FlexpriceEnv, PreviewEnv, StripeBillingEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
 import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
-import type { PricingConfig } from './usage/pricing.js';
+import { CreditPackCatalogSchema, type PricingConfig } from './usage/pricing.js';
 import {
   createBudgetThresholdAlerts,
   createCachedCreditBalanceGate,
@@ -77,6 +77,11 @@ import {
   createDbBillingStore,
   createFlexpriceBillingClient,
 } from './billing/webhooks.js';
+import {
+  createCreditGrantService,
+  createDbCreditGrantStore,
+  createFlexpriceCreditWalletClient,
+} from './billing/topup.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -269,19 +274,37 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           const flexprice = createFlexpriceBillingClient({
             ...runtime.flexprice,
           });
-          return {
-            stripe: createStripeBillingClient({
-              platformSecretKey: runtime.billing.platformSecretKey,
+          const stripe = createStripeBillingClient({
+            platformSecretKey: runtime.billing.platformSecretKey,
+          });
+          const packs = CreditPackCatalogSchema.parse(runtime.pricing.creditPacks);
+          const grants = createCreditGrantService({
+            store: createDbCreditGrantStore({ database }),
+            wallet: createFlexpriceCreditWalletClient({
+              ...runtime.flexprice,
+              creditsPerUsd: runtime.pricing.creditsPerUsd,
             }),
+            trialCredits: runtime.planLimits.trial.monthlyCredits,
+          });
+          return {
+            stripe,
             store,
             prices: runtime.billing.prices,
             appBaseUrl: runtime.auth.config.appBaseUrl,
+            topups: {
+              stripe,
+              packs,
+              prices: runtime.billing.creditPackPrices,
+              pricing: runtime.pricing,
+            },
+            trial: grants,
             webhook: createBillingWebhookProcessor({
               webhookSecret: runtime.billing.webhookSecret,
               store,
               idempotency: createActivityIdempotencyRepository(database),
               flexprice,
               plans: BillingPlanCatalogSchema.parse(runtime.planLimits),
+              topups: grants,
             }),
           };
         })();

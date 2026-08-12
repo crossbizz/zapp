@@ -93,6 +93,7 @@ function composed(): AppInstance {
       platformSecretKey: PLATFORM_STRIPE_SECRET,
       webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
       prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      creditPackPrices: { starter: 'price_starter123' },
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
     },
@@ -181,6 +182,9 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['POST', '/v1/billing/checkout'],
   ['POST', '/v1/billing/portal'],
   ['PATCH', '/v1/billing/subscription'],
+  ['GET', '/v1/billing/topups'],
+  ['POST', '/v1/billing/topups/checkout'],
+  ['POST', '/v1/billing/estimate'],
   ['POST', '/v1/webhooks/stripe'],
 ];
 

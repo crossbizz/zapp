@@ -23,12 +23,27 @@ const UsageRateSchema = z
   })
   .strict();
 
+const CreditPackSchema = z
+  .object({
+    credits: z.string().regex(/^\d+(?:\.\d{1,4})?$/u),
+    amountUsd: z.string().regex(/^\d+(?:\.\d{1,6})?$/u),
+  })
+  .strict();
+
+export const CreditPackCatalogSchema = z
+  .record(z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/u), CreditPackSchema)
+  .refine((packs) => Object.keys(packs).length > 0, 'at least one credit pack is required');
+export type CreditPackCatalog = z.infer<typeof CreditPackCatalogSchema>;
+
 export const PricingConfigSchema = z
   .object({
     version: z.string().trim().min(1),
     defaultRunCreditCeiling: DecimalSchema,
     walletBalanceGraceFloor: DecimalSchema.optional(),
     creditsPerUsd: DecimalSchema,
+    // Optional so immutable OPS-1A pricing snapshots written before OPS-5
+    // remain readable. Deployment composition requires it for the top-up API.
+    creditPacks: CreditPackCatalogSchema.optional(),
     models: z.record(z.string().regex(/^[a-z0-9-]+\/[a-z0-9][a-z0-9.-]*$/u), ModelRateSchema),
     usageRates: z
       .object({
@@ -45,9 +60,29 @@ export const PricingConfigSchema = z
       .optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value.models).length > 0, {
-    message: 'models must contain at least one rate',
-    path: ['models'],
+  .superRefine((value, context) => {
+    if (Object.keys(value.models).length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'models must contain at least one rate',
+        path: ['models'],
+      });
+    }
+    for (const [packId, pack] of Object.entries(value.creditPacks ?? {})) {
+      const usdUnits = decimalUnits(pack.amountUsd, 6);
+      const creditsPerUsdUnits = decimalUnits(value.creditsPerUsd, 6);
+      const configuredCreditsUnits = decimalUnits(pack.credits, 6);
+      if (
+        (usdUnits * creditsPerUsdUnits) % 1_000_000n !== 0n ||
+        (usdUnits * creditsPerUsdUnits) / 1_000_000n !== configuredCreditsUnits
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pack credits must equal amountUsd multiplied by creditsPerUsd',
+          path: ['creditPacks', packId],
+        });
+      }
+    }
   });
 
 export type PricingConfig = z.infer<typeof PricingConfigSchema>;
@@ -99,7 +134,7 @@ export interface PricedTokenUsage {
   readonly totalCredits: string;
 }
 
-const UsageEstimateInputSchema = z
+export const UsageEstimateInputSchema = z
   .object({
     category: z.enum([
       'model_input_tokens',

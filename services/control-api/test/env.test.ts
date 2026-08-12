@@ -212,6 +212,8 @@ describe('Stripe platform billing configuration', () => {
         PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
         STRIPE_PLAN_PRICE_IDS_JSON:
           '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
+          '{"starter":"price_starter123","scale":"price_scale123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
           'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
       }),
@@ -219,6 +221,7 @@ describe('Stripe platform billing configuration', () => {
       platformSecretKey: PLATFORM_STRIPE_SECRET,
       webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
       prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      creditPackPrices: { starter: 'price_starter123', scale: 'price_scale123' },
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
     });
@@ -228,10 +231,22 @@ describe('Stripe platform billing configuration', () => {
         PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
         STRIPE_PLAN_PRICE_IDS_JSON:
           '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
+          '{"starter":"price_starter123","scale":"price_scale123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
           'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
       }),
     ).toThrow('PLATFORM_BILLING_STRIPE_SECRET_KEY');
+    expect(() =>
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
+        STRIPE_PLAN_PRICE_IDS_JSON:
+          '{"builder":"price_builder123","studio":"price_studio123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toThrow('STRIPE_CREDIT_PACK_PRICE_IDS_JSON');
   });
 
   it('refuses production without platform billing and permits an absent local provider', () => {

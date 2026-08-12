@@ -26,6 +26,7 @@ import { actorOf } from '../plugins/auth.js';
 import { authorize, organizationNotFound, selectOrganizationId } from '../plugins/tenant.js';
 import { ROLES } from '../policy/permissions.js';
 import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
+import type { TrialGrantPort } from '../billing/topup.js';
 
 /**
  * PRD §32 organizations, memberships and invites.
@@ -121,6 +122,7 @@ export interface OrgRoutesDeps {
   readonly users: UserStore;
   readonly port: AuthPort;
   readonly now: () => Date;
+  readonly trial?: TrialGrantPort;
 }
 
 /** Nothing carrying a credential — an invite token — may be cached. */
@@ -268,6 +270,22 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
       }
       if (created === undefined) {
         throw slugTaken();
+      }
+
+      if (deps.trial !== undefined) {
+        try {
+          await deps.trial.ensureTrial({
+            organizationId: created.organization.id,
+            userId: user.id,
+          });
+        } catch (error) {
+          // The durable claim remains pending. The billing lifecycle retries it;
+          // provider availability must not roll back an otherwise valid org.
+          request.log.error(
+            { err: error, organizationId: created.organization.id },
+            'trial credit delivery deferred',
+          );
+        }
       }
 
       return await reply

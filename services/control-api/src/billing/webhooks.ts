@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { BillingPlanCatalogSchema, type BillingPlanCatalog } from './stripe.js';
+import type { CreditGrantService } from './topup.js';
 
 const StripeEventIdSchema = z.string().regex(/^evt_[A-Za-z0-9_]+$/u);
 const StripeObjectIdSchema = z.string().trim().min(1).max(255);
@@ -70,6 +71,8 @@ const StripeEventSchema = z
     object: z.literal('event'),
     created: UnixTimestampSchema,
     type: z.enum([
+      'checkout.session.async_payment_succeeded',
+      'checkout.session.completed',
       'customer.subscription.created',
       'customer.subscription.updated',
       'customer.subscription.deleted',
@@ -556,6 +559,7 @@ export function createBillingWebhookProcessor(options: {
   readonly idempotency: ActivityIdempotencyRepository;
   readonly flexprice: FlexpriceBillingPort;
   readonly plans: BillingPlanCatalog;
+  readonly topups?: Pick<CreditGrantService, 'grantPaidCheckout'>;
   readonly now?: () => Date;
   readonly signatureToleranceSeconds?: number;
 }): {
@@ -567,6 +571,19 @@ export function createBillingWebhookProcessor(options: {
 
   async function apply(event: z.infer<typeof StripeEventSchema>): Promise<void> {
     const operationKey = `stripe-event:${event.id}`;
+    if (
+      event.type === 'checkout.session.completed' ||
+      event.type === 'checkout.session.async_payment_succeeded'
+    ) {
+      if (options.topups === undefined) {
+        throw new Error('Credit top-up checkout processing is not configured');
+      }
+      await options.topups.grantPaidCheckout(
+        event.data.object,
+        new Date(event.created * 1_000),
+      );
+      return;
+    }
     if (event.type.startsWith('customer.subscription.')) {
       const subscription = StripeSubscriptionObjectSchema.parse(event.data.object);
       const planId = subscription.metadata.plan_id;

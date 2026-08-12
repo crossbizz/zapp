@@ -3,6 +3,16 @@
   "defaultRunCreditCeiling": "1000.0000",
   "walletBalanceGraceFloor": "10.0000",
   "creditsPerUsd": "100.0000",
+  "creditPacks": {
+    "starter": {
+      "credits": "500.0000",
+      "amountUsd": "5.00"
+    },
+    "scale": {
+      "credits": "2500.0000",
+      "amountUsd": "25.00"
+    }
+  },
   "usageRates": {
     "sandbox_cpu_seconds": { "unit": "cpu_seconds", "usdPerUnit": "0.000010" },
     "sandbox_mem_gib_seconds": { "unit": "gib_seconds", "usdPerUnit": "0.000005" },

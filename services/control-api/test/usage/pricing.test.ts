@@ -126,6 +126,13 @@ describe('OPS-1A pricing snapshot', () => {
     [
       {
         ...config,
+        creditPacks: { starter: { credits: '499.0000', amountUsd: '5.00' } },
+      },
+      'creditPacks',
+    ],
+    [
+      {
+        ...config,
         models: {
           'anthropic/claude-sonnet-5': {
             inputUsdPerMillion: '3',

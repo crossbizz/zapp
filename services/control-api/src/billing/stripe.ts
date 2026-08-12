@@ -85,6 +85,8 @@ const FlexpriceLinkResponseSchema = z
   .object({ mapping: FlexpriceMappingSchema })
   .passthrough();
 const BILLING_WEBHOOK_EVENTS = [
+  'checkout.session.async_payment_succeeded',
+  'checkout.session.completed',
   'customer.subscription.created',
   'customer.subscription.updated',
   'customer.subscription.deleted',
@@ -124,6 +126,21 @@ export interface StripeBillingPort {
     readonly operationKey: string;
   }): Promise<{ readonly id: string }>;
   verifyWebhookEndpoint(input: { readonly url: string }): Promise<void>;
+}
+
+export interface StripeCreditCheckoutPort {
+  createCreditCheckout(input: {
+    readonly organizationId: string;
+    readonly packId: string;
+    readonly priceId: string;
+    readonly credits: string;
+    readonly amountUsd: string;
+    readonly pricingVersion: string;
+    readonly customerId: string | null;
+    readonly successUrl: string;
+    readonly cancelUrl: string;
+    readonly operationKey: string;
+  }): Promise<{ readonly id: string; readonly url: string }>;
 }
 
 export interface FlexpriceStripeCatalogPort {
@@ -220,7 +237,7 @@ export function createStripeBillingClient(options: {
   readonly platformSecretKey: string;
   readonly fetcher?: typeof fetch;
   readonly baseUrl?: string;
-}): StripeBillingPort {
+}): StripeBillingPort & StripeCreditCheckoutPort {
   const apiKey = StripePlatformSecretSchema.parse(options.platformSecretKey);
   const fetcher = options.fetcher ?? fetch;
   const baseUrl = (options.baseUrl ?? 'https://api.stripe.com').replace(/\/+$/u, '');
@@ -250,38 +267,47 @@ export function createStripeBillingClient(options: {
     return await response.json();
   }
 
+  async function resolveCustomer(input: {
+    readonly organizationId: string;
+    readonly customerId: string | null;
+    readonly operationKey: string;
+  }): Promise<string> {
+    const query = encodeURIComponent(
+      `metadata['flexprice_customer_id']:'${input.organizationId}'`,
+    );
+    const matchingCustomers =
+      input.customerId === null
+        ? StripeObjectListSchema.parse(
+            await request(
+              'GET',
+              `/v1/customers/search?query=${query}&limit=2`,
+              'stripe-customer-search',
+            ),
+          ).data
+        : [];
+    if (matchingCustomers.length > 1) {
+      throw new Error('Stripe returned multiple customers for one organization');
+    }
+    return (
+      input.customerId ??
+      matchingCustomers[0]?.id ??
+      StripeObjectSchema.parse(
+        await request(
+          'POST',
+          '/v1/customers',
+          `${input.operationKey}:customer`,
+          append(new URLSearchParams(), [
+            ['metadata[organization_id]', input.organizationId],
+            ['metadata[flexprice_customer_id]', input.organizationId],
+          ]),
+        ),
+      ).id
+    );
+  }
+
   return {
     async createCheckout(input) {
-      const query = encodeURIComponent(
-        `metadata['flexprice_customer_id']:'${input.organizationId}'`,
-      );
-      const matchingCustomers =
-        input.customerId === null
-          ? StripeObjectListSchema.parse(
-              await request(
-                'GET',
-                `/v1/customers/search?query=${query}&limit=2`,
-                'stripe-customer-search',
-              ),
-            ).data
-          : [];
-      if (matchingCustomers.length > 1) {
-        throw new Error('Stripe returned multiple customers for one organization');
-      }
-      const customerId =
-        input.customerId ??
-        matchingCustomers[0]?.id ??
-        StripeObjectSchema.parse(
-          await request(
-            'POST',
-            '/v1/customers',
-            `${input.operationKey}:customer`,
-            append(new URLSearchParams(), [
-              ['metadata[organization_id]', input.organizationId],
-              ['metadata[flexprice_customer_id]', input.organizationId],
-            ]),
-          ),
-        ).id;
+      const customerId = await resolveCustomer(input);
       const params = append(new URLSearchParams(), [
         ['mode', 'subscription'],
         ['client_reference_id', input.organizationId],
@@ -293,6 +319,34 @@ export function createStripeBillingClient(options: {
         ['metadata[plan_id]', input.planId],
         ['subscription_data[metadata][organization_id]', input.organizationId],
         ['subscription_data[metadata][plan_id]', input.planId],
+        ['customer', customerId],
+      ]);
+      return StripeUrlObjectSchema.parse(
+        await request('POST', '/v1/checkout/sessions', input.operationKey, params),
+      );
+    },
+
+    async createCreditCheckout(input) {
+      const customerId = await resolveCustomer(input);
+      const params = append(new URLSearchParams(), [
+        ['mode', 'payment'],
+        ['client_reference_id', input.organizationId],
+        ['line_items[0][price]', input.priceId],
+        ['line_items[0][quantity]', 1],
+        ['success_url', input.successUrl],
+        ['cancel_url', input.cancelUrl],
+        ['metadata[checkout_kind]', 'credit_topup'],
+        ['metadata[organization_id]', input.organizationId],
+        ['metadata[credit_pack_id]', input.packId],
+        ['metadata[credit_amount]', input.credits],
+        ['metadata[amount_usd]', input.amountUsd],
+        ['metadata[pricing_version]', input.pricingVersion],
+        ['payment_intent_data[metadata][checkout_kind]', 'credit_topup'],
+        ['payment_intent_data[metadata][organization_id]', input.organizationId],
+        ['payment_intent_data[metadata][credit_pack_id]', input.packId],
+        ['payment_intent_data[metadata][credit_amount]', input.credits],
+        ['payment_intent_data[metadata][amount_usd]', input.amountUsd],
+        ['payment_intent_data[metadata][pricing_version]', input.pricingVersion],
         ['customer', customerId],
       ]);
       return StripeUrlObjectSchema.parse(

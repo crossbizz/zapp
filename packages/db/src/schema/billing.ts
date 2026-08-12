@@ -13,7 +13,7 @@ import {
 import { sql } from 'drizzle-orm';
 
 import { oneOf } from './columns.js';
-import { organizations } from './identity.js';
+import { organizations, users } from './identity.js';
 import { agentRuns, agentTasks, approvals } from './planning.js';
 import { projectTenantForeignKey, projects } from './projects.js';
 
@@ -36,6 +36,36 @@ export const subscriptions = pgTable(
     // — Postgres allows many NULLs under a unique index, one id under it.
     uniqueIndex('subscriptions_stripe_subscription_id_idx').on(t.stripeSubscriptionId),
     index('subscriptions_organization_idx').on(t.organizationId),
+  ],
+);
+
+const TRIAL_CREDIT_GRANT_STATES = ['pending', 'delivered'] as const;
+
+/**
+ * Durable P0 trial claim and delivery journal (plan 10 OPS-5).
+ *
+ * The organization primary key enforces one trial wallet per organization;
+ * the user unique index is the structural abuse guard enforcing one trial per
+ * user across every organization they create. Provider delivery may be retried
+ * while pending under the stable organization-derived idempotency key.
+ */
+export const trialCreditGrants = pgTable(
+  'trial_credit_grants',
+  {
+    organizationId: text('organization_id')
+      .primaryKey()
+      .references(() => organizations.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    state: text('state', { enum: TRIAL_CREDIT_GRANT_STATES }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('trial_credit_grants_user_idx').on(t.userId),
+    index('trial_credit_grants_pending_idx').on(t.state, t.createdAt),
+    check('trial_credit_grants_state_check', oneOf('state', TRIAL_CREDIT_GRANT_STATES)),
   ],
 );
 
@@ -323,6 +353,7 @@ export const creditExhaustionEpisodes = pgTable(
 
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
+export type TrialCreditGrant = typeof trialCreditGrants.$inferSelect;
 export type UsageLedgerEntry = typeof usageLedger.$inferSelect;
 export type NewUsageLedgerEntry = typeof usageLedger.$inferInsert;
 export type RunCreditAccount = typeof runCreditAccounts.$inferSelect;

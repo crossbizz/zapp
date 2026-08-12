@@ -36,6 +36,12 @@ import type { CreditBalanceGate, PlanLimitsConfig } from './usage/limits.js';
 import type { ModelCompletionRepository } from './usage/model-completions.js';
 import { registerBillingRoutes, type BillingRoutesDeps } from './billing/portal.js';
 import {
+  createTrialGrantLifecycle,
+  registerCreditTopupRoutes,
+  type CreditGrantService,
+  type CreditTopupRouteConfig,
+} from './billing/topup.js';
+import {
   createDunningLifecycle,
   registerStripeBillingWebhookRoute,
   type BillingWebhookProcessor,
@@ -234,6 +240,8 @@ export interface LocalAgentDeps {
 export interface BillingDeps extends BillingRoutesDeps {
   readonly webhook: BillingWebhookProcessor;
   readonly dunningSweepIntervalMs?: number;
+  readonly topups?: CreditTopupRouteConfig;
+  readonly trial?: CreditGrantService;
 }
 
 /**
@@ -578,6 +586,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           users: auth.users,
           port: auth.port,
           now,
+          ...(deps.billing?.trial === undefined ? {} : { trial: deps.billing.trial }),
         });
         // Registered only with a tenant handle to give them: a projects route
         // that could not scope itself would be the one thing this service must
@@ -699,6 +708,13 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           if (deps.billing !== undefined) {
             registerBillingRoutes(app, deps.billing);
+            if (deps.billing.topups !== undefined) {
+              registerCreditTopupRoutes(app, {
+                ...deps.billing.topups,
+                store: deps.billing.store,
+                appBaseUrl: deps.billing.appBaseUrl,
+              });
+            }
           }
 
           if (secrets !== undefined) {
@@ -764,11 +780,22 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         app.log.error({ err: error }, 'billing dunning sweep failed');
       },
     });
+    const trials =
+      deps.billing.trial === undefined
+        ? undefined
+        : createTrialGrantLifecycle({
+            service: deps.billing.trial,
+            onError: (error) => {
+              app.log.error({ err: error }, 'billing trial grant sweep failed');
+            },
+          });
     app.addHook('onReady', () => {
       dunning.start();
+      trials?.start();
     });
     app.addHook('onClose', async () => {
       await dunning.stop();
+      await trials?.stop();
     });
   }
 
