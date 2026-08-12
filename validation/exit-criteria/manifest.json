@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 1,
+  "source": "PRD-39",
+  "criteria": [
+    {
+      "id": "E1",
+      "criterion": "A first-time nontechnical user can move from one initial prompt through clarification, build, preview, iteration, readiness check, and deployment without leaving the unified builder or opening a terminal.",
+      "state": "blocked",
+      "requiredTasks": ["WEB-10", "WEB-14"],
+      "sourceEvidence": [
+        "apps/web/e2e/projects.spec.ts",
+        "services/orchestrator-worker/test/integration/autonomous.test.ts",
+        "services/release-service/test/integration/deploy-workflow.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/web test -- projects.spec.ts",
+        "pnpm --filter @zapp/orchestrator-worker test:integration -- autonomous.test.ts",
+        "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
+      ],
+      "evidenceArtifacts": [],
+      "blocker": "The plan approval and deployment UI tasks are not integrated."
+    },
+    {
+      "id": "E2",
+      "criterion": "Conversation, preview, Mission Control, and deployment status remain synchronized across web and macOS.",
+      "state": "blocked",
+      "requiredTasks": ["WEB-9", "WEB-14", "MAC-8"],
+      "sourceEvidence": [
+        "services/control-api/test/mission-control.test.ts",
+        "apps/web/e2e/preview-panel.spec.ts",
+        "apps/desktop/src/zapp/project-list/list.tsx"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test -- mission-control.test.ts",
+        "pnpm --filter @zapp/web exec playwright test e2e/preview-panel.spec.ts"
+      ],
+      "evidenceArtifacts": [],
+      "blocker": "Mission Control, deployment UI, and macOS cloud-builder parity remain incomplete."
+    },
+    {
+      "id": "E3",
+      "criterion": "A user can sign in on web and macOS.",
+      "state": "candidate",
+      "requiredTasks": ["CP-3", "MAC-4"],
+      "sourceEvidence": [
+        "services/control-api/test/integration/auth.test.ts",
+        "apps/desktop/src/zapp/auth/session.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test:integration -- auth.test.ts",
+        "pnpm --filter @zapp/desktop exec vitest run src/zapp/auth/session.test.ts"
+      ],
+      "evidenceArtifacts": []
+    },
+    {
+      "id": "E4",
+      "criterion": "A user can create or import a Dyad-compatible project.",
+      "state": "verified",
+      "requiredTasks": ["CP-7", "INT-2"],
+      "sourceEvidence": [
+        "services/control-api/test/integration/projects.test.ts",
+        "services/control-api/test/github-import.test.ts",
+        "apps/desktop/e2e-tests/import.spec.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test -- github-import.test.ts",
+        "pnpm --filter @zapp/control-api test:integration -- projects.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E5",
+      "criterion": "The project can run locally on macOS or in Modal.",
+      "state": "verified",
+      "requiredTasks": ["MAC-6", "WS-4"],
+      "sourceEvidence": [
+        "apps/desktop/src/zapp/runtime/local.spec.ts",
+        "services/sandbox-service/test/integration/checkpoint.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/desktop exec vitest run src/zapp/runtime/local.spec.ts",
+        "pnpm --filter @zapp/sandbox-service test -- test/integration/checkpoint.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E6",
+      "criterion": "The cloud project survives sandbox termination and resumes from durable state.",
+      "state": "verified",
+      "requiredTasks": ["WS-7", "WS-8"],
+      "sourceEvidence": [
+        "services/sandbox-service/test/integration/checkpoint.test.ts",
+        "services/orchestrator-worker/test/integration/task-isolation.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/sandbox-service test -- test/integration/checkpoint.test.ts",
+        "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/task-isolation.test.ts --no-file-parallelism"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E7",
+      "criterion": "Autonomous mode conducts an interview and obtains plan approval.",
+      "state": "verified",
+      "requiredTasks": ["AR-16", "AR-17"],
+      "sourceEvidence": [
+        "packages/specification-engine/test/spec.test.ts",
+        "services/orchestrator-worker/test/integration/autonomous.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/specification-engine test",
+        "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/autonomous.test.ts --no-file-parallelism"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E8",
+      "criterion": "Mission Control shows structured progress and allows pause, resume, redirect, and cancel.",
+      "state": "blocked",
+      "requiredTasks": ["CP-16", "WEB-9"],
+      "sourceEvidence": [
+        "services/control-api/test/mission-control.test.ts",
+        "services/control-api/src/routes/mission-control.ts"
+      ],
+      "verifyCommands": ["pnpm --filter @zapp/control-api test -- mission-control.test.ts"],
+      "evidenceArtifacts": [],
+      "blocker": "The public control API exists, but the WEB-9 Mission Control surface remains incomplete."
+    },
+    {
+      "id": "E9",
+      "criterion": "Builder produces task-scoped commits.",
+      "state": "verified",
+      "requiredTasks": ["AR-7", "AR-8"],
+      "sourceEvidence": [
+        "services/orchestrator-worker/test/integration/task-isolation.test.ts",
+        "packages/workspace-runtime/test/runtime.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/task-isolation.test.ts --no-file-parallelism",
+        "pnpm --filter @zapp/workspace-runtime test"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E10",
+      "criterion": "Verifier independently evaluates acceptance criteria.",
+      "state": "failed",
+      "requiredTasks": ["VF-10"],
+      "sourceEvidence": [
+        "services/orchestrator-worker/test/integration/verifier.test.ts",
+        "packages/verification-engine/src/verifier/decision.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/verifier.test.ts --no-file-parallelism"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"],
+      "failure": "The durable verifier replay test passes its assertions but fails cleanup because run_credit_ceiling_adjustments is append-only."
+    },
+    {
+      "id": "E11",
+      "criterion": "The platform can generate and execute browser tests.",
+      "state": "verified",
+      "requiredTasks": ["VF-7", "VF-8"],
+      "sourceEvidence": [
+        "services/verification-service/test/playwright.test.ts",
+        "packages/verification-engine/test/evidence.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/verification-service test -- playwright.test.ts",
+        "pnpm --filter @zapp/verification-engine test -- evidence.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E12",
+      "criterion": "A failed test can trigger a bounded repair loop.",
+      "state": "failed",
+      "requiredTasks": ["VF-13"],
+      "sourceEvidence": [
+        "services/orchestrator-worker/test/integration/repair.test.ts",
+        "packages/verification-engine/src/repair/loop.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/repair.test.ts --no-file-parallelism"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"],
+      "failure": "The durable repair replay test passes its assertions but fails cleanup because run_credit_ceiling_adjustments is append-only."
+    },
+    {
+      "id": "E13",
+      "criterion": "The user can open an authenticated preview.",
+      "state": "verified",
+      "requiredTasks": ["WS-10", "WEB-7"],
+      "sourceEvidence": [
+        "services/sandbox-service/test/preview-auth.test.ts",
+        "apps/web/e2e/preview-panel.spec.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/sandbox-service test -- preview-auth.test.ts",
+        "pnpm --filter @zapp/web exec playwright test e2e/preview-panel.spec.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E14",
+      "criterion": "The user can connect GitHub.",
+      "state": "candidate",
+      "requiredTasks": ["INT-1"],
+      "sourceEvidence": [
+        "services/control-api/test/github-install.test.ts",
+        "services/control-api/test/integration/github-live.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test -- github-install.test.ts",
+        "pnpm --filter @zapp/control-api test:integration -- github-live.test.ts"
+      ],
+      "evidenceArtifacts": []
+    },
+    {
+      "id": "E15",
+      "criterion": "The user can connect at least one database provider.",
+      "state": "candidate",
+      "requiredTasks": ["INT-5", "INT-7"],
+      "sourceEvidence": [
+        "services/control-api/test/supabase.test.ts",
+        "services/control-api/test/neon.test.ts"
+      ],
+      "verifyCommands": ["pnpm --filter @zapp/control-api test -- supabase.test.ts neon.test.ts"],
+      "evidenceArtifacts": []
+    },
+    {
+      "id": "E16",
+      "criterion": "The user can deploy through at least one production provider.",
+      "state": "blocked",
+      "requiredTasks": ["DEP-4", "DEP-5", "DEP-12"],
+      "sourceEvidence": ["services/release-service/test/integration/deploy-workflow.test.ts"],
+      "verifyCommands": [
+        "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
+      ],
+      "evidenceArtifacts": [],
+      "blocker": "Provider adapters exist, but the end-to-end release lifecycle task remains incomplete."
+    },
+    {
+      "id": "E17",
+      "criterion": "A release evidence manifest is generated.",
+      "state": "verified",
+      "requiredTasks": ["VF-15"],
+      "sourceEvidence": [
+        "packages/verification-engine/test/evidence.test.ts",
+        "packages/verification-engine/src/evidence.ts"
+      ],
+      "verifyCommands": ["pnpm --filter @zapp/verification-engine test -- evidence.test.ts"],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E18",
+      "criterion": "A healthy previous deployment can be restored.",
+      "state": "verified",
+      "requiredTasks": ["DEP-9"],
+      "sourceEvidence": [
+        "services/release-service/test/integration/rollback.test.ts",
+        "services/release-service/src/rollback/service.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/release-service test -- test/integration/rollback.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E19",
+      "criterion": "Usage and cost are recorded per organization and run.",
+      "state": "verified",
+      "requiredTasks": ["OPS-1B", "OPS-2"],
+      "sourceEvidence": [
+        "services/control-api/test/integration/usage-ledger.test.ts",
+        "services/control-api/test/usage/collectors.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test:integration -- usage-ledger.test.ts",
+        "pnpm --filter @zapp/control-api test -- usage/collectors.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E20",
+      "criterion": "Tenant isolation, secret redaction, and sandbox abuse tests pass.",
+      "state": "verified",
+      "requiredTasks": ["OPS-12"],
+      "sourceEvidence": [
+        "services/control-api/test/integration/tenant-isolation.test.ts",
+        "services/control-api/test/route-isolation.test.ts",
+        "services/sandbox-service/test/injection.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test:isolation",
+        "pnpm --filter @zapp/sandbox-service test -- injection.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E21",
+      "criterion": "A production error can be converted into a Fix run.",
+      "state": "verified",
+      "requiredTasks": ["OPS-11"],
+      "sourceEvidence": [
+        "services/control-api/test/incidents.test.ts",
+        "services/control-api/test/integration/incidents.test.ts"
+      ],
+      "verifyCommands": [
+        "pnpm --filter @zapp/control-api test -- incidents.test.ts",
+        "pnpm --filter @zapp/control-api test:integration -- incidents.test.ts"
+      ],
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
+    },
+    {
+      "id": "E22",
+      "criterion": "Five real applications complete at least five repeat changes each during internal validation.",
+      "state": "blocked",
+      "requiredTasks": ["V-2"],
+      "sourceEvidence": ["validation/benchmarks/manifest.json"],
+      "verifyCommands": ["pnpm validation:benchmarks"],
+      "evidenceArtifacts": [],
+      "blocker": "V-2 cannot run until the incomplete M2–M5 product surfaces are integrated."
+    }
+  ]
+}
