@@ -21,8 +21,12 @@ export async function bootstrapControlApiServer(input: {
   readonly githubImportLifecycle?: GitHubImportLifecycle;
   readonly notificationLifecycle?: NotificationWorkerLifecycle;
   readonly archiveLifecycle?: BackgroundLifecycle;
+  readonly retentionLifecycle?: BackgroundLifecycle;
+  readonly deletionLifecycle?: BackgroundLifecycle;
 }): Promise<void> {
   input.app.addHook('onClose', async () => {
+    await input.deletionLifecycle?.close();
+    await input.retentionLifecycle?.close();
     await input.archiveLifecycle?.close();
     await input.githubImportLifecycle?.close();
     await input.notificationLifecycle?.close();
@@ -31,6 +35,8 @@ export async function bootstrapControlApiServer(input: {
     await input.eventPublisherLifecycle.close();
   });
   await input.archiveLifecycle?.start();
+  await input.retentionLifecycle?.start();
+  await input.deletionLifecycle?.start();
   await input.githubImportLifecycle?.start();
   await input.notificationLifecycle?.start();
   await input.githubWebhookLifecycle?.start();

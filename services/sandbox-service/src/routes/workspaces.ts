@@ -177,6 +177,8 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
     providerWorkspaceId: string,
     ttlMs: number,
   ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }>;
+  deleteSnapshot?(providerSnapshotId: string): Promise<void>;
+  snapshotExists?(providerSnapshotId: string): Promise<boolean>;
   resolvePreviewTunnel?(providerWorkspaceId: string): Promise<URL>;
   exec(input: ExecInput, idempotencyKey?: string): Promise<z.infer<typeof ExecResultSchema>>;
   execStream(
@@ -552,6 +554,10 @@ export function registerWorkspaceRoutes(
         readonly organizationId: string;
         readonly projectId: string;
       }): Promise<unknown>;
+    };
+    readonly snapshotDeletion?: {
+      remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
+      absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
     };
     readonly checkpointService?: {
       checkpoint(input: unknown): Promise<CheckpointRecord>;
@@ -930,6 +936,57 @@ export function registerWorkspaceRoutes(
             projectId,
           }),
         );
+      },
+    );
+  }
+  if (deps.snapshotDeletion !== undefined) {
+    const snapshotDeletion = deps.snapshotDeletion;
+    app.post(
+      '/internal/projects/:projectId/snapshots/delete',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          headers: z.object({ 'idempotency-key': OperationKeySchema }).passthrough(),
+          response: { 200: z.object({ absent: z.boolean() }).strict() },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        await snapshotDeletion.remove(scope);
+        return { absent: await snapshotDeletion.absent(scope) };
+      },
+    );
+    app.get(
+      '/internal/projects/:projectId/snapshots/absent',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          response: { 200: z.object({ absent: z.boolean() }).strict() },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        return { absent: await snapshotDeletion.absent(scope) };
       },
     );
   }

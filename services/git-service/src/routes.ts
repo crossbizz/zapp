@@ -372,6 +372,24 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
   );
 
   app.get(
+    '/internal/git/repositories/:organizationId/:projectId/exists',
+    {
+      preHandler: [guard()],
+      schema: {
+        params: ProjectParams,
+        response: { 200: z.object({ exists: z.boolean() }).strict() },
+      },
+    },
+    async (request) => {
+      try {
+        return { exists: await provider.repositoryExists(internalRepoRef(request.params)) };
+      } catch (error) {
+        return refuse(request, error, 'repositoryExists');
+      }
+    },
+  );
+
+  app.get(
     '/internal/git/repositories/:organizationId/:projectId/branches',
     {
       preHandler: [guard()],

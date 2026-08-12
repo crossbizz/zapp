@@ -64,6 +64,7 @@ export interface FakeGitProvider extends GitProvider {
   branch: BranchRef | undefined;
   commits: CommitSummary[];
   commit: CommitDetail | undefined;
+  exists: boolean;
 }
 
 /**
@@ -93,6 +94,7 @@ export function createFakeProvider(overrides: Partial<GitProvider> = {}): FakeGi
     branch: { name: 'main', headSha: 'a'.repeat(40) },
     commits: [],
     commit: undefined,
+    exists: true,
 
     failNext(method, error) {
       failures.set(method, error);
@@ -109,6 +111,10 @@ export function createFakeProvider(overrides: Partial<GitProvider> = {}): FakeGi
     deleteRepository(ref: string): Promise<void> {
       record('deleteRepository', ref);
       return Promise.resolve();
+    },
+    repositoryExists(ref: string): Promise<boolean> {
+      record('repositoryExists', ref);
+      return Promise.resolve(fake.exists);
     },
     createBranch(ref: string, name: string, fromSha: string): Promise<void> {
       record('createBranch', ref, name, fromSha);

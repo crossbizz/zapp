@@ -90,6 +90,7 @@ import { createPostHogRuntime } from './analytics/posthog.js';
 import type { PostHogEnv } from './env.js';
 import type { NotificationStatePort, NotificationTrigger } from './notifications/service.js';
 import type { AdminRoutesConfig } from './routes/admin.js';
+import { createDatabaseProjectDeletionRequestStore } from './jobs/deletion.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -386,6 +387,9 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
       incidents: createDbIncidentStore(database, runtime.masterKey),
+      ...(runtime.gitServiceUrl === undefined
+        ? {}
+        : { projectDeletions: createDatabaseProjectDeletionRequestStore(database) }),
       ...(runtime.incidentWebhookSecret === undefined
         ? {}
         : { incidentWebhookSecret: runtime.incidentWebhookSecret }),

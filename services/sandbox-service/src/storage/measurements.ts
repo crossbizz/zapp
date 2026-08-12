@@ -1,6 +1,6 @@
 import { CheckpointKindSchema, idSchema } from '@zapp/contracts';
 import { sandboxSnapshotMeasurements, type Database } from '@zapp/db';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 const ProjectScopeSchema = z
@@ -21,13 +21,26 @@ export interface SnapshotMeasurementStore {
   sumActiveBytes(scope: z.infer<typeof ProjectScopeSchema>, at: Date): Promise<unknown>;
 }
 
+export interface SnapshotDeletionStore {
+  listProject(scope: z.infer<typeof ProjectScopeSchema>, limit: number): Promise<unknown>;
+  removeVerified(
+    scope: z.infer<typeof ProjectScopeSchema>,
+    providerSnapshotId: string,
+  ): Promise<boolean>;
+}
+
+export interface SnapshotDeletionProvider {
+  deleteSnapshot(providerSnapshotId: string): Promise<void>;
+  snapshotExists(providerSnapshotId: string): Promise<boolean>;
+}
+
 export interface ProjectVolumeMeasurementPort {
   measureProjectVolumeBytes(scope: z.infer<typeof ProjectScopeSchema>): Promise<unknown>;
 }
 
 export function createDatabaseSnapshotMeasurementStore(
   database: Database,
-): SnapshotMeasurementStore {
+): SnapshotMeasurementStore & SnapshotDeletionStore {
   return {
     async record(rawInput) {
       const input = z
@@ -83,6 +96,72 @@ export function createDatabaseSnapshotMeasurementStore(
           ),
         );
       return row?.bytes ?? '0';
+    },
+    async listProject(rawScope, rawLimit) {
+      const scope = ProjectScopeSchema.parse(rawScope);
+      const limit = z.number().int().min(1).max(500).parse(rawLimit);
+      const rows = await database
+        .select({ providerSnapshotId: sandboxSnapshotMeasurements.providerSnapshotId })
+        .from(sandboxSnapshotMeasurements)
+        .where(
+          and(
+            eq(sandboxSnapshotMeasurements.organizationId, scope.organizationId),
+            eq(sandboxSnapshotMeasurements.projectId, scope.projectId),
+          ),
+        )
+        .orderBy(asc(sandboxSnapshotMeasurements.providerSnapshotId))
+        .limit(limit);
+      return rows.map((row) => row.providerSnapshotId);
+    },
+    async removeVerified(rawScope, rawProviderSnapshotId) {
+      const scope = ProjectScopeSchema.parse(rawScope);
+      const providerSnapshotId = z.string().trim().min(1).max(500).parse(rawProviderSnapshotId);
+      const rows = await database
+        .delete(sandboxSnapshotMeasurements)
+        .where(
+          and(
+            eq(sandboxSnapshotMeasurements.providerSnapshotId, providerSnapshotId),
+            eq(sandboxSnapshotMeasurements.organizationId, scope.organizationId),
+            eq(sandboxSnapshotMeasurements.projectId, scope.projectId),
+          ),
+        )
+        .returning({ providerSnapshotId: sandboxSnapshotMeasurements.providerSnapshotId });
+      return rows.length === 1;
+    },
+  };
+}
+
+export function createProjectSnapshotDeletionService(options: {
+  readonly snapshots: SnapshotDeletionStore;
+  readonly provider: SnapshotDeletionProvider;
+}) {
+  return {
+    async remove(rawScope: z.input<typeof ProjectScopeSchema>): Promise<void> {
+      const scope = ProjectScopeSchema.parse(rawScope);
+      for (;;) {
+        const ids = z
+          .array(z.string().trim().min(1).max(500))
+          .max(500)
+          .parse(await options.snapshots.listProject(scope, 500));
+        if (ids.length === 0) return;
+        for (const providerSnapshotId of ids) {
+          await options.provider.deleteSnapshot(providerSnapshotId);
+          if (await options.provider.snapshotExists(providerSnapshotId)) {
+            throw new Error('snapshot remained after deletion');
+          }
+          if (!(await options.snapshots.removeVerified(scope, providerSnapshotId))) {
+            throw new Error('snapshot measurement deletion lost its scope');
+          }
+        }
+      }
+    },
+    async absent(rawScope: z.input<typeof ProjectScopeSchema>): Promise<boolean> {
+      const scope = ProjectScopeSchema.parse(rawScope);
+      const ids = z
+        .array(z.string().trim().min(1).max(500))
+        .max(1)
+        .parse(await options.snapshots.listProject(scope, 1));
+      return ids.length === 0;
     },
   };
 }

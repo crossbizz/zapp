@@ -49,6 +49,7 @@ import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/sec
 import type { TenantDbFactory } from '../../src/tenant/db.js';
 import type { GitHubInstallDependencies } from '../../src/integrations/github/install.js';
 import type { GitHubWebhookDependencies } from '../../src/integrations/github/webhooks.js';
+import type { ProjectDeletionRequestStore } from '../../src/jobs/deletion.js';
 import { FakeAuthPort } from './fake-auth-port.js';
 import { InMemoryOrganizationStore } from './org-store.js';
 import { TestServiceTokens } from './service-tokens.js';
@@ -298,6 +299,7 @@ export interface HarnessOptions {
   readonly notificationState?: NotificationDeps['state'];
   readonly notificationEnqueue?: NotificationDeps['enqueue'];
   readonly admin?: AdminRoutesConfig;
+  readonly projectDeletions?: ProjectDeletionRequestStore;
 }
 
 /**
@@ -376,6 +378,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.integrationPort === undefined
               ? {}
               : { integrationPort: options.integrationPort }),
+            ...(options.projectDeletions === undefined
+              ? {}
+              : { projectDeletions: options.projectDeletions }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that

@@ -445,6 +445,18 @@ describe('the write routes', () => {
     expect(h.provider.calls.at(-1)?.args).toEqual([
       internalRepoRef({ organizationId: other.organizationId, projectId: other.projectId }),
     ]);
+
+    h.provider.exists = false;
+    const absent = await h.app.inject({
+      method: 'GET',
+      url: `/internal/git/repositories/${other.organizationId}/${other.projectId}/exists`,
+      headers: serviceHeaders(await serviceToken()),
+    });
+    expect(absent.statusCode).toBe(200);
+    expect(absent.json()).toEqual({ exists: false });
+    expect(h.provider.calls.at(-1)?.args).toEqual([
+      internalRepoRef({ organizationId: other.organizationId, projectId: other.projectId }),
+    ]);
   });
 });
 

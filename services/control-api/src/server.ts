@@ -40,6 +40,21 @@ import {
   createS3AgentEventArchiveObjectStore,
   createDatabaseSnapshotRetentionAuditPort,
 } from './jobs/archive.js';
+import {
+  createArtifactRetentionJob,
+  createArtifactRetentionLifecycle,
+  createDatabaseArtifactRetention,
+  createS3ArtifactRetentionObjectStore,
+} from './jobs/retention.js';
+import {
+  createDatabaseDeletionStore,
+  createGitProjectDeletionTarget,
+  createPostgresProjectDeletionTarget,
+  createProjectDeletionJob,
+  createProjectDeletionLifecycle,
+  createS3ProjectDeletionTarget,
+  createSandboxSnapshotDeletionTarget,
+} from './jobs/deletion.js';
 import { createRedisConnection } from './redis/client.js';
 import { loadSupportAdminConfig } from './routes/admin.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
@@ -324,6 +339,34 @@ const archiveLifecycle = createAgentEventArchiveLifecycle({
     );
   },
 });
+const retentionLifecycle = createArtifactRetentionLifecycle({
+  job: createArtifactRetentionJob({
+    database: createDatabaseArtifactRetention(database.db),
+    objects: createS3ArtifactRetentionObjectStore(artifactStorage),
+  }),
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'artifact retention failed');
+  },
+});
+const deletionLifecycle =
+  gitServiceUrl === undefined
+    ? undefined
+    : createProjectDeletionLifecycle({
+        job: createProjectDeletionJob({
+          store: createDatabaseDeletionStore(database.db),
+          workerId: `control-api-${randomUUID()}`,
+          snapshots: createSandboxSnapshotDeletionTarget({
+            baseUrl: preview.sandboxServiceUrl,
+            serviceTokens,
+          }),
+          git: createGitProjectDeletionTarget({ baseUrl: gitServiceUrl, serviceTokens }),
+          objects: createS3ProjectDeletionTarget(artifactStorage),
+          postgres: createPostgresProjectDeletionTarget(database.db),
+        }),
+        onError: (error) => {
+          app.log.error({ errorName: error.name }, 'project deletion failed');
+        },
+      });
 const usageQueue = createSqsUsageQueue(usageQueueConfig);
 const usageCounter = createRedisUsageLedgerCounter(redis);
 const storageLedger = createUsageLedgerRepository({ database: database.db });
@@ -597,6 +640,8 @@ try {
     githubImportLifecycle,
     notificationLifecycle,
     archiveLifecycle,
+    retentionLifecycle,
+    ...(deletionLifecycle === undefined ? {} : { deletionLifecycle }),
   });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');

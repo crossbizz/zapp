@@ -23,7 +23,7 @@ export const releases = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     environmentId: text('environment_id')
       .notNull()
       .references(() => environments.id),
@@ -55,7 +55,7 @@ export const deployments = pgTable(
     organizationId: organizationId(),
     releaseId: text('release_id')
       .notNull()
-      .references(() => releases.id),
+      .references(() => releases.id, { onDelete: 'cascade' }),
     /** `vercel`, `cloudflare`, … (PRD §27.2). */
     provider: text('provider').notNull(),
     /** Null between "we asked" and "the provider answered" — that gap is where reconciliation lives. */
@@ -84,7 +84,7 @@ export const syntheticChecks = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     environmentId: text('environment_id')
       .notNull()
       .references(() => environments.id),

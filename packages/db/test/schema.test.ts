@@ -84,9 +84,11 @@ describe('identity tables', () => {
       'slug',
       'plan',
       'billing_customer_id',
+      'deletion_requested_at',
       'created_at',
       'settings_json',
     ]);
+    expect(sqlType(organizations, 'deletion_requested_at')).toBe('timestamp with time zone');
     expect(requiredColumns(organizations)).toContain('settings_json');
     expect(sqlType(organizations, 'settings_json')).toBe('jsonb');
   });

@@ -954,6 +954,8 @@ export interface ModalWorkspaceSdkPort {
     readonly digest: string;
     readonly volumeName: string;
   }): Promise<string>;
+  deleteSnapshot?(providerSnapshotId: string): Promise<void>;
+  snapshotExists?(providerSnapshotId: string): Promise<boolean>;
   close(): void;
 }
 
@@ -1465,6 +1467,23 @@ function createModalWorkspaceSdk(
         throw error;
       }
     },
+    async deleteSnapshot(providerSnapshotId) {
+      try {
+        await client.images.delete(providerSnapshotId);
+      } catch (error) {
+        if (error instanceof NotFoundError) return;
+        throw error;
+      }
+    },
+    async snapshotExists(providerSnapshotId) {
+      try {
+        await client.images.fromId(providerSnapshotId);
+        return true;
+      } catch (error) {
+        if (error instanceof NotFoundError) return false;
+        throw error;
+      }
+    },
     async measureProjectVolumeBytes(input) {
       const app = await client.apps.fromName(input.appName, {
         environment: input.environment,
@@ -1645,6 +1664,32 @@ export class ModalSandboxProvider {
         logicalBytes,
         expiresAt: new Date(this.now().getTime() + retentionMs).toISOString(),
       };
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async deleteSnapshot(providerSnapshotId: string): Promise<void> {
+    const id = ImageDigestSchema.parse(providerSnapshotId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      if (sdk.deleteSnapshot === undefined) {
+        throw new Error('Modal SDK adapter cannot delete snapshots');
+      }
+      await sdk.deleteSnapshot(id);
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async snapshotExists(providerSnapshotId: string): Promise<boolean> {
+    const id = ImageDigestSchema.parse(providerSnapshotId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      if (sdk.snapshotExists === undefined) {
+        throw new Error('Modal SDK adapter cannot probe snapshots');
+      }
+      return await sdk.snapshotExists(id);
     } finally {
       sdk.close();
     }

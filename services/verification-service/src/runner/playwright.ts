@@ -7,11 +7,13 @@ import {
   agentPhases,
   agentRuns,
   agentTasks,
+  artifactRetention,
   artifacts,
   testCases,
   testRuns,
   type Database,
   type NewArtifact,
+  type NewArtifactRetention,
   type NewTestCase,
   type NewTestRun,
 } from '@zapp/db';
@@ -22,9 +24,24 @@ const MAX_REPORT_BYTES = 2 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 32 * 1024 * 1024;
 const PLAYWRIGHT_TIMEOUT_MS = 10 * 60_000;
 export const BROWSER_RUN_LEASE_MS = PLAYWRIGHT_TIMEOUT_MS + 2 * 60_000;
+const TEST_ARTIFACT_RETENTION_MS = 30 * 86_400_000;
 
 export function browserRunLeaseExpired(startedAt: Date, now: Date): boolean {
   return now.getTime() - startedAt.getTime() >= BROWSER_RUN_LEASE_MS;
+}
+
+export function classifyTestArtifacts(
+  artifactRows: readonly NewArtifact[],
+  createdAt: Date,
+): NewArtifactRetention[] {
+  const expiresAt = new Date(createdAt.getTime() + TEST_ARTIFACT_RETENTION_MS);
+  return artifactRows.map((artifact) => ({
+    artifactId: artifact.id,
+    organizationId: artifact.organizationId,
+    projectId: artifact.projectId,
+    retentionClass: 'test',
+    expiresAt,
+  }));
 }
 const RelativePathSchema = z
   .string()
@@ -983,8 +1000,17 @@ export function createDrizzleBrowserRunRecordStore(
         : { kind: 'in_progress' };
     },
     async complete(completion) {
+      if (!(completion.testRun.completedAt instanceof Date)) {
+        throw new Error('Browser run completion requires a completion time');
+      }
+      const completedAt = completion.testRun.completedAt;
       await db.transaction(async (tx) => {
-        if (completion.artifacts.length > 0) await tx.insert(artifacts).values([...completion.artifacts]);
+        if (completion.artifacts.length > 0) {
+          await tx.insert(artifacts).values([...completion.artifacts]);
+          await tx
+            .insert(artifactRetention)
+            .values(classifyTestArtifacts(completion.artifacts, completedAt));
+        }
         if (completion.testCases.length > 0) await tx.insert(testCases).values([...completion.testCases]);
         const updated = await tx
           .update(testRuns)

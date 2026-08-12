@@ -264,10 +264,12 @@ describe.skipIf(!hasForgejo)('the Forgejo provider, against a real instance', ()
   it('deletes a repository, and deleting a missing one is a success', async () => {
     const { organizationId, projectId, ref } = project();
     await provider.createRepository({ organizationId, projectId, defaultBranch: 'main' });
+    await expect(provider.repositoryExists(ref)).resolves.toBe(true);
 
     await provider.deleteRepository(ref);
     // The caller's goal was that it not exist, and it does not.
     await expect(provider.deleteRepository(ref)).resolves.toBeUndefined();
+    await expect(provider.repositoryExists(ref)).resolves.toBe(false);
 
     const [owner, name] = ref.split('/') as [string, string];
     const gone = await client.send({

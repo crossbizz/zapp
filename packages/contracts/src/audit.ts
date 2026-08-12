@@ -25,6 +25,7 @@ export const AUDIT_ACTIONS = [
   'project.created',
   'project.updated',
   'project.scan_requested',
+  'project.deletion_requested',
   'specification.created',
   'specification.updated',
   'specification.approved',

@@ -3774,7 +3774,86 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    orgId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletions: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch: {
@@ -4788,7 +4867,86 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletion: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch: {
@@ -5031,6 +5189,99 @@ export interface paths {
                                 organizationId: string;
                                 projectId: string;
                                 version: number;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletion: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
                             };
                         };
                     };

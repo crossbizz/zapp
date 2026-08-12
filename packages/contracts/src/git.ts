@@ -226,6 +226,9 @@ export interface GitProvider {
    */
   deleteRepository(ref: string): Promise<void>;
 
+  /** Explicit absence probe used by the verified project-deletion pipeline. */
+  repositoryExists(ref: string): Promise<boolean>;
+
   /** Cuts `name` from `fromSha`. */
   createBranch(ref: string, name: string, fromSha: string): Promise<void>;
 

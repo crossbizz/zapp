@@ -218,6 +218,13 @@
       "when": 1786547483226,
       "tag": "0030_clever_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786547825660,
+      "tag": "0031_luxuriant_skullbuster",
+      "breakpoints": true
     }
   ]
 }

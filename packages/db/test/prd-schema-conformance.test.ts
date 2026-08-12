@@ -101,6 +101,18 @@ const NON_PRD_TABLES = new Map([
     'trial_credit_grants',
     'the durable organization trial delivery journal and structural per-user abuse guard required by plan 10 OPS-5',
   ],
+  [
+    'incidents',
+    'the durable production-error to AR-19 Fix-run and resolving-release linkage required by PRD §29.4 and plan 10 OPS-11',
+  ],
+  [
+    'project_deletions',
+    'the durable cross-store deletion state and post-project polling proof required by PRD §31.4 and plan 02 CP-17',
+  ],
+  [
+    'artifact_retention',
+    'the closed expirable-artifact classification required by ADR-0031 and plan 02 CP-17 so release evidence cannot be selected by a name heuristic',
+  ],
 ]);
 
 /**
@@ -125,6 +137,10 @@ const NON_PRD_COLUMNS = new Map([
   [
     'organizations.settings_json',
     'durable organization settings for CP-12 and its configurable deploy policy; accepted physical-schema extension in ADR-0004',
+  ],
+  [
+    'organizations.deletion_requested_at',
+    'durable organization deletion fence required by plan 02 CP-17 so a concurrent project create cannot enter after cascade enumeration',
   ],
   [
     'usage_ledger.operation_key',

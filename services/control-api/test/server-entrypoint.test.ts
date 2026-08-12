@@ -319,7 +319,7 @@ const production = vi.hoisted(() => {
       NODE_ENV: 'test',
       PORT: 4_321,
     })),
-    loadGitServiceUrl: vi.fn(() => undefined),
+    loadGitServiceUrl: vi.fn(() => 'http://git-service.test:4500'),
     loadGitHubAppEnv: vi.fn(() => github),
     loadGitHubWebhookQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
@@ -591,6 +591,14 @@ describe('control-api production entrypoint', () => {
             readonly start: () => Promise<void>;
             readonly close: () => Promise<void>;
           };
+          readonly retentionLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
+          readonly deletionLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
         }
       | undefined;
     expect(bootstrapInput?.app).toBe(production.app);
@@ -600,6 +608,10 @@ describe('control-api production entrypoint', () => {
     expect(bootstrapInput?.notificationLifecycle?.start).toBeTypeOf('function');
     expect(bootstrapInput?.notificationLifecycle?.close).toBeTypeOf('function');
     expect(bootstrapInput?.archiveLifecycle).toBe(production.archiveLifecycle);
+    expect(bootstrapInput?.retentionLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.retentionLifecycle?.close).toBeTypeOf('function');
+    expect(bootstrapInput?.deletionLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.deletionLifecycle?.close).toBeTypeOf('function');
     expect(production.createPostgresAgentEventArchiveDatabase).toHaveBeenCalledOnce();
     expect(production.createS3AgentEventArchiveObjectStore).toHaveBeenCalledWith(
       production.artifactStorage,
