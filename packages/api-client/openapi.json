@@ -28718,6 +28718,386 @@
         }
       }
     },
+    "/v1/integrations/vercel/connect": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "projectId": {
+                    "type": "string",
+                    "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  "accessToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 10000
+                  },
+                  "configuration": {
+                    "type": "object",
+                    "properties": {
+                      "projectId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "projectName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "teamId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    },
+                    "required": [
+                      "projectId",
+                      "projectName"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "projectId",
+                  "accessToken",
+                  "configuration"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "organizationId": {
+                          "type": "string"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "github",
+                            "supabase",
+                            "neon",
+                            "stripe",
+                            "vercel"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "credentialRef": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "configuration": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "installationId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "externalRepoRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "branch": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "internalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "externalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "in_sync",
+                                    "ahead",
+                                    "behind",
+                                    "diverged"
+                                  ]
+                                },
+                                "lastDeliveryId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "blockedTaskIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "conflictTaskId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "conflictCreated": {
+                                  "type": "boolean"
+                                },
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "installationId",
+                                "externalRepoRef",
+                                "branch",
+                                "internalHeadSha",
+                                "externalHeadSha",
+                                "state",
+                                "lastDeliveryId",
+                                "blockedTaskIds",
+                                "conflictTaskId",
+                                "conflictCreated",
+                                "updatedAt"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "projectRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "projectRef"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "projectId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "databaseName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "previewBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "productionBranchId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "projectId",
+                                "databaseName"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "accountId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "enum": [
+                                    "test",
+                                    "live"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "accountId",
+                                "mode"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "projectId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "projectName": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "teamId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "projectId",
+                                "projectName"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "projectId",
+                        "provider",
+                        "status",
+                        "credentialRef",
+                        "configuration"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "connection"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage/summary": {
       "get": {
         "parameters": [

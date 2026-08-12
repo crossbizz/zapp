@@ -82,12 +82,13 @@ function headers(wired: Wired, session: TestSession, key: string): Record<string
   return { ...wired.as(session), 'idempotency-key': key };
 }
 
-function requestFor(provider: 'github' | 'supabase' | 'neon' | 'stripe', projectId: string): { readonly url: string; readonly body: Record<string, unknown> } {
+function requestFor(provider: 'github' | 'supabase' | 'neon' | 'stripe' | 'vercel', projectId: string): { readonly url: string; readonly body: Record<string, unknown> } {
   switch (provider) {
     case 'github': return { url: '/v1/integrations/github/install', body: { installationId: '1188', state: 'oauth-state', code: CREDENTIAL } };
     case 'supabase': return { url: '/v1/integrations/supabase/connect', body: { projectId, accessToken: CREDENTIAL, configuration: { projectRef: 'acme-db' } } };
     case 'neon': return { url: '/v1/integrations/neon/connect', body: { projectId, apiKey: CREDENTIAL, configuration: { projectId: 'neon-db', databaseName: 'neondb' } } };
     case 'stripe': return { url: '/v1/integrations/stripe/connect', body: { projectId, apiKey: CREDENTIAL, configuration: { accountId: 'acct_123', mode: 'test' } } };
+    case 'vercel': return { url: '/v1/integrations/vercel/connect', body: { projectId, accessToken: CREDENTIAL, configuration: { projectId: 'prj_vercel', projectName: 'zapp-web' } } };
   }
 }
 
@@ -154,7 +155,7 @@ describe('integration route shells', () => {
     expect(wired.built.audit.events.at(-1)).toMatchObject({ action: 'integration.disconnected', targetId: connectionId, metadata: { provider: 'vercel' } });
   });
 
-  it.each(['github', 'supabase', 'neon', 'stripe'] as const)('connects %s with a safe strict connection view', async (provider) => {
+  it.each(['github', 'supabase', 'neon', 'stripe', 'vercel'] as const)('connects %s with a safe strict connection view', async (provider) => {
     const wired = await wire();
     const request = requestFor(provider, wired.projectId);
     const response = await wired.built.app.inject({ method: 'POST', url: request.url, headers: headers(wired, wired.owner, `connect-${provider}-01`), payload: request.body });

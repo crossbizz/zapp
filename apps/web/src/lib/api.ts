@@ -171,6 +171,48 @@ export function createControlPlaneClient(organizationId?: string) {
         query,
         ...(signal === undefined ? {} : { signal }),
       }),
+    getProject: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    updateProject: (projectId: string, body: { readonly archived?: boolean }, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}', { method: 'PATCH', path: { projectId }, headers: headers(true, true, idempotencyKey), body }),
+    deleteProject: (projectId: string, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}', { method: 'DELETE', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey) }),
+    listProjectSecrets: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/secrets', { method: 'GET', path: { projectId }, headers: headers(), query: { limit: 100 }, ...(signal === undefined ? {} : { signal }) }),
+    createProjectSecret: (projectId: string, body: { readonly name: string; readonly value: string; readonly environmentId?: string }) =>
+      client.request('/v1/projects/{projectId}/secrets', { method: 'POST', path: { projectId }, headers: headers(true, false), body }),
+    rotateProjectSecret: (projectId: string, secretId: string, value: string) =>
+      client.request('/v1/projects/{projectId}/secrets/{secretId}/rotate', { method: 'POST', path: { projectId, secretId }, headers: headers(true, false), body: { value } }),
+    listIntegrations: (signal?: AbortSignal) =>
+      client.request('/v1/integrations', { method: 'GET', headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    disconnectIntegration: (connectionId: string, idempotencyKey?: string) =>
+      client.request('/v1/integrations/{connectionId}', { method: 'DELETE', path: { connectionId }, headers: requiredKeyHeaders(idempotencyKey) }),
+    connectSupabase: (projectId: string, accessToken: string, projectRef: string, idempotencyKey?: string) =>
+      client.request('/v1/integrations/supabase/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, accessToken, configuration: { projectRef } } }),
+    connectNeon: (projectId: string, apiKey: string, providerProjectId: string, databaseName: string, idempotencyKey?: string) =>
+      client.request('/v1/integrations/neon/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, apiKey, configuration: { projectId: providerProjectId, databaseName } } }),
+    connectStripe: (projectId: string, apiKey: string, accountId: string, idempotencyKey?: string) =>
+      client.request('/v1/integrations/stripe/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, apiKey, configuration: { accountId, mode: 'test' } } }),
+    connectVercel: (projectId: string, accessToken: string, providerProjectId: string, projectName: string, idempotencyKey?: string) =>
+      client.request('/v1/integrations/vercel/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, accessToken, configuration: { projectId: providerProjectId, projectName } } }),
+    listOrganizationMembers: (organizationId: string, signal?: AbortSignal) =>
+      client.request('/v1/organizations/{orgId}/members', { method: 'GET', path: { orgId: organizationId }, ...(signal === undefined ? {} : { signal }) }),
+    inviteOrganizationMember: (organizationId: string, body: { readonly email: string; readonly role: 'owner' | 'builder' | 'viewer' }) =>
+      client.request('/v1/organizations/{orgId}/invites', { method: 'POST', path: { orgId: organizationId }, headers: headers(true, false), body }),
+    updateOrganizationMember: (organizationId: string, userId: string, role: 'owner' | 'builder' | 'viewer') =>
+      client.request('/v1/organizations/{orgId}/members/{userId}', { method: 'PATCH', path: { orgId: organizationId, userId }, headers: headers(true, false), body: { role } }),
+    getOrganizationSettings: (organizationId: string, signal?: AbortSignal) =>
+      client.request('/v1/organizations/{orgId}/settings', { method: 'GET', path: { orgId: organizationId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    updateOrganizationSettings: (organizationId: string, builderCanDeploy: boolean, idempotencyKey?: string) =>
+      client.request('/v1/organizations/{orgId}/settings', { method: 'PATCH', path: { orgId: organizationId }, headers: requiredKeyHeaders(idempotencyKey), body: { builderCanDeploy } }),
+    getGitHubSyncState: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/integrations/github', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    updateGitHubSyncPolicy: (projectId: string, syncPolicy: 'direct_push' | 'pull_request', idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}/integrations/github/policy', { method: 'PATCH', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey), body: { syncPolicy } }),
+    syncGitHubNow: (projectId: string, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}/integrations/github/sync', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey) }),
+    exportToGitHub: (projectId: string, body: { readonly installationId: string; readonly repositoryName: string; readonly private: boolean; readonly syncPolicy: 'direct_push' | 'pull_request' }, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}/integrations/github/export', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey), body }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>
       client.request('/v1/projects', {
         method: 'POST',

@@ -15,6 +15,7 @@ const GitHubBody = z.object({ installationId: z.string().trim().min(1).max(200),
 const SupabaseBody = z.object({ projectId: idSchema('proj'), accessToken: z.string().trim().min(1).max(10_000), configuration: z.object({ projectRef: z.string().trim().min(1).max(200) }).strict() }).strict();
 const NeonBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ projectId: z.string().trim().min(1).max(200), databaseName: z.string().min(1).max(63).regex(/^[a-z_][a-z0-9_]*$/u) }).strict() }).strict();
 const StripeBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ accountId: z.string().trim().min(1).max(200), mode: z.enum(['test', 'live']) }).strict() }).strict();
+const VercelBody = z.object({ projectId: idSchema('proj'), accessToken: z.string().trim().min(1).max(10_000), configuration: z.object({ projectId: z.string().trim().min(1).max(200), projectName: z.string().trim().min(1).max(200), teamId: z.string().trim().min(1).max(200).optional() }).strict() }).strict();
 const IntegrationStatusSchema = IntegrationConnectionSchema.omit({ credentialRef: true }).strict();
 
 const IntegrationInputSchema = z.discriminatedUnion('provider', [
@@ -22,6 +23,7 @@ const IntegrationInputSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('supabase'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectRef: z.string().min(1) }).strict() }).strict(),
   z.object({ provider: z.literal('neon'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectId: z.string().min(1), databaseName: z.string().min(1).max(63).regex(/^[a-z_][a-z0-9_]*$/u) }).strict() }).strict(),
   z.object({ provider: z.literal('stripe'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict() }).strict(),
+  z.object({ provider: z.literal('vercel'), organizationId: idSchema('org'), projectId: idSchema('proj'), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ projectId: z.string().min(1), projectName: z.string().min(1), teamId: z.string().min(1).optional() }).strict() }).strict(),
 ]);
 export type IntegrationInput = z.infer<typeof IntegrationInputSchema>;
 export type IntegrationMutationInput = IntegrationInput & {
@@ -174,12 +176,13 @@ export function registerIntegrationRoutes(app: AppInstance, deps: IntegrationRou
   registerProjectConnection(app, deps, 'supabase', SupabaseBody);
   registerProjectConnection(app, deps, 'neon', NeonBody);
   registerProjectConnection(app, deps, 'stripe', StripeBody);
+  registerProjectConnection(app, deps, 'vercel', VercelBody);
 }
 
-function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps, provider: 'supabase' | 'neon' | 'stripe', body: z.ZodTypeAny): void {
+function registerProjectConnection(app: AppInstance, deps: IntegrationRoutesDeps, provider: 'supabase' | 'neon' | 'stripe' | 'vercel', body: z.ZodTypeAny): void {
   app.post(`/v1/integrations/${provider}/connect`, { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { body, response: { 201: z.object({ connection: IntegrationConnectionSchema }).strict() } } }, async (request, reply) => {
     const ctx = tenantOf(request);
-    const parsed = body.parse(request.body) as z.infer<typeof SupabaseBody> | z.infer<typeof NeonBody> | z.infer<typeof StripeBody>;
+    const parsed = body.parse(request.body) as z.infer<typeof SupabaseBody> | z.infer<typeof NeonBody> | z.infer<typeof StripeBody> | z.infer<typeof VercelBody>;
     const project = await ctx.db.projects.getById(parsed.projectId);
     if (project === undefined) throw projectNotFound();
     authorize(ctx, 'edit_code');

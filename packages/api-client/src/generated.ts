@@ -3013,6 +3013,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/integrations/vercel/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        accessToken: string;
+                        configuration: {
+                            projectId: string;
+                            projectName: string;
+                            teamId?: string;
+                        };
+                        projectId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            connection: {
+                                configuration: {
+                                    installationId: string;
+                                } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
+                                    projectRef: string;
+                                } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
+                                    projectId: string;
+                                } | {
+                                    accountId: string;
+                                    /** @enum {string} */
+                                    mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
+                                };
+                                credentialRef: string | null;
+                                id: string;
+                                organizationId: string;
+                                projectId: string | null;
+                                /** @enum {string} */
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
+                                status: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/invites/{token}/accept": {
         parameters: {
             query?: never;

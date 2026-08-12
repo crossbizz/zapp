@@ -214,7 +214,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-20 Redirect + plan diff
 - [x] AR-20-FIX-1 Serialize redirect Temporal acceptance
 - [x] AR-21 Forking (project/branch/conversation/run)
-- [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
+- [x] WEB-12 Settings suite (secrets/integrations/members/GitHub)
 - [ ] WEB-13 Releases + evidence viewer
 - [x] OPS-12 Security suites (start; complete M5)
 - [x] OPS-13 Injection evals + Semgrep gates (start; complete M5)
