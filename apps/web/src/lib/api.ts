@@ -213,6 +213,18 @@ export function createControlPlaneClient(organizationId?: string) {
       client.request('/v1/projects/{projectId}/integrations/github/sync', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey) }),
     exportToGitHub: (projectId: string, body: { readonly installationId: string; readonly repositoryName: string; readonly private: boolean; readonly syncPolicy: 'direct_push' | 'pull_request' }, idempotencyKey?: string) =>
       client.request('/v1/projects/{projectId}/integrations/github/export', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+    listProjectReleases: (projectId: string, cursor?: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/releases', { method: 'GET', path: { projectId }, headers: headers(), query: { limit: 20, ...(cursor === undefined ? {} : { cursor }) }, ...(signal === undefined ? {} : { signal }) }),
+    getRelease: (releaseId: string, signal?: AbortSignal) =>
+      client.request('/v1/releases/{releaseId}', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    getReleaseEvidence: (releaseId: string, signal?: AbortSignal) =>
+      client.request('/v1/releases/{releaseId}/evidence', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    approveRelease: (releaseId: string, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/approve', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey) }),
+    deployRelease: (releaseId: string, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/deploy', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { deploymentType: 'redeploy' } }),
+    forkRelease: (releaseId: string, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/fork', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { startFixRun: true } }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>
       client.request('/v1/projects', {
         method: 'POST',

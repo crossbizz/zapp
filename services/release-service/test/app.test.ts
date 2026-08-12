@@ -95,7 +95,7 @@ const history: ReleaseHistoryPort = {
     return Promise.resolve({
       items: [{
         id: RELEASE_ID, projectId: input.projectId, environmentId: ENVIRONMENT_ID,
-        commitSha: COMMIT_SHA, status: 'healthy', supportLevel: 'managed',
+        commitSha: COMMIT_SHA, status: 'healthy', createdBy: USER_ID, supportLevel: 'managed',
         activeProduction: true, createdAt: RELEASE.createdAt.toISOString(), deployments: [],
         evidenceArtifactId: null,
       }], rollbackTargets: [], nextCursor: null,

@@ -178,7 +178,7 @@ class RecordingReleasePort implements ReleasePort {
         .slice(0, input.limit)
         .map((release) => ({
           id: release.id, projectId: release.projectId, environmentId: release.environmentId,
-          commitSha: release.commitSha, status: release.status, supportLevel: 'compatible' as const,
+          commitSha: release.commitSha, status: release.status, createdBy: release.createdBy, supportLevel: 'compatible' as const,
           activeProduction: true, createdAt: release.createdAt.toISOString(), deployments: [],
           evidence: { artifactId: newId('art'), href: `/v1/releases/${release.id}/evidence` },
         })),

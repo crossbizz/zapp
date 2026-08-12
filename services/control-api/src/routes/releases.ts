@@ -140,6 +140,7 @@ export const PublicReleaseHistoryPageSchema = z
     items: z.array(z.object({
       id: idSchema('rel'), projectId: idSchema('proj'), environmentId: idSchema('env'),
       commitSha: CommitShaSchema, status: z.string().min(1),
+      createdBy: idSchema('user'),
       supportLevel: z.enum(['compatible', 'verified', 'managed']),
       activeProduction: z.boolean(), createdAt: z.string().datetime(),
       deployments: z.array(DeploymentHistorySchema).max(100),

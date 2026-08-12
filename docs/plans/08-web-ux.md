@@ -207,9 +207,9 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Create: `src/app/projects/[id]/releases/*`
 **Effort:** M
 
-- [ ] Binding behavior: release list (status, commit, env, support badge, created by/at, active-in-prod marker); detail: evidence manifest rendered as the Appendix D report (sections with pass/fail/waiver chips + artifact links), criteria table (VF-9: every criterion with result — unverified/failed never hidden), rollback target, deploy history; actions: Deploy (if ready+approved role), Fork to repair branch (DEP-12).
-- [ ] e2e: fixture manifest renders all criteria incl. a failed one prominently.
-- [ ] Commit: `feat(web): release history + evidence report viewer`
+- [x] Binding behavior: release list (status, commit, env, support badge, created by/at, active-in-prod marker); detail: evidence manifest rendered as the Appendix D report (sections with pass/fail/waiver chips + artifact links), criteria table (VF-9: every criterion with result — unverified/failed never hidden), rollback target, deploy history; actions: Deploy (if ready+approved role), Fork to repair branch (DEP-12).
+- [x] e2e: fixture manifest renders all criteria incl. a failed one prominently.
+- [x] Commit: `feat(web): release history + evidence report viewer`
 
 ### Task WEB-14 [M3–M4]: Deploy flow UI
 
@@ -292,6 +292,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-12 WEB-11 done — Replaced placeholder tabs with tenant-scoped file/edit/diff, searchable follow logs, and test/evidence/Fix-run surfaces; focused Playwright and web gates passed.
 - 2026-08-12 WEB-17 done — Added the public template gallery/detail demo, server-resolved slug Remix, and seeded builder handoff; focused Playwright passed 2/2 and web lint/typecheck passed without provider calls.
 - 2026-08-12 WEB-12 done — Added SDK-backed project settings for write-only secrets, all five integrations (including the missing public Vercel connect route), member roles/invites/deploy policy, GitHub sync/export, and archive/delete; focused E2E passed 2/2 with a network-level secret-value assertion and read-only Viewer proof.
+- 2026-08-12 WEB-13 done — Added SDK-backed release history/detail pages with support and active-production markers, deployment/rollback data, actionable lifecycle controls, and a complete evidence/criteria report; focused E2E passed 1/1 including prominent failed and unverified criteria.
 - 2026-08-11 WEB-4 controller correction done — under explicit bounded post-cap authority, added independently paginated/deduped branch discovery with keyboard page-2 selection, preserved durable import identity and public progress across close/reopen without create/enqueue replay, consumed failed callbacks before completion to prevent credential replay, and cleared aborted branch loading synchronously; all four fixes followed RED→GREEN, focused cases passed 5/5, projects E2E passed 17/17 on canonical ports, and web lint/typecheck/build plus API client 52/52 passed; the one-time live GitHub gate was not rerun and no product/API deviation was needed.
 - 2026-08-11 WEB-12 BLOCKED — API-first audit found secrets and the organization `builderCanDeploy` setting available, but no public integration status/disconnect or Vercel operations, organization member-list read model, GitHub sync-policy/state/manual-sync/export operations, or project archive/delete pipeline; those contracts are owned by INT-1..4, DEP-5, and CP-17, so the task remains unchecked and no fixture-only settings state was introduced.
 - 2026-08-11 WEB-13 BLOCKED — API-first audit found release detail/readiness and evidence-manifest reads, but no public project release-list read, active-production marker, deploy-history or rollback-target projection, or DEP-12 repair-fork operation; the task remains unchecked pending Plan 07 release lifecycle contracts, and no fixture-only release state was introduced.

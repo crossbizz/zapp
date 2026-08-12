@@ -21340,6 +21340,10 @@
                             "type": "string",
                             "minLength": 1
                           },
+                          "createdBy": {
+                            "type": "string",
+                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
                           "supportLevel": {
                             "type": "string",
                             "enum": [
@@ -21437,6 +21441,7 @@
                           "environmentId",
                           "commitSha",
                           "status",
+                          "createdBy",
                           "supportLevel",
                           "activeProduction",
                           "createdAt",

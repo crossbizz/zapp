@@ -6875,6 +6875,7 @@ export interface paths {
                                 commitSha: string;
                                 /** Format: date-time */
                                 createdAt: string;
+                                createdBy: string;
                                 deployments: {
                                     /** Format: date-time */
                                     completedAt: string | null;
