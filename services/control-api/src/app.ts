@@ -159,6 +159,7 @@ import { registerSpecificationRoutes } from './routes/specifications.js';
 import {
   createUnavailableIntegrationPort,
   registerIntegrationRoutes,
+  type GitHubControlsPort,
   type IntegrationPort,
 } from './routes/integrations.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
@@ -271,6 +272,7 @@ export interface TenantDeps {
   readonly incidentWebhookSecret?: string;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
+  readonly githubControls?: GitHubControlsPort;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
   readonly pricing?: PricingConfig;
@@ -868,6 +870,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                     provider: deps.github.provider,
                     stateStore: deps.github.stateStore,
                   })),
+            ...(tenant.githubControls === undefined ? {} : { githubControls: tenant.githubControls }),
           });
           if (deps.usageLedger !== undefined && tenant.creditBalance !== undefined) {
             registerPublicUsageRoutes(app, {

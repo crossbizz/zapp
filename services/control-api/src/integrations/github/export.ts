@@ -27,6 +27,7 @@ const GitHubExportInputSchema = z
     repositoryName: GitHubRepositoryNameSchema,
     private: z.boolean(),
     syncPolicy: GitHubSyncPolicySchema,
+    operationKey: z.string().min(8).max(255),
   })
   .strict();
 
@@ -118,6 +119,7 @@ export interface GitHubExportGitPort {
     readonly externalCloneUrl: string;
     readonly externalToken: string;
     readonly defaultBranch: string;
+    readonly operationKey: string;
   }): Promise<{ readonly internalHeadSha: string; readonly externalHeadSha: string }>;
 }
 
@@ -169,7 +171,7 @@ export function createGitHubExportService(input: {
       const created = CreatedGitHubRepositorySchema.parse(
         await input.provider.createRepository({
           installationId: request.installationId,
-          operationKey: `github-export:${request.projectId}`,
+          operationKey: request.operationKey,
           name: request.repositoryName,
           private: request.private,
         }),
@@ -180,6 +182,7 @@ export function createGitHubExportService(input: {
           externalCloneUrl: created.cloneUrl,
           externalToken: created.token,
           defaultBranch: target.defaultBranch,
+          operationKey: request.operationKey,
         }),
       );
       if (pushed.internalHeadSha !== pushed.externalHeadSha) {

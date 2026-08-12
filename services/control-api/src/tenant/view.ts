@@ -308,6 +308,19 @@ export const IntegrationConnectionSchema = z
     credentialRef: z.string().nullable(),
     configuration: z.union([
       z.object({ installationId: z.string().min(1) }).strict(),
+      z.object({
+        installationId: z.string().min(1),
+        externalRepoRef: z.string().min(1),
+        branch: z.string().min(1),
+        internalHeadSha: z.string().regex(/^[0-9a-f]{40}$/u),
+        externalHeadSha: z.string().regex(/^[0-9a-f]{40}$/u),
+        state: z.enum(['in_sync', 'ahead', 'behind', 'diverged']),
+        lastDeliveryId: z.string().nullable(),
+        blockedTaskIds: z.array(z.string()),
+        conflictTaskId: z.string().nullable(),
+        conflictCreated: z.boolean(),
+        updatedAt: z.string().datetime(),
+      }).strict(),
       z.object({ projectRef: z.string().min(1) }).strict(),
       z
         .object({

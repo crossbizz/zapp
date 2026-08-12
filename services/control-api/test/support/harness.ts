@@ -35,7 +35,7 @@ import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
 import type { RunArtifactReaderPort } from '../../src/routes/run-artifacts.js';
 import type { AdminRoutesConfig } from '../../src/routes/admin.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
-import type { IntegrationPort } from '../../src/routes/integrations.js';
+import type { GitHubControlsPort, IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
 import type { ProjectExportDeps } from '../../src/routes/export.js';
 import type { BuilderArtifactPort } from '../../src/routes/builder-artifacts.js';
@@ -288,6 +288,7 @@ export interface HarnessOptions {
   readonly incidentWebhookSecret?: string;
   readonly deploymentUsage?: DeploymentUsagePort;
   readonly integrationPort?: IntegrationPort;
+  readonly githubControls?: GitHubControlsPort;
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
@@ -405,6 +406,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.integrationPort === undefined
               ? {}
               : { integrationPort: options.integrationPort }),
+            ...(options.githubControls === undefined ? {} : { githubControls: options.githubControls }),
             ...(options.projectDeletions === undefined
               ? {}
               : { projectDeletions: options.projectDeletions }),

@@ -102,6 +102,7 @@ export interface GitHubSyncGitPort {
     readonly externalCloneUrl: string;
     readonly externalToken: string;
     readonly branch: string;
+    readonly operationKey: string;
   }): Promise<{
     readonly internalHeadSha: string;
     readonly externalHeadSha: string;
@@ -117,6 +118,7 @@ export interface GitHubSyncGitPort {
     readonly externalToken: string;
     readonly sourceBranch: string;
     readonly targetBranch: string;
+    readonly operationKey: string;
   }): Promise<{ readonly internalHeadSha: string; readonly externalHeadSha: string }>;
 }
 
@@ -577,6 +579,12 @@ const SyncCommitInputSchema = z
   })
   .strict();
 
+const ManualSyncInputSchema = z.object({
+  organizationId: idSchema('org'),
+  projectId: idSchema('proj'),
+  operationKey: z.string().min(8).max(255),
+}).strict();
+
 const InboundResultSchema = z
   .object({
     action: z.literal('inbound'),
@@ -612,6 +620,35 @@ export function createGitHubSyncEngine(input: {
 }) {
   const now = input.now ?? (() => new Date());
   return {
+    async refreshProject(rawInput: z.input<typeof ManualSyncInputSchema>) {
+      const request = ManualSyncInputSchema.parse(rawInput);
+      const target = await input.store.resolveOutbound(request);
+      if (target === undefined) throw new Error('GitHub synchronization target does not exist');
+      const prepared = PreparedRepositorySchema.parse(await input.provider.prepareRepository({
+        installationId: target.installationId,
+        externalRepoRef: target.externalRepoRef,
+      }));
+      const comparison = z.object({
+        internalHeadSha: CommitShaSchema,
+        externalHeadSha: CommitShaSchema,
+        state: GitHubSyncRelationSchema,
+      }).strict().parse(await input.git.fetchExternal({
+        internalRepoRef: target.internalRepoRef,
+        externalCloneUrl: prepared.cloneUrl,
+        externalToken: prepared.token,
+        branch: target.branch,
+        operationKey: request.operationKey,
+      }));
+      const recorded = await input.store.recordInbound({
+        target,
+        deliveryId: request.operationKey,
+        webhookHeadSha: comparison.externalHeadSha,
+        previousExternalHeadSha: target.previousExternalHeadSha,
+        ...comparison,
+        now: now(),
+      });
+      return InboundResultSchema.parse({ action: 'inbound', ...comparison, ...recorded });
+    },
     async processWebhook(body: string) {
       const message = GitHubWebhookQueueMessageSchema.parse(JSON.parse(body) as unknown);
       if (message.eventName !== 'push' || message.installationId === undefined) {
@@ -648,6 +685,7 @@ export function createGitHubSyncEngine(input: {
             externalCloneUrl: prepared.cloneUrl,
             externalToken: prepared.token,
             branch,
+            operationKey: message.deliveryId,
           }),
         );
       const recorded = await input.store.recordInbound({
@@ -683,6 +721,7 @@ export function createGitHubSyncEngine(input: {
             externalToken: prepared.token,
             sourceBranch: syncInput.sourceBranch,
             targetBranch: head,
+            operationKey: `github-sync:${syncInput.runId}`,
           }),
         );
       const pullRequest =

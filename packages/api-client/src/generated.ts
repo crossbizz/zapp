@@ -2160,6 +2160,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -2338,6 +2352,20 @@ export interface paths {
                             connection: {
                                 configuration: {
                                     installationId: string;
+                                } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
                                 } | {
                                     projectRef: string;
                                 } | {
@@ -2689,6 +2717,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -2800,6 +2842,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -2908,6 +2964,20 @@ export interface paths {
                             connection: {
                                 configuration: {
                                     installationId: string;
+                                } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
                                 } | {
                                     projectRef: string;
                                 } | {
@@ -4125,7 +4195,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "integration.github_policy_updated" | "integration.github_sync_requested" | "integration.github_exported" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -4187,7 +4257,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "integration.github_policy_updated" | "integration.github_sync_requested" | "integration.github_exported" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -6157,6 +6227,360 @@ export interface paths {
                                 /** Format: uri */
                                 traceUrl: string | null;
                             };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            blockedTaskIds: string[];
+                            branch: string | null;
+                            conflictTaskId: string | null;
+                            externalHeadSha: string | null;
+                            externalRepoRef: string | null;
+                            internalHeadSha: string | null;
+                            projectId: string;
+                            /** @enum {string|null} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged" | null;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                            /** Format: date-time */
+                            updatedAt: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        installationId: string;
+                        private: boolean;
+                        repositoryName: string;
+                        /** @enum {string} */
+                        syncPolicy: "direct_push" | "pull_request";
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            externalHeadSha: string;
+                            externalRepoRef: string;
+                            internalHeadSha: string;
+                            /** Format: uri */
+                            repositoryUrl: string;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        syncPolicy: "direct_push" | "pull_request";
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            blockedTaskIds: string[];
+                            branch: string | null;
+                            conflictTaskId: string | null;
+                            externalHeadSha: string | null;
+                            externalRepoRef: string | null;
+                            internalHeadSha: string | null;
+                            projectId: string;
+                            /** @enum {string|null} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged" | null;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                            /** Format: date-time */
+                            updatedAt: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            action: "inbound";
+                            blockedTaskIds: string[];
+                            conflictCreated: boolean;
+                            externalHeadSha: string;
+                            internalHeadSha: string;
+                            /** @enum {string} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged";
                         };
                     };
                 };

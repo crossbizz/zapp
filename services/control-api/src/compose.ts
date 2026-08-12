@@ -61,6 +61,10 @@ import {
 import { createS3BuilderPreviewScreenshotStore } from './routes/builder-preview.js';
 import { createGitHubProvider } from './integrations/github/app.js';
 import { createGitHubIntegrationPort } from './integrations/github/install.js';
+import { createGitHubControls } from './integrations/github/controls.js';
+import { createDbGitHubSyncStore, createGitHubSyncEngine } from './integrations/github/sync.js';
+import { createDbGitHubExportStore, createGitHubExportService } from './integrations/github/export.js';
+import { createGitHubGitRuntime } from './integrations/github/git-runtime.js';
 import {
   createRedisGitHubAuthorizationStateStore,
   createDbGitHubWebhookStore,
@@ -265,6 +269,27 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           provider: githubProvider,
           stateStore: githubStateStore,
         });
+  const githubControls =
+    githubProvider === undefined || runtime.gitServiceUrl === undefined
+      ? undefined
+      : (() => {
+          const git = createGitHubGitRuntime(createGitServiceProjectExportPort({
+            baseUrl: runtime.gitServiceUrl,
+            serviceTokens: runtime.serviceTokens,
+          }));
+          return createGitHubControls({
+            sync: createGitHubSyncEngine({
+              store: createDbGitHubSyncStore(database),
+              provider: githubProvider,
+              git,
+            }),
+            exporter: createGitHubExportService({
+              store: createDbGitHubExportStore(database),
+              provider: githubProvider,
+              git,
+            }),
+          });
+        })();
   const supabaseIntegration = createSupabaseIntegrationPort({
     database,
     masterKey: runtime.masterKey,
@@ -374,6 +399,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       tenantDb,
       ...(runtime.templates === undefined ? {} : { templates: runtime.templates }),
       integrationPort,
+      ...(githubControls === undefined ? {} : { githubControls }),
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,
       ...(runtime.planLimits === undefined ? {} : { planLimits: runtime.planLimits }),

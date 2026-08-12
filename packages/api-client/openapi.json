@@ -2305,6 +2305,9 @@
                 "support.impersonation",
                 "integration.connected",
                 "integration.disconnected",
+                "integration.github_policy_updated",
+                "integration.github_sync_requested",
+                "integration.github_exported",
                 "secret.decrypted",
                 "git_token.minted",
                 "git_token.revoked"
@@ -2487,6 +2490,9 @@
                               "support.impersonation",
                               "integration.connected",
                               "integration.disconnected",
+                              "integration.github_policy_updated",
+                              "integration.github_sync_requested",
+                              "integration.github_exported",
                               "secret.decrypted",
                               "git_token.minted",
                               "git_token.revoked"
@@ -25671,6 +25677,774 @@
         }
       }
     },
+    "/v1/projects/{projectId}/integrations/github": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string",
+                      "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "externalRepoRef": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "syncPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "direct_push",
+                        "pull_request"
+                      ]
+                    },
+                    "branch": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "internalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$",
+                      "nullable": true
+                    },
+                    "externalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$",
+                      "nullable": true
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "in_sync",
+                        "ahead",
+                        "behind",
+                        "diverged"
+                      ],
+                      "nullable": true
+                    },
+                    "blockedTaskIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "conflictTaskId": {
+                      "type": "string",
+                      "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$",
+                      "nullable": true
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "externalRepoRef",
+                    "syncPolicy",
+                    "branch",
+                    "internalHeadSha",
+                    "externalHeadSha",
+                    "state",
+                    "blockedTaskIds",
+                    "conflictTaskId",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/integrations/github/policy": {
+      "patch": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "syncPolicy": {
+                    "type": "string",
+                    "enum": [
+                      "direct_push",
+                      "pull_request"
+                    ]
+                  }
+                },
+                "required": [
+                  "syncPolicy"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string",
+                      "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "externalRepoRef": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "syncPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "direct_push",
+                        "pull_request"
+                      ]
+                    },
+                    "branch": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "internalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$",
+                      "nullable": true
+                    },
+                    "externalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$",
+                      "nullable": true
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "in_sync",
+                        "ahead",
+                        "behind",
+                        "diverged"
+                      ],
+                      "nullable": true
+                    },
+                    "blockedTaskIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "conflictTaskId": {
+                      "type": "string",
+                      "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$",
+                      "nullable": true
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "externalRepoRef",
+                    "syncPolicy",
+                    "branch",
+                    "internalHeadSha",
+                    "externalHeadSha",
+                    "state",
+                    "blockedTaskIds",
+                    "conflictTaskId",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/integrations/github/sync": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "inbound"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "in_sync",
+                        "ahead",
+                        "behind",
+                        "diverged"
+                      ]
+                    },
+                    "internalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "externalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "blockedTaskIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "conflictCreated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "action",
+                    "state",
+                    "internalHeadSha",
+                    "externalHeadSha",
+                    "blockedTaskIds",
+                    "conflictCreated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/integrations/github/export": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "installationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "repositoryName": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9._-]+$",
+                    "maxLength": 100
+                  },
+                  "private": {
+                    "type": "boolean"
+                  },
+                  "syncPolicy": {
+                    "type": "string",
+                    "enum": [
+                      "direct_push",
+                      "pull_request"
+                    ]
+                  }
+                },
+                "required": [
+                  "installationId",
+                  "repositoryName",
+                  "private",
+                  "syncPolicy"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "externalRepoRef": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "repositoryUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "syncPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "direct_push",
+                        "pull_request"
+                      ]
+                    },
+                    "internalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    },
+                    "externalHeadSha": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{40}$"
+                    }
+                  },
+                  "required": [
+                    "externalRepoRef",
+                    "repositoryUrl",
+                    "syncPolicy",
+                    "internalHeadSha",
+                    "externalHeadSha"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/integrations": {
       "get": {
         "security": [
@@ -25730,6 +26504,75 @@
                                 },
                                 "required": [
                                   "installationId"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "installationId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "externalRepoRef": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "branch": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "internalHeadSha": {
+                                    "type": "string",
+                                    "pattern": "^[0-9a-f]{40}$"
+                                  },
+                                  "externalHeadSha": {
+                                    "type": "string",
+                                    "pattern": "^[0-9a-f]{40}$"
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "in_sync",
+                                      "ahead",
+                                      "behind",
+                                      "diverged"
+                                    ]
+                                  },
+                                  "lastDeliveryId": {
+                                    "type": "string",
+                                    "nullable": true
+                                  },
+                                  "blockedTaskIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "conflictTaskId": {
+                                    "type": "string",
+                                    "nullable": true
+                                  },
+                                  "conflictCreated": {
+                                    "type": "boolean"
+                                  },
+                                  "updatedAt": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  }
+                                },
+                                "required": [
+                                  "installationId",
+                                  "externalRepoRef",
+                                  "branch",
+                                  "internalHeadSha",
+                                  "externalHeadSha",
+                                  "state",
+                                  "lastDeliveryId",
+                                  "blockedTaskIds",
+                                  "conflictTaskId",
+                                  "conflictCreated",
+                                  "updatedAt"
                                 ],
                                 "additionalProperties": false
                               },
@@ -26144,6 +26987,75 @@
                             {
                               "type": "object",
                               "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "externalRepoRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "branch": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "internalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "externalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "in_sync",
+                                    "ahead",
+                                    "behind",
+                                    "diverged"
+                                  ]
+                                },
+                                "lastDeliveryId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "blockedTaskIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "conflictTaskId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "conflictCreated": {
+                                  "type": "boolean"
+                                },
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "installationId",
+                                "externalRepoRef",
+                                "branch",
+                                "internalHeadSha",
+                                "externalHeadSha",
+                                "state",
+                                "lastDeliveryId",
+                                "blockedTaskIds",
+                                "conflictTaskId",
+                                "conflictCreated",
+                                "updatedAt"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
                                 "projectRef": {
                                   "type": "string",
                                   "minLength": 1
@@ -26438,6 +27350,75 @@
                               },
                               "required": [
                                 "installationId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "externalRepoRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "branch": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "internalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "externalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "in_sync",
+                                    "ahead",
+                                    "behind",
+                                    "diverged"
+                                  ]
+                                },
+                                "lastDeliveryId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "blockedTaskIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "conflictTaskId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "conflictCreated": {
+                                  "type": "boolean"
+                                },
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "installationId",
+                                "externalRepoRef",
+                                "branch",
+                                "internalHeadSha",
+                                "externalHeadSha",
+                                "state",
+                                "lastDeliveryId",
+                                "blockedTaskIds",
+                                "conflictTaskId",
+                                "conflictCreated",
+                                "updatedAt"
                               ],
                               "additionalProperties": false
                             },
@@ -26751,6 +27732,75 @@
                             {
                               "type": "object",
                               "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "externalRepoRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "branch": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "internalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "externalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "in_sync",
+                                    "ahead",
+                                    "behind",
+                                    "diverged"
+                                  ]
+                                },
+                                "lastDeliveryId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "blockedTaskIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "conflictTaskId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "conflictCreated": {
+                                  "type": "boolean"
+                                },
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "installationId",
+                                "externalRepoRef",
+                                "branch",
+                                "internalHeadSha",
+                                "externalHeadSha",
+                                "state",
+                                "lastDeliveryId",
+                                "blockedTaskIds",
+                                "conflictTaskId",
+                                "conflictCreated",
+                                "updatedAt"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
                                 "projectRef": {
                                   "type": "string",
                                   "minLength": 1
@@ -27053,6 +28103,75 @@
                               },
                               "required": [
                                 "installationId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "installationId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "externalRepoRef": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "branch": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "internalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "externalHeadSha": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "in_sync",
+                                    "ahead",
+                                    "behind",
+                                    "diverged"
+                                  ]
+                                },
+                                "lastDeliveryId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "blockedTaskIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "conflictTaskId": {
+                                  "type": "string",
+                                  "nullable": true
+                                },
+                                "conflictCreated": {
+                                  "type": "boolean"
+                                },
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "installationId",
+                                "externalRepoRef",
+                                "branch",
+                                "internalHeadSha",
+                                "externalHeadSha",
+                                "state",
+                                "lastDeliveryId",
+                                "blockedTaskIds",
+                                "conflictTaskId",
+                                "conflictCreated",
+                                "updatedAt"
                               ],
                               "additionalProperties": false
                             },

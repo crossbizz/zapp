@@ -191,7 +191,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
 
 - [x] CP-26 Settings + organization directory APIs
-- [ ] INT-10 Public GitHub sync policy/state/manual-sync/export
+- [x] INT-10 Public GitHub sync policy/state/manual-sync/export
 - [ ] DEP-13 Release list/history/active-production projection
 
 - [x] VF-6 Preview health + browser smoke gates

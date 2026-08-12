@@ -275,8 +275,11 @@ Execution expansion (2026-08-12):
 **Files:** Modify control-api GitHub integration routes/composition, DB if required, OpenAPI/SDK/tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: sync policy/state, keyed manual sync and export over the existing engines; stale-base/conflict surfacing and no last-writer-wins.
-- [ ] Commit: `feat(integrations): public GitHub sync controls`
+- [x] **10a RED/GREEN — state/policy:** expose the tenant repository's GitHub link, policy, durable heads/relation/conflict state, and update only the closed policy vocabulary.
+- [x] **10b RED/GREEN — keyed operations:** route manual inbound refresh and export through the existing INT-3/INT-4 engines with stable operation identity, RBAC, audit, and typed stale-base/conflict responses.
+- [x] **10c production/SDK:** compose provider and Git boundaries, regenerate OpenAPI/SDK, and verify focused control/Git gates without a live provider call.
+- [x] Binding behavior: sync policy/state, keyed manual sync and export over the existing engines; stale-base/conflict surfacing and no last-writer-wins.
+- [x] Commit: `feat(integrations): public GitHub sync controls`
 
 ### Task GIT-7 [M4]: Public short-lived repository credential lease
 
@@ -302,6 +305,7 @@ Execution expansion (2026-08-12):
 
 - 2026-08-12 GIT-6 done — Added three exact-SHA official template releases with strict source/demo validation and a server-only registry projection that omits repository identity.
 - 2026-08-12 GIT-5 done — Added exact-SHA bounded commit comparison and service-authenticated, registry-only idempotent template seeding with scoped credential cleanup; no provider call.
+- 2026-08-12 INT-10 done — Published GitHub sync state/policy/manual-refresh/export APIs over the existing divergence-safe engines and composed the server Git boundary; focused control 22/22, local-Git 5/5, SDK 56/56, lint/typecheck/build passed without a provider call.
 
 - (empty)
 - 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.

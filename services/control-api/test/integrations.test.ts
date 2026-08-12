@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AuthIdentity } from '../src/auth/port.js';
 import { NO_TRANSACTION } from '../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
-import type { IntegrationPort, IntegrationMutationInput } from '../src/routes/integrations.js';
+import type { GitHubControlsPort, IntegrationPort, IntegrationMutationInput } from '../src/routes/integrations.js';
 import type { IntegrationConnectionView } from '../src/tenant/view.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
@@ -55,10 +55,10 @@ interface Wired {
   as: (session: TestSession) => Record<string, string>;
 }
 
-async function wire(): Promise<Wired> {
+async function wire(githubControls?: GitHubControlsPort): Promise<Wired> {
   const data = new InMemoryTenantData();
   const integrations = new RecordingIntegrationPort();
-  const built = buildHarness({ tenantDb: data.factory, integrationPort: integrations });
+  const built = buildHarness({ tenantDb: data.factory, integrationPort: integrations, ...(githubControls === undefined ? {} : { githubControls }) });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
   const organization = await built.app.inject({ method: 'POST', url: '/v1/organizations', headers: owner.headers, payload: { name: 'Integration Factory' } });
@@ -92,6 +92,44 @@ function requestFor(provider: 'github' | 'supabase' | 'neon' | 'stripe', project
 }
 
 describe('integration route shells', () => {
+  it('publishes policy/state and runs keyed manual sync/export without last-writer-wins', async () => {
+    const calls: Array<{ kind: string; operationKey: string }> = [];
+    const githubControls: GitHubControlsPort = {
+      refreshProject(input) {
+        calls.push({ kind: 'sync', operationKey: input.operationKey });
+        return Promise.resolve({ action: 'inbound', state: 'diverged', internalHeadSha: 'a'.repeat(40), externalHeadSha: 'b'.repeat(40), blockedTaskIds: [newId('task')], conflictCreated: true });
+      },
+      exportProject(input) {
+        calls.push({ kind: 'export', operationKey: input.operationKey });
+        return Promise.resolve({ externalRepoRef: 'acme/exported', repositoryUrl: 'https://github.com/acme/exported', syncPolicy: input.syncPolicy, internalHeadSha: 'c'.repeat(40), externalHeadSha: 'c'.repeat(40) });
+      },
+    };
+    const wired = await wire(githubControls);
+    const repository = wired.data.repositories.find((candidate) => candidate.projectId === wired.projectId);
+    if (repository === undefined) throw new Error('project repository missing');
+    repository.externalRepoRef = 'acme/portal';
+    repository.syncPolicy = 'pull_request';
+    wired.data.integrationConnections.push({ id: newId('intc'), organizationId: wired.organizationId, projectId: wired.projectId, provider: 'github', status: 'connected', credentialRef: null, configurationJson: { installationId: '1188', externalRepoRef: 'acme/portal', branch: 'main', internalHeadSha: 'a'.repeat(40), externalHeadSha: 'b'.repeat(40), state: 'diverged', lastDeliveryId: 'delivery-1', blockedTaskIds: [], conflictTaskId: null, conflictCreated: true, updatedAt: '2026-08-12T12:00:00.000Z' } });
+
+    const status = await wired.built.app.inject({ method: 'GET', url: `/v1/projects/${wired.projectId}/integrations/github`, headers: wired.as(wired.owner) });
+    expect(status.statusCode, status.body).toBe(200);
+    expect(status.json()).toMatchObject({ externalRepoRef: 'acme/portal', syncPolicy: 'pull_request', state: 'diverged' });
+
+    const policy = await wired.built.app.inject({ method: 'PATCH', url: `/v1/projects/${wired.projectId}/integrations/github/policy`, headers: headers(wired, wired.owner, 'github-policy-direct-01'), payload: { syncPolicy: 'direct_push' } });
+    expect(policy.statusCode, policy.body).toBe(200);
+    expect(repository.syncPolicy).toBe('direct_push');
+
+    const sync = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/integrations/github/sync`, headers: headers(wired, wired.owner, 'github-manual-sync-01') });
+    expect(sync.statusCode, sync.body).toBe(200);
+    expect(sync.json()).toMatchObject({ state: 'diverged', conflictCreated: true });
+
+    repository.externalRepoRef = null;
+    const exported = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/integrations/github/export`, headers: headers(wired, wired.owner, 'github-export-public-01'), payload: { installationId: '1188', repositoryName: 'exported', private: true, syncPolicy: 'pull_request' } });
+    expect(exported.statusCode, exported.body).toBe(201);
+    expect(calls.map((call) => call.kind)).toEqual(['sync', 'export']);
+    expect(calls.every((call) => /^op_[a-f0-9]{64}$/u.test(call.operationKey))).toBe(true);
+  });
+
   it('lists secret-free Vercel status and disconnects it with audit', async () => {
     const wired = await wire();
     const connectionId = newId('intc');

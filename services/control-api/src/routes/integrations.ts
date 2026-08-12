@@ -1,4 +1,4 @@
-import { idSchema } from '@zapp/contracts';
+import { CommitShaSchema, idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -9,6 +9,7 @@ import type { AuditHook } from '../plugins/audit.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { IntegrationConnectionSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
+import { GitHubSyncPolicySchema, GitHubSyncRelationSchema } from '../integrations/github/sync.js';
 
 const GitHubBody = z.object({ installationId: z.string().trim().min(1).max(200), state: z.string().trim().min(1).max(500), code: z.string().trim().min(1).max(10_000) }).strict();
 const SupabaseBody = z.object({ projectId: idSchema('proj'), accessToken: z.string().trim().min(1).max(10_000), configuration: z.object({ projectRef: z.string().trim().min(1).max(200) }).strict() }).strict();
@@ -30,9 +31,96 @@ export interface IntegrationPort {
   connect(input: IntegrationMutationInput): Promise<z.infer<typeof IntegrationConnectionSchema>>;
 }
 export function createUnavailableIntegrationPort(): IntegrationPort { return { connect: () => Promise.reject(new Error('integration service unavailable')) }; }
-export interface IntegrationRoutesDeps { readonly port: IntegrationPort; }
+const GitHubSyncResultSchema = z.object({
+  action: z.literal('inbound'),
+  state: GitHubSyncRelationSchema,
+  internalHeadSha: CommitShaSchema,
+  externalHeadSha: CommitShaSchema,
+  blockedTaskIds: z.array(idSchema('task')),
+  conflictCreated: z.boolean(),
+}).strict();
+const GitHubExportResultSchema = z.object({
+  externalRepoRef: z.string().min(1),
+  repositoryUrl: z.string().url(),
+  syncPolicy: GitHubSyncPolicySchema,
+  internalHeadSha: CommitShaSchema,
+  externalHeadSha: CommitShaSchema,
+}).strict();
+const GitHubSyncStateResponseSchema = z.object({
+  projectId: idSchema('proj'),
+  externalRepoRef: z.string().nullable(),
+  syncPolicy: GitHubSyncPolicySchema,
+  branch: z.string().nullable(),
+  internalHeadSha: CommitShaSchema.nullable(),
+  externalHeadSha: CommitShaSchema.nullable(),
+  state: GitHubSyncRelationSchema.nullable(),
+  blockedTaskIds: z.array(idSchema('task')),
+  conflictTaskId: idSchema('task').nullable(),
+  updatedAt: z.string().datetime().nullable(),
+}).strict();
+export interface GitHubControlsPort {
+  refreshProject(input: { organizationId: string; projectId: string; operationKey: string }): Promise<z.infer<typeof GitHubSyncResultSchema>>;
+  exportProject(input: { organizationId: string; projectId: string; installationId: string; repositoryName: string; private: boolean; syncPolicy: 'direct_push' | 'pull_request'; operationKey: string }): Promise<z.infer<typeof GitHubExportResultSchema>>;
+}
+export interface IntegrationRoutesDeps { readonly port: IntegrationPort; readonly githubControls?: GitHubControlsPort; }
 
 export function registerIntegrationRoutes(app: AppInstance, deps: IntegrationRoutesDeps): void {
+  app.get('/v1/projects/:projectId/integrations/github', { preHandler: [app.requireSession, app.requireTenant], schema: { params: z.object({ projectId: idSchema('proj') }), response: { 200: GitHubSyncStateResponseSchema } } }, async (request) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'view_project');
+    const repository = await ctx.db.repositories.forProject(request.params.projectId);
+    if (repository === undefined) throw projectNotFound();
+    const connection = (await ctx.db.integrations.list()).find((candidate) => candidate.provider === 'github' && candidate.projectId === repository.projectId);
+    const configuration = connection?.configuration;
+    const state = configuration !== undefined && 'state' in configuration ? configuration : undefined;
+    return GitHubSyncStateResponseSchema.parse({
+      projectId: repository.projectId,
+      externalRepoRef: repository.externalRepoRef,
+      syncPolicy: GitHubSyncPolicySchema.parse(repository.syncPolicy),
+      branch: state?.branch ?? null,
+      internalHeadSha: state?.internalHeadSha ?? null,
+      externalHeadSha: state?.externalHeadSha ?? null,
+      state: state?.state ?? null,
+      blockedTaskIds: state?.blockedTaskIds ?? [],
+      conflictTaskId: state?.conflictTaskId ?? null,
+      updatedAt: state?.updatedAt ?? null,
+    });
+  });
+  app.patch('/v1/projects/:projectId/integrations/github/policy', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { params: z.object({ projectId: idSchema('proj') }), body: z.object({ syncPolicy: GitHubSyncPolicySchema }).strict(), response: { 200: GitHubSyncStateResponseSchema } } }, async (request) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'manage_organization');
+    const operationKey = operationOf(request);
+    const repository = await ctx.db.repositories.setSyncPolicy({
+      projectId: request.params.projectId,
+      syncPolicy: request.body.syncPolicy,
+      audit: async (tx, updated) => { await request.audit(tx, { organizationId: ctx.organizationId, action: 'integration.github_policy_updated', target: { type: 'project', id: updated.projectId }, metadata: { syncPolicy: updated.syncPolicy, operationKey } }); },
+    });
+    if (repository === undefined) throw projectNotFound();
+    const connection = (await ctx.db.integrations.list()).find((candidate) => candidate.provider === 'github' && candidate.projectId === repository.projectId);
+    const configuration = connection?.configuration;
+    const state = configuration !== undefined && 'state' in configuration ? configuration : undefined;
+    return GitHubSyncStateResponseSchema.parse({ projectId: repository.projectId, externalRepoRef: repository.externalRepoRef, syncPolicy: request.body.syncPolicy, branch: state?.branch ?? null, internalHeadSha: state?.internalHeadSha ?? null, externalHeadSha: state?.externalHeadSha ?? null, state: state?.state ?? null, blockedTaskIds: state?.blockedTaskIds ?? [], conflictTaskId: state?.conflictTaskId ?? null, updatedAt: state?.updatedAt ?? null });
+  });
+  app.post('/v1/projects/:projectId/integrations/github/sync', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { params: z.object({ projectId: idSchema('proj') }), response: { 200: GitHubSyncResultSchema } } }, async (request) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'edit_code');
+    if (await ctx.db.repositories.forProject(request.params.projectId) === undefined) throw projectNotFound();
+    if (deps.githubControls === undefined) throw integrationServiceFailed();
+    const operationKey = operationOf(request);
+    const result = GitHubSyncResultSchema.parse(await deps.githubControls.refreshProject({ organizationId: ctx.organizationId, projectId: request.params.projectId, operationKey }));
+    await request.auditDetached({ organizationId: ctx.organizationId, action: 'integration.github_sync_requested', target: { type: 'project', id: request.params.projectId }, metadata: { operationKey, state: result.state, conflictCreated: result.conflictCreated } });
+    return result;
+  });
+  app.post('/v1/projects/:projectId/integrations/github/export', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { params: z.object({ projectId: idSchema('proj') }), body: z.object({ installationId: z.string().min(1).max(200), repositoryName: z.string().regex(/^[A-Za-z0-9._-]+$/u).max(100), private: z.boolean(), syncPolicy: GitHubSyncPolicySchema }).strict(), response: { 201: GitHubExportResultSchema } } }, async (request, reply) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'manage_organization');
+    if (await ctx.db.repositories.forProject(request.params.projectId) === undefined) throw projectNotFound();
+    if (deps.githubControls === undefined) throw integrationServiceFailed();
+    const operationKey = operationOf(request);
+    const result = GitHubExportResultSchema.parse(await deps.githubControls.exportProject({ organizationId: ctx.organizationId, projectId: request.params.projectId, operationKey, ...request.body }));
+    await request.auditDetached({ organizationId: ctx.organizationId, action: 'integration.github_exported', target: { type: 'project', id: request.params.projectId }, metadata: { operationKey, externalRepoRef: result.externalRepoRef, syncPolicy: result.syncPolicy } });
+    return await reply.status(201).send(result);
+  });
   app.get('/v1/integrations', { preHandler: [app.requireSession, app.requireTenant], schema: { response: { 200: z.object({ connections: z.array(IntegrationStatusSchema).max(1_000) }).strict() } } }, async (request) => {
     const ctx = tenantOf(request);
     authorize(ctx, 'manage_organization');

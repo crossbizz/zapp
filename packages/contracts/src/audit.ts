@@ -84,6 +84,9 @@ export const AUDIT_ACTIONS = [
   'support.impersonation',
   'integration.connected',
   'integration.disconnected',
+  'integration.github_policy_updated',
+  'integration.github_sync_requested',
+  'integration.github_exported',
   'secret.decrypted',
   ...GIT_AUDIT_ACTIONS,
 ] as const;

@@ -279,6 +279,11 @@ export interface TenantProjectSummaryRepository {
 export interface TenantRepositoryRepository {
   /** The project's repository; `undefined` for another tenant's project. */
   forProject(projectId: string): Promise<Repository | undefined>;
+  setSyncPolicy(input: {
+    readonly projectId: string;
+    readonly syncPolicy: 'direct_push' | 'pull_request';
+    readonly audit: AuditHook<Repository>;
+  }): Promise<Repository | undefined>;
 }
 
 export interface TenantBranchRepository {
@@ -2395,6 +2400,18 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .where(scoped(repositories.organizationId, eq(repositories.projectId, projectId)))
             .limit(1);
           return row;
+        },
+        async setSyncPolicy(input) {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(repositories)
+              .set({ syncPolicy: input.syncPolicy })
+              .where(scoped(repositories.organizationId, eq(repositories.projectId, input.projectId)))
+              .returning();
+            if (row === undefined) return undefined;
+            await input.audit(tx, row);
+            return row;
+          });
         },
       },
 

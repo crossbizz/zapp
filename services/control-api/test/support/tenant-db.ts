@@ -843,6 +843,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           mine(orgId, data.repositories).find((row) => row.projectId === projectId),
         );
       },
+      async setSyncPolicy(input) {
+        const row = mine(orgId, data.repositories).find((repository) => repository.projectId === input.projectId);
+        if (row === undefined) return undefined;
+        row.syncPolicy = input.syncPolicy;
+        await input.audit(NO_TRANSACTION, row);
+        return row;
+      },
     },
 
     branches: {
