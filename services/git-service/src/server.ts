@@ -1,4 +1,5 @@
 import { createDb } from '@zapp/db';
+import { loadTemplateRegistryFile } from '@zapp/config';
 
 import { composeApp } from './compose.js';
 import {
@@ -30,6 +31,9 @@ const commandDeadlines = loadGitCommandDeadlineEnv();
 // without a database would refuse every mint — which is a worse way to learn the
 // variable is missing than not starting.
 const database = createDb(loadDatabaseUrl());
+const templates = await loadTemplateRegistryFile(
+  new URL('../../../config/templates.json', import.meta.url),
+);
 
 const { app, tokens } = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
@@ -37,6 +41,7 @@ const { app, tokens } = composeApp({
   serviceTokens,
   database: database.db,
   gitBundleCommandTimeoutMs: commandDeadlines.restoreCommandDeadlineMs,
+  templates,
 });
 
 /**

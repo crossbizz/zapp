@@ -1,4 +1,4 @@
-import { createServiceTokenSigner, type ServiceName } from '@zapp/config';
+import { createServiceTokenSigner, createTemplateRegistry, type ServiceName } from '@zapp/config';
 import { internalRepoRef, newId } from '@zapp/contracts';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -12,9 +12,25 @@ import type {
   CreateRepositoryInput,
   CreatedRepository,
   GitProvider,
+  CommitComparison,
+  CommitComparisonProvider,
 } from '../../src/provider/types.js';
 import type { MintedToken, TokenService } from '../../src/tokens.js';
 import type { GitBundleExporter } from '../../src/export.js';
+import type { GitTemplateSeedInput, GitTemplateSeeder } from '../../src/template-seeder.js';
+
+export const TEMPLATE_SOURCE_SHA = 'a57bb2926674275a84f651c64e5c995a42519b5e';
+const TEST_TEMPLATES = createTemplateRegistry([{
+  slug: 'next-starter',
+  name: 'Next.js Starter',
+  description: 'A production-ready Next.js starting point.',
+  pagesIncluded: ['Home'],
+  highlights: ['TypeScript included'],
+  demoUrl: 'https://templates.zapp.build/next-starter/a57bb2926674/',
+  stack: ['Next.js', 'React', 'TypeScript'],
+  repoRef: 'https://github.com/dyad-sh/nextjs-template.git',
+  commitSha: TEMPLATE_SOURCE_SHA,
+}]);
 
 /** Long enough to clear the HS256 floor `loadServiceTokenConfig` enforces. */
 export const SERVICE_SECRET = 'test-service-secret-that-is-long-enough-32';
@@ -57,7 +73,7 @@ export interface RecordedProviderCall {
   readonly args: readonly unknown[];
 }
 
-export interface FakeGitProvider extends GitProvider {
+export interface FakeGitProvider extends GitProvider, CommitComparisonProvider {
   readonly calls: readonly RecordedProviderCall[];
   /** Makes the next call to `method` throw. For proving the failure path. */
   failNext(method: string, error: Error): void;
@@ -66,6 +82,7 @@ export interface FakeGitProvider extends GitProvider {
   commits: CommitSummary[];
   commit: CommitDetail | undefined;
   exists: boolean;
+  comparison: CommitComparison | undefined;
 }
 
 /**
@@ -96,6 +113,15 @@ export function createFakeProvider(overrides: Partial<GitProvider> = {}): FakeGi
     commits: [],
     commit: undefined,
     exists: true,
+    comparison: {
+      beforeSha: 'a'.repeat(40),
+      afterSha: 'b'.repeat(40),
+      changedFiles: 1,
+      files: [{ path: 'src/index.ts', status: 'modified', additions: 1, deletions: 1 }],
+      filesTruncated: false,
+      patch: '@@ -1 +1 @@\n-before\n+after\n',
+      patchTruncated: false,
+    },
 
     failNext(method, error) {
       failures.set(method, error);
@@ -140,6 +166,10 @@ export function createFakeProvider(overrides: Partial<GitProvider> = {}): FakeGi
     createTag(ref: string, tag: string, sha: string): Promise<void> {
       record('createTag', ref, tag, sha);
       return Promise.resolve();
+    },
+    compareCommits(ref: string, beforeSha: string, afterSha: string) {
+      record('compareCommits', ref, beforeSha, afterSha);
+      return Promise.resolve(fake.comparison);
     },
     ...overrides,
   };
@@ -209,6 +239,7 @@ export interface Harness {
   readonly provider: FakeGitProvider;
   readonly tokens: FakeTokenService;
   readonly audit: RecordingGitAuditSink;
+  readonly templateSeeder: GitTemplateSeeder & { readonly calls: readonly GitTemplateSeedInput[] };
 }
 
 /** The app as it ships, with the provider and the token service substituted. */
@@ -222,16 +253,27 @@ export function harness(
   const provider = createFakeProvider();
   const tokens = createFakeTokenService();
   const audit = createRecordingGitAuditSink();
+  const seedCalls: GitTemplateSeedInput[] = [];
+  const templateSeeder = {
+    calls: seedCalls,
+    seed(input: GitTemplateSeedInput) {
+      seedCalls.push(input);
+      return Promise.resolve({ headCommitSha: TEMPLATE_SOURCE_SHA });
+    },
+  };
   const app = buildApp({
     logger: false,
     provider,
     tokens,
     signer,
+    comparison: provider,
+    templates: TEST_TEMPLATES,
+    templateSeeder,
     ...(options.callers === undefined ? {} : { callers: options.callers }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.bundleExporter === undefined
       ? {}
       : { bundleExporter: options.bundleExporter }),
   });
-  return { app, provider, tokens, audit };
+  return { app, provider, tokens, audit, templateSeeder };
 }

@@ -9,6 +9,7 @@ import {
   newProject,
   serviceHeaders,
   serviceToken,
+  TEMPLATE_SOURCE_SHA,
   type Harness,
 } from './support/harness.js';
 
@@ -143,6 +144,69 @@ describe('the service-token gate', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: 'ok' });
     expect(h.provider.calls).toEqual([]);
+  });
+});
+
+describe('GIT-5 public-service repository operations', () => {
+  it('derives repository scope for a bounded exact-SHA comparison', async () => {
+    const before = 'a'.repeat(40);
+    const after = 'b'.repeat(40);
+    const response = await h.app.inject({
+      method: 'GET',
+      url: `/internal/git/repositories/${project.organizationId}/${project.projectId}/compare?before=${before}&after=${after}`,
+      headers: serviceHeaders(await serviceToken()),
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ beforeSha: before, afterSha: after, changedFiles: 1 });
+    expect(h.provider.calls.at(-1)).toEqual({
+      method: 'compareCommits', args: [project.ref, before, after],
+    });
+  });
+
+  it('resolves only an approved slug server-side, seeds once, and always revokes the target credential', async () => {
+    h.provider.branch = { name: 'main', headSha: TEMPLATE_SOURCE_SHA };
+    const response = await h.app.inject({
+      method: 'POST',
+      url: `/internal/git/repositories/${project.organizationId}/${project.projectId}/seed-template`,
+      headers: {
+        ...serviceHeaders(await serviceToken()),
+        'idempotency-key': 'template-seed-operation-1',
+      },
+      payload: { templateSlug: 'next-starter' },
+    });
+    const arbitrary = await h.app.inject({
+      method: 'POST',
+      url: `/internal/git/repositories/${project.organizationId}/${project.projectId}/seed-template`,
+      headers: {
+        ...serviceHeaders(await serviceToken()),
+        'idempotency-key': 'template-seed-operation-2',
+      },
+      payload: { templateSlug: 'https://attacker.test/repository.git' },
+    });
+    const missing = await h.app.inject({
+      method: 'POST',
+      url: `/internal/git/repositories/${project.organizationId}/${project.projectId}/seed-template`,
+      headers: {
+        ...serviceHeaders(await serviceToken()),
+        'idempotency-key': 'template-seed-operation-3',
+      },
+      payload: { templateSlug: 'not-approved' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      templateSlug: 'next-starter', branch: 'main', headCommitSha: TEMPLATE_SOURCE_SHA,
+    });
+    expect(arbitrary.statusCode, arbitrary.body).toBe(400);
+    expect(missing.statusCode, missing.body).toBe(404);
+    expect(h.templateSeeder.calls).toHaveLength(1);
+    expect(h.templateSeeder.calls[0]).toMatchObject({
+      sourceCloneUrl: 'https://github.com/dyad-sh/nextjs-template.git',
+      sourceCommitSha: TEMPLATE_SOURCE_SHA,
+      targetBranch: 'main',
+    });
+    expect(h.tokens.calls.map(({ method }) => method).slice(-2)).toEqual(['mint', 'revokeEphemeral']);
   });
 });
 

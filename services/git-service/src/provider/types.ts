@@ -24,6 +24,25 @@ export type {
   GitProvider,
 } from '@zapp/contracts';
 
+export interface CommitComparison {
+  readonly beforeSha: string;
+  readonly afterSha: string;
+  readonly changedFiles: number;
+  readonly files: readonly {
+    readonly path: string;
+    readonly status: string;
+    readonly additions: number;
+    readonly deletions: number;
+  }[];
+  readonly filesTruncated: boolean;
+  readonly patch: string;
+  readonly patchTruncated: boolean;
+}
+
+export interface CommitComparisonProvider {
+  compareCommits(ref: string, beforeSha: string, afterSha: string): Promise<CommitComparison | undefined>;
+}
+
 /**
  * The provider was asked for something the Git host cannot honour without
  * losing information.

@@ -260,8 +260,15 @@ Execution expansion (2026-08-12):
 **Files:** Modify git-service provider/routes/ports/tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
-- [ ] Commit: `feat(git-service): commit diff and template seeding`
+- [x] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
+- [x] Commit: `feat(git-service): commit diff and template seeding`
+
+Execution expansion (2026-08-12):
+
+- [x] **5a RED — comparison:** require service auth and derived tenant repository identity; compare two exact SHAs and bound both file metadata and UTF-8 patch bytes.
+- [x] **5b RED — approved seed:** accept only a registry slug plus operation key, resolve source URL/SHA server-side, and mint a repository-scoped target credential.
+- [x] **5c GREEN — idempotent Git transaction:** fetch the exact approved commit, reject divergent/nonempty target history, push one default branch, and recover an equal retry without another push; always revoke credentials and remove temporary state.
+- [x] **5d verification:** run git-service unit/integration/static gates and architecture, then tracker/log bookkeeping and one commit; no live provider call.
 
 ### Task INT-10 [M3]: Public GitHub sync controls
 
@@ -294,6 +301,7 @@ Execution expansion (2026-08-12):
 ## Execution log
 
 - 2026-08-12 GIT-6 done — Added three exact-SHA official template releases with strict source/demo validation and a server-only registry projection that omits repository identity.
+- 2026-08-12 GIT-5 done — Added exact-SHA bounded commit comparison and service-authenticated, registry-only idempotent template seeding with scoped credential cleanup; no provider call.
 
 - (empty)
 - 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.

@@ -17,10 +17,13 @@ import { errorHandler, notFoundHandler } from './errors.js';
 import { serviceAuth } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import type { GitProvider } from './provider/types.js';
+import type { CommitComparisonProvider } from './provider/types.js';
 import type { GitMirror } from './import/mirror.js';
 import type { GitBundleExporter } from './export.js';
 import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
+import type { GitTemplateSeeder } from './template-seeder.js';
+import type { TemplateRegistryEntry, PublicTemplate } from '@zapp/config';
 
 const httpServerTelemetry = createHttpServerTelemetry();
 
@@ -63,6 +66,12 @@ export interface AppDeps {
   readonly mirror?: GitMirror;
   readonly importPoll?: ImportBranchPoll;
   readonly bundleExporter?: GitBundleExporter;
+  readonly comparison?: CommitComparisonProvider;
+  readonly templates?: {
+    getApproved(slug: string): TemplateRegistryEntry | undefined;
+    getPublic(slug: string): PublicTemplate | undefined;
+  };
+  readonly templateSeeder?: GitTemplateSeeder;
 }
 
 /**
@@ -135,6 +144,9 @@ export function buildApp(deps: AppDeps): AppInstance {
       ...(deps.mirror === undefined ? {} : { mirror: deps.mirror }),
       ...(deps.importPoll === undefined ? {} : { importPoll: deps.importPoll }),
       ...(deps.bundleExporter === undefined ? {} : { bundleExporter: deps.bundleExporter }),
+      ...(deps.comparison === undefined ? {} : { comparison: deps.comparison }),
+      ...(deps.templates === undefined ? {} : { templates: deps.templates }),
+      ...(deps.templateSeeder === undefined ? {} : { templateSeeder: deps.templateSeeder }),
     });
   });
 

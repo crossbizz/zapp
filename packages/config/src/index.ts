@@ -83,4 +83,5 @@ export {
   loadTemplateRegistryFile,
   type PublicTemplate,
   type TemplateRegistryEntry,
+  type TemplateRegistry,
 } from './templates.js';

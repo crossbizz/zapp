@@ -1,4 +1,8 @@
-import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
+import {
+  createServiceTokenSigner,
+  type ServiceTokenConfig,
+  type TemplateRegistry,
+} from '@zapp/config';
 import type { Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
@@ -15,6 +19,7 @@ import {
   createGitBundleExporter,
   createTokenServiceGitBundleCredentials,
 } from './export.js';
+import { createGitTemplateSeeder } from './template-seeder.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -52,6 +57,7 @@ export interface ServiceRuntime {
   readonly logger?: LoggerConfig;
   /** Bounded Git subprocess deadline for an on-demand portable bundle. */
   readonly gitBundleCommandTimeoutMs?: number;
+  readonly templates: TemplateRegistry;
 }
 
 /**
@@ -111,6 +117,9 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
     signer: createServiceTokenSigner(runtime.serviceTokens),
     mirror: createGitMirror(),
     bundleExporter,
+    comparison: provider,
+    templates: runtime.templates,
+    templateSeeder: createGitTemplateSeeder(),
   });
 
   return { app, tokens };

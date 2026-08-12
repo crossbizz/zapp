@@ -91,6 +91,7 @@ export function createTemplateRegistry(input: unknown) {
     getApproved: (slug: string): TemplateRegistryEntry | undefined => bySlug.get(slug),
   };
 }
+export type TemplateRegistry = ReturnType<typeof createTemplateRegistry>;
 
 export async function loadTemplateRegistryFile(source: URL) {
   return createTemplateRegistry(JSON.parse(await readFile(source, 'utf8')) as unknown);
