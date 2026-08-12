@@ -75,3 +75,12 @@ export {
   type ServiceTokenVerdict,
   type SignServiceTokenInput,
 } from './service-token.js';
+export {
+  PublicTemplateSchema,
+  TemplateRegistryEntrySchema,
+  TemplateRegistrySchema,
+  createTemplateRegistry,
+  loadTemplateRegistryFile,
+  type PublicTemplate,
+  type TemplateRegistryEntry,
+} from './templates.js';

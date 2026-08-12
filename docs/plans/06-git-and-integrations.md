@@ -245,8 +245,15 @@ be built:
 **Files:** Create `config/templates.json`; modify config schema/tests and required server loader.
 **Effort:** S. **[expand-at-execution]**
 
-- [ ] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
-- [ ] Commit: `feat(templates): approved source registry`
+- [x] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
+- [x] Commit: `feat(templates): approved source registry`
+
+Execution expansion (2026-08-12):
+
+- [x] **6a RED — strict registry:** reject duplicate/unsafe slugs, mutable or credential-bearing source refs, non-SHA releases, and unsafe demo URLs.
+- [x] **6b GREEN — approved releases:** check in the official starter entries with exact source commits and complete public presentation metadata.
+- [x] **6c RED/GREEN — server-only loader:** load/index the registry by slug and return a public projection that structurally omits repository identity.
+- [x] **6d verification:** run config tests plus lint/typecheck/build, diff checks, tracker/log bookkeeping, and one commit.
 
 ### Task GIT-5 [M2]: Commit comparison + approved template seeding
 
@@ -285,6 +292,8 @@ be built:
 - Repo-scoped 300 s tokens; per-org Forgejo namespaces; installation tokens never stored raw (exchanged per operation); integration credentials only in vault with scope labels; credential separation (platform vs generated-app Stripe) has a dedicated permanent test.
 
 ## Execution log
+
+- 2026-08-12 GIT-6 done — Added three exact-SHA official template releases with strict source/demo validation and a server-only registry projection that omits repository identity.
 
 - (empty)
 - 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.
