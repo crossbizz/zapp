@@ -258,6 +258,8 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-12 WEB-16-FIX-1 done — The DEP-12a pre-push cold gate exposed WEB-16's manifest/test contract drift: the new activation test restored a broad glob while the gate still required the enumerated non-rebuilding command. Enumerated activation alongside the existing Node tests so it runs without weakening the cold task-graph assertion.
+
 - 2026-08-11 WEB-COLD-FIX-2 done — Updated the stale cross-package manifest assertion exposed by the uncached OPS-4 pre-push gate; the config suite now covers the shipped cleanup-unit-plus-Playwright command without changing build scheduling, and no provider call was required.
 - 2026-08-11 WEB-COLD-FIX-1 done — Removed only the absolute web `.next` before fixture ports bind, added exact-target/tree/sibling coverage, and passed final 2/2 unit plus build→88/88 E2E, lint, typecheck, and capped review; the previously captured cold manifest/chunk failure was the RED while one fresh pre-fix rerun was non-reproducing, and no provider call was required.
 - 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
