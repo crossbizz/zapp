@@ -462,8 +462,15 @@ Test-only; no provider call or production behavior change.
 **Files:** Modify sandbox-service workspace routes/services and tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: service-authenticated lazy list/read plus compare-token write that atomically creates commit `manual edit via web`; path guards, bounded payloads, stale-write rejection, and no partial commit.
-- [ ] Commit: `feat(sandbox): attributed workspace file edits`
+- [x] Binding behavior: service-authenticated lazy list/read plus compare-token write that atomically creates commit `manual edit via web`; path guards, bounded payloads, stale-write rejection, and no partial commit.
+- [x] Commit: `feat(sandbox): attributed workspace file edits`
+
+Execution expansion (2026-08-12):
+
+- [x] **16a RED — editor reads:** require service authentication and tenant-scoped workspace resolution; add lazy path listing plus base64 file reads with a SHA-256 compare token and fixed entry/byte ceilings.
+- [x] **16b RED — direct edit:** accept one canonical relative path, bounded bytes, actor id, compare token, and operation key; stale content rejects before mutation.
+- [x] **16c GREEN — commit/rollback:** serialize each workspace edit, atomically replace the file, create only `manual edit via web`, and restore both worktree bytes and staged state when commit creation fails.
+- [x] **16d verification:** run focused route/service tests, sandbox-service lint/typecheck/build and full local suite; record and commit once without a provider call.
 
 ### Task WS-17 [M4]: Immutable public `forge-node-base` OCI mirror
 
@@ -485,6 +492,8 @@ Test-only; no provider call or production behavior change.
 - This plan implements Global Constraints 1, 5, 6, 8 as **tests**, not conventions. Sandbox isolation abuse tests (fork bomb, OOM, egress attempts) live in OPS-12 and run against this service.
 
 ## Execution log
+
+- 2026-08-12 WS-16 done — Added service-authenticated bounded editor reads/listing and keyed attributed compare-token edits with exact manual commit and rollback; no provider call.
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added typed, allowlisted `merge` and `revert` Git operations required by AR-4; ADR-0010 records the deviation.

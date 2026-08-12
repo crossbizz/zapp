@@ -429,7 +429,16 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
     return jsonResponse([{ path: 'src/index.ts', type: 'file' }]);
   }
   if (key === 'POST /git') {
-    return jsonResponse({ exitCode: 0, stdout: 'clean', stderr: '' });
+    const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
+      operation: string;
+    };
+    return jsonResponse({
+      exitCode: 0,
+      stdout: body.operation === 'add_commit'
+        ? '[main abcdef012345] manual edit via web\n'
+        : 'clean',
+      stderr: '',
+    });
   }
   if (key === 'GET /healthz') {
     return jsonResponse({ ok: true, details: 'workspace-agent ready', devServer: null });
@@ -1274,6 +1283,44 @@ describe('attach reattach recovery and ownership', () => {
     });
     expect(file.statusCode).toBe(200);
     expect(file.rawPayload).toEqual(Buffer.from('file bytes'));
+
+    const editorRead = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/file?path=src%2Findex.ts`,
+      headers,
+    });
+    expect(editorRead.statusCode, editorRead.body).toBe(200);
+    const editorSnapshot = editorRead.json<{ compareToken: string; dataBase64: string }>();
+    expect(editorSnapshot.dataBase64).toBe(Buffer.from('file bytes').toString('base64'));
+    const editorList = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/files?path=src&maxDepth=1`,
+      headers,
+    });
+    expect(editorList.statusCode, editorList.body).toBe(200);
+    expect(editorList.json()).toEqual({
+      entries: [{ path: 'src/index.ts', type: 'file' }],
+      truncated: false,
+    });
+    const editorWrite = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/edits`,
+      headers,
+      payload: {
+        path: 'src/index.ts',
+        dataBase64: Buffer.from('next').toString('base64'),
+        expectedCompareToken: editorSnapshot.compareToken,
+        actorUserId: newId('user'),
+      },
+    });
+    expect(editorWrite.statusCode, editorWrite.body).toBe(200);
+    expect(editorWrite.json()).toMatchObject({ path: 'src/index.ts', commitRef: 'abcdef012345' });
+    const unsafeEditorRead = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/file?path=..%2Fsecret`,
+      headers,
+    });
+    expect(unsafeEditorRead.statusCode, unsafeEditorRead.body).toBe(400);
   });
 
   it('reconciles unknown, terminated, unready, disappeared, and mismatched provider state without replacement', async () => {

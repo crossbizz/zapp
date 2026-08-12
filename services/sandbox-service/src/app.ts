@@ -39,6 +39,7 @@ import {
   type ControlPlanePreviewEventClientOptions,
 } from './events/client.js';
 import { SandboxQuotaExceededError, type RunawayComputeGovernor } from './lifecycle/governor.js';
+import { WorkspaceFileBoundaryError } from './workspace-files.js';
 import {
   createCostRecorder,
   type CostRecorderDependencies,
@@ -326,6 +327,13 @@ export function buildApp(options: BuildAppOptions) {
       void reply.status(409).send({
         code: 'atomic_write_conflict',
         message: 'Atomic file changed before commit.',
+      });
+      return;
+    }
+    if (error instanceof WorkspaceFileBoundaryError) {
+      void reply.status(error.statusCode).send({
+        code: error.code,
+        message: error.message,
       });
       return;
     }

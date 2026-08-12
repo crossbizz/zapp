@@ -48,6 +48,11 @@ import {
   type ScopedSecretInjector,
   type SecretRegistry,
 } from '../secrets/injector.js';
+import {
+  MAX_EDITOR_FILE_BYTES,
+  MAX_EDITOR_LIST_ENTRIES,
+  createWorkspaceFileEditor,
+} from '../workspace-files.js';
 
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -331,6 +336,41 @@ const ListQuerySchema = z
     maxDepth: z.coerce.number().int().min(0).max(100).optional(),
   })
   .strict();
+const EditorPathSchema = z.string().min(1).max(1_024);
+const EditorListQuerySchema = z
+  .object({
+    path: EditorPathSchema.default('.'),
+    glob: z.string().min(1).max(256).optional(),
+    maxDepth: z.coerce.number().int().min(0).max(100).optional(),
+  })
+  .strict();
+const EditorReadQuerySchema = z.object({ path: EditorPathSchema }).strict();
+const EditorListResponseSchema = z.object({
+  entries: z.array(
+    z.object({ path: z.string().max(1_024), type: z.enum(['file', 'directory', 'symlink']) }).strict(),
+  ).max(MAX_EDITOR_LIST_ENTRIES),
+  truncated: z.boolean(),
+}).strict();
+const EditorReadResponseSchema = z.object({
+  path: EditorPathSchema,
+  dataBase64: z.string().max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4),
+  byteSize: z.number().int().nonnegative().max(MAX_EDITOR_FILE_BYTES),
+  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
+const EditorEditBodySchema = z.object({
+  path: EditorPathSchema,
+  dataBase64: z.string()
+    .max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4)
+    .refine((value) => Buffer.from(value, 'base64').toString('base64') === value, 'Expected canonical base64')
+    .refine((value) => Buffer.from(value, 'base64').byteLength <= MAX_EDITOR_FILE_BYTES, 'File is too large'),
+  expectedCompareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+  actorUserId: idSchema('user'),
+}).strict();
+const EditorEditResponseSchema = z.object({
+  path: EditorPathSchema,
+  commitRef: z.string().regex(/^[0-9a-f]{7,64}$/u),
+  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
 const GitBodySchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -578,6 +618,7 @@ export function registerWorkspaceRoutes(
     };
   },
 ): void {
+  const fileEditor = createWorkspaceFileEditor(deps.provider);
   const failureMonitors = new Map<
     string,
     { readonly controller: AbortController; readonly leaseToken: string }
@@ -1612,6 +1653,76 @@ export function registerWorkspaceRoutes(
         path,
       );
       return reply.type('application/octet-stream').send(Buffer.from(body));
+    },
+  );
+
+  app.get(
+    '/internal/workspaces/:workspaceId/editor/files',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        querystring: EditorListQuerySchema,
+        response: { 200: EditorListResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const query = EditorListQuerySchema.parse(request.query);
+      return EditorListResponseSchema.parse(await fileEditor.list(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        query.path,
+        {
+          ...(query.glob === undefined ? {} : { glob: query.glob }),
+          ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
+        },
+      ));
+    },
+  );
+
+  app.get(
+    '/internal/workspaces/:workspaceId/editor/file',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        querystring: EditorReadQuerySchema,
+        response: { 200: EditorReadResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const { path } = EditorReadQuerySchema.parse(request.query);
+      return EditorReadResponseSchema.parse(await fileEditor.read(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        path,
+      ));
+    },
+  );
+
+  app.post(
+    '/internal/workspaces/:workspaceId/editor/edits',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        body: EditorEditBodySchema,
+        response: { 200: EditorEditResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const body = EditorEditBodySchema.parse(request.body);
+      return EditorEditResponseSchema.parse(await fileEditor.edit(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        {
+          path: body.path,
+          data: Buffer.from(body.dataBase64, 'base64'),
+          expectedCompareToken: body.expectedCompareToken,
+          actorUserId: body.actorUserId,
+          operationKey: readIdempotencyKey(request.headers['idempotency-key']),
+        },
+      ));
     },
   );
 
