@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Architecture approved; written specification pending final review
+**Status:** Approved for implementation
 
 **Owner:** M1 cross-plan gate repair
 
