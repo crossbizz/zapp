@@ -720,7 +720,10 @@ describe('workspace-agent RPC daemon', () => {
       headers: authorization(),
     });
     const headBefore = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot });
-    await execFileAsync('git', ['config', '--unset', 'user.email'], { cwd: workspaceRoot });
+    const objectsPath = join(workspaceRoot, '.git', 'objects');
+    const objectsBackupPath = join(workspaceRoot, '.git', 'objects-backup');
+    await rename(objectsPath, objectsBackupPath);
+    await writeFile(objectsPath, 'not a Git object directory');
 
     const rejected = await requireApp().inject({
       method: 'POST',
@@ -732,6 +735,8 @@ describe('workspace-agent RPC daemon', () => {
         compareToken: snapshot.json<{ compareToken: string }>().compareToken,
       },
     });
+    await rm(objectsPath);
+    await rename(objectsBackupPath, objectsPath);
 
     expect(rejected.statusCode).toBe(500);
     expect(rejected.json()).toEqual({ error: 'internal_error' });
