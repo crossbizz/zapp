@@ -22,6 +22,7 @@ import type { ConversationImageInput } from '../conversation/Composer';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
+import { IncidentBanner } from './IncidentBanner';
 
 const defaultConversationWidth = 40;
 const minimumConversationWidth = 28;
@@ -742,6 +743,11 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             Preferences could not be saved.
           </p>
         ) : null}
+        <IncidentBanner
+          onRunCreated={setActiveRun}
+          organizationId={organizationId}
+          projectId={projectId}
+        />
         <div
           className="zapp-builder-workspace"
           data-inline-mission={inlineMissionControl && missionControlOpen ? 'open' : 'closed'}

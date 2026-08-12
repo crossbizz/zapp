@@ -12,6 +12,7 @@ import type { PermissionContext } from '../policy/permissions.js';
 import type { DeploymentUsagePort } from '../usage/collectors/git.js';
 import { ReleaseSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
+import type { IncidentStore } from './incidents.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') }).strict();
 const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
@@ -94,7 +95,9 @@ export const EvidenceManifestSchema = z
     release_id: idSchema('rel'),
     commit_sha: CommitShaSchema,
     specification_version: z.number().int().positive(),
-    criteria: z.array(z.object({ id: z.string().min(1), status: z.enum(['passed', 'failed']) }).strict()),
+    criteria: z.array(
+      z.object({ id: z.string().min(1), status: z.enum(['passed', 'failed']) }).strict(),
+    ),
     build: EvidenceSectionSchema,
     typecheck: EvidenceSectionSchema,
     tests: EvidenceSectionSchema,
@@ -118,8 +121,13 @@ export const CreateReleaseInputSchema = z
     operationKey: OperationKeySchema,
   })
   .strict();
-export const ReleaseLookupInputSchema = z.object({ organizationId: idSchema('org'), releaseId: idSchema('rel') }).strict();
-export const ReleaseMutationInputSchema = ReleaseLookupInputSchema.extend({ actorId: idSchema('user'), operationKey: OperationKeySchema }).strict();
+export const ReleaseLookupInputSchema = z
+  .object({ organizationId: idSchema('org'), releaseId: idSchema('rel') })
+  .strict();
+export const ReleaseMutationInputSchema = ReleaseLookupInputSchema.extend({
+  actorId: idSchema('user'),
+  operationKey: OperationKeySchema,
+}).strict();
 export const DeployInputSchema = ReleaseMutationInputSchema.extend({
   deploymentType: DeploymentTypeSchema,
   confirmation: z.object({ dataDisposition: DataDispositionSchema.nullable() }).strict(),
@@ -162,229 +170,323 @@ export interface ReleaseRoutesDeps {
   readonly deploymentUsage?: DeploymentUsagePort;
   readonly productAnalytics?: ProductAnalytics;
   readonly now: () => Date;
+  readonly incidents?: IncidentStore;
 }
 
 export function createUnavailableReleasePort(): ReleasePort {
-  const unavailable = (): Promise<never> => Promise.reject(new Error('release service unavailable'));
-  return { createReleaseCandidate: unavailable, getRelease: unavailable, getReadiness: unavailable, approve: unavailable, deploy: unavailable, rollback: unavailable, getEvidence: unavailable };
+  const unavailable = (): Promise<never> =>
+    Promise.reject(new Error('release service unavailable'));
+  return {
+    createReleaseCandidate: unavailable,
+    getRelease: unavailable,
+    getReadiness: unavailable,
+    approve: unavailable,
+    deploy: unavailable,
+    rollback: unavailable,
+    getEvidence: unavailable,
+  };
 }
 
 export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps): void {
-  app.post('/v1/projects/:projectId/releases', {
-    preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-    schema: { params: ProjectParams, body: CreateReleaseBody, response: { 201: z.object({ release: ReleaseSchema }).strict() } },
-  }, async (request, reply) => {
-    const ctx = tenantOf(request);
-    const project = await ctx.db.projects.getById(request.params.projectId);
-    if (project === undefined) throw projectNotFound();
-    if ((await ctx.db.environments.getForProject(project.id, request.body.environmentId)) === undefined)
-      throw projectNotFound();
-    if (
-      request.body.specificationId !== null &&
-      (await ctx.db.specifications.getForProject(project.id, request.body.specificationId)) === undefined
-    )
-      throw projectNotFound();
-    authorize(ctx, 'edit_code');
-    const commitRunModes = new Set<z.infer<typeof RunModeSchema>>();
-    for (const run of await ctx.db.runs.byProject(project.id)) {
-      for (const event of await ctx.db.events.byRun(run.id)) {
-        if (event.type !== 'commit.created') continue;
-        const payload = CommitCreatedPayloadSchema.safeParse(event.payloadJson);
-        if (payload.success && payload.data.commitSha === request.body.commitSha) {
-          commitRunModes.add(run.mode);
+  app.post(
+    '/v1/projects/:projectId/releases',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ProjectParams,
+        body: CreateReleaseBody,
+        response: { 201: z.object({ release: ReleaseSchema }).strict() },
+      },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined) throw projectNotFound();
+      if (
+        (await ctx.db.environments.getForProject(project.id, request.body.environmentId)) ===
+        undefined
+      )
+        throw projectNotFound();
+      if (
+        request.body.specificationId !== null &&
+        (await ctx.db.specifications.getForProject(project.id, request.body.specificationId)) ===
+          undefined
+      )
+        throw projectNotFound();
+      authorize(ctx, 'edit_code');
+      const commitRunModes = new Set<z.infer<typeof RunModeSchema>>();
+      const commitRunIds = new Set<string>();
+      for (const run of await ctx.db.runs.byProject(project.id)) {
+        for (const event of await ctx.db.events.byRun(run.id)) {
+          if (event.type !== 'commit.created') continue;
+          const payload = CommitCreatedPayloadSchema.safeParse(event.payloadJson);
+          if (payload.success && payload.data.commitSha === request.body.commitSha) {
+            commitRunModes.add(run.mode);
+            commitRunIds.add(run.id);
+          }
         }
       }
-    }
-    if (commitRunModes.has('prototype') && !commitRunModes.has('build')) {
-      throw new ApiError(
-        'prototype_not_deployable',
-        409,
-        'Prototype-only commits must be converted to Build before release creation.',
+      if (commitRunModes.has('prototype') && !commitRunModes.has('build')) {
+        throw new ApiError(
+          'prototype_not_deployable',
+          409,
+          'Prototype-only commits must be converted to Build before release creation.',
+        );
+      }
+      const operationKey = operationOf(request);
+      const expected = {
+        organizationId: ctx.organizationId,
+        projectId: project.id,
+        environmentId: request.body.environmentId,
+        specificationId: request.body.specificationId,
+        releaseId: null,
+      };
+      const row = await releaseMutationResult(
+        () =>
+          deps.port.createReleaseCandidate({
+            ...CreateReleaseInputSchema.parse({
+              organizationId: ctx.organizationId,
+              projectId: project.id,
+              ...request.body,
+              actorId: actorOf(request),
+              operationKey,
+            }),
+            audit: async (tx, release) => {
+              assertReleaseIdentity(release, expected);
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'release.created',
+                target: { type: 'release', id: release.id },
+                metadata: {
+                  projectId: release.projectId,
+                  environmentId: release.environmentId,
+                  operationKey,
+                },
+              });
+              if (deps.incidents !== undefined) {
+                for (const fixRunId of commitRunIds) {
+                  await deps.incidents.resolveForRun(tx, {
+                    organizationId: ctx.organizationId,
+                    projectId: project.id,
+                    fixRunId,
+                    releaseId: release.id,
+                    actorId: actorOf(request),
+                    occurredAt: deps.now(),
+                  });
+                }
+              }
+            },
+          }),
+        expected,
       );
-    }
-    const operationKey = operationOf(request);
-    const expected = {
-      organizationId: ctx.organizationId,
-      projectId: project.id,
-      environmentId: request.body.environmentId,
-      specificationId: request.body.specificationId,
-      releaseId: null,
-    };
-    const row = await releaseMutationResult(
-      () =>
-        deps.port.createReleaseCandidate({
-          ...CreateReleaseInputSchema.parse({
-            organizationId: ctx.organizationId,
-            projectId: project.id,
-            ...request.body,
-            actorId: actorOf(request),
-            operationKey,
-          }),
-          audit: async (tx, release) => {
-            assertReleaseIdentity(release, expected);
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'release.created',
-              target: { type: 'release', id: release.id },
-              metadata: {
-                projectId: release.projectId,
-                environmentId: release.environmentId,
-                operationKey,
-              },
-            });
-          },
-        }),
-      expected,
-    );
-    await captureReleaseLifecycle(
-      deps,
-      ctx,
-      actorOf(request),
-      'release_created',
-      row.id,
-      row.projectId,
-    );
-    return await reply.status(201).send({ release: releaseView(row) });
-  });
+      await captureReleaseLifecycle(
+        deps,
+        ctx,
+        actorOf(request),
+        'release_created',
+        row.id,
+        row.projectId,
+      );
+      return await reply.status(201).send({ release: releaseView(row) });
+    },
+  );
 
-  app.get('/v1/releases/:releaseId', {
-    preHandler: [app.requireSession, app.requireTenant],
-    schema: { params: ReleaseParams, response: { 200: z.object({ release: ReleaseSchema, readiness: ReadinessSchema }).strict() } },
-  }, async (request) => {
-    const ctx = tenantOf(request);
-    const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
-    authorize(ctx, 'view_project');
-    const readiness = await portResult(() => deps.port.getReadiness({ organizationId: ctx.organizationId, releaseId: row.id }), ReadinessSchema);
-    return { release: releaseView(row), readiness };
-  });
+  app.get(
+    '/v1/releases/:releaseId',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        response: {
+          200: z.object({ release: ReleaseSchema, readiness: ReadinessSchema }).strict(),
+        },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, 'view_project');
+      const readiness = await portResult(
+        () => deps.port.getReadiness({ organizationId: ctx.organizationId, releaseId: row.id }),
+        ReadinessSchema,
+      );
+      return { release: releaseView(row), readiness };
+    },
+  );
 
-  app.post('/v1/releases/:releaseId/approve', {
-    preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-    schema: { params: ReleaseParams, response: { 200: z.object({ release: ReleaseSchema }).strict() } },
-  }, async (request) => {
-    const ctx = tenantOf(request);
-    const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
-    authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
-    const operationKey = operationOf(request);
-    const expected = {
-      organizationId: row.organizationId,
-      projectId: row.projectId,
-      environmentId: row.environmentId,
-      specificationId: row.specificationId,
-      releaseId: row.id,
-    };
-    const approved = await releaseMutationResult(
-      () =>
-        deps.port.approve({
-          organizationId: ctx.organizationId,
-          releaseId: row.id,
-          actorId: actorOf(request),
-          operationKey,
-          audit: async (tx, release) => {
-            assertReleaseIdentity(release, expected);
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'release.approved',
-              target: { type: 'release', id: release.id },
-              metadata: { operationKey },
-            });
-          },
-        }),
-      expected,
-    );
-    return { release: releaseView(approved) };
-  });
-
-  app.post('/v1/releases/:releaseId/deploy', {
-    preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-    schema: { params: ReleaseParams, body: DeployBody, response: { 200: z.object({ deploymentId: idSchema('dep') }).strict() } },
-  }, async (request) => {
-    const ctx = tenantOf(request);
-    const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
-    authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
-    if (request.body.deploymentType === 'replace_deployment' && request.body.dataDisposition === undefined) throw dataDispositionRequired();
-    const operationKey = operationOf(request);
-    const result = await portResult(
-      () =>
-        deps.port.deploy({
-          ...DeployInputSchema.parse({
+  app.post(
+    '/v1/releases/:releaseId/approve',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        response: { 200: z.object({ release: ReleaseSchema }).strict() },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(
+        ctx,
+        'approve_production_deploy',
+        await permissionContext(deps, ctx.organizationId),
+      );
+      const operationKey = operationOf(request);
+      const expected = {
+        organizationId: row.organizationId,
+        projectId: row.projectId,
+        environmentId: row.environmentId,
+        specificationId: row.specificationId,
+        releaseId: row.id,
+      };
+      const approved = await releaseMutationResult(
+        () =>
+          deps.port.approve({
             organizationId: ctx.organizationId,
             releaseId: row.id,
             actorId: actorOf(request),
             operationKey,
-            deploymentType: request.body.deploymentType,
-            confirmation: { dataDisposition: request.body.dataDisposition ?? null },
+            audit: async (tx, release) => {
+              assertReleaseIdentity(release, expected);
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'release.approved',
+                target: { type: 'release', id: release.id },
+                metadata: { operationKey },
+              });
+            },
           }),
-          audit: async (tx) => {
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'release.deploy_requested',
-              target: { type: 'release', id: row.id },
-              metadata: {
-                operationKey,
-                deploymentType: request.body.deploymentType,
-                dataDisposition: request.body.dataDisposition ?? null,
-              },
-            });
-          },
-        }),
-      DeploymentResultSchema,
-    );
-    await meterDeployment(deps, ctx, row, result);
-    return result;
-  });
+        expected,
+      );
+      return { release: releaseView(approved) };
+    },
+  );
 
-  app.post('/v1/releases/:releaseId/rollback', {
-    preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
-    schema: { params: ReleaseParams, body: RollbackBody, response: { 200: z.object({ deploymentId: idSchema('dep') }).strict() } },
-  }, async (request) => {
-    const ctx = tenantOf(request);
-    const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
-    authorize(ctx, 'approve_production_deploy', await permissionContext(deps, ctx.organizationId));
-    const operationKey = operationOf(request);
-    const result = await portResult(
-      () =>
-        deps.port.rollback({
-          ...RollbackInputSchema.parse({
-            organizationId: ctx.organizationId,
-            releaseId: row.id,
-            actorId: actorOf(request),
-            operationKey,
-            toDeploymentId: request.body.toDeploymentId ?? null,
-            reason: request.body.reason,
+  app.post(
+    '/v1/releases/:releaseId/deploy',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        body: DeployBody,
+        response: { 200: z.object({ deploymentId: idSchema('dep') }).strict() },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(
+        ctx,
+        'approve_production_deploy',
+        await permissionContext(deps, ctx.organizationId),
+      );
+      if (
+        request.body.deploymentType === 'replace_deployment' &&
+        request.body.dataDisposition === undefined
+      )
+        throw dataDispositionRequired();
+      const operationKey = operationOf(request);
+      const result = await portResult(
+        () =>
+          deps.port.deploy({
+            ...DeployInputSchema.parse({
+              organizationId: ctx.organizationId,
+              releaseId: row.id,
+              actorId: actorOf(request),
+              operationKey,
+              deploymentType: request.body.deploymentType,
+              confirmation: { dataDisposition: request.body.dataDisposition ?? null },
+            }),
+            audit: async (tx) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'release.deploy_requested',
+                target: { type: 'release', id: row.id },
+                metadata: {
+                  operationKey,
+                  deploymentType: request.body.deploymentType,
+                  dataDisposition: request.body.dataDisposition ?? null,
+                },
+              });
+            },
           }),
-          audit: async (tx) => {
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'release.rollback_requested',
-              target: { type: 'release', id: row.id },
-              metadata: { operationKey, toDeploymentId: request.body.toDeploymentId ?? null },
-            });
-          },
-        }),
-      DeploymentResultSchema,
-    );
-    await meterDeployment(deps, ctx, row, result);
-    await captureReleaseLifecycle(
-      deps,
-      ctx,
-      actorOf(request),
-      'rollback_executed',
-      result.deploymentId,
-      row.projectId,
-    );
-    return result;
-  });
+        DeploymentResultSchema,
+      );
+      await meterDeployment(deps, ctx, row, result);
+      return result;
+    },
+  );
 
-  app.get('/v1/releases/:releaseId/evidence', {
-    preHandler: [app.requireSession, app.requireTenant],
-    schema: { params: ReleaseParams, response: { 200: z.object({ evidence: EvidenceManifestSchema }).strict() } },
-  }, async (request) => {
-    const ctx = tenantOf(request);
-    const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
-    authorize(ctx, 'view_project');
-    return { evidence: await evidenceFor(deps.port, row) };
-  });
+  app.post(
+    '/v1/releases/:releaseId/rollback',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        body: RollbackBody,
+        response: { 200: z.object({ deploymentId: idSchema('dep') }).strict() },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(
+        ctx,
+        'approve_production_deploy',
+        await permissionContext(deps, ctx.organizationId),
+      );
+      const operationKey = operationOf(request);
+      const result = await portResult(
+        () =>
+          deps.port.rollback({
+            ...RollbackInputSchema.parse({
+              organizationId: ctx.organizationId,
+              releaseId: row.id,
+              actorId: actorOf(request),
+              operationKey,
+              toDeploymentId: request.body.toDeploymentId ?? null,
+              reason: request.body.reason,
+            }),
+            audit: async (tx) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'release.rollback_requested',
+                target: { type: 'release', id: row.id },
+                metadata: { operationKey, toDeploymentId: request.body.toDeploymentId ?? null },
+              });
+            },
+          }),
+        DeploymentResultSchema,
+      );
+      await meterDeployment(deps, ctx, row, result);
+      await captureReleaseLifecycle(
+        deps,
+        ctx,
+        actorOf(request),
+        'rollback_executed',
+        result.deploymentId,
+        row.projectId,
+      );
+      return result;
+    },
+  );
+
+  app.get(
+    '/v1/releases/:releaseId/evidence',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        response: { 200: z.object({ evidence: EvidenceManifestSchema }).strict() },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const row = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, 'view_project');
+      return { evidence: await evidenceFor(deps.port, row) };
+    },
+  );
 }
 
 async function captureReleaseLifecycle(
@@ -437,7 +539,11 @@ async function meterDeployment(
   });
 }
 
-async function releaseFor(port: ReleasePort, organizationId: string, releaseId: string): Promise<z.infer<typeof ReleaseRowSchema>> {
+async function releaseFor(
+  port: ReleasePort,
+  organizationId: string,
+  releaseId: string,
+): Promise<z.infer<typeof ReleaseRowSchema>> {
   let raw: unknown;
   try {
     raw = await port.getRelease({ organizationId, releaseId });
@@ -451,19 +557,26 @@ async function releaseFor(port: ReleasePort, organizationId: string, releaseId: 
   } catch {
     throw releaseServiceFailed();
   }
-  if (result.organizationId !== organizationId || result.id !== releaseId) throw releaseServiceFailed();
+  if (result.organizationId !== organizationId || result.id !== releaseId)
+    throw releaseServiceFailed();
   return result;
 }
 async function evidenceFor(port: ReleasePort, release: ReleaseRow): Promise<EvidenceManifest> {
   return await portResult(async () => {
-    const result = EvidenceManifestSchema.parse(await port.getEvidence({ organizationId: release.organizationId, releaseId: release.id }));
+    const result = EvidenceManifestSchema.parse(
+      await port.getEvidence({ organizationId: release.organizationId, releaseId: release.id }),
+    );
     if (result.release_id !== release.id || result.commit_sha !== release.commitSha)
       throw new Error('evidence identity mismatch');
     return result;
   }, EvidenceManifestSchema);
 }
 async function portResult<T>(work: () => Promise<T>, schema: z.ZodType<T>): Promise<T> {
-  try { return schema.parse(await work()); } catch { throw releaseServiceFailed(); }
+  try {
+    return schema.parse(await work());
+  } catch {
+    throw releaseServiceFailed();
+  }
 }
 type ExpectedReleaseIdentity = Pick<
   ReleaseRow,
@@ -489,13 +602,36 @@ function assertReleaseIdentity(result: ReleaseRow, expected: ExpectedReleaseIden
   )
     throw new Error('release identity mismatch');
 }
-async function permissionContext(deps: ReleaseRoutesDeps, organizationId: string): Promise<PermissionContext> {
-  try { return await deps.permissionContextFor(organizationId); } catch { throw releaseServiceFailed(); }
+async function permissionContext(
+  deps: ReleaseRoutesDeps,
+  organizationId: string,
+): Promise<PermissionContext> {
+  try {
+    return await deps.permissionContextFor(organizationId);
+  } catch {
+    throw releaseServiceFailed();
+  }
 }
 function releaseView(row: z.infer<typeof ReleaseRowSchema>): z.infer<typeof ReleaseSchema> {
   return ReleaseSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
 }
-function projectNotFound(): ApiError { return new ApiError('project_not_found', 404, 'That project does not exist.'); }
-function releaseNotFound(): ApiError { return new ApiError('release_not_found', 404, 'That release does not exist.'); }
-function dataDispositionRequired(): ApiError { return new ApiError('data_disposition_required', 422, 'Replacing a deployment requires a data disposition.'); }
-function releaseServiceFailed(): ApiError { return new ApiError('release_service_unavailable', 502, 'The release service could not complete the request.'); }
+function projectNotFound(): ApiError {
+  return new ApiError('project_not_found', 404, 'That project does not exist.');
+}
+function releaseNotFound(): ApiError {
+  return new ApiError('release_not_found', 404, 'That release does not exist.');
+}
+function dataDispositionRequired(): ApiError {
+  return new ApiError(
+    'data_disposition_required',
+    422,
+    'Replacing a deployment requires a data disposition.',
+  );
+}
+function releaseServiceFailed(): ApiError {
+  return new ApiError(
+    'release_service_unavailable',
+    502,
+    'The release service could not complete the request.',
+  );
+}

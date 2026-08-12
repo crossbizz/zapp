@@ -195,8 +195,8 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `services/control-api/src/routes/incidents.ts`, web hook-up
 **Effort:** M
 
-- [ ] Binding behavior (PRD §29.4): inbound error webhook (Grafana Alerting webhook from Faro/Loki error rules) / synthetic failure / user report → incident record → "Create Fix run" action (web + notification CTA) → AR-19 fix workflow seeded with: release id, commit, error payload, trace/log links, repro route; resolution links back (incident → fix run → new release) for the §10.3 journey; fully autonomous remediation explicitly absent (approval gates intact).
-- [ ] Commit: `feat(ops): incident-to-fix-run closed loop`
+- [x] Binding behavior (PRD §29.4): inbound error webhook (Grafana Alerting webhook from Faro/Loki error rules) / synthetic failure / user report → incident record → "Create Fix run" action (web + notification CTA) → AR-19 fix workflow seeded with: release id, commit, error payload, trace/log links, repro route; resolution links back (incident → fix run → new release) for the §10.3 journey; fully autonomous remediation explicitly absent (approval gates intact).
+- [x] Commit: `feat(ops): incident-to-fix-run closed loop`
 
 ### Task OPS-12 [M5, start M3]: Security test program — isolation, redaction, sandbox abuse
 
@@ -270,6 +270,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-12 OPS-11 done — Added tenant-scoped encrypted incident ingestion, explicit web and notification Fix creation, and transactional incident→run→release resolution links; the single capped review closed identity, seed-bounding, notification, plaintext-diagnostic, and environment-boundary gaps, and the cold gate's cross-package Zod compatibility defect was repaired with a composability regression. Task-owned tests and the real Neon incident lifecycle passed; the root integration rail used the remote us-east-2 Neon database, where one unrelated build-run recovery case completed correctly in 5.15 s under a 15 s process allowance but exceeded its fixed 5 s local-docker timeout, and a later SSE worker wedged in teardown, so exact-head GitHub Actions remains the authoritative clean-machine gate; Forgejo, live Stripe, and live GitHub provider cases skipped for missing credentials, with no provider call, blocker, or behavioral deviation.
 - 2026-08-12 OPS-10 CI repair done — Exact-head Security rejected the generated observability checker's empty JSON-parse catch; made its existing fail-closed empty-manifest fallback explicit and retained the same structural gate behavior.
 - 2026-08-12 OPS-10 done — Added the strict four-template Faro/OTel/logging/health instrumentation plan and Managed structural observability gate with per-project credential isolation; one capped review closed presence-marker and log-value-redaction gaps, while the cold gate's unrelated control-api case completed correctly in 5.166 s under an extended process limit but exceeded its fixed 5 s test timeout, and task-owned tests plus root static gates remained green with no provider call or behavioral deviation.
 - 2026-08-11 OPS-8 CI repair done — Exact-head CI exposed the generated Stripe template test's two serial full TypeScript programs hitting its 30 s ceiling under the 94-task cold DAG; combined both namespaced adapter trees into one compiler program and retained a finite 60 s ceiling, preserving every type assertion while removing half the expensive work.

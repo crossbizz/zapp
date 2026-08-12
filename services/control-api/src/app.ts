@@ -119,6 +119,7 @@ import {
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerIncidentRoutes, type IncidentStore } from './routes/incidents.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
 import { registerLocalAgentRoutes } from './routes/local-agent.js';
 import type {
@@ -233,6 +234,10 @@ export interface TenantDeps {
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
   readonly deploymentUsage?: DeploymentUsagePort;
+  /** OPS-11's append-only production incident ledger. */
+  readonly incidents?: IncidentStore;
+  /** Dedicated Grafana Alerting webhook credential, never a user/service token. */
+  readonly incidentWebhookSecret?: string;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
@@ -689,6 +694,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             ...(deps.modelCompletions === undefined
               ? {}
               : { modelCompletions: deps.modelCompletions }),
+            ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
           });
           registerAttachmentRoutes(app, {
             now,
@@ -749,7 +755,21 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               : { deploymentUsage: tenant.deploymentUsage }),
             permissionContextFor: async (organizationId) =>
               (await orgs.organizations.getSettings(organizationId)) ?? {},
+            ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
           });
+          if (tenant.incidents !== undefined && secrets !== undefined) {
+            registerIncidentRoutes(app, {
+              store: tenant.incidents,
+              releases: tenant.releasePort ?? createUnavailableReleasePort(),
+              now,
+              ...(tenant.incidentWebhookSecret === undefined
+                ? {}
+                : { grafanaWebhookSecret: tenant.incidentWebhookSecret }),
+              ...(deps.notifications === undefined
+                ? {}
+                : { enqueueNotification: deps.notifications.enqueue }),
+            });
+          }
           if (deps.github !== undefined) {
             registerGitHubInstallRoutes(app, deps.github);
           }

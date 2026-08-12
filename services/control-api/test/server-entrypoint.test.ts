@@ -311,6 +311,7 @@ const production = vi.hoisted(() => {
       deadLetterQueueName: 'zapp-github-imports-dlq',
     })),
     loadPostHogEnv: vi.fn(() => undefined),
+    loadIncidentWebhookSecret: vi.fn(() => undefined),
     loadFlexpriceEnv: vi.fn(() => ({
       apiKey: 'not-a-real-flexprice-key',
       baseUrl: 'https://api.cloud.flexprice.io/v1',
@@ -375,6 +376,7 @@ vi.mock('../src/env.js', () => ({
   loadGitHubImportQueueEnv: production.loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv: production.loadGitHubWebhookQueueEnv,
   loadPostHogEnv: production.loadPostHogEnv,
+  loadIncidentWebhookSecret: production.loadIncidentWebhookSecret,
   loadMasterKey: production.loadMasterKey,
   loadModelGatewayUrl: production.loadModelGatewayUrl,
   loadPreviewEnv: production.loadPreviewEnv,

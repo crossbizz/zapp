@@ -18,6 +18,7 @@ import {
   loadModelGatewayUrl,
   loadNotificationEnv,
   loadPostHogEnv,
+  loadIncidentWebhookSecret,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
@@ -105,6 +106,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
     expect(() => loadPostHogEnv(environment)).not.toThrow();
+    expect(loadIncidentWebhookSecret(environment, 'development')).toBeUndefined();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
     expect(loadStripeBillingEnv(environment)).toBeUndefined();
   });
@@ -175,6 +177,7 @@ describe('the shipped .env.example', () => {
       'GITHUB_APP_CLIENT_ID',
       'GITHUB_APP_CLIENT_SECRET',
       'GITHUB_WEBHOOK_SECRET',
+      'GRAFANA_ALERT_WEBHOOK_SECRET',
       'GITHUB_API_BASE_URL',
       'ARTIFACT_ENDPOINT',
       'ARTIFACT_REGION',
@@ -330,6 +333,27 @@ describe('the rotation variables', () => {
     expect(() => loadServiceTokenConfig({ ...base, SERVICE_TOKEN_SECRET: 'replace-me' })).toThrow(
       new Error('Invalid environment: SERVICE_TOKEN_SECRET'),
     );
+  });
+});
+
+describe('the Grafana incident webhook credential', () => {
+  it('allows an empty development value and fails closed in production', () => {
+    expect(
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: '' }, 'development'),
+    ).toBeUndefined();
+    expect(() =>
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: '' }, 'production'),
+    ).toThrow(new Error('GRAFANA_ALERT_WEBHOOK_SECRET is required in production'));
+  });
+
+  it('accepts only a dedicated high-entropy-sized credential', () => {
+    const secret = 'g'.repeat(32);
+    expect(loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: secret }, 'production')).toBe(
+      secret,
+    );
+    expect(() =>
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: 'short' }, 'development'),
+    ).toThrow(new Error('Invalid environment: GRAFANA_ALERT_WEBHOOK_SECRET'));
   });
 });
 

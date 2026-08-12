@@ -26,6 +26,7 @@ import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
 import type { BuilderPreviewSandboxPort, SandboxServicePort } from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
+import type { IncidentStore } from '../../src/routes/incidents.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
@@ -257,6 +258,8 @@ export interface HarnessOptions {
   readonly builderPreviewRecheckIntervalMs?: number;
   readonly fork?: ForkActivity;
   readonly releasePort?: ReleasePort;
+  readonly incidentStore?: IncidentStore;
+  readonly incidentWebhookSecret?: string;
   readonly deploymentUsage?: DeploymentUsagePort;
   readonly integrationPort?: IntegrationPort;
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
@@ -353,6 +356,10 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { builderPreviewRecheckIntervalMs: options.builderPreviewRecheckIntervalMs }),
             ...(options.fork === undefined ? {} : { fork: options.fork }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
+            ...(options.incidentStore === undefined ? {} : { incidents: options.incidentStore }),
+            ...(options.incidentWebhookSecret === undefined
+              ? {}
+              : { incidentWebhookSecret: options.incidentWebhookSecret }),
             ...(options.deploymentUsage === undefined
               ? {}
               : { deploymentUsage: options.deploymentUsage }),

@@ -25,6 +25,7 @@ import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
+import { createDbIncidentStore } from './incidents/store.js';
 import {
   createRedisPreviewRevocationSource,
   createRedisPreviewSessionStore,
@@ -156,6 +157,8 @@ export interface ServiceRuntime {
   readonly github?: GitHubAppEnv;
   /** OPS-6 server-side analytics and organization flag evaluation. */
   readonly posthog?: PostHogEnv;
+  /** OPS-11 credential configured on the Grafana Alerting contact point. */
+  readonly incidentWebhookSecret?: string;
   readonly notifications?: {
     readonly state: NotificationStatePort;
     enqueue(trigger: NotificationTrigger): Promise<void>;
@@ -375,6 +378,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
       ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
+      incidents: createDbIncidentStore(database, runtime.masterKey),
+      ...(runtime.incidentWebhookSecret === undefined
+        ? {}
+        : { incidentWebhookSecret: runtime.incidentWebhookSecret }),
       ...(previewRuntime === undefined
         ? {}
         : {

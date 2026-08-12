@@ -60,6 +60,23 @@ export function loadPostHogEnv(source: unknown = process.env): PostHogEnv {
   };
 }
 
+const IncidentWebhookEnvSchema = z.object({
+  GRAFANA_ALERT_WEBHOOK_SECRET: z.union([z.string().trim().min(32), z.literal('')]).optional(),
+});
+
+/** Dedicated Grafana Alerting credential. Production refuses to expose an inert webhook. */
+export function loadIncidentWebhookSecret(
+  source: unknown = process.env,
+  environment: ServiceEnv['NODE_ENV'] = 'production',
+): string | undefined {
+  const configured = defineEnv(IncidentWebhookEnvSchema, source).GRAFANA_ALERT_WEBHOOK_SECRET;
+  const secret = configured === '' ? undefined : configured;
+  if (environment === 'production' && secret === undefined) {
+    throw new Error('GRAFANA_ALERT_WEBHOOK_SECRET is required in production');
+  }
+  return secret;
+}
+
 /**
  * Shared state, and therefore deliberately outside {@link EnvSchema}: it has no
  * default and never will. Redis holds the token denylist, the device grants,

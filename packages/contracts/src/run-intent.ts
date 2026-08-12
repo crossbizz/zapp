@@ -28,11 +28,19 @@ const FixGrafanaEvidenceSchema = z
     summary: z.string().trim().min(1).max(2_000),
   })
   .strict();
+const FixIncidentEvidenceSchema = z
+  .object({
+    kind: z.literal('incident_record'),
+    incidentId: idSchema('aud'),
+    summary: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
 
 /** Immutable evidence references accepted by the public Fix run boundary. */
 export const FixEvidenceSchema = z.discriminatedUnion('kind', [
   FixPreviewEvidenceSchema,
   FixGrafanaEvidenceSchema,
+  FixIncidentEvidenceSchema,
 ]);
 export type FixEvidence = z.infer<typeof FixEvidenceSchema>;
 
@@ -43,6 +51,12 @@ export const FixRequestSchema = z
     relevantCommitSha: CommitShaSchema,
     reproductionRef: z.string().trim().min(1).max(4_096),
     evidence: z.array(FixEvidenceSchema).min(1).max(100),
+    /** Present when the explicit Fix action starts from an OPS-11 incident record. */
+    incidentId: idSchema('aud').optional(),
+    /** The immutable production release whose commit must be restored first. */
+    releaseId: idSchema('rel').optional(),
+    /** Bounded diagnostic payload copied from the incident, never provider credentials. */
+    errorPayload: z.string().trim().min(1).max(10_000).optional(),
   })
   .strict();
 export type FixRequest = z.infer<typeof FixRequestSchema>;

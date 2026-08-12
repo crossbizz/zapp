@@ -108,6 +108,8 @@ export const SERVICE_TOKEN_AUDIENCES = [
   'control-api:credit-ceilings',
   /** OPS-1B append-only non-model usage writer. */
   'control-api:usage.ingest',
+  /** OPS-11 release-service synthetic failure ingestion boundary. */
+  'control-api:incidents.ingest',
   ...SERVICE_NAMES,
 ] as const;
 

@@ -2817,7 +2817,7 @@ export interface paths {
                                 inApp: boolean;
                                 organizationId: string;
                                 /** @enum {string} */
-                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
                                 userId: string;
                             }[];
                         };
@@ -2846,7 +2846,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                    type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
                 };
                 cookie?: never;
             };
@@ -2909,7 +2909,7 @@ export interface paths {
                                 inApp: boolean;
                                 organizationId: string;
                                 /** @enum {string} */
-                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
                                 userId: string;
                             };
                         };
@@ -3266,7 +3266,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -3328,7 +3328,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -4608,6 +4608,255 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                errorPayload: string;
+                                evidenceArtifactId: string | null;
+                                fixRequest: {
+                                    errorPayload?: string;
+                                    evidence: ({
+                                        artifactId: string;
+                                        /** @enum {string} */
+                                        kind: "preview_console" | "preview_network" | "failed_check" | "user_report";
+                                        summary: string;
+                                    } | {
+                                        /** @enum {string} */
+                                        kind: "grafana_faro" | "grafana_loki";
+                                        summary: string;
+                                        /** Format: uri */
+                                        url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
+                                    })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
+                                    relevantCommitSha: string;
+                                    reproductionRef: string;
+                                    /** @enum {string} */
+                                    source: "error_report" | "failed_check" | "user_bug";
+                                    summary: string;
+                                };
+                                fixRunId: string | null;
+                                id: string;
+                                /** Format: uri */
+                                logsUrl: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                releaseId: string;
+                                reproductionRoute: string;
+                                resolutionReleaseId: string | null;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki" | "synthetic_failure" | "user_report";
+                                /** @enum {string} */
+                                status: "open" | "fix_running" | "resolved";
+                                title: string;
+                                /** Format: uri */
+                                traceUrl: string | null;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        errorPayload: string;
+                        /** Format: uri */
+                        logsUrl?: string;
+                        releaseId: string;
+                        reproductionRoute: string;
+                        title: string;
+                        /** Format: uri */
+                        traceUrl?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            incident: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                errorPayload: string;
+                                evidenceArtifactId: string | null;
+                                fixRequest: {
+                                    errorPayload?: string;
+                                    evidence: ({
+                                        artifactId: string;
+                                        /** @enum {string} */
+                                        kind: "preview_console" | "preview_network" | "failed_check" | "user_report";
+                                        summary: string;
+                                    } | {
+                                        /** @enum {string} */
+                                        kind: "grafana_faro" | "grafana_loki";
+                                        summary: string;
+                                        /** Format: uri */
+                                        url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
+                                    })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
+                                    relevantCommitSha: string;
+                                    reproductionRef: string;
+                                    /** @enum {string} */
+                                    source: "error_report" | "failed_check" | "user_bug";
+                                    summary: string;
+                                };
+                                fixRunId: string | null;
+                                id: string;
+                                /** Format: uri */
+                                logsUrl: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                releaseId: string;
+                                reproductionRoute: string;
+                                resolutionReleaseId: string | null;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki" | "synthetic_failure" | "user_report";
+                                /** @enum {string} */
+                                status: "open" | "fix_running" | "resolved";
+                                title: string;
+                                /** Format: uri */
+                                traceUrl: string | null;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/preview/shares": {
         parameters: {
             query?: never;
@@ -4900,6 +5149,7 @@ export interface paths {
                             maxCredits: number;
                         };
                         fixRequest: {
+                            errorPayload?: string;
                             evidence: ({
                                 artifactId: string;
                                 /** @enum {string} */
@@ -4911,7 +5161,14 @@ export interface paths {
                                 summary: string;
                                 /** Format: uri */
                                 url: string;
+                            } | {
+                                incidentId: string;
+                                /** @enum {string} */
+                                kind: "incident_record";
+                                summary: string;
                             })[];
+                            incidentId?: string;
+                            releaseId?: string;
                             relevantCommitSha: string;
                             reproductionRef: string;
                             /** @enum {string} */
@@ -7777,6 +8034,115 @@ export interface paths {
                         "application/json": {
                             /** @enum {boolean} */
                             accepted: true;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/webhooks/grafana": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        alerts: ({
+                            annotations: {
+                                error_payload: string;
+                                /** Format: uri */
+                                logs_url?: string;
+                                repro_route: string;
+                                summary: string;
+                                /** Format: uri */
+                                trace_url?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            fingerprint: string;
+                            labels: {
+                                organization_id: string;
+                                project_id: string;
+                                release_id: string;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki";
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            /** @enum {string} */
+                            status: "firing" | "resolved";
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @enum {string} */
+                        status: "firing" | "resolved";
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            accepted: number;
                         };
                     };
                 };

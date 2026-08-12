@@ -20,6 +20,7 @@ export const NOTIFICATION_TYPES = [
   'budget_80',
   'budget_100',
   'synthetic_check_failed',
+  'production_incident',
   'deploy_succeeded',
   'deploy_failed',
   'payment_failed',

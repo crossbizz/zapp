@@ -19,6 +19,7 @@ import {
   loadModelGatewayUrl,
   loadNotificationEnv,
   loadPostHogEnv,
+  loadIncidentWebhookSecret,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadPreviewEnv,
@@ -153,6 +154,7 @@ const github = loadGitHubAppEnv();
 const githubQueueConfig = loadGitHubWebhookQueueEnv();
 const githubImportQueueConfig = loadGitHubImportQueueEnv();
 const posthog = loadPostHogEnv();
+const incidentWebhookSecret = loadIncidentWebhookSecret(process.env, env.NODE_ENV);
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -241,6 +243,7 @@ const app = composeApp({
   artifactStorage,
   github,
   posthog,
+  ...(incidentWebhookSecret === undefined ? {} : { incidentWebhookSecret }),
   notifications: {
     state: notificationState,
     enqueue: (trigger) => notificationProducer.enqueue(trigger),

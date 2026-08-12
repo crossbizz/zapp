@@ -21,6 +21,10 @@ const COPY = {
   budget_80: ['Run budget at 80%', 'A run has used 80% of its approved budget.'],
   budget_100: ['Run budget exhausted', 'A run has used 100% of its approved budget.'],
   synthetic_check_failed: ['Production check failed', 'A production synthetic check failed.'],
+  production_incident: [
+    'Production incident detected',
+    'Open the incident to review evidence and create a Fix run.',
+  ],
   deploy_succeeded: ['Deployment succeeded', 'A production deployment completed successfully.'],
   deploy_failed: ['Deployment failed', 'A production deployment needs attention.'],
   payment_failed: ['Payment failed', 'A subscription payment failed.'],
@@ -38,6 +42,18 @@ function destination(
     return {
       webUrl: new URL(trigger.context['inviteUrl']).toString(),
       desktopUrl: `zapp://invites/${encodeURIComponent(trigger.triggerId)}`,
+    };
+  }
+  if (
+    trigger.type === 'production_incident' &&
+    trigger.projectId !== undefined &&
+    typeof trigger.context['incidentId'] === 'string'
+  ) {
+    const projectId = encodeURIComponent(trigger.projectId);
+    const incidentId = encodeURIComponent(trigger.context['incidentId']);
+    return {
+      webUrl: new URL(`/projects/${projectId}?incident=${incidentId}`, webBaseUrl).toString(),
+      desktopUrl: `zapp://projects/${projectId}/incidents/${incidentId}`,
     };
   }
   const parts = ['organizations', trigger.organizationId];

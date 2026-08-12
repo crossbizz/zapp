@@ -22,6 +22,7 @@ import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations
 import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 import type { paths as GeneratedPaths } from '../../../packages/api-client/src/generated.js';
 import { createInMemoryNotificationState } from '../src/notifications/service.js';
+import { createInMemoryIncidentStore } from '../src/routes/incidents.js';
 
 const GENERATED_TYPES = resolve(
   import.meta.dirname,
@@ -58,6 +59,8 @@ interface OpenApiOperation {
 
 function documentedHarness(): Harness {
   const built = buildHarness({
+    incidentStore: createInMemoryIncidentStore(),
+    incidentWebhookSecret: 'openapi-grafana-secret-that-is-long-enough',
     notificationState: createInMemoryNotificationState(),
     tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
@@ -145,6 +148,18 @@ afterEach(async () => {
 });
 
 describe('generated API types', () => {
+  it('publishes the versioned incident list/report APIs and Fix seed', async () => {
+    const app = documentedHarness().app;
+    apps.push(app);
+    await app.ready();
+    const document = app.swagger() as { paths: Record<string, OpenApiOperation> };
+    const incidentPath = document.paths['/v1/projects/{projectId}/incidents'] as unknown as {
+      get?: OpenApiOperation;
+      post?: OpenApiOperation;
+    };
+    expect(incidentPath.get?.responses?.['200']?.content?.['application/json']).toBeDefined();
+    expect(incidentPath.post?.responses?.['201']?.content?.['application/json']).toBeDefined();
+  });
   it('match deterministic openapi-typescript output from a live app document', async () => {
     // Break caught: a public route/schema changes while the client keeps a
     // stale generated type surface, allowing web or desktop to compile against

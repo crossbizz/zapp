@@ -43,6 +43,7 @@ import {
   type PlanLimitsConfig,
   type CreditBalanceGate,
 } from '../usage/limits.js';
+import type { IncidentRecord, IncidentStore } from './incidents.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -50,14 +51,16 @@ const RunBudgetSchema = z
   .object({ maxCredits: z.number().int().positive().max(1_000_000) })
   .strict();
 const CreateRunBodyShape = {
-    prompt: z.string().trim().min(1).max(20_000),
-    branchId: idSchema('br').optional(),
-    budget: RunBudgetSchema.optional(),
-    appType: AppTypeSchema.default('web'),
-    model: ModelIdentifierSchema.optional(),
+  prompt: z.string().trim().min(1).max(20_000),
+  branchId: idSchema('br').optional(),
+  budget: RunBudgetSchema.optional(),
+  appType: AppTypeSchema.default('web'),
+  model: ModelIdentifierSchema.optional(),
 } as const;
 const CreateRunBody = z.discriminatedUnion('mode', [
-  z.object({ ...CreateRunBodyShape, mode: z.literal('fix'), fixRequest: FixRequestSchema }).strict(),
+  z
+    .object({ ...CreateRunBodyShape, mode: z.literal('fix'), fixRequest: FixRequestSchema })
+    .strict(),
   z
     .object({
       ...CreateRunBodyShape,
@@ -74,11 +77,12 @@ const ContinueRunBody = z
   .strict();
 const AttachmentMetadataSchema = AttachmentRefSchema.omit({ attachmentId: true }).strict();
 const ContinueRunResponse = z
-  .object({ messageId: z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/u), sequence: z.number().int().positive() })
+  .object({
+    messageId: z.string().regex(/^msg_[0-9A-HJKMNP-TV-Z]{26}$/u),
+    sequence: z.number().int().positive(),
+  })
   .strict();
-const ApprovalParams = z
-  .object({ runId: idSchema('run'), approvalId: idSchema('appr') })
-  .strict();
+const ApprovalParams = z.object({ runId: idSchema('run'), approvalId: idSchema('appr') }).strict();
 const ResolveBudgetApprovalBody = z
   .object({
     decision: z.enum(['approved', 'rejected']),
@@ -159,13 +163,12 @@ export interface RunRoutesDeps {
   readonly orchestrator: OrchestratorPort;
   readonly organizations: OrganizationStore;
   readonly eventStream: EventStreamDependencies;
-  readonly revalidateEventStream: (
-    context: EventStreamAuthorizationContext,
-  ) => Promise<boolean>;
+  readonly revalidateEventStream: (context: EventStreamAuthorizationContext) => Promise<boolean>;
   readonly pricing?: PricingConfig;
   readonly planLimits?: PlanLimitsConfig;
   readonly creditBalance?: CreditBalanceGate;
   readonly modelCompletions?: ModelCompletionRepository;
+  readonly incidents?: IncidentStore;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -189,6 +192,35 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       )
         throw branchNotFound();
       authorize(ctx, 'start_run');
+      let sourceIncident: IncidentRecord | undefined;
+      if (request.body.mode === 'fix') {
+        const incidentFields = [
+          request.body.fixRequest.incidentId,
+          request.body.fixRequest.releaseId,
+          request.body.fixRequest.errorPayload,
+        ];
+        if (
+          incidentFields.some((value) => value !== undefined) &&
+          incidentFields.some((value) => value === undefined)
+        ) {
+          throw new ApiError('validation_failed', 400, 'The request failed validation.');
+        }
+      }
+      if (request.body.mode === 'fix' && request.body.fixRequest.incidentId !== undefined) {
+        sourceIncident = await deps.incidents?.get({
+          organizationId: ctx.organizationId,
+          incidentId: request.body.fixRequest.incidentId,
+        });
+        if (
+          sourceIncident === undefined ||
+          sourceIncident.projectId !== project.id ||
+          sourceIncident.releaseId !== request.body.fixRequest.releaseId ||
+          sourceIncident.commitSha !== request.body.fixRequest.relevantCommitSha ||
+          sourceIncident.errorPayload !== request.body.fixRequest.errorPayload
+        ) {
+          throw new ApiError('incident_not_found', 404, 'That incident does not exist.');
+        }
+      }
       const idempotency = idempotencyOf(request);
       // The plugin's raw digest remains suitable for its short-lived Redis
       // record. PostgreSQL gets only this keyed, cross-instance derivative.
@@ -198,7 +230,9 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       const operationKey = creationOperationOf(request);
       const runId = stableId('run', operationKey);
       const organization =
-        deps.planLimits === undefined ? undefined : await deps.organizations.findById(ctx.organizationId);
+        deps.planLimits === undefined
+          ? undefined
+          : await deps.organizations.findById(ctx.organizationId);
       const limit =
         deps.planLimits === undefined || organization === undefined
           ? undefined
@@ -210,10 +244,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (run === undefined) {
         const pricing = deps.pricing;
         if (pricing === undefined) throw pricingUnavailable();
-        if (
-          request.body.model !== undefined &&
-          pricing.models[request.body.model] === undefined
-        ) {
+        if (request.body.model !== undefined && pricing.models[request.body.model] === undefined) {
           throw pricingUnavailable();
         }
         if (deps.creditBalance !== undefined) {
@@ -238,44 +269,57 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         let created;
         try {
           created = await ctx.db.runs.create({
-          id: runId,
-          workflowId: runId,
-          requestFingerprint,
-          projectId: project.id,
-          branchId: request.body.branchId ?? null,
-          mode: request.body.mode,
-          ...(request.body.mode === 'autonomous' && limit !== undefined
-            ? { concurrentAutonomousLimit: limit.concurrentAutonomousRuns }
-            : {}),
-          appType: request.body.appType,
-          model: request.body.model ?? null,
-          budget: resolvedBudget,
-          planMaxCredits: `${String(
-            limit === undefined ? Number(pricing.defaultRunCreditCeiling) : Number(limit.maxRunBudgetCredits),
-          )}.0000`,
-          accounting: {
-            baseCeiling: `${String(resolvedBudget.maxCredits)}.0000`,
-            pricingVersion: pricing.version,
-            pricingSnapshot: pricing,
-          },
-          startedBy: actorOf(request),
-          now: deps.now(),
-          authorize: (inserted) => {
-            if (inserted.model !== null && !explicitModelAllowed) throw modelNotAllowed();
-          },
-          audit: async (tx, inserted) => {
-            await request.audit(tx, {
-              organizationId: ctx.organizationId,
-              action: 'run.created',
-              target: { type: 'run', id: inserted.id },
-              metadata: {
-                projectId: inserted.projectId,
-                mode: inserted.mode,
-                appType: inserted.appType,
-                model: inserted.model,
-              },
-            });
-          },
+            id: runId,
+            workflowId: runId,
+            requestFingerprint,
+            projectId: project.id,
+            branchId: request.body.branchId ?? null,
+            mode: request.body.mode,
+            ...(request.body.mode === 'autonomous' && limit !== undefined
+              ? { concurrentAutonomousLimit: limit.concurrentAutonomousRuns }
+              : {}),
+            appType: request.body.appType,
+            model: request.body.model ?? null,
+            budget: resolvedBudget,
+            planMaxCredits: `${String(
+              limit === undefined
+                ? Number(pricing.defaultRunCreditCeiling)
+                : Number(limit.maxRunBudgetCredits),
+            )}.0000`,
+            accounting: {
+              baseCeiling: `${String(resolvedBudget.maxCredits)}.0000`,
+              pricingVersion: pricing.version,
+              pricingSnapshot: pricing,
+            },
+            startedBy: actorOf(request),
+            now: deps.now(),
+            authorize: (inserted) => {
+              if (inserted.model !== null && !explicitModelAllowed) throw modelNotAllowed();
+            },
+            audit: async (tx, inserted) => {
+              await request.audit(tx, {
+                organizationId: ctx.organizationId,
+                action: 'run.created',
+                target: { type: 'run', id: inserted.id },
+                metadata: {
+                  projectId: inserted.projectId,
+                  mode: inserted.mode,
+                  appType: inserted.appType,
+                  model: inserted.model,
+                },
+              });
+              if (sourceIncident !== undefined && deps.incidents !== undefined) {
+                await deps.incidents.linkFixRun(tx, {
+                  organizationId: ctx.organizationId,
+                  projectId: project.id,
+                  incidentId: sourceIncident.id,
+                  releaseId: sourceIncident.releaseId,
+                  runId: inserted.id,
+                  actorId: actorOf(request),
+                  occurredAt: deps.now(),
+                });
+              }
+            },
           });
         } catch (error) {
           if (error instanceof PlanLimitConcurrentRunsError) throw planLimitConcurrentRuns();
@@ -343,7 +387,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           });
           throw dispatchNotStarted();
         }
-        if (error instanceof OrchestratorError || error instanceof z.ZodError) throw workflowFailed();
+        if (error instanceof OrchestratorError || error instanceof z.ZodError)
+          throw workflowFailed();
         throw error;
       }
       return await reply.status(201).send({ run: toRun(run) });
@@ -472,7 +517,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       }> = [];
       for (const supplied of request.body.attachments) {
         const artifact = await ctx.db.attachments.getById(supplied.attachmentId);
-        if (artifact === undefined || artifact.projectId !== run.projectId) throw attachmentNotFound();
+        if (artifact === undefined || artifact.projectId !== run.projectId)
+          throw attachmentNotFound();
         attachmentArtifacts.push(artifact);
         attachments.push(
           AttachmentRefSchema.parse({
@@ -588,7 +634,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         if (
           (pendingRequest.reason === 'run_budget_exhausted' && requested <= current) ||
           (pendingRequest.reason === 'organization_credit_exhausted' && requested !== current)
-        ) throw planBudgetExceeded();
+        )
+          throw planBudgetExceeded();
       }
       const resolved = await ctx.db.approvals.resolve({
         runId: run.id,
@@ -694,9 +741,10 @@ function creationOperationOf(request: {
     `op_${createHash('sha256').update(idempotencyOf(request).key).digest('hex')}`,
   );
 }
-function idempotencyOf(request: {
-  idempotency?: { key: string; fingerprint: string };
-}): { readonly key: string; readonly fingerprint: string } {
+function idempotencyOf(request: { idempotency?: { key: string; fingerprint: string } }): {
+  readonly key: string;
+  readonly fingerprint: string;
+} {
   if (request.idempotency === undefined)
     throw new ApiError('idempotency_key_required', 400, 'An Idempotency-Key header is required.');
   return request.idempotency;
@@ -746,11 +794,7 @@ function accountingUnavailable(): ApiError {
   return new ApiError('usage_accounting_unavailable', 503, 'Usage accounting is unavailable.');
 }
 function modelNotAllowed(): ApiError {
-  return new ApiError(
-    'model_not_allowed',
-    400,
-    'That model is not allowed by this organization.',
-  );
+  return new ApiError('model_not_allowed', 400, 'That model is not allowed by this organization.');
 }
 function idempotencyConflict(): ApiError {
   return new ApiError(
@@ -796,10 +840,18 @@ function planLimitConcurrentRuns(): ApiError {
   );
 }
 function creditBalanceExhausted(): ApiError {
-  return new ApiError('credit_balance_exhausted', 402, 'The organization credit balance is exhausted.');
+  return new ApiError(
+    'credit_balance_exhausted',
+    402,
+    'The organization credit balance is exhausted.',
+  );
 }
 function planBudgetExceeded(): ApiError {
-  return new ApiError('plan_budget_exceeded', 422, 'The requested budget exceeds the organization plan maximum.');
+  return new ApiError(
+    'plan_budget_exceeded',
+    422,
+    'The requested budget exceeds the organization plan maximum.',
+  );
 }
 function resolveRunBudget(
   pricing: PricingConfig,

@@ -15,8 +15,7 @@ export type CreateProjectInput =
 export type CreateRunInput =
   paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
 export type ListProjectsQuery = NonNullable<paths['/v1/projects']['get']['parameters']['query']>;
-export type ProjectSummariesQuery =
-  paths['/v1/projects/summaries']['get']['parameters']['query'];
+export type ProjectSummariesQuery = paths['/v1/projects/summaries']['get']['parameters']['query'];
 export type CompleteGitHubInstallInput =
   paths['/v1/integrations/github/install']['post']['requestBody']['content']['application/json'];
 export type ListGitHubRepositoriesQuery =
@@ -27,6 +26,8 @@ export type EnqueueGitHubImportInput =
   paths['/v1/projects/{projectId}/import/github']['post']['requestBody']['content']['application/json'];
 export type CreateRunMessageInput =
   paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
+export type ListIncidentsQuery =
+  paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -208,6 +209,14 @@ export function createControlPlaneClient(organizationId?: string) {
         headers: headers(),
         ...(signal === undefined ? {} : { signal }),
       }),
+    listIncidents: (projectId: string, query: ListIncidentsQuery = {}, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/incidents', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
     sendRunMessage: (runId: string, body: CreateRunMessageInput, idempotencyKey?: string) =>
       client.request('/v1/runs/{runId}/messages', {
         method: 'POST',
@@ -298,4 +307,7 @@ export type FeatureFlagsResponse = Awaited<
 >;
 export type BuilderRun = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>
+>['items'][number];
+export type ProjectIncident = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['listIncidents']>
 >['items'][number];
