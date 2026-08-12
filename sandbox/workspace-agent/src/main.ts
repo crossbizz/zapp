@@ -25,11 +25,12 @@ import {
   FileListSchema,
   FileQuerySchema,
   ListQuerySchema,
+  MAX_DIRECT_EDIT_BYTES,
   WorkspaceFileManager,
   listWorkspaceFiles,
   readWorkspaceFile,
 } from './fs.js';
-import { GitRequestSchema, GitResultSchema, runGit } from './git.js';
+import { commitDirectEdit, GitRequestSchema, GitResultSchema, runGit } from './git.js';
 import {
   HealthResponseSchema,
   MetricsResponseSchema,
@@ -75,22 +76,47 @@ const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const CleanupParamsSchema = z.object({ cleanupId: CleanupIdSchema }).strict();
 const CleanupResponseSchema = z.object({ cleaned: z.literal(true) }).strict();
 const ErrorResponseSchema = z.object({ error: z.string() }).strict();
-const AtomicConflictResponseSchema = z.object({ error: z.literal('atomic_write_conflict') }).strict();
+const AtomicConflictResponseSchema = z
+  .object({ error: z.literal('atomic_write_conflict') })
+  .strict();
 const OkResponseSchema = z.object({ ok: z.literal(true) }).strict();
 const Base64Schema = z
   .string()
   .refine(
-    (value) =>
-      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value),
+    (value) => /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value),
     'Invalid base64',
   );
+const CompareTokenSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const DirectEditBodySchema = z
+  .object({
+    path: FileQuerySchema.shape.path,
+    dataBase64: Base64Schema.refine(
+      (value) => Buffer.from(value, 'base64').byteLength <= MAX_DIRECT_EDIT_BYTES,
+      'Workspace file exceeds the direct-edit limit',
+    ),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
+const DirectEditResponseSchema = z
+  .object({ commitSha: z.string().regex(/^[a-f0-9]{40}$/u) })
+  .strict();
+const FileUpdateSnapshotSchema = z
+  .object({
+    dataBase64: Base64Schema,
+    byteLength: z.number().int().nonnegative().max(MAX_DIRECT_EDIT_BYTES),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
 const AtomicWriteBodySchema = z
   .object({
     files: z
       .array(
         z
           .object({
-            path: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+            path: z
+              .string()
+              .min(1)
+              .refine((value) => !value.includes('\0'), 'NUL is not allowed'),
             dataBase64: Base64Schema,
             expectedRevision: z.string().min(1).optional(),
           })
@@ -102,7 +128,10 @@ const AtomicWriteBodySchema = z
 const SearchBodySchema = z
   .object({
     pattern: z.string(),
-    path: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    path: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes('\0'), 'NUL is not allowed'),
     glob: z.string().min(1).optional(),
     fixedStrings: z.boolean().optional(),
     ignoreCase: z.boolean().optional(),
@@ -110,7 +139,10 @@ const SearchBodySchema = z
   .strict();
 const RenameBodySchema = z
   .object({
-    source: z.string().min(1).refine((value) => !value.includes('\0'), 'NUL is not allowed'),
+    source: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes('\0'), 'NUL is not allowed'),
     destination: z
       .string()
       .min(1)
@@ -118,9 +150,7 @@ const RenameBodySchema = z
     overwrite: z.literal('replace'),
   })
   .strict();
-const DeleteResponseSchema = z
-  .object({ ok: z.literal(true), alreadyAbsent: z.boolean() })
-  .strict();
+const DeleteResponseSchema = z.object({ ok: z.literal(true), alreadyAbsent: z.boolean() }).strict();
 const DevServerBodySchema = z.object({ contract: ExecutionContractSchema }).strict();
 const DevServerResponseSchema = z
   .object({
@@ -164,6 +194,7 @@ const IDEMPOTENCY_REQUIRED_ROUTES = new Set([
   'POST /exec/:pid/kill',
   'PUT /files',
   'POST /files/atomic-write',
+  'POST /files/direct-edit',
   'DELETE /files',
   'POST /files/rename',
   'POST /dev-server/start',
@@ -575,14 +606,12 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   });
   app.setErrorHandler(async (error, _request, reply) => {
     if (error instanceof ContainmentCleanupError) {
-      await reply
-        .code(503)
-        .send(
-          CleanupFailureResponseSchema.parse({
-            error: 'containment_cleanup_failed',
-            stage: error.stage,
-          }),
-        );
+      await reply.code(503).send(
+        CleanupFailureResponseSchema.parse({
+          error: 'containment_cleanup_failed',
+          stage: error.stage,
+        }),
+      );
       return;
     }
     if (error instanceof ContainmentUnavailableError) {
@@ -657,11 +686,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
     reply.raw.statusCode = 200;
     reply.raw.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
     const onClose = (): void => {
-      if (
-        !reply.raw.writableEnded &&
-        activePid !== undefined &&
-        activeExecutionId !== undefined
-      ) {
+      if (!reply.raw.writableEnded && activePid !== undefined && activeExecutionId !== undefined) {
         execManager.kill(activePid, activeExecutionId);
       }
     };
@@ -758,7 +783,33 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   app.get('/files/update-snapshot', async (request) => {
     EmptyBodySchema.parse(request.body);
     const { path } = FileQuerySchema.parse(request.query);
-    return fileManager.validateGuardedSnapshotPath(path);
+    const snapshot = await fileManager.readForDirectEdit(path);
+    return FileUpdateSnapshotSchema.parse({
+      dataBase64: snapshot.data.toString('base64'),
+      byteLength: snapshot.data.byteLength,
+      compareToken: snapshot.compareToken,
+    });
+  });
+
+  app.post('/files/direct-edit', async (request) => {
+    EmptyQuerySchema.parse(request.query);
+    const input = DirectEditBodySchema.parse(request.body);
+    return DirectEditResponseSchema.parse(
+      await fileManager.directEdit(
+        {
+          path: input.path,
+          data: Buffer.from(input.dataBase64, 'base64'),
+          compareToken: input.compareToken,
+        },
+        () =>
+          commitDirectEdit(
+            workspaceRoot,
+            input.path,
+            Buffer.from(input.dataBase64, 'base64'),
+            execManager,
+          ),
+      ),
+    );
   });
 
   app.post('/files/atomic-write', async (request) => {
@@ -768,9 +819,7 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
       body.files.map((file) => ({
         path: file.path,
         data: Buffer.from(file.dataBase64, 'base64'),
-        ...(file.expectedRevision === undefined
-          ? {}
-          : { expectedRevision: file.expectedRevision }),
+        ...(file.expectedRevision === undefined ? {} : { expectedRevision: file.expectedRevision }),
       })),
     );
     return OkResponseSchema.parse({ ok: true });
@@ -824,7 +873,9 @@ export async function buildWorkspaceAgent(options: BuildOptions): Promise<Fastif
   app.post('/git', async (request) => {
     EmptyQuerySchema.parse(request.query);
     const gitRequest = GitRequestSchema.parse(request.body);
-    return GitResultSchema.parse(await runGit(workspaceRoot, gitRequest, execManager));
+    return GitResultSchema.parse(
+      await fileManager.runExclusive(() => runGit(workspaceRoot, gitRequest, execManager)),
+    );
   });
 
   app.get('/healthz', async (request) => {

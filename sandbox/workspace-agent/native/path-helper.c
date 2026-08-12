@@ -39,9 +39,12 @@ enum {
   PATH_HELPER_USAGE = 64,
   PATH_HELPER_PATH_VIOLATION = 65,
   PATH_HELPER_VALIDATION_FAILURE = 66,
+  PATH_HELPER_CONFLICT = 67,
   PATH_HELPER_IO_FAILURE = 74,
   PATH_HELPER_CONTAINMENT_FAILURE = 75,
 };
+
+static int parse_size(const char *value, size_t *result);
 
 static bool is_path_violation_errno(int error_code) {
   return error_code == ELOOP || error_code == EXDEV;
@@ -263,9 +266,7 @@ static int open_final_beneath(
   return fallback_descriptor;
 }
 
-static int pause_after_pinned_descriptor(void) {
-  const char *ready_path = getenv("ZAPP_NATIVE_TEST_READY_PATH");
-  const char *continue_path = getenv("ZAPP_NATIVE_TEST_CONTINUE_PATH");
+static int pause_for_test_paths(const char *ready_path, const char *continue_path) {
   if (ready_path == NULL || continue_path == NULL) {
     return 0;
   }
@@ -287,6 +288,18 @@ static int pause_after_pinned_descriptor(void) {
   }
   errno = ETIMEDOUT;
   return -1;
+}
+
+static int pause_after_pinned_descriptor(void) {
+  return pause_for_test_paths(
+      getenv("ZAPP_NATIVE_TEST_READY_PATH"),
+      getenv("ZAPP_NATIVE_TEST_CONTINUE_PATH"));
+}
+
+static int pause_before_cas_commit(void) {
+  return pause_for_test_paths(
+      getenv("ZAPP_NATIVE_TEST_CAS_READY_PATH"),
+      getenv("ZAPP_NATIVE_TEST_CAS_CONTINUE_PATH"));
 }
 
 static int write_all(int output_fd, const char *buffer, size_t length) {
@@ -342,6 +355,31 @@ static int read_exact(int input_fd, char *buffer, size_t length) {
     offset += (size_t)bytes_read;
   }
   return 0;
+}
+
+static int descriptor_matches(int file_fd, const char *expected, size_t expected_length) {
+  if (lseek(file_fd, 0, SEEK_SET) < 0) return -1;
+  size_t offset = 0;
+  char buffer[64 * 1024];
+  while (offset < expected_length) {
+    size_t requested = expected_length - offset;
+    if (requested > sizeof(buffer)) requested = sizeof(buffer);
+    ssize_t bytes_read = read(file_fd, buffer, requested);
+    if (bytes_read < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (bytes_read == 0 || memcmp(buffer, expected + offset, (size_t)bytes_read) != 0) {
+      return 0;
+    }
+    offset += (size_t)bytes_read;
+  }
+  for (;;) {
+    ssize_t trailing = read(file_fd, buffer, 1);
+    if (trailing < 0 && errno == EINTR) continue;
+    if (trailing < 0) return -1;
+    return trailing == 0 ? 1 : 0;
+  }
 }
 
 int join_cgroup(const char *procs_path) {
@@ -529,6 +567,49 @@ static int run_read(const char *root, const char *path) {
     result = report_failure("path-helper", path_violation);
   } else {
     result = 0;
+  }
+  if (file_fd >= 0) close(file_fd);
+  if (parent_fd >= 0) close(parent_fd);
+  if (root_fd >= 0) close(root_fd);
+  free(leaf);
+  return result;
+}
+
+static int copy_stream_limited(int input_fd, int output_fd, size_t maximum_length) {
+  char buffer[64 * 1024];
+  size_t copied = 0;
+  for (;;) {
+    size_t remaining = maximum_length - copied;
+    size_t requested = remaining < sizeof(buffer) ? remaining + 1 : sizeof(buffer);
+    ssize_t bytes_read = read(input_fd, buffer, requested);
+    if (bytes_read < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (bytes_read == 0) return 0;
+    if ((size_t)bytes_read > remaining) return 1;
+    if (write_all(output_fd, buffer, (size_t)bytes_read) != 0) return -1;
+    copied += (size_t)bytes_read;
+  }
+}
+
+static int run_read_limited(int argc, char **argv) {
+  size_t maximum_length = 0;
+  if (argc != 5 || parse_size(argv[4], &maximum_length) != 0) return PATH_HELPER_USAGE;
+  bool path_violation = false;
+  int root_fd = open_workspace_root(argv[2], &path_violation);
+  int parent_fd = -1;
+  int file_fd = -1;
+  char *leaf = NULL;
+  int result = PATH_HELPER_IO_FAILURE;
+  if (root_fd < 0 ||
+      open_parent_beneath(root_fd, argv[3], &parent_fd, &leaf, &path_violation) != 0 ||
+      pause_after_pinned_descriptor() != 0 ||
+      (file_fd = open_final_beneath(parent_fd, leaf, O_RDONLY, 0, &path_violation)) < 0) {
+    result = report_failure("path-helper", path_violation);
+  } else {
+    int copied = copy_stream_limited(file_fd, STDOUT_FILENO, maximum_length);
+    result = copied == 0 ? 0 : copied == 1 ? PATH_HELPER_VALIDATION_FAILURE : PATH_HELPER_IO_FAILURE;
   }
   if (file_fd >= 0) close(file_fd);
   if (parent_fd >= 0) close(parent_fd);
@@ -780,6 +861,103 @@ cleanup:
   return result;
 }
 
+static int run_cas_write(int argc, char **argv) {
+  size_t expected_length = 0;
+  size_t replacement_length = 0;
+  const size_t maximum_length = 1024 * 1024;
+  if (argc != 6 || parse_size(argv[4], &expected_length) != 0 ||
+      parse_size(argv[5], &replacement_length) != 0 || expected_length > maximum_length ||
+      replacement_length > maximum_length) {
+    return PATH_HELPER_USAGE;
+  }
+
+  char *expected = malloc(expected_length == 0 ? 1 : expected_length);
+  if (expected == NULL || read_exact(STDIN_FILENO, expected, expected_length) != 0) {
+    free(expected);
+    return PATH_HELPER_IO_FAILURE;
+  }
+
+  bool path_violation = false;
+  int root_fd = open_workspace_root(argv[2], &path_violation);
+  int parent_fd = -1;
+  int file_fd = -1;
+  int stage_fd = -1;
+  char *leaf = NULL;
+  char stage[96] = {0};
+  int result = PATH_HELPER_IO_FAILURE;
+  struct stat original;
+  struct stat current;
+  if (root_fd < 0 ||
+      open_parent_beneath(root_fd, argv[3], &parent_fd, &leaf, &path_violation) != 0 ||
+      (file_fd = open_final_beneath(parent_fd, leaf, O_RDONLY, 0, &path_violation)) < 0 ||
+      fstat(file_fd, &original) != 0) {
+    result = path_violation ? PATH_HELPER_PATH_VIOLATION : PATH_HELPER_IO_FAILURE;
+    goto cas_cleanup;
+  }
+  if (!S_ISREG(original.st_mode)) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+    goto cas_cleanup;
+  }
+  int initial_match = descriptor_matches(file_fd, expected, expected_length);
+  if (initial_match <= 0) {
+    result = initial_match == 0 ? PATH_HELPER_CONFLICT : PATH_HELPER_IO_FAILURE;
+    goto cas_cleanup;
+  }
+
+  (void)snprintf(stage, sizeof(stage), ".zapp-cas-%ld.stage", (long)getpid());
+  stage_fd = openat(
+      parent_fd,
+      stage,
+      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+      original.st_mode & 07777);
+  if (stage_fd < 0) goto cas_cleanup;
+  char buffer[64 * 1024];
+  size_t remaining = replacement_length;
+  while (remaining > 0) {
+    size_t chunk = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+    if (read_exact(STDIN_FILENO, buffer, chunk) != 0 || write_all(stage_fd, buffer, chunk) != 0) {
+      goto cas_cleanup;
+    }
+    remaining -= chunk;
+  }
+  if (fchmod(stage_fd, original.st_mode & 07777) != 0 || close(stage_fd) != 0) {
+    stage_fd = -1;
+    goto cas_cleanup;
+  }
+  stage_fd = -1;
+  if (pause_before_cas_commit() != 0) goto cas_cleanup;
+  if (fstatat(parent_fd, leaf, &current, AT_SYMLINK_NOFOLLOW) != 0) {
+    result = errno == ENOENT ? PATH_HELPER_CONFLICT : PATH_HELPER_IO_FAILURE;
+    goto cas_cleanup;
+  }
+  if (!S_ISREG(current.st_mode)) {
+    result = PATH_HELPER_VALIDATION_FAILURE;
+    goto cas_cleanup;
+  }
+  if (current.st_dev != original.st_dev || current.st_ino != original.st_ino) {
+    result = PATH_HELPER_CONFLICT;
+    goto cas_cleanup;
+  }
+  int final_match = descriptor_matches(file_fd, expected, expected_length);
+  if (final_match <= 0) {
+    result = final_match == 0 ? PATH_HELPER_CONFLICT : PATH_HELPER_IO_FAILURE;
+    goto cas_cleanup;
+  }
+  if (renameat(parent_fd, stage, parent_fd, leaf) != 0) goto cas_cleanup;
+  stage[0] = '\0';
+  result = 0;
+
+cas_cleanup:
+  if (stage_fd >= 0) close(stage_fd);
+  if (parent_fd >= 0 && stage[0] != '\0') (void)unlinkat(parent_fd, stage, 0);
+  if (file_fd >= 0) close(file_fd);
+  if (parent_fd >= 0) close(parent_fd);
+  if (root_fd >= 0) close(root_fd);
+  free(leaf);
+  free(expected);
+  return result;
+}
+
 static int run_delete(const char *root, const char *path) {
   bool path_violation = false;
   int root_fd = open_workspace_root(root, &path_violation);
@@ -912,6 +1090,9 @@ int path_helper_main(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "read") == 0) {
     return run_read(argv[2], argv[3]);
   }
+  if (argc == 5 && strcmp(argv[1], "read-limited") == 0) {
+    return run_read_limited(argc, argv);
+  }
   if (argc == 4 && strcmp(argv[1], "write") == 0) {
     return run_write(argv[2], argv[3]);
   }
@@ -920,6 +1101,9 @@ int path_helper_main(int argc, char **argv) {
   }
   if (argc >= 6 && strcmp(argv[1], "atomic-write") == 0) {
     return run_atomic_write(argc, argv);
+  }
+  if (argc == 6 && strcmp(argv[1], "cas-write") == 0) {
+    return run_cas_write(argc, argv);
   }
   if (argc == 4 && strcmp(argv[1], "delete") == 0) {
     return run_delete(argv[2], argv[3]);

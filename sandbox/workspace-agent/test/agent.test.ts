@@ -27,6 +27,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { CgroupV2Containment } from '../src/containment/cgroup.js';
 import { consumeOutputChunks } from '../src/exec.js';
+import { WorkspaceFileManager } from '../src/fs.js';
 import type { Containment, ExecutionContainment } from '../src/containment/types.js';
 import {
   buildWorkspaceAgent,
@@ -201,6 +202,19 @@ function configureNativePause(readyPath: string, continuePath: string): () => vo
     else process.env.ZAPP_NATIVE_TEST_READY_PATH = previousReady;
     if (previousContinue === undefined) delete process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH;
     else process.env.ZAPP_NATIVE_TEST_CONTINUE_PATH = previousContinue;
+  };
+}
+
+function configureNativeCasPause(readyPath: string, continuePath: string): () => void {
+  const previousReady = process.env.ZAPP_NATIVE_TEST_CAS_READY_PATH;
+  const previousContinue = process.env.ZAPP_NATIVE_TEST_CAS_CONTINUE_PATH;
+  process.env.ZAPP_NATIVE_TEST_CAS_READY_PATH = readyPath;
+  process.env.ZAPP_NATIVE_TEST_CAS_CONTINUE_PATH = continuePath;
+  return () => {
+    if (previousReady === undefined) delete process.env.ZAPP_NATIVE_TEST_CAS_READY_PATH;
+    else process.env.ZAPP_NATIVE_TEST_CAS_READY_PATH = previousReady;
+    if (previousContinue === undefined) delete process.env.ZAPP_NATIVE_TEST_CAS_CONTINUE_PATH;
+    else process.env.ZAPP_NATIVE_TEST_CAS_CONTINUE_PATH = previousContinue;
   };
 }
 
@@ -590,6 +604,412 @@ describe('workspace-agent RPC daemon', () => {
     return app;
   }
 
+  test('returns a compare snapshot and creates one attributed direct-edit commit', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n');
+    await execFileAsync('git', ['add', '--', 'tracked.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+
+    expect(snapshot.statusCode).toBe(200);
+    const snapshotBody = snapshot.json<{
+      dataBase64: string;
+      byteLength: number;
+      compareToken: string;
+    }>();
+    expect(snapshotBody).toMatchObject({
+      dataBase64: Buffer.from('before\n').toString('base64'),
+      byteLength: 7,
+    });
+    expect(snapshotBody.compareToken).toMatch(/^sha256:[a-f0-9]{64}$/u);
+
+    const edited = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-happy-path'),
+      payload: {
+        path: 'tracked.txt',
+        dataBase64: Buffer.from('after\n').toString('base64'),
+        compareToken: snapshotBody.compareToken,
+      },
+    });
+
+    expect(edited.statusCode).toBe(200);
+    const editedBody = edited.json<{ commitSha: string }>();
+    expect(editedBody.commitSha).toMatch(/^[a-f0-9]{40}$/u);
+    await expect(readFile(join(workspaceRoot, 'tracked.txt'), 'utf8')).resolves.toBe('after\n');
+    await expect(
+      execFileAsync('git', ['show', '-s', '--format=%s', editedBody.commitSha], {
+        cwd: workspaceRoot,
+      }),
+    ).resolves.toMatchObject({ stdout: 'manual edit via web\n' });
+    await expect(
+      execFileAsync('git', ['rev-list', '--count', 'HEAD'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({
+      stdout: '2\n',
+    });
+  });
+
+  test('rejects a stale direct-edit compare token without changing bytes or HEAD', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n');
+    await execFileAsync('git', ['add', '--', 'tracked.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'concurrent\n');
+    const headBefore = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot });
+
+    const rejected = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-stale'),
+      payload: {
+        path: 'tracked.txt',
+        dataBase64: Buffer.from('after\n').toString('base64'),
+        compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+      },
+    });
+
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toEqual({ error: 'atomic_write_conflict' });
+    await expect(readFile(join(workspaceRoot, 'tracked.txt'), 'utf8')).resolves.toBe(
+      'concurrent\n',
+    );
+    await expect(
+      execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({
+      stdout: headBefore.stdout,
+    });
+  });
+
+  test('rolls back direct-edit bytes and index state when commit creation fails', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n');
+    await execFileAsync('git', ['add', '--', 'tracked.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+    const headBefore = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', '--unset', 'user.email'], { cwd: workspaceRoot });
+
+    const rejected = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-hook-failure'),
+      payload: {
+        path: 'tracked.txt',
+        dataBase64: Buffer.from('after\n').toString('base64'),
+        compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+      },
+    });
+
+    expect(rejected.statusCode).toBe(500);
+    expect(rejected.json()).toEqual({ error: 'internal_error' });
+    await expect(readFile(join(workspaceRoot, 'tracked.txt'), 'utf8')).resolves.toBe('before\n');
+    await expect(
+      execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({
+      stdout: headBefore.stdout,
+    });
+    await expect(
+      execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({ stdout: '' });
+  });
+
+  test('rolls back direct-edit bytes when the commit boundary throws', async () => {
+    const target = join(workspaceRoot, 'throwing-commit.txt');
+    await writeFile(target, 'before');
+    const manager = new WorkspaceFileManager(workspaceRoot);
+    const snapshot = await manager.readForDirectEdit('throwing-commit.txt');
+
+    await expect(
+      manager.directEdit(
+        {
+          path: 'throwing-commit.txt',
+          data: Buffer.from('after'),
+          compareToken: snapshot.compareToken,
+        },
+        () => Promise.reject(new Error('git transport failed')),
+      ),
+    ).rejects.toMatchObject({ name: 'DirectEditCommitError' });
+    await expect(readFile(target, 'utf8')).resolves.toBe('before');
+  });
+
+  test('commits only the direct-edit path and preserves unrelated staged work', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await Promise.all([
+      writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n'),
+      writeFile(join(workspaceRoot, 'other.txt'), 'other-before\n'),
+    ]);
+    await execFileAsync('git', ['add', '--', 'tracked.txt', 'other.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    await writeFile(join(workspaceRoot, 'other.txt'), 'other-staged\n');
+    await execFileAsync('git', ['add', '--', 'other.txt'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+
+    const edited = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-preserves-index'),
+      payload: {
+        path: 'tracked.txt',
+        dataBase64: Buffer.from('after\n').toString('base64'),
+        compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+      },
+    });
+
+    expect(edited.statusCode).toBe(200);
+    await expect(
+      execFileAsync('git', ['show', '--pretty=format:', '--name-only', 'HEAD'], {
+        cwd: workspaceRoot,
+      }),
+    ).resolves.toMatchObject({ stdout: 'tracked.txt\n' });
+    await expect(
+      execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({ stdout: 'other.txt\n' });
+    await expect(readFile(join(workspaceRoot, 'other.txt'), 'utf8')).resolves.toBe(
+      'other-staged\n',
+    );
+  });
+
+  test('serializes competing direct edits and replays the winning key without another commit', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n');
+    await execFileAsync('git', ['add', '--', 'tracked.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+    const compareToken = snapshot.json<{ compareToken: string }>().compareToken;
+    const attempts = [
+      { key: 'direct-edit-race-a', content: 'winner-a\n' },
+      { key: 'direct-edit-race-b', content: 'winner-b\n' },
+    ] as const;
+
+    const responses = await Promise.all(
+      attempts.map((attempt) =>
+        requireApp().inject({
+          method: 'POST',
+          url: '/files/direct-edit',
+          headers: authorization(token, attempt.key),
+          payload: {
+            path: 'tracked.txt',
+            dataBase64: Buffer.from(attempt.content).toString('base64'),
+            compareToken,
+          },
+        }),
+      ),
+    );
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    const winnerIndex = responses.findIndex((response) => response.statusCode === 200);
+    const winner = attempts[winnerIndex];
+    expect(winner).toBeDefined();
+    await expect(readFile(join(workspaceRoot, 'tracked.txt'), 'utf8')).resolves.toBe(
+      winner?.content,
+    );
+    const replayed = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, winner?.key),
+      payload: {
+        path: 'tracked.txt',
+        dataBase64: Buffer.from(winner?.content ?? '').toString('base64'),
+        compareToken,
+      },
+    });
+    expect(replayed.body).toBe(responses[winnerIndex]?.body);
+    await expect(
+      execFileAsync('git', ['rev-list', '--count', 'HEAD'], { cwd: workspaceRoot }),
+    ).resolves.toMatchObject({
+      stdout: '2\n',
+    });
+  });
+
+  test('rejects direct-edit request bodies over one MiB before mutation', async () => {
+    await writeFile(join(workspaceRoot, 'bounded.txt'), 'before\n');
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=bounded.txt',
+      headers: authorization(),
+    });
+
+    const rejected = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-too-large'),
+      payload: {
+        path: 'bounded.txt',
+        dataBase64: Buffer.alloc(1_024 * 1_024 + 1, 'x').toString('base64'),
+        compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+      },
+    });
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: 'bad_request' });
+    await expect(readFile(join(workspaceRoot, 'bounded.txt'), 'utf8')).resolves.toBe('before\n');
+  });
+
+  test('rejects snapshots over one MiB through the native bounded reader', async () => {
+    await writeFile(join(workspaceRoot, 'oversized.txt'), Buffer.alloc(4 * 1_024 * 1_024, 'x'));
+
+    const rejected = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=oversized.txt',
+      headers: authorization(),
+    });
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: 'bad_request' });
+  });
+
+  test('treats Git pathspec-looking direct-edit paths as literal filenames', async () => {
+    const literalPath = ':(top)package.json';
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await Promise.all([
+      writeFile(join(workspaceRoot, 'package.json'), 'root-before\n'),
+      writeFile(join(workspaceRoot, literalPath), 'literal-before\n'),
+    ]);
+    await execFileAsync('git', ['--literal-pathspecs', 'add', '--', 'package.json', literalPath], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: `/files/update-snapshot?path=${encodeURIComponent(literalPath)}`,
+      headers: authorization(),
+    });
+
+    const edited = await requireApp().inject({
+      method: 'POST',
+      url: '/files/direct-edit',
+      headers: authorization(token, 'direct-edit-literal-path'),
+      payload: {
+        path: literalPath,
+        dataBase64: Buffer.from('literal-after\n').toString('base64'),
+        compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+      },
+    });
+
+    expect(edited.statusCode).toBe(200);
+    await expect(readFile(join(workspaceRoot, literalPath), 'utf8')).resolves.toBe(
+      'literal-after\n',
+    );
+    await expect(readFile(join(workspaceRoot, 'package.json'), 'utf8')).resolves.toBe(
+      'root-before\n',
+    );
+    await expect(
+      execFileAsync('git', ['show', '--pretty=format:', '--name-only', 'HEAD'], {
+        cwd: workspaceRoot,
+      }),
+    ).resolves.toMatchObject({ stdout: `${literalPath}\n` });
+  });
+
+  test('rejects an out-of-band mutation at the native compare-and-swap boundary', async () => {
+    await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['config', 'user.email', 'workspace-agent@example.invalid'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Workspace Agent Test'], {
+      cwd: workspaceRoot,
+    });
+    await writeFile(join(workspaceRoot, 'tracked.txt'), 'before\n');
+    await execFileAsync('git', ['add', '--', 'tracked.txt'], { cwd: workspaceRoot });
+    await execFileAsync('git', ['commit', '-m', 'seed'], { cwd: workspaceRoot });
+    const snapshot = await requireApp().inject({
+      method: 'GET',
+      url: '/files/update-snapshot?path=tracked.txt',
+      headers: authorization(),
+    });
+    const readyPath = join(workspaceRoot, 'cas-ready');
+    const continuePath = join(workspaceRoot, 'cas-continue');
+    const restorePause = configureNativeCasPause(readyPath, continuePath);
+
+    try {
+      const request = requireApp().inject({
+        method: 'POST',
+        url: '/files/direct-edit',
+        headers: authorization(token, 'direct-edit-native-cas'),
+        payload: {
+          path: 'tracked.txt',
+          dataBase64: Buffer.from('after\n').toString('base64'),
+          compareToken: snapshot.json<{ compareToken: string }>().compareToken,
+        },
+      });
+      await requireNativePause(request, readyPath);
+      await writeFile(join(workspaceRoot, 'tracked.txt'), 'concurrent\n');
+      await writeFile(continuePath, 'continue');
+
+      const rejected = await request;
+      expect(rejected.statusCode).toBe(409);
+      expect(rejected.json()).toEqual({ error: 'atomic_write_conflict' });
+      await expect(readFile(join(workspaceRoot, 'tracked.txt'), 'utf8')).resolves.toBe(
+        'concurrent\n',
+      );
+      await expect(
+        execFileAsync('git', ['rev-list', '--count', 'HEAD'], { cwd: workspaceRoot }),
+      ).resolves.toMatchObject({
+        stdout: '1\n',
+      });
+    } finally {
+      restorePause();
+    }
+  });
+
   test('atomically writes an unguarded file batch through the advanced route', async () => {
     await mkdir(join(workspaceRoot, 'nested'));
     const response = await requireApp().inject({
@@ -607,10 +1027,12 @@ describe('workspace-agent RPC daemon', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
     await expect(readFile(join(workspaceRoot, 'first.txt'), 'utf8')).resolves.toBe('first');
-    await expect(readFile(join(workspaceRoot, 'nested/second.txt'), 'utf8')).resolves.toBe('second');
+    await expect(readFile(join(workspaceRoot, 'nested/second.txt'), 'utf8')).resolves.toBe(
+      'second',
+    );
   });
 
-  test('fails guarded snapshots and batches closed without changing the target', async () => {
+  test('returns guarded snapshots while failing unsupported guarded batches closed', async () => {
     await writeFile(join(workspaceRoot, 'guarded.txt'), 'before');
 
     const snapshot = await requireApp().inject({
@@ -633,8 +1055,17 @@ describe('workspace-agent RPC daemon', () => {
       },
     });
 
-    expect(snapshot.statusCode).toBe(409);
-    expect(snapshot.json()).toEqual({ error: 'atomic_write_conflict' });
+    expect(snapshot.statusCode).toBe(200);
+    const snapshotBody = snapshot.json<{
+      dataBase64: string;
+      byteLength: number;
+      compareToken: string;
+    }>();
+    expect(snapshotBody).toMatchObject({
+      dataBase64: Buffer.from('before').toString('base64'),
+      byteLength: 6,
+    });
+    expect(snapshotBody.compareToken).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(batch.statusCode).toBe(409);
     expect(batch.json()).toEqual({ error: 'atomic_write_conflict' });
     await expect(readFile(join(workspaceRoot, 'guarded.txt'), 'utf8')).resolves.toBe('before');
@@ -670,9 +1101,7 @@ describe('workspace-agent RPC daemon', () => {
     },
     {
       name: 'leaf symlink',
-      files: [
-        { path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') },
-      ],
+      files: [{ path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') }],
     },
   ])('returns typed HTTP 400 for an atomic $name conflict with zero writes', async ({ files }) => {
     await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
@@ -743,11 +1172,17 @@ describe('workspace-agent RPC daemon', () => {
 
       expect(response.statusCode).toBe(500);
       expect(response.json()).toEqual({ error: 'internal_error' });
-      await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe('first-before');
-      await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe('second-before');
+      await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe(
+        'first-before',
+      );
+      await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe(
+        'second-before',
+      );
       expect((await lstat(join(workspaceRoot, 'rollback-first.txt'))).mode & 0o777).toBe(0o640);
       expect((await lstat(join(workspaceRoot, 'rollback-second.txt'))).mode & 0o777).toBe(0o600);
-      expect((await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+      expect(
+        (await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-')),
+      ).toEqual([]);
     } finally {
       if (previousFailureIndex === undefined) {
         delete process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX;
@@ -841,12 +1276,18 @@ describe('workspace-agent RPC daemon', () => {
       method: 'POST',
       url: '/files/rename',
       headers: authorization(),
-      payload: { source: 'destination.txt', destination: './destination.txt', overwrite: 'replace' },
+      payload: {
+        source: 'destination.txt',
+        destination: './destination.txt',
+        overwrite: 'replace',
+      },
     });
     expect(renamed.statusCode).toBe(200);
     expect(renamed.json()).toEqual({ ok: true });
     await expect(readFile(join(workspaceRoot, 'destination.txt'), 'utf8')).resolves.toBe('source');
-    await expect(access(join(workspaceRoot, 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(join(workspaceRoot, 'source.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(same.statusCode).toBe(400);
   });
 
@@ -910,7 +1351,7 @@ describe('workspace-agent RPC daemon', () => {
     const script = [
       `process.stdout.write(${JSON.stringify('first-out\n')});`,
       `process.stderr.write(${JSON.stringify('first-error\n')});`,
-      "process.stdout.write(Buffer.alloc(11*1024*1024,120));",
+      'process.stdout.write(Buffer.alloc(11*1024*1024,120));',
       `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1');`,
       'setInterval(() => {}, 1000);',
     ].join('');
@@ -947,7 +1388,11 @@ describe('workspace-agent RPC daemon', () => {
     expect(body.state).toBe('ready');
     expect(body.truncated).toBe(true);
     expect(body.entries.length).toBeGreaterThan(0);
-    expect(body.entries.every((entry, index, entries) => index === 0 || entry.cursor > (entries[index - 1]?.cursor ?? -1))).toBe(true);
+    expect(
+      body.entries.every(
+        (entry, index, entries) => index === 0 || entry.cursor > (entries[index - 1]?.cursor ?? -1),
+      ),
+    ).toBe(true);
     expect(
       body.entries.reduce((total, entry) => total + Buffer.byteLength(entry.message), 0),
     ).toBeLessThanOrEqual(10 * 1_024 * 1_024);
@@ -973,7 +1418,7 @@ describe('workspace-agent RPC daemon', () => {
       "const fs=require('node:fs');",
       `const path=${JSON.stringify(countPath)};`,
       "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
-      "fs.writeFileSync(path,String(count));",
+      'fs.writeFileSync(path,String(count));',
       `const server=require('node:http').createServer((_request,response)=>{response.end('ready',()=>{setTimeout(()=>server.close(()=>process.exit(1)),25);});});`,
       `server.listen(${String(port)},'127.0.0.1',()=>{console.log('boot-'+String(count));});`,
     ].join('');
@@ -1036,7 +1481,7 @@ describe('workspace-agent RPC daemon', () => {
       "const fs=require('node:fs');",
       `const path=${JSON.stringify(countPath)};`,
       "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
-      "fs.writeFileSync(path,String(count));",
+      'fs.writeFileSync(path,String(count));',
       `const server=require('node:http').createServer((_request,response)=>{response.end('ready');if(count===1){server.close(()=>process.exit(1));}});`,
       `server.listen(${String(port)},'127.0.0.1');`,
       'setInterval(() => {}, 1000);',
@@ -1053,20 +1498,26 @@ describe('workspace-agent RPC daemon', () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    await vi.waitFor(async () => {
-      await expect(readFile(countPath, 'utf8')).resolves.toBe('2');
-    }, { timeout: 5_000, interval: 25 });
-    await vi.waitFor(async () => {
-      const health = await requireApp().inject({
-        method: 'GET',
-        url: '/healthz',
-        headers: authorization(),
-      });
-      expect(health.json()).toMatchObject({
-        ok: true,
-        devServer: { owned: true, httpReady: true },
-      });
-    }, { timeout: 5_000, interval: 25 });
+    await vi.waitFor(
+      async () => {
+        await expect(readFile(countPath, 'utf8')).resolves.toBe('2');
+      },
+      { timeout: 5_000, interval: 25 },
+    );
+    await vi.waitFor(
+      async () => {
+        const health = await requireApp().inject({
+          method: 'GET',
+          url: '/healthz',
+          headers: authorization(),
+        });
+        expect(health.json()).toMatchObject({
+          ok: true,
+          devServer: { owned: true, httpReady: true },
+        });
+      },
+      { timeout: 5_000, interval: 25 },
+    );
   }, 12_000);
 
   test('rejects an unrelated ready listener as managed dev-server readiness', async () => {
@@ -1116,7 +1567,10 @@ describe('workspace-agent RPC daemon', () => {
         await writeFile(join(outsideRoot, operation.action, 'target.txt'), 'outside-marker');
         if (operation.action === 'rename') {
           await writeFile(join(parent, 'destination.txt'), 'destination-before');
-          await writeFile(join(outsideRoot, operation.action, 'destination.txt'), 'outside-destination');
+          await writeFile(
+            join(outsideRoot, operation.action, 'destination.txt'),
+            'outside-destination',
+          );
         }
         const restorePause = configureNativePause(readyPath, continuePath);
         try {
@@ -1170,13 +1624,19 @@ describe('workspace-agent RPC daemon', () => {
           const response = await request;
           expect(response.statusCode, operation.action).toBe(200);
           if (operation.action === 'delete') {
-            await expect(access(join(pinnedParent, 'target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+            await expect(access(join(pinnedParent, 'target.txt'))).rejects.toMatchObject({
+              code: 'ENOENT',
+            });
           } else if (operation.action === 'rename') {
-            await expect(readFile(join(pinnedParent, 'destination.txt'), 'utf8')).resolves.toBe(operation.after);
+            await expect(readFile(join(pinnedParent, 'destination.txt'), 'utf8')).resolves.toBe(
+              operation.after,
+            );
           } else if (operation.action === 'search') {
             expect(response.json<{ stdout: string }>().stdout).toContain('pinned-search-marker');
           } else {
-            await expect(readFile(join(pinnedParent, 'target.txt'), 'utf8')).resolves.toBe(operation.after);
+            await expect(readFile(join(pinnedParent, 'target.txt'), 'utf8')).resolves.toBe(
+              operation.after,
+            );
           }
           await expect(
             readFile(
@@ -1201,7 +1661,10 @@ describe('workspace-agent RPC daemon', () => {
     const ports = await Promise.all([availablePort(), availablePort()]);
     const contracts = ports.map((port) => {
       const script = `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
-      return executionContract(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, port);
+      return executionContract(
+        `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        port,
+      );
     });
     const responses = await Promise.all(
       contracts.map((contract, index) =>
@@ -2220,12 +2683,12 @@ describe('workspace-agent RPC daemon', () => {
   test('kills an active streamed command by its real PID and reaps it', async () => {
     const pidFile = join(workspaceRoot, 'active.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'active-stream-kill', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
     });
     const pid = Number(await waitForFile(pidFile));
     expect(stream.started.pid).toBe(pid);
@@ -2351,13 +2814,13 @@ describe('workspace-agent RPC daemon', () => {
   test('reports a non-zero exit when the kill route terminates a PTY command', async () => {
     const pidFile = join(workspaceRoot, 'active-pty.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'active-pty-kill', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
-        pty: true,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
+      pty: true,
     });
     const pid = Number(await waitForFile(pidFile));
     expect(stream.started.pid).toBe(pid);
@@ -2759,6 +3222,19 @@ describe('workspace-agent RPC daemon', () => {
           headers: authorization(),
         });
         expect(response.statusCode, path).toBe(400);
+        if (path !== '%2e%2e%2foutside') {
+          const directEdit = await requireApp().inject({
+            method: 'POST',
+            url: '/files/direct-edit',
+            headers: authorization(token, `direct-edit-escape-${String(paths.indexOf(path))}`),
+            payload: {
+              path,
+              dataBase64: Buffer.from('bad').toString('base64'),
+              compareToken: `sha256:${'a'.repeat(64)}`,
+            },
+          });
+          expect(directEdit.statusCode, path).toBe(400);
+        }
       }
 
       const spawnMarker = join(workspaceRoot, 'must-not-spawn');
@@ -2965,20 +3441,17 @@ describe('workspace-agent RPC daemon', () => {
     '/files/update-snapshot?path=missing',
     '/healthz',
     '/metrics',
-  ])(
-    'rejects a request body on GET %s',
-    async (url) => {
-      const response = await requireApp().inject({
-        method: 'GET',
-        url,
-        headers: authorization(),
-        payload: { unexpected: true },
-      });
+  ])('rejects a request body on GET %s', async (url) => {
+    const response = await requireApp().inject({
+      method: 'GET',
+      url,
+      headers: authorization(),
+      payload: { unexpected: true },
+    });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ error: 'bad_request' });
-    },
-  );
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'bad_request' });
+  });
 
   test('reports configured dev-server readiness and finite non-negative metrics', async () => {
     await requireApp().close();
@@ -3037,12 +3510,12 @@ describe('workspace-agent RPC daemon', () => {
     app = await buildWorkspaceAgent(options);
     const pidFile = join(workspaceRoot, 'metrics.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'metrics-active-stream', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
     });
     const pid = Number(await waitForFile(pidFile));
     expect(stream.started.pid).toBe(pid);
