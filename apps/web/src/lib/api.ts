@@ -26,6 +26,10 @@ export type EnqueueGitHubImportInput =
   paths['/v1/projects/{projectId}/import/github']['post']['requestBody']['content']['application/json'];
 export type CreateRunMessageInput =
   paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
+export type MissionControlData =
+  paths['/v1/runs/{runId}/mission-control']['get']['responses'][200]['content']['application/json'];
+export type ResolveApprovalInput =
+  paths['/v1/runs/{runId}/approvals/{approvalId}']['post']['requestBody']['content']['application/json'];
 export type ListIncidentsQuery =
   paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
 export type UsageSummaryQuery = paths['/v1/usage/summary']['get']['parameters']['query'];
@@ -391,6 +395,56 @@ export function createControlPlaneClient(organizationId?: string) {
         method: 'POST',
         path: { runId },
         headers: headers(true, true, idempotencyKey),
+      }),
+    getMissionControl: (runId: string, signal?: AbortSignal) =>
+      client.request('/v1/runs/{runId}/mission-control', {
+        method: 'GET',
+        path: { runId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    pauseRun: (runId: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/pause', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    resumeRun: (runId: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/resume', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    redirectRun: (runId: string, prompt: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/redirect', {
+        method: 'POST',
+        path: { runId },
+        headers: headers(true, true, idempotencyKey),
+        body: { prompt },
+      }),
+    retryRunTask: (runId: string, taskId: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/tasks/{taskId}/retry', {
+        method: 'POST',
+        path: { runId, taskId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    skipRunPhase: (runId: string, phaseId: string, idempotencyKey?: string) =>
+      client.request('/v1/runs/{runId}/phases/{phaseId}/skip', {
+        method: 'POST',
+        path: { runId, phaseId },
+        headers: headers(true, true, idempotencyKey),
+      }),
+    resolveRunApproval: (
+      runId: string,
+      approvalId: string,
+      body: ResolveApprovalInput,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/runs/{runId}/approvals/{approvalId}', {
+        method: 'POST',
+        path: { runId, approvalId },
+        headers: headers(true, true, idempotencyKey),
+        body,
       }),
     readDevServerLogs: (workspaceId: string, after = 0, signal?: AbortSignal) =>
       client.request('/v1/workspaces/{workspaceId}/dev-server/logs', {

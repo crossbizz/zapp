@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -14,7 +15,12 @@ import {
   type ReactElement,
 } from 'react';
 
-import { createControlPlaneClient, type BuilderRun } from '../../lib/api';
+import {
+  createControlPlaneClient,
+  type BuilderRun,
+  type MissionControlData,
+  type ResolveApprovalInput,
+} from '../../lib/api';
 import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { organizationStorageKey, resolveOrganization } from '../../lib/session';
 import { Thread } from '../conversation/Thread';
@@ -23,6 +29,14 @@ import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
 import { IncidentBanner } from './IncidentBanner';
+import { Overview } from '../mission-control/Overview';
+import { TaskGraph } from '../mission-control/TaskGraph';
+import { Agents } from '../mission-control/Agents';
+import { Activity } from '../mission-control/Activity';
+import { FilesCommits } from '../mission-control/FilesCommits';
+import { Tests } from '../mission-control/Tests';
+import { Approvals } from '../mission-control/Approvals';
+import { Risks } from '../mission-control/Risks';
 
 const defaultConversationWidth = 40;
 const minimumConversationWidth = 28;
@@ -393,6 +407,97 @@ function MissionControlEmpty(): ReactElement {
   );
 }
 
+const missionTabs = ['Overview', 'Tasks', 'Agents', 'Activity', 'Files/Commits', 'Tests', 'Approvals', 'Risks'] as const;
+type MissionTab = (typeof missionTabs)[number];
+type ApprovalKind = NonNullable<ResolveApprovalInput['kind']>;
+const approvalKinds = new Set<ApprovalKind>([
+  'budget_increase', 'specification', 'plan', 'plan_diff', 'migration', 'deploy',
+]);
+
+function isApprovalKind(value: string): value is ApprovalKind {
+  return approvalKinds.has(value as ApprovalKind);
+}
+
+function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }: {
+  readonly organizationId: string;
+  readonly runId: string;
+  readonly onOpenPreview: () => void;
+  readonly onCompare: () => void;
+}): ReactElement {
+  const client = useMemo(() => createControlPlaneClient(organizationId), [organizationId]);
+  const [activeTab, setActiveTab] = useState<MissionTab>('Overview');
+  const [announcement, setAnnouncement] = useState('');
+  const [data, setData] = useState<MissionControlData>();
+  const [redirect, setRedirect] = useState('');
+
+  const reload = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    try {
+      setData(await client.getMissionControl(runId, signal));
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setAnnouncement('Mission Control could not refresh.');
+    }
+  }, [client, runId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void reload(controller.signal);
+    const interval = window.setInterval(() => { void reload(controller.signal); }, 2_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [reload]);
+
+  const runAction = async (label: string, action: () => Promise<unknown>): Promise<void> => {
+    setAnnouncement(`${label} requested.`);
+    try {
+      await action();
+      await reload();
+      setAnnouncement(`${label} applied.`);
+    } catch {
+      await reload();
+      setAnnouncement(`${label} was not applied.`);
+    }
+  };
+
+  const resolveApproval = (approvalId: string, type: string, decision: 'approved' | 'rejected'): void => {
+    if (!isApprovalKind(type)) {
+      setAnnouncement('This approval type is not supported.');
+      return;
+    }
+    void runAction(decision === 'approved' ? 'Approval' : 'Rejection', () =>
+      client.resolveRunApproval(runId, approvalId, { kind: type, decision }),
+    );
+  };
+
+  if (data === undefined) return <p role="status">Loading Mission Control…</p>;
+  const content: Record<MissionTab, ReactElement> = {
+    Overview: <Overview data={data} />,
+    Tasks: <TaskGraph data={data} onRetry={(taskId) => { void runAction('Task retry', () => client.retryRunTask(runId, taskId)); }} onSkip={(phaseId) => { void runAction('Phase skip', () => client.skipRunPhase(runId, phaseId)); }} />,
+    Agents: <Agents data={data} />,
+    Activity: <Activity data={data} />,
+    'Files/Commits': <FilesCommits data={data} onCompare={onCompare} />,
+    Tests: <Tests data={data} />,
+    Approvals: <Approvals data={data} onResolve={resolveApproval} />,
+    Risks: <Risks data={data} />,
+  };
+  return <div className="zapp-mission-content">
+    <div aria-label="Mission Control views" role="tablist">{missionTabs.map((tab) => <button aria-selected={activeTab === tab} key={tab} onClick={() => { setActiveTab(tab); }} role="tab" type="button">{tab}</button>)}</div>
+    <div aria-live="polite" className="zapp-mission-announcement">{announcement}</div>
+    <div aria-label={`${activeTab} view`} role="tabpanel">{content[activeTab]}</div>
+    <div aria-label="Run actions">
+      {data.run.status === 'paused' ? <button onClick={() => { void runAction('Resume', () => client.resumeRun(runId)); }} type="button">Resume</button> : <button onClick={() => { void runAction('Pause', () => client.pauseRun(runId)); }} type="button">Pause</button>}
+      <button onClick={() => { if (globalThis.confirm('Cancel this run?')) void runAction('Cancel', () => client.cancelRun(runId)); }} type="button">Cancel</button>
+      <button onClick={onOpenPreview} type="button">Open preview</button>
+      <form onSubmit={(event) => { event.preventDefault(); const prompt = redirect.trim(); if (prompt.length === 0) return; void runAction('Redirect', () => client.redirectRun(runId, prompt)); setRedirect(''); }}>
+        <label>Redirect instructions<input maxLength={4_000} onChange={(event) => { setRedirect(event.target.value); }} value={redirect} /></label>
+        <button disabled={redirect.trim().length === 0} type="submit">Redirect</button>
+      </form>
+    </div>
+  </div>;
+}
+
 export function Shell({ projectId }: ShellProps): ReactElement {
   const [activePane, setActivePane] = useState<BuilderPane>('conversation');
   const [activeRun, setActiveRun] = useState<BuilderRun>();
@@ -704,7 +809,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       title="Mission Control"
       trigger={missionTrigger}
     >
-      <MissionControlEmpty />
+      {activeRun === undefined ? <MissionControlEmpty /> : <MissionControlPanel organizationId={organizationId} runId={activeRun.id} onOpenPreview={previewSurface} onCompare={openCommit} />}
     </Drawer>
   );
   const splitStyle = {
@@ -858,7 +963,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   Close
                 </Button>
               </div>
-              <MissionControlEmpty />
+              {activeRun === undefined ? <MissionControlEmpty /> : <MissionControlPanel organizationId={organizationId} runId={activeRun.id} onOpenPreview={previewSurface} onCompare={openCommit} />}
             </aside>
           ) : null}
         </div>

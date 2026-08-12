@@ -125,6 +125,63 @@ test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
 });
 
+test('renders Mission Control state and reconciles pause and approval actions', async ({ page }) => {
+  let runStatus = 'running';
+  let approvalStatus = 'pending';
+  const mission = () => ({
+    run: { ...activeRun, status: runStatus },
+    currentPhase: { id: 'phase_build', sequence: 1, title: 'Build checkout', status: 'running' },
+    progress: { done: 1, total: 2 },
+    taskGraph: {
+      nodes: [
+        { id: 'task_form', phaseId: 'phase_build', title: 'Create form', status: 'failed', riskLevel: 'medium', assignedAgentRole: 'builder' },
+        { id: 'task_verify', phaseId: 'phase_build', title: 'Verify checkout', status: 'queued', riskLevel: 'low', assignedAgentRole: 'verifier' },
+      ],
+      edges: [{ from: 'task_form', to: 'task_verify' }],
+    },
+    activeAgents: [{ agentId: 'agent-builder', role: 'builder', taskId: 'task_form', startedAt: '2026-08-10T12:00:00.000Z' }],
+    recentToolCalls: [{ sequence: 3, toolCallId: 'tool-write', toolName: 'write_file', status: 'failed', userSummary: 'Edited checkout form', durationMs: 42, taskId: 'task_form', agentId: 'agent-builder', occurredAt: '2026-08-10T12:00:03.000Z' }],
+    filesChanged: [{ path: 'src/checkout.tsx', additions: 12, deletions: 1 }],
+    commits: [],
+    testRuns: [],
+    previewStatus: { status: 'ready', occurredAt: '2026-08-10T12:00:04.000Z' },
+    screenshots: [],
+    cost: { creditsUsed: 2, budget: 10 },
+    approvals: [{ approvalId: 'appr_plan', taskId: null, type: 'plan', status: approvalStatus, request: { artifactId: 'art_plan' }, response: null, requestedAt: '2026-08-10T12:00:05.000Z', resolvedAt: null }],
+    risks: [{ id: 'risk-1', severity: 'medium', summary: 'Checkout needs browser evidence' }],
+    actions: {
+      retryFailedTasks: [{ taskId: 'task_form', eligible: true, reason: 'eligible' }],
+      skipOptionalPhases: [],
+    },
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/mission-control`, async (route) => {
+    await route.fulfill({ body: JSON.stringify(mission()), headers: corsHeaders(), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/pause`, async (route) => {
+    runStatus = 'paused';
+    await route.fulfill({ body: JSON.stringify({ run: { ...activeRun, status: runStatus } }), headers: corsHeaders(), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/appr_plan`, async (route) => {
+    approvalStatus = 'approved';
+    await route.fulfill({ body: JSON.stringify({ approval: { approvalId: 'appr_plan', kind: 'plan', status: 'approved' } }), headers: corsHeaders(), status: 200 });
+  });
+  await mockBuilder(page);
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await page.getByRole('button', { name: 'Mission Control' }).click();
+  await expect(page.getByText('Build checkout')).toBeVisible();
+  await page.getByRole('tab', { name: 'Tasks' }).click();
+  await expect(page.getByRole('listitem').filter({ hasText: 'Create form' })).toContainText('failed');
+  await expect(page.getByRole('button', { name: 'Retry failed task' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Pause' }).click();
+  await page.getByRole('tab', { name: 'Overview' }).click();
+  await expect(page.getByText('Run status: paused')).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('tab', { name: 'Approvals' }).click();
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByText(/plan — approved/u)).toBeVisible();
+});
+
 test('reduces the seeded stream into messages, grouped activity, progress, and a commit link', async ({
   page,
 }) => {

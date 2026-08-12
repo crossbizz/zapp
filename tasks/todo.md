@@ -165,7 +165,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-8 Element selection attachments
 - [x] WEB-COLD-FIX-1 Isolate E2E Next build output
 - [x] WEB-COLD-FIX-2 Align the repository test contract with isolated E2E startup
-- [ ] WEB-9 Mission Control drawer
+- [x] WEB-9 Mission Control drawer
 - [ ] WEB-10 Interview/spec/plan approval cards
 - [ ] WEB-11 Code/Logs/Tests surfaces
 - [ ] WEB-17 Template gallery + detail with demo preview & Remix
