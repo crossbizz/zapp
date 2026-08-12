@@ -35,6 +35,11 @@ export type NotificationPreferenceChannels =
   paths['/v1/notification-preferences/{type}']['put']['requestBody']['content']['application/json'];
 export type AuditEventsQuery =
   paths['/v1/organizations/{orgId}/audit-events']['get']['parameters']['query'];
+export type StartSupportSessionInput =
+  paths['/v1/admin/support-sessions']['post']['requestBody']['content']['application/json'];
+export type AdminOverviewQuery = NonNullable<
+  paths['/v1/admin/organizations/{organizationId}/overview']['get']['parameters']['query']
+>;
 
 function controlPlaneUrl(): string {
   const value = process.env.NEXT_PUBLIC_CONTROL_API_URL;
@@ -201,6 +206,84 @@ export function createControlPlaneClient(organizationId?: string) {
         path: { projectId },
         headers: headers(),
         ...(signal === undefined ? {} : { signal }),
+      }),
+    startSupportSession: (body: StartSupportSessionInput, idempotencyKey?: string) =>
+      client.request('/v1/admin/support-sessions', {
+        method: 'POST',
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
+    getAdminOverview: (
+      targetOrganizationId: string,
+      query: AdminOverviewQuery,
+      supportSession: string,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/admin/organizations/{organizationId}/overview', {
+        method: 'GET',
+        path: { organizationId: targetOrganizationId },
+        headers: { 'x-zapp-support-session': supportSession },
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getAdminRunDiagnostics: (
+      targetOrganizationId: string,
+      runId: string,
+      supportSession: string,
+      signal?: AbortSignal,
+    ) =>
+      client.request(
+        '/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics',
+        {
+          method: 'GET',
+          path: { organizationId: targetOrganizationId, runId },
+          headers: { 'x-zapp-support-session': supportSession },
+          ...(signal === undefined ? {} : { signal }),
+        },
+      ),
+    terminateAdminRun: (
+      targetOrganizationId: string,
+      runId: string,
+      supportSession: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/admin/organizations/{organizationId}/runs/{runId}/terminate', {
+        method: 'POST',
+        path: { organizationId: targetOrganizationId, runId },
+        headers: {
+          ...requiredKeyHeaders(idempotencyKey),
+          'x-zapp-support-session': supportSession,
+        },
+      }),
+    terminateAdminWorkspace: (
+      targetOrganizationId: string,
+      workspaceId: string,
+      supportSession: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request(
+        '/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate',
+        {
+          method: 'POST',
+          path: { organizationId: targetOrganizationId, workspaceId },
+          headers: {
+            ...requiredKeyHeaders(idempotencyKey),
+            'x-zapp-support-session': supportSession,
+          },
+        },
+      ),
+    terminateAdminOrganizationSandboxes: (
+      targetOrganizationId: string,
+      supportSession: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/admin/organizations/{organizationId}/terminate-all', {
+        method: 'POST',
+        path: { organizationId: targetOrganizationId },
+        headers: {
+          ...requiredKeyHeaders(idempotencyKey),
+          'x-zapp-support-session': supportSession,
+        },
       }),
     createRun: (projectId: string, body: CreateRunInput, idempotencyKey?: string) =>
       client.request('/v1/projects/{projectId}/runs', {

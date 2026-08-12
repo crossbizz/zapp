@@ -12,7 +12,12 @@ import {
   ReadBuilderPreviewLogsInputSchema,
   RestartBuilderPreviewInputSchema,
   SandboxServiceError,
+  SupportTerminateWorkspaceResultSchema,
+  TerminateOrganizationInputSchema,
+  TerminateOrganizationResultSchema,
+  TerminateWorkspaceInputSchema,
   type BuilderPreviewSandboxPort,
+  type SupportSandboxServicePort,
 } from './port.js';
 
 const REQUEST_DEADLINE_MS = 10_000;
@@ -124,6 +129,80 @@ export function createBuilderPreviewSandboxClient(
         },
       );
       return BuilderPreviewDevServerResponseSchema.parse(await readableJson(response));
+    },
+  };
+}
+
+const TerminatedWorkspaceResponseSchema = z
+  .object({
+    workspace: z
+      .object({ status: z.literal('terminated'), terminatedAt: z.coerce.date() })
+      .passthrough(),
+  })
+  .strict();
+
+/** Service-authenticated support bridge to WS-15's audited kill boundaries. */
+export function createSupportSandboxClient(
+  options: BuilderPreviewSandboxClientOptions,
+): SupportSandboxServicePort {
+  const baseUrl = options.baseUrl.replace(/\/+$/u, '');
+  const signer = createServiceTokenSigner(options.serviceTokens);
+  const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
+
+  const token = async (): Promise<string> =>
+    (
+      await signer.signServiceToken({
+        service: 'control-api',
+        aud: 'sandbox-service',
+      })
+    ).token;
+
+  return {
+    async terminateWorkspace(untrustedInput) {
+      const input = TerminateWorkspaceInputSchema.parse(untrustedInput);
+      const response = await request(
+        doFetch,
+        `${baseUrl}/internal/workspaces/${input.workspace.id}/terminate`,
+        {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            'idempotency-key': input.operationKey,
+            'x-zapp-organization-id': input.workspace.organizationId,
+            'x-zapp-project-id': input.workspace.projectId,
+            'x-zapp-service-token': await token(),
+          },
+          body: JSON.stringify({ operationKey: input.operationKey }),
+          signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+        },
+      );
+      const result = TerminatedWorkspaceResponseSchema.parse(await readableJson(response));
+      return SupportTerminateWorkspaceResultSchema.parse(result.workspace);
+    },
+
+    async terminateOrganization(untrustedInput) {
+      const input = TerminateOrganizationInputSchema.parse(untrustedInput);
+      const response = await request(
+        doFetch,
+        `${baseUrl}/internal/orgs/${input.organizationId}/terminate-all`,
+        {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            'idempotency-key': input.operationKey,
+            'x-zapp-service-token': await token(),
+          },
+          body: JSON.stringify({
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+            operationKey: input.operationKey,
+          }),
+          signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+        },
+      );
+      return TerminateOrganizationResultSchema.parse(await readableJson(response));
     },
   };
 }

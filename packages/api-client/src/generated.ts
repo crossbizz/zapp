@@ -1,4 +1,598 @@
 export interface paths {
+    "/v1/admin/organizations/{organizationId}/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header: {
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            organization: {
+                                id: string;
+                                name: string;
+                                plan: string;
+                                slug: string;
+                            };
+                            projects: {
+                                /** Format: date-time */
+                                archivedAt: string | null;
+                                deploymentStatus: string | null;
+                                id: string;
+                                /** Format: date-time */
+                                lastActivityAt: string | null;
+                                name: string;
+                                releaseStatus: string | null;
+                                runs: {
+                                    /** Format: date-time */
+                                    completedAt: string | null;
+                                    id: string;
+                                    mode: string;
+                                    projectId: string;
+                                    /** Format: date-time */
+                                    startedAt: string;
+                                    status: string;
+                                }[];
+                                slug: string;
+                                supportLevel: string;
+                                workspaces: {
+                                    /** Format: date-time */
+                                    createdAt: string;
+                                    id: string;
+                                    /** Format: date-time */
+                                    lastActiveAt: string | null;
+                                    projectId: string;
+                                    provider: string;
+                                    resourceProfile: string;
+                                    runId: string | null;
+                                    /** @enum {string} */
+                                    status: "requested" | "provisioning" | "started" | "ready" | "active" | "checkpointing" | "idle" | "terminated";
+                                    /** Format: date-time */
+                                    terminatedAt: string | null;
+                                }[];
+                            }[];
+                            usage: {
+                                byCategory: {
+                                    category: string;
+                                    quantity: string;
+                                }[];
+                                byProject: {
+                                    projectId: string | null;
+                                    quantity: string;
+                                }[];
+                                byRun: {
+                                    quantity: string;
+                                    runId: string | null;
+                                }[];
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header: {
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artifacts: {
+                                contentHash: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                type: string;
+                            }[];
+                            events: {
+                                agentId: string | null;
+                                id: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                payload: {
+                                    [key: string]: unknown;
+                                };
+                                phaseId: string | null;
+                                sequence: number;
+                                taskId: string | null;
+                                type: string;
+                            }[];
+                            run: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                mode: string;
+                                projectId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                            };
+                            sourceInspection: {
+                                /** @enum {boolean} */
+                                allowed: false;
+                                /** @enum {boolean} */
+                                requiresCustomerGrant: true;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            run: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                mode: string;
+                                projectId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/terminate-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            terminated: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            workspace: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                /** Format: date-time */
+                                lastActiveAt: string | null;
+                                projectId: string;
+                                provider: string;
+                                resourceProfile: string;
+                                runId: string | null;
+                                /** @enum {string} */
+                                status: "requested" | "provisioning" | "started" | "ready" | "active" | "checkpointing" | "idle" | "terminated";
+                                /** Format: date-time */
+                                terminatedAt: string | null;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/support-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        organizationId: string;
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            expiresAt: string;
+                            id: string;
+                            organizationId: string;
+                            token: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/attachments/{attachmentId}": {
         parameters: {
             query?: never;
@@ -3267,13 +3861,13 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_linked" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
                     limit?: number;
                     targetId?: string;
-                    targetType?: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "integration_connection";
+                    targetType?: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "incident" | "integration_connection";
                     to?: string;
                 };
                 header?: never;
@@ -3329,7 +3923,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_linked" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -3342,7 +3936,7 @@ export interface paths {
                                 organizationId: string;
                                 targetId: string | null;
                                 /** @enum {string} */
-                                targetType: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "integration_connection";
+                                targetType: "organization" | "membership" | "invite" | "project" | "specification" | "run" | "workspace" | "artifact" | "secret" | "release" | "incident" | "integration_connection";
                             }[];
                             nextCursor: string | null;
                         };
@@ -4680,7 +5274,6 @@ export interface paths {
                                 errorPayload: string;
                                 evidenceArtifactId: string | null;
                                 fixRequest: {
-                                    errorPayload?: string;
                                     evidence: ({
                                         artifactId: string;
                                         /** @enum {string} */
@@ -4692,14 +5285,7 @@ export interface paths {
                                         summary: string;
                                         /** Format: uri */
                                         url: string;
-                                    } | {
-                                        incidentId: string;
-                                        /** @enum {string} */
-                                        kind: "incident_record";
-                                        summary: string;
                                     })[];
-                                    incidentId?: string;
-                                    releaseId?: string;
                                     relevantCommitSha: string;
                                     reproductionRef: string;
                                     /** @enum {string} */
@@ -4804,7 +5390,6 @@ export interface paths {
                                 errorPayload: string;
                                 evidenceArtifactId: string | null;
                                 fixRequest: {
-                                    errorPayload?: string;
                                     evidence: ({
                                         artifactId: string;
                                         /** @enum {string} */
@@ -4816,14 +5401,7 @@ export interface paths {
                                         summary: string;
                                         /** Format: uri */
                                         url: string;
-                                    } | {
-                                        incidentId: string;
-                                        /** @enum {string} */
-                                        kind: "incident_record";
-                                        summary: string;
                                     })[];
-                                    incidentId?: string;
-                                    releaseId?: string;
                                     relevantCommitSha: string;
                                     reproductionRef: string;
                                     /** @enum {string} */
@@ -5150,7 +5728,6 @@ export interface paths {
                             maxCredits: number;
                         };
                         fixRequest: {
-                            errorPayload?: string;
                             evidence: ({
                                 artifactId: string;
                                 /** @enum {string} */
@@ -5162,14 +5739,7 @@ export interface paths {
                                 summary: string;
                                 /** Format: uri */
                                 url: string;
-                            } | {
-                                incidentId: string;
-                                /** @enum {string} */
-                                kind: "incident_record";
-                                summary: string;
                             })[];
-                            incidentId?: string;
-                            releaseId?: string;
                             relevantCommitSha: string;
                             reproductionRef: string;
                             /** @enum {string} */

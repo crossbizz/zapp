@@ -244,7 +244,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
 - [x] OPS-13 Injection evals + policy scans blocking
 - [x] OPS-14 Retention archival + rehydration
-- [ ] OPS-17 Support/admin console
+- [x] OPS-17 Support/admin console
 - [ ] CP-17 Retention & deletion pipeline
 - [ ] CP-18 Export APIs
 - [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel

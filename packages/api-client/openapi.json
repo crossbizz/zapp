@@ -1812,6 +1812,8 @@
                 "project.created",
                 "project.updated",
                 "project.scan_requested",
+                "project.deletion_requested",
+                "project.exported",
                 "specification.created",
                 "specification.updated",
                 "specification.approved",
@@ -1856,8 +1858,9 @@
                 "release.deploy_requested",
                 "release.rollback_requested",
                 "incident.created",
-                "incident.fix_run_created",
+                "incident.fix_linked",
                 "incident.resolved",
+                "support.impersonation",
                 "integration.connected",
                 "secret.decrypted",
                 "git_token.minted",
@@ -1882,6 +1885,7 @@
                 "artifact",
                 "secret",
                 "release",
+                "incident",
                 "integration_connection"
               ]
             },
@@ -1982,6 +1986,8 @@
                               "project.created",
                               "project.updated",
                               "project.scan_requested",
+                              "project.deletion_requested",
+                              "project.exported",
                               "specification.created",
                               "specification.updated",
                               "specification.approved",
@@ -2026,8 +2032,9 @@
                               "release.deploy_requested",
                               "release.rollback_requested",
                               "incident.created",
-                              "incident.fix_run_created",
+                              "incident.fix_linked",
                               "incident.resolved",
+                              "support.impersonation",
                               "integration.connected",
                               "secret.decrypted",
                               "git_token.minted",
@@ -2047,6 +2054,7 @@
                               "artifact",
                               "secret",
                               "release",
+                              "incident",
                               "integration_connection"
                             ]
                           },
@@ -2710,6 +2718,1438 @@
                   },
                   "required": [
                     "settings"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/support-sessions": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "organizationId": {
+                    "type": "string",
+                    "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organizationId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^support_[0-9a-f]{32}$"
+                    },
+                    "token": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "organizationId": {
+                      "type": "string",
+                      "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "token",
+                    "organizationId",
+                    "expiresAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/{organizationId}/overview": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "from",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "to",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "header",
+            "name": "x-zapp-support-session",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organization": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "slug": {
+                          "type": "string"
+                        },
+                        "plan": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "slug",
+                        "plan"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "slug": {
+                            "type": "string"
+                          },
+                          "supportLevel": {
+                            "type": "string"
+                          },
+                          "archivedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "lastActivityAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "releaseStatus": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "deploymentStatus": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "runs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                                },
+                                "projectId": {
+                                  "type": "string",
+                                  "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "type": "string"
+                                },
+                                "startedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "completedAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "projectId",
+                                "mode",
+                                "status",
+                                "startedAt",
+                                "completedAt"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 25
+                          },
+                          "workspaces": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+                                },
+                                "projectId": {
+                                  "type": "string",
+                                  "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                                },
+                                "runId": {
+                                  "type": "string",
+                                  "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$",
+                                  "nullable": true
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "requested",
+                                    "provisioning",
+                                    "started",
+                                    "ready",
+                                    "active",
+                                    "checkpointing",
+                                    "idle",
+                                    "terminated"
+                                  ]
+                                },
+                                "resourceProfile": {
+                                  "type": "string"
+                                },
+                                "createdAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "lastActiveAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                },
+                                "terminatedAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "projectId",
+                                "runId",
+                                "provider",
+                                "status",
+                                "resourceProfile",
+                                "createdAt",
+                                "lastActiveAt",
+                                "terminatedAt"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 25
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "slug",
+                          "supportLevel",
+                          "archivedAt",
+                          "lastActivityAt",
+                          "releaseStatus",
+                          "deploymentStatus",
+                          "runs",
+                          "workspaces"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 50
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "byCategory": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "category": {
+                                "type": "string"
+                              },
+                              "quantity": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "category",
+                              "quantity"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "byProject": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "projectId": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "quantity": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "projectId",
+                              "quantity"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "byRun": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "runId": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "quantity": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "runId",
+                              "quantity"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "byCategory",
+                        "byProject",
+                        "byRun"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "organization",
+                    "projects",
+                    "usage"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "runId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "header",
+            "name": "x-zapp-support-session",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "projectId",
+                        "mode",
+                        "status",
+                        "startedAt",
+                        "completedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "sequence": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "occurredAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "phaseId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "taskId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "payload": {
+                            "type": "object",
+                            "additionalProperties": {}
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "sequence",
+                          "type",
+                          "occurredAt",
+                          "phaseId",
+                          "taskId",
+                          "agentId",
+                          "payload"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 100
+                    },
+                    "artifacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "contentHash": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "contentHash",
+                          "createdAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 100
+                    },
+                    "sourceInspection": {
+                      "type": "object",
+                      "properties": {
+                        "allowed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "requiresCustomerGrant": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "allowed",
+                        "requiresCustomerGrant"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "run",
+                    "events",
+                    "artifacts",
+                    "sourceInspection"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/{organizationId}/terminate-all": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "header",
+            "name": "x-zapp-support-session",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "terminated": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "terminated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/terminate": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "runId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "header",
+            "name": "x-zapp-support-session",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "completedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "projectId",
+                        "mode",
+                        "status",
+                        "startedAt",
+                        "completedAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "run"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "organizationId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "workspaceId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{8,255}$"
+            },
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "header",
+            "name": "x-zapp-support-session",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "runId": {
+                          "type": "string",
+                          "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$",
+                          "nullable": true
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "requested",
+                            "provisioning",
+                            "started",
+                            "ready",
+                            "active",
+                            "checkpointing",
+                            "idle",
+                            "terminated"
+                          ]
+                        },
+                        "resourceProfile": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "lastActiveAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        },
+                        "terminatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "projectId",
+                        "runId",
+                        "provider",
+                        "status",
+                        "resourceProfile",
+                        "createdAt",
+                        "lastActiveAt",
+                        "terminatedAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "workspace"
                   ],
                   "additionalProperties": false
                 }
@@ -4842,50 +6282,11 @@
                                     "summary"
                                   ],
                                   "additionalProperties": false
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "kind": {
-                                      "type": "string",
-                                      "enum": [
-                                        "incident_record"
-                                      ]
-                                    },
-                                    "incidentId": {
-                                      "type": "string",
-                                      "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                                    },
-                                    "summary": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 2000
-                                    }
-                                  },
-                                  "required": [
-                                    "kind",
-                                    "incidentId",
-                                    "summary"
-                                  ],
-                                  "additionalProperties": false
                                 }
                               ]
                             },
                             "minItems": 1,
                             "maxItems": 100
-                          },
-                          "incidentId": {
-                            "type": "string",
-                            "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                          },
-                          "releaseId": {
-                            "type": "string",
-                            "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
-                          },
-                          "errorPayload": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 10000
                           }
                         },
                         "required": [
@@ -16830,50 +18231,11 @@
                                         "summary"
                                       ],
                                       "additionalProperties": false
-                                    },
-                                    {
-                                      "type": "object",
-                                      "properties": {
-                                        "kind": {
-                                          "type": "string",
-                                          "enum": [
-                                            "incident_record"
-                                          ]
-                                        },
-                                        "incidentId": {
-                                          "type": "string",
-                                          "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                                        },
-                                        "summary": {
-                                          "type": "string",
-                                          "minLength": 1,
-                                          "maxLength": 2000
-                                        }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "incidentId",
-                                        "summary"
-                                      ],
-                                      "additionalProperties": false
                                     }
                                   ]
                                 },
                                 "minItems": 1,
                                 "maxItems": 100
-                              },
-                              "incidentId": {
-                                "type": "string",
-                                "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                              },
-                              "releaseId": {
-                                "type": "string",
-                                "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
-                              },
-                              "errorPayload": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 10000
                               }
                             },
                             "required": [
@@ -17259,50 +18621,11 @@
                                       "summary"
                                     ],
                                     "additionalProperties": false
-                                  },
-                                  {
-                                    "type": "object",
-                                    "properties": {
-                                      "kind": {
-                                        "type": "string",
-                                        "enum": [
-                                          "incident_record"
-                                        ]
-                                      },
-                                      "incidentId": {
-                                        "type": "string",
-                                        "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                                      },
-                                      "summary": {
-                                        "type": "string",
-                                        "minLength": 1,
-                                        "maxLength": 2000
-                                      }
-                                    },
-                                    "required": [
-                                      "kind",
-                                      "incidentId",
-                                      "summary"
-                                    ],
-                                    "additionalProperties": false
                                   }
                                 ]
                               },
                               "minItems": 1,
                               "maxItems": 100
-                            },
-                            "incidentId": {
-                              "type": "string",
-                              "pattern": "^aud_[0-9A-HJKMNP-TV-Z]{26}$"
-                            },
-                            "releaseId": {
-                              "type": "string",
-                              "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
-                            },
-                            "errorPayload": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 10000
                             }
                           },
                           "required": [

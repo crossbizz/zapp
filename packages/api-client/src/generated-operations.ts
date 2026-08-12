@@ -1,5 +1,135 @@
 /** Generated from the live public OpenAPI document. Do not edit. */
 export const PUBLIC_API_OPERATIONS = {
+  "/v1/admin/organizations/{organizationId}/overview": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/admin/organizations/{organizationId}/runs/{runId}/terminate": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "202": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/admin/organizations/{organizationId}/terminate-all": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/admin/support-sessions": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/attachments/{attachmentId}": {
     "get": {
       "security": [

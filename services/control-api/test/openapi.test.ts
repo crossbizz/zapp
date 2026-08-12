@@ -14,6 +14,11 @@ const apps: AppInstance[] = [];
 
 function documentedApp(): AppInstance {
   const built = buildHarness({
+    admin: { enabled: false, staffUserIds: [] },
+    usageLedger: {
+      recordUsage: () => Promise.reject(new Error('OpenAPI must not record usage.')),
+      getUsageSummary: () => Promise.reject(new Error('OpenAPI must not read usage.')),
+    },
     // Route registration is declarative; this sentinel makes an accidental
     // database access during document creation loud without supplying a fake
     // data surface the routes could accidentally use.
@@ -134,8 +139,14 @@ describe('GET /v1/openapi.json', () => {
       '/v1/webhooks/github',
       '/v1/feature-flags',
       '/v1/forks',
+      '/v1/admin/support-sessions',
+      '/v1/admin/organizations/{organizationId}/overview',
+      '/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics',
+      '/v1/admin/organizations/{organizationId}/runs/{runId}/terminate',
+      '/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate',
+      '/v1/admin/organizations/{organizationId}/terminate-all',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(74);
+    expect(Object.keys(document.paths)).toHaveLength(80);
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { loadAuthEnv } from '../src/auth/config.js';
+import { loadSupportAdminConfig } from '../src/routes/admin.js';
 import {
   loadEnv,
   loadArtifactStorageEnv,
@@ -107,6 +108,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
     expect(() => loadPostHogEnv(environment)).not.toThrow();
     expect(loadIncidentWebhookSecret(environment, 'development')).toBeUndefined();
+    expect(() => loadSupportAdminConfig(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
     expect(loadStripeBillingEnv(environment)).toBeUndefined();
   });
@@ -186,6 +188,8 @@ describe('the shipped .env.example', () => {
       'ARTIFACT_SECRET',
       'POSTHOG_KEY',
       'POSTHOG_HOST',
+      'SUPPORT_ADMIN_ENABLED',
+      'SUPPORT_ADMIN_USER_IDS',
     ]) {
       expect(template, name).toHaveProperty(name);
     }
@@ -206,6 +210,33 @@ describe('the shipped .env.example', () => {
   });
 });
 
+describe('support admin configuration', () => {
+  it('is disabled by default and accepts an exact staff user allowlist', () => {
+    expect(loadSupportAdminConfig({})).toEqual({ enabled: false, staffUserIds: [] });
+    expect(
+      loadSupportAdminConfig({
+        SUPPORT_ADMIN_ENABLED: 'true',
+        SUPPORT_ADMIN_USER_IDS:
+          'user_00000000000000000000000001,user_00000000000000000000000002',
+      }),
+    ).toEqual({
+      enabled: true,
+      staffUserIds: [
+        'user_00000000000000000000000001',
+        'user_00000000000000000000000002',
+      ],
+    });
+  });
+
+  it('refuses malformed staff identifiers without exposing their values', () => {
+    expect(() =>
+      loadSupportAdminConfig({
+        SUPPORT_ADMIN_ENABLED: 'true',
+        SUPPORT_ADMIN_USER_IDS: 'not-a-user-id',
+      }),
+    ).toThrow(new Error('Invalid environment: SUPPORT_ADMIN_USER_IDS'));
+  });
+});
 describe('PostHog configuration', () => {
   it('loads the server project key and normalizes the host', () => {
     expect(

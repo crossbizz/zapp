@@ -59,6 +59,7 @@ interface OpenApiOperation {
 
 function documentedHarness(): Harness {
   const built = buildHarness({
+    admin: { enabled: false, staffUserIds: [] },
     incidentStore: createInMemoryIncidentStore(),
     incidentWebhookSecret: 'openapi-grafana-secret-that-is-long-enough',
     notificationState: createInMemoryNotificationState(),
@@ -280,6 +281,60 @@ describe('generated API types', () => {
     );
   });
 
+  it('publishes the reason-gated, support-session-bound admin API', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const supportSession = paths['/v1/admin/support-sessions']?.['post'];
+    const overview =
+      paths['/v1/admin/organizations/{organizationId}/overview']?.['get'];
+    const terminateRun =
+      paths['/v1/admin/organizations/{organizationId}/runs/{runId}/terminate']?.['post'];
+    const terminateAll =
+      paths['/v1/admin/organizations/{organizationId}/terminate-all']?.['post'];
+
+    expect(supportSession?.requestBody?.required).toBe(true);
+    expect(supportSession?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+      ]),
+    );
+    expect(overview?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+    expect(terminateRun?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+    expect(terminateAll?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+
+    type StartSupportSessionPost = NonNullable<
+      GeneratedPaths['/v1/admin/support-sessions']['post']
+    >;
+    type SupportHeaders = NonNullable<StartSupportSessionPost['parameters']['header']>;
+    const generatedHeaders: SupportHeaders = { 'idempotency-key': 'support-session-0001' };
+    expect(generatedHeaders['idempotency-key']).toBe('support-session-0001');
+  });
   it('projects validated model choices through the public membership schema', async () => {
     // Break caught: WEB-3 falls back to the Owner-only settings route when /v1/me
     // does not carry the model identifiers a Builder is permitted to select.

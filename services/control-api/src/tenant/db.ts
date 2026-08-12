@@ -448,7 +448,7 @@ export interface CompleteRunOperationInput {
 }
 
 export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
-  byProject(projectId: string): Promise<AgentRun[]>;
+  byProject(projectId: string, limit?: number): Promise<AgentRun[]>;
   /** Plan-limit admission reads only active autonomous runs for this tenant. */
   countActiveAutonomousRuns(): Promise<number>;
   /** Redis credit mirrors are summed only for active runs in this tenant. */
@@ -495,6 +495,8 @@ export interface CompleteWorkspaceOperationInput {
 }
 export interface TenantWorkspaceRepository {
   getById(workspaceId: string): Promise<Workspace | undefined>;
+  /** Bounded newest-first status projection for one tenant project. */
+  byProject(projectId: string, limit: number): Promise<Workspace[]>;
   create(input: NewWorkspaceInput): Promise<Workspace>;
   completeCreate(input: CompleteWorkspaceCreateInput): Promise<Workspace | undefined>;
   claimOperation(
@@ -1839,6 +1841,19 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       runs: {
         ...base.runs,
 
+        async byProject(projectId, rawLimit): Promise<AgentRun[]> {
+          if (rawLimit === undefined) return await base.runs.byProject(projectId);
+          const limit = z.number().int().min(1).max(25).parse(rawLimit);
+          return await db
+            .select()
+            .from(agentRuns)
+            .where(
+              and(eq(agentRuns.organizationId, orgId), eq(agentRuns.projectId, projectId)),
+            )
+            .orderBy(desc(agentRuns.id))
+            .limit(limit);
+        },
+
         async countActiveAutonomousRuns(): Promise<number> {
           const [result] = await db
             .select({ count: sql<number>`count(*)::int` })
@@ -2168,6 +2183,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .where(scoped(workspaces.organizationId, eq(workspaces.id, id)))
             .limit(1);
           return row;
+        },
+        async byProject(projectId, rawLimit) {
+          const limit = z.number().int().min(1).max(25).parse(rawLimit);
+          return await db
+            .select()
+            .from(workspaces)
+            .where(
+              scoped(
+                workspaces.organizationId,
+                eq(workspaces.projectId, projectId),
+              ),
+            )
+            .orderBy(desc(workspaces.id))
+            .limit(limit);
         },
         async create(input) {
           return await db.transaction(async (tx) => {

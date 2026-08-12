@@ -24,10 +24,15 @@ import {
 import type { GitServicePort } from '../../src/git/port.js';
 import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
-import type { BuilderPreviewSandboxPort, SandboxServicePort } from '../../src/sandbox/port.js';
+import type {
+  BuilderPreviewSandboxPort,
+  SandboxServicePort,
+  SupportSandboxServicePort,
+} from '../../src/sandbox/port.js';
 import type { ReleasePort } from '../../src/routes/releases.js';
 import type { IncidentStore } from '../../src/routes/incidents.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
+import type { AdminRoutesConfig } from '../../src/routes/admin.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
@@ -252,6 +257,7 @@ export interface HarnessOptions {
   readonly orchestrator?: OrchestratorPort;
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  readonly supportSandbox?: SupportSandboxServicePort;
   readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
   readonly builderPreviewProxy?: PreviewRoutesDeps['proxy'];
   readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
@@ -291,6 +297,7 @@ export interface HarnessOptions {
   readonly featureFlags?: FeatureFlagEvaluator;
   readonly notificationState?: NotificationDeps['state'];
   readonly notificationEnqueue?: NotificationDeps['enqueue'];
+  readonly admin?: AdminRoutesConfig;
 }
 
 /**
@@ -342,6 +349,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { attachmentStorage: options.attachmentStorage }),
             capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+            ...(options.supportSandbox === undefined
+              ? {}
+              : { supportSandbox: options.supportSandbox }),
             ...(options.builderPreviewSandbox === undefined
               ? {}
               : { builderPreviewSandbox: options.builderPreviewSandbox }),
@@ -392,6 +402,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       ? {}
       : { productAnalytics: options.productAnalytics }),
     ...(options.featureFlags === undefined ? {} : { featureFlags: options.featureFlags }),
+    ...(options.admin === undefined ? {} : { admin: options.admin }),
     ...(options.notificationState === undefined
       ? {}
       : {

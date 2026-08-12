@@ -28,6 +28,7 @@ import {
 import { z } from 'zod';
 
 import type { AuthConfig } from './auth/config.js';
+import { createSupportTenantAccess } from './admin/tenant-access.js';
 import {
   createInMemoryTokenDenylist,
   sessionFamilyKey,
@@ -66,8 +67,10 @@ import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestr
 import {
   createUnavailableBuilderPreviewSandbox,
   createUnavailableSandboxService,
+  createUnavailableSupportSandboxService,
   type BuilderPreviewSandboxPort,
   type SandboxServicePort,
+  type SupportSandboxServicePort,
 } from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { registerInternalEventRoutes } from './internal/events.js';
@@ -102,6 +105,7 @@ import {
   type AttachmentStoragePort,
 } from './routes/attachments.js';
 import { registerAuditRoutes } from './routes/audit.js';
+import { registerAdminRoutes, type AdminRoutesConfig } from './routes/admin.js';
 import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
 import { registerForkRoutes } from './routes/forks.js';
 import { registerFeatureFlagRoutes } from './routes/feature-flags.js';
@@ -222,6 +226,8 @@ export interface TenantDeps {
   /** VF-3's Temporal workspace activity client. Missing deployments fail closed. */
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  /** OPS-17 service-authenticated bridge to WS-15's support kill boundaries. */
+  readonly supportSandbox?: SupportSandboxServicePort;
   /** CP-21 authenticated bridge to the sandbox dev-server surface. */
   readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
   /** CP-21 capture/screenshot projection through the internal preview transport. */
@@ -360,6 +366,8 @@ export interface AppDeps {
   readonly featureFlags?: FeatureFlagEvaluator;
   /** OPS-7's queue producer and per-user delivery preferences. */
   readonly notifications?: NotificationDeps;
+  /** OPS-17's separately enabled and allowlisted staff surface. */
+  readonly admin?: AdminRoutesConfig;
 }
 
 /**
@@ -523,6 +531,17 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   if (deps.usageLedger !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: usage routes require service authentication');
   }
+  if (deps.admin !== undefined && (deps.tenant === undefined || deps.usageLedger === undefined)) {
+    throw new Error('refusing to start: admin routes require tenant and usage dependencies');
+  }
+  if (
+    deps.admin?.enabled === true &&
+    (deps.tenant?.orchestrator === undefined || deps.tenant.supportSandbox === undefined)
+  ) {
+    throw new Error(
+      'refusing to start: enabled admin routes require orchestrator and support sandbox dependencies',
+    );
+  }
 
   if (deps.tenant !== undefined && deps.orgs === undefined) {
     // The tenant plugin's whole job is "is this caller an active member of this
@@ -651,6 +670,19 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             registerNotificationRoutes(app, deps.notifications.state);
           }
           registerAuditRoutes(app, { organizations: orgs.organizations });
+          if (deps.admin !== undefined && deps.usageLedger !== undefined) {
+            registerAdminRoutes(app, {
+              config: deps.admin,
+              sessionSecret: auth.config.sessionSecret,
+              organizations: orgs.organizations,
+              tenants: createSupportTenantAccess(tenant.tenantDb),
+              orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+              sandbox: tenant.supportSandbox ?? createUnavailableSupportSandboxService(),
+              usage: deps.usageLedger,
+              audit: sink,
+              now,
+            });
+          }
           // Static paths must be enrolled before `/v1/projects/:projectId`, or
           // Fastify treats `summaries` as a malformed project id.
           registerProjectSummaryRoutes(app, {

@@ -41,6 +41,7 @@ import {
   createDatabaseSnapshotRetentionAuditPort,
 } from './jobs/archive.js';
 import { createRedisConnection } from './redis/client.js';
+import { loadSupportAdminConfig } from './routes/admin.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
 import {
@@ -162,6 +163,7 @@ const githubQueueConfig = loadGitHubWebhookQueueEnv();
 const githubImportQueueConfig = loadGitHubImportQueueEnv();
 const posthog = loadPostHogEnv();
 const incidentWebhookSecret = loadIncidentWebhookSecret(process.env, env.NODE_ENV);
+const admin = loadSupportAdminConfig();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -251,6 +253,7 @@ const app = composeApp({
   github,
   posthog,
   ...(incidentWebhookSecret === undefined ? {} : { incidentWebhookSecret }),
+  admin,
   notifications: {
     state: notificationState,
     enqueue: (trigger) => notificationProducer.enqueue(trigger),
