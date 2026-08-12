@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Writable } from 'node:stream';
 import { rgPath } from '@vscode/ripgrep';
 import { z } from 'zod';
-import { AtomicWriteConflictError, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
+import {
+  AtomicWriteConflictError,
+  PathViolationError,
+  resolveInRoot,
+} from '@zapp/workspace-runtime';
 
 const NonEmptyNoNulStringSchema = z
   .string()
@@ -61,9 +66,22 @@ export class FileOperationValidationError extends Error {
   }
 }
 
+export class DirectEditCommitError extends Error {
+  constructor() {
+    super('Workspace direct edit could not be committed');
+    this.name = 'DirectEditCommitError';
+  }
+}
+
+export const MAX_DIRECT_EDIT_BYTES = 1_024 * 1_024;
+
+function directEditCompareToken(data: Uint8Array): string {
+  return `sha256:${createHash('sha256').update(data).digest('hex')}`;
+}
+
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATH_HELPER = join(PACKAGE_ROOT, 'dist', 'native', 'path-helper');
-const TYPED_EARLY_EXIT_CODES = new Set([65, 66]);
+const TYPED_EARLY_EXIT_CODES = new Set([65, 66, 67]);
 
 class NativePathHelperError extends Error {
   constructor(readonly exitCode: number | null) {
@@ -98,7 +116,10 @@ function isTypedEarlyExitPipeClosure(error: Error, exitCode: number | null): boo
 }
 
 function globMatches(path: string, glob: string): boolean {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replaceAll('*', '.*').replaceAll('?', '.');
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/gu, '\\$&')
+    .replaceAll('*', '.*')
+    .replaceAll('?', '.');
   return new RegExp(`^${escaped}$`, 'u').test(basename(path));
 }
 
@@ -152,7 +173,11 @@ function runNativeHelper(
     const child = spawn(PATH_HELPER, args, {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    if (child.stdout === null || child.stderr === null || (input !== undefined && child.stdin === null)) {
+    if (
+      child.stdout === null ||
+      child.stderr === null ||
+      (input !== undefined && child.stdin === null)
+    ) {
       child.kill('SIGKILL');
       rejectResult(new NativePathHelperError(null));
       return;
@@ -209,6 +234,9 @@ function translateAdvancedHelperError(error: unknown, path: string): never {
   if (error instanceof NativePathHelperError && error.exitCode === 66) {
     throw new FileOperationValidationError('Workspace file operation rejected');
   }
+  if (error instanceof NativePathHelperError && error.exitCode === 67) {
+    throw new AtomicWriteConflictError();
+  }
   throw error;
 }
 
@@ -261,6 +289,27 @@ export async function readWorkspaceFile(root: string, path: string): Promise<Buf
   return runPathOperation('read', root, path);
 }
 
+async function readWorkspaceFileBounded(root: string, path: string, maximumBytes: number) {
+  await resolveInRoot(root, path);
+  try {
+    const result = await runNativeHelper(
+      ['read-limited', root, path, String(maximumBytes)],
+      undefined,
+      new Set([0]),
+      maximumBytes,
+    );
+    return result.stdout;
+  } catch (error: unknown) {
+    if (error instanceof NativePathHelperError && error.exitCode === 65) {
+      throw new PathViolationError(path);
+    }
+    if (error instanceof NativePathHelperError && error.exitCode === 66) {
+      throw new FileOperationValidationError('Workspace file exceeds the direct-edit limit');
+    }
+    throw error;
+  }
+}
+
 export async function writeWorkspaceFile(root: string, path: string, body: Buffer): Promise<void> {
   await resolveInRoot(root, path);
   await runPathOperation('write', root, path, body);
@@ -285,6 +334,10 @@ export class WorkspaceFileManager {
     }
   }
 
+  async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    return this.serialize(operation);
+  }
+
   async write(path: string, body: Buffer): Promise<void> {
     await this.serialize(() => writeWorkspaceFile(this.root, path, body));
   }
@@ -294,11 +347,52 @@ export class WorkspaceFileManager {
     throw new AtomicWriteConflictError();
   }
 
+  async readForDirectEdit(path: string): Promise<{
+    readonly data: Buffer;
+    readonly compareToken: string;
+  }> {
+    const data = await readWorkspaceFileBounded(this.root, path, MAX_DIRECT_EDIT_BYTES);
+    return { data, compareToken: directEditCompareToken(data) };
+  }
+
+  async directEdit(
+    input: { readonly path: string; readonly data: Buffer; readonly compareToken: string },
+    commit: () => Promise<{ readonly exitCode: number; readonly commitSha?: string }>,
+  ): Promise<{ readonly commitSha: string }> {
+    if (input.data.byteLength > MAX_DIRECT_EDIT_BYTES) {
+      throw new FileOperationValidationError('Workspace file exceeds the direct-edit limit');
+    }
+    await resolveInRoot(this.root, input.path);
+    return this.serialize(async () => {
+      const previous = await readWorkspaceFileBounded(this.root, input.path, MAX_DIRECT_EDIT_BYTES);
+      if (directEditCompareToken(previous) !== input.compareToken) {
+        throw new AtomicWriteConflictError();
+      }
+      await this.compareAndSwapUnlocked(input.path, previous, input.data);
+      let committed: { readonly exitCode: number; readonly commitSha?: string };
+      try {
+        committed = await commit();
+      } catch {
+        await this.compareAndSwapUnlocked(input.path, input.data, previous);
+        throw new DirectEditCommitError();
+      }
+      if (committed.exitCode !== 0 || committed.commitSha === undefined) {
+        await this.compareAndSwapUnlocked(input.path, input.data, previous);
+        throw new DirectEditCommitError();
+      }
+      return { commitSha: committed.commitSha };
+    });
+  }
+
   async writeAtomically(files: readonly AtomicWorkspaceFile[]): Promise<void> {
     if (files.some((file) => file.expectedRevision !== undefined)) {
       throw new AtomicWriteConflictError();
     }
     for (const file of files) await resolveInRoot(this.root, file.path);
+    await this.serialize(() => this.writeAtomicallyUnlocked(files));
+  }
+
+  private async writeAtomicallyUnlocked(files: readonly AtomicWorkspaceFile[]): Promise<void> {
     const args = [
       'atomic-write',
       this.root,
@@ -306,15 +400,29 @@ export class WorkspaceFileManager {
       ...files.flatMap((file) => [file.path, String(file.data.byteLength)]),
     ];
     try {
-      await this.serialize(() =>
-        runNativeHelper(
-          args,
-          Buffer.concat(files.map((file) => Buffer.from(file.data))),
-          new Set([0]),
-        ),
+      await runNativeHelper(
+        args,
+        Buffer.concat(files.map((file) => Buffer.from(file.data))),
+        new Set([0]),
       );
     } catch (error: unknown) {
       translateAdvancedHelperError(error, files[0]?.path ?? '.');
+    }
+  }
+
+  private async compareAndSwapUnlocked(
+    path: string,
+    expected: Uint8Array,
+    replacement: Uint8Array,
+  ): Promise<void> {
+    try {
+      await runNativeHelper(
+        ['cas-write', this.root, path, String(expected.byteLength), String(replacement.byteLength)],
+        Buffer.concat([Buffer.from(expected), Buffer.from(replacement)]),
+        new Set([0]),
+      );
+    } catch (error: unknown) {
+      translateAdvancedHelperError(error, path);
     }
   }
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Modal JS SDK (pinned), Fastify (service + workspace-agent), execa + node-pty (agent), http-proxy (preview proxy), tar/zstd (patch checkpoints), @zapp/contracts.
 
-**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-15). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
+**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-16), M4 distribution (WS-17). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
 
 ## Global Constraints
 
@@ -457,6 +457,33 @@ Test-only; no provider call or production behavior change.
 
 ---
 
+### Task WS-16 [M2]: Workspace file + attributed direct-edit boundary
+
+**Files:** Modify sandbox-service workspace routes/services and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: service-authenticated lazy list/read plus compare-token write that atomically creates commit `manual edit via web`; path guards, bounded payloads, stale-write rejection, and no partial commit.
+- [x] Commit: `feat(sandbox): attributed workspace file edits`
+
+Execution expansion (2026-08-12; ADR-0032): the authenticated
+`sandbox/workspace-agent` route and its provider transport are the deployed execution half of
+sandbox-service, so they are required boundary imports/exports for the single edit-and-commit
+operation. No package outside Plan 03 is in scope.
+
+- [x] **16a RED — durable edit contract:** prove a bounded read returns bytes plus a stable compare token; a matching keyed edit creates exactly one commit with subject `manual edit via web`; stale tokens, path escapes, oversized payloads, and key reuse fail without changing bytes or `HEAD`.
+- [x] **16b GREEN — workspace transaction:** add descriptor-relative compare-and-swap replacement plus a serialized Git commit operation that preserves unrelated index entries and compensates file/index changes when commit creation fails.
+- [x] **16c RED/GREEN — Modal transport:** prove the provider validates and forwards the typed snapshot/edit envelopes, maps compare conflicts, and never exposes the provider workspace identity.
+- [x] **16d RED/GREEN — tenant route:** expose the service-token-only tenant-scoped snapshot and keyed direct-edit routes, retaining cross-tenant 404 behavior and canonical base64/size bounds.
+- [x] **16e verify/review/ship:** run workspace-agent and sandbox-service tests, lint/typecheck/build, root architecture checks, one capped Critical/Important review (exit zero), then check the tracker and append the execution-log line in the prescribed commit. No real-provider call is required because this task adds no provider credential or immutable-image publication; WS-17 remains the explicit immutable-image publication gate for this source.
+
+### Task WS-17 [M4]: Immutable public `forge-node-base` OCI mirror
+
+**Files:** Modify provider-neutral image recipe, GHCR workflow, image lock/config and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
+- [ ] Commit: `build(images): publish immutable forge node mirror`
+
 ## Testing strategy
 - Unit vs fakes for state machines/policies; env-gated integration against real Modal dev env (WS-4, WS-5, WS-7, WS-12); nightly E2E (WS-14).
 - The env-allowlist test (WS-11) and preview-auth test (WS-12) are permanent security suite members (referenced by OPS-12).
@@ -535,3 +562,5 @@ Test-only; no provider call or production behavior change.
 - 2026-08-10 M1-GATE-12 done — cold/full-contention verification exposed real-Chrome SSE/browser cleanup ordering and a post-snapshot leader-exit `ps` race; focused and affected package gates, root `pnpm verify`, and one zero-Critical/Important review passed without a provider call.
 - 2026-08-10 M2-CI-PREVIEW-CDP done — exact-sha CI exposed a 25 ms loopback CDP discovery race; the test now waits for the mocked connection boundary before explicit downstream abort and proves busy-slot retention plus late-browser cleanup; focused 1/1, preview-proxy 109/109, and package lint/typecheck/build passed with no provider call.
 - 2026-08-11 WS-1-FIX-1 done — Exact-SHA clean Linux CI observed an already-killed orphan PID before host reaping; the inherited-pipe proof now uses the existing bounded lifecycle helper while preserving the 500 ms kill deadline, exit 124, process-group containment, and cleanup. The focused case passed 20 consecutive runs and workspace-runtime passed 35/35 plus lint/typecheck/build, with no provider call, blocker, or deviation.
+- 2026-08-12 WS-16 done — service-authenticated tenant routes now expose bounded compare snapshots and keyed direct edits; the agent uses descriptor-relative bounded reads/CAS plus literal-path Git plumbing to build the requested blob/tree, CAS `HEAD`, preserve unrelated index state, and create exactly `manual edit via web`. Workspace-agent 124/124 and sandbox-service 160/171 (11 credential-gated skips), both package static/build gates, and root architecture 184/184 passed; the single capped review's bounded-read, Git-transaction, and pathspec findings were fixed, while immutable-image publication remains the binding WS-17 gate and no provider run occurred.
+- 2026-08-12 WS-16-CI-FIX-1 done — exact-SHA CI exposed a runner-dependent rollback fixture whose missing local Git email inherited CI's identity and committed successfully; the fixture now replaces its temporary repository's object directory with a regular file for one request, forcing the real Git commit path to fail independent of runner configuration. Workspace-agent lint/typecheck/build and 124/124 tests plus root architecture 184/184 passed; no review restart or provider run occurred.

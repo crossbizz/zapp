@@ -18,7 +18,11 @@ import {
   type GitTokenClient,
   type WorkspaceGitCommandPort,
 } from '../../src/provider/git-bootstrap.js';
-import type { WorkspaceAgentProvider, WorkspaceLifecycleRow, WorkspaceRowBoundary } from '../../src/routes/workspaces.js';
+import type {
+  WorkspaceAgentProvider,
+  WorkspaceLifecycleRow,
+  WorkspaceRowBoundary,
+} from '../../src/routes/workspaces.js';
 import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 
 const execFileAsync = promisify(execFile);
@@ -200,9 +204,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       CLEAN_CLONE_URL,
     );
     expect((await git(workspace, 'config', '--get', 'credential.helper')).stdout).toBe('\n');
-    expect((await git(workspace, 'config', '--get', 'user.name')).stdout.trim()).toBe(
-      'zapp-agent',
-    );
+    expect((await git(workspace, 'config', '--get', 'user.name')).stdout.trim()).toBe('zapp-agent');
     expect((await git(workspace, 'config', '--get', 'user.email')).stdout.trim()).toBe(
       'agent@zapp.build',
     );
@@ -371,10 +373,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       getStatus: () => Promise.resolve('ready'),
       updateNetworkPolicy: () => Promise.resolve(),
       exec: async (input, idempotencyKey) =>
-        (await commands.exec(
-          input,
-          idempotencyKey ?? OPERATION_KEY,
-        )) as WorkspaceAgentExecResult,
+        (await commands.exec(input, idempotencyKey ?? OPERATION_KEY)) as WorkspaceAgentExecResult,
       execStream: () => ({ [Symbol.asyncIterator]: async function* () {} }),
       killExec: unused,
       readFile: unused,
@@ -384,6 +383,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       health: unused,
       metrics: unused,
       readFileForUpdate: unused,
+      commitFileEdit: unused,
       writeFilesAtomically: unused,
       search: unused,
       deleteFile: unused,

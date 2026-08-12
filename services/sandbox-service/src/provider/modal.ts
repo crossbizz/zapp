@@ -647,9 +647,7 @@ async function waitForPreviewProxyHealth(
     );
     if (response.exitCode === 0) {
       try {
-        const health = PreviewProxyHealthSchema.safeParse(
-          JSON.parse(response.stdout) as unknown,
-        );
+        const health = PreviewProxyHealthSchema.safeParse(JSON.parse(response.stdout) as unknown);
         if (health.success) return;
         lastFailure = 'preview proxy returned an invalid health response';
       } catch {
@@ -904,9 +902,7 @@ export interface ModalWorkspaceCreateOptions {
   readonly sandboxName: string;
   readonly volume: Readonly<{
     name: string;
-    mounts: readonly [
-      Readonly<{ mountPath: '/cache'; subPath: '/cache' }>,
-    ];
+    mounts: readonly [Readonly<{ mountPath: '/cache'; subPath: '/cache' }>];
   }>;
   readonly command: readonly string[];
   readonly encryptedPorts: readonly [8877, 8080];
@@ -1122,6 +1118,36 @@ const AtomicFileWriteSchema = z
     data: z.instanceof(Uint8Array),
     expectedRevision: z.string().min(1).optional(),
   })
+  .strict();
+const MAX_DIRECT_EDIT_BYTES = 1_024 * 1_024;
+const CompareTokenSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const CanonicalBase64Schema = z
+  .string()
+  .refine(
+    (value) => Buffer.from(value, 'base64').toString('base64') === value,
+    'Expected canonical base64',
+  );
+const AgentFileUpdateSnapshotSchema = z
+  .object({
+    dataBase64: CanonicalBase64Schema,
+    byteLength: z.number().int().nonnegative().max(MAX_DIRECT_EDIT_BYTES),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
+const DirectFileEditInputSchema = z
+  .object({
+    path: z.string().min(1),
+    data: z
+      .instanceof(Uint8Array)
+      .refine(
+        (value) => value.byteLength <= MAX_DIRECT_EDIT_BYTES,
+        'Workspace file exceeds the direct-edit limit',
+      ),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
+const DirectFileEditResponseSchema = z
+  .object({ commitSha: z.string().regex(/^[a-f0-9]{40}$/u) })
   .strict();
 const SearchInputSchema = z
   .object({
@@ -1518,7 +1544,10 @@ function createModalWorkspaceSdk(
           createIfMissing: false,
         });
       } catch (error) {
-        if (error instanceof NotFoundError || (error as { readonly name?: unknown }).name === 'NotFoundError') {
+        if (
+          error instanceof NotFoundError ||
+          (error as { readonly name?: unknown }).name === 'NotFoundError'
+        ) {
           return '0';
         }
         throw error;
@@ -1659,7 +1688,12 @@ export class ModalSandboxProvider {
     ttlMs: number,
   ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }> {
     const id = z.string().min(1).parse(providerWorkspaceId);
-    const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+    const retentionMs = z
+      .number()
+      .int()
+      .positive()
+      .max(30 * 86_400_000)
+      .parse(ttlMs);
     const measurement = await this.exec({
       providerWorkspaceId: id,
       command: '/usr/bin/du',
@@ -1723,9 +1757,7 @@ export class ModalSandboxProvider {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
     const initialNetworkPolicy = resolveNetworkPolicy(input.networkProfile, []);
     const image =
-      input.purpose === 'verifier'
-        ? this.images['forge-web-test']
-        : this.images['forge-node-base'];
+      input.purpose === 'verifier' ? this.images['forge-web-test'] : this.images['forge-node-base'];
     if (input.imageTag !== image.publishedName || input.imageTag.includes(':latest')) {
       throw new Error('Workspace image must match the immutable image lock');
     }
@@ -1882,9 +1914,7 @@ export class ModalSandboxProvider {
         throw error;
       }
       const tags = SandboxTagsSchema.parse(untrustedTags);
-      const requiredTagNames = Object.keys(
-        attachment.requiredTags,
-      ) as Array<keyof SandboxTags>;
+      const requiredTagNames = Object.keys(attachment.requiredTags) as Array<keyof SandboxTags>;
       if (requiredTagNames.some((name) => tags[name] !== attachment.requiredTags[name])) {
         throw new ModalWorkspaceTagMismatchError();
       }
@@ -1892,7 +1922,9 @@ export class ModalSandboxProvider {
         await sandbox.waitUntilReady(Math.max(1, deadline - this.clockMs()));
         for (;;) {
           if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
-          const health = WorkspaceAgentHealthSchema.parse(await sandbox.agentHealth(this.agentToken));
+          const health = WorkspaceAgentHealthSchema.parse(
+            await sandbox.agentHealth(this.agentToken),
+          );
           if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
           if (health.ok) break;
           await this.sleep(Math.min(HEALTH_PROBE_INTERVAL_MS, deadline - this.clockMs()));
@@ -2211,11 +2243,48 @@ export class ModalSandboxProvider {
     return MetricsResponseSchema.parse(jsonAgentBody(response));
   }
 
-  readFileForUpdate(providerWorkspaceId: string, path: string): Promise<never> {
-    z.object({ providerWorkspaceId: z.string().min(1), path: z.string().min(1) })
+  async readFileForUpdate(providerWorkspaceId: string, path: string) {
+    const input = z
+      .object({ providerWorkspaceId: z.string().min(1), path: z.string().min(1) })
       .strict()
       .parse({ providerWorkspaceId, path });
-    return Promise.reject(new ModalAtomicWriteConflictError());
+    const response = await this.requestAgent(input.providerWorkspaceId, {
+      method: 'GET',
+      path: '/files/update-snapshot',
+      query: { path: input.path },
+    });
+    const snapshot = AgentFileUpdateSnapshotSchema.parse(jsonAgentBodyWithConflict(response));
+    const data = Buffer.from(snapshot.dataBase64, 'base64');
+    if (data.byteLength !== snapshot.byteLength) {
+      throw new Error('Workspace agent returned an invalid file snapshot length');
+    }
+    return { data, compareToken: snapshot.compareToken };
+  }
+
+  async commitFileEdit(
+    providerWorkspaceId: string,
+    untrustedInput: {
+      readonly path: string;
+      readonly data: Uint8Array;
+      readonly compareToken: string;
+    },
+    idempotencyKey = randomUUID(),
+  ) {
+    const input = DirectFileEditInputSchema.parse(untrustedInput);
+    const response = await this.requestAgent(z.string().min(1).parse(providerWorkspaceId), {
+      method: 'POST',
+      path: '/files/direct-edit',
+      idempotencyKey,
+      contentType: 'application/json',
+      body: Buffer.from(
+        JSON.stringify({
+          path: input.path,
+          dataBase64: Buffer.from(input.data).toString('base64'),
+          compareToken: input.compareToken,
+        }),
+      ),
+    });
+    return DirectFileEditResponseSchema.parse(jsonAgentBodyWithConflict(response));
   }
 
   async writeFilesAtomically(
@@ -2409,7 +2478,12 @@ export function createModalNightlyE2eDriver(
   return {
     async checkpointAndKill(providerWorkspaceId, ttlMs) {
       const id = z.string().min(1).parse(providerWorkspaceId);
-      const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+      const retentionMs = z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 86_400_000)
+        .parse(ttlMs);
       const sandbox = await client.sandboxes.fromId(id);
       const snapshot = await sandbox.snapshotFilesystem({
         timeoutMs: 55_000,

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Temporal, Fly Machines API, Vercel API, Docker buildkit in sandbox (image builds), @zapp/{contracts,verification-engine}.
 
-**Milestone:** M4. **Depends on:** Plans 01–06 (evidence from 05, commits from 06, sandboxes from 03). **Consumed by:** 08 (deploy UX), 10 (cost attribution, synthetic checks ops).
+**Milestone:** M4 (DEP-1..15, with DEP-13 prepared for M3 WEB-13). **Depends on:** Plans 01–06 (evidence from 05, commits from 06, sandboxes from 03). **Consumed by:** 08 (deploy UX), 10 (cost attribution, synthetic checks ops).
 
 ## Global Constraints
 
@@ -192,6 +192,30 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 - [x] Binding behavior: PRD §32.4 routes fully live: create → readiness → approve → deploy → evidence → rollback; evidence endpoint returns VF-15 manifest; release-into-repair-branch fork (PRD §28): `POST /v1/releases/:id/fork` creates branch `fix/rel-{id}` at release commit + optional Fix run — used by production-bug journey (§10.3 step 3).
 - [x] E2E test (staging, nightly): template project → build run → verify → release → deploy (fly) → synthetic pass → rollback → previous content served. This is exit criteria E16/E17/E18 as one executable test.
 - [x] Commit: `feat: end-to-end release lifecycle live behind /v1 APIs`
+
+### Task DEP-13 [M3]: Public release history projection
+
+**Files:** Modify release/control views, DB schema/repos, OpenAPI/SDK/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: paginated project release list, active-production marker, support badge, deploy history, healthy rollback targets, and bounded evidence artifact links.
+- [ ] Commit: `feat(releases): public release history projection`
+
+### Task DEP-14 [M4]: Public deployment progress + actions
+
+**Files:** Modify release DB/lifecycle/routes, control bridge, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: classification and exact confirmation, keyed readiness actions, deployment-scoped append-only eight-stage replay/SSE, safe retry/Fix/Ask actions, terminal success, and domains.
+- [ ] Commit: `feat(releases): public deployment progress and actions`
+
+### Task DEP-15 [M4]: Production health + rollback preview
+
+**Files:** Modify release DB health/synthetic/annotation/rollback projections, control bridge, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: production/deploy history, health and synthetic result history, annotations/monitoring links, healthy targets, and pre-mutation `compatible | requires_compensation | incompatible` rollback state.
+- [ ] Commit: `feat(releases): production health and rollback preview`
 
 ---
 

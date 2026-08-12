@@ -214,6 +214,11 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
   health(providerWorkspaceId: string): Promise<z.infer<typeof HealthResponseSchema>>;
   metrics(providerWorkspaceId: string): Promise<z.infer<typeof MetricsResponseSchema>>;
   readFileForUpdate(providerWorkspaceId: string, path: string): Promise<unknown>;
+  commitFileEdit(
+    providerWorkspaceId: string,
+    input: { readonly path: string; readonly data: Uint8Array; readonly compareToken: string },
+    idempotencyKey?: string,
+  ): Promise<{ readonly commitSha: string }>;
   writeFilesAtomically(
     providerWorkspaceId: string,
     files: readonly { path: string; data: Uint8Array; expectedRevision?: string }[],
@@ -365,6 +370,35 @@ const AtomicWriteBodySchema = z
       )
       .min(1),
   })
+  .strict();
+const MAX_DIRECT_EDIT_BYTES = 1_024 * 1_024;
+const MAX_DIRECT_EDIT_TRANSPORT_BYTES = Math.ceil(MAX_DIRECT_EDIT_BYTES / 3) * 4 + 4 * 1_024;
+const CanonicalBase64Schema = z
+  .string()
+  .refine(
+    (value) => Buffer.from(value, 'base64').toString('base64') === value,
+    'Expected canonical base64',
+  );
+const CompareTokenSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const FileUpdateSnapshotResponseSchema = z
+  .object({
+    dataBase64: CanonicalBase64Schema,
+    byteLength: z.number().int().nonnegative().max(MAX_DIRECT_EDIT_BYTES),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
+const DirectEditBodySchema = z
+  .object({
+    path: z.string().min(1),
+    dataBase64: CanonicalBase64Schema.refine(
+      (value) => Buffer.from(value, 'base64').byteLength <= MAX_DIRECT_EDIT_BYTES,
+      'Workspace file exceeds the direct-edit limit',
+    ),
+    compareToken: CompareTokenSchema,
+  })
+  .strict();
+const DirectEditResponseSchema = z
+  .object({ commitSha: z.string().regex(/^[a-f0-9]{40}$/u) })
   .strict();
 const SearchBodySchema = z
   .object({
@@ -559,7 +593,10 @@ export function registerWorkspaceRoutes(
     };
     readonly snapshotDeletion?: {
       remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
-      absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
+      absent(input: {
+        readonly organizationId: string;
+        readonly projectId: string;
+      }): Promise<boolean>;
     };
     readonly checkpointService?: {
       checkpoint(input: unknown): Promise<CheckpointRecord>;
@@ -1728,9 +1765,43 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
-      return deps.provider.readFileForUpdate(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        path,
+      const snapshot = z
+        .object({ data: z.instanceof(Uint8Array), compareToken: CompareTokenSchema })
+        .strict()
+        .parse(
+          await deps.provider.readFileForUpdate(
+            await resolveProviderWorkspaceId(workspaceId, request),
+            path,
+          ),
+        );
+      return FileUpdateSnapshotResponseSchema.parse({
+        dataBase64: Buffer.from(snapshot.data).toString('base64'),
+        byteLength: snapshot.data.byteLength,
+        compareToken: snapshot.compareToken,
+      });
+    },
+  );
+
+  app.post(
+    '/internal/workspaces/:workspaceId/files/direct-edit',
+    {
+      bodyLimit: MAX_DIRECT_EDIT_TRANSPORT_BYTES,
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, body: DirectEditBodySchema },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const input = DirectEditBodySchema.parse(request.body);
+      return DirectEditResponseSchema.parse(
+        await deps.provider.commitFileEdit(
+          await resolveProviderWorkspaceId(workspaceId, request),
+          {
+            path: input.path,
+            data: Buffer.from(input.dataBase64, 'base64'),
+            compareToken: input.compareToken,
+          },
+          readIdempotencyKey(request.headers['idempotency-key']),
+        ),
       );
     },
   );

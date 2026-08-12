@@ -8,7 +8,7 @@
 
 **Tech Stack:** Forgejo 9 (Fly.io + volume), simple-git/isomorphic-git (service-side ops), Octokit + GitHub App JWT, Supabase Management API, Neon API, Stripe SDK.
 
-**Milestone:** GIT-1..4 (M0–M1), INT-1..2 (M1 pull-forward), INT-3..9 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore).
+**Milestone:** GIT-1..4 (M0–M1), INT-1..2 (M1 pull-forward), GIT-5..6 (M2), INT-10 (M3), INT-3..9 + GIT-7 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore), 08 (templates/settings), 09 (desktop sync).
 
 ## Global Constraints
 
@@ -239,6 +239,38 @@ be built:
 
 - [x] Binding behavior: full loop in a fixture next app: seed products → checkout session (test card via Stripe test clock/API, not browser) → webhook `checkout.session.completed` → sync row `active` → access middleware admits; cancel → webhook → access revoked. This suite is what VF's `integration_tests` gate runs for Stripe-enabled Managed projects (PRD §24.2).
 - [x] Commit: `test(integrations): stripe subscription end-to-end in test mode`
+
+### Task GIT-6 [M2]: Approved template source registry
+
+**Files:** Create `config/templates.json`; modify config schema/tests and required server loader.
+**Effort:** S. **[expand-at-execution]**
+
+- [ ] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
+- [ ] Commit: `feat(templates): approved source registry`
+
+### Task GIT-5 [M2]: Commit comparison + approved template seeding
+
+**Files:** Modify git-service provider/routes/ports/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
+- [ ] Commit: `feat(git-service): commit diff and template seeding`
+
+### Task INT-10 [M3]: Public GitHub sync controls
+
+**Files:** Modify control-api GitHub integration routes/composition, DB if required, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Binding behavior: sync policy/state, keyed manual sync and export over the existing engines; stale-base/conflict surfacing and no last-writer-wins.
+- [ ] Commit: `feat(integrations): public GitHub sync controls`
+
+### Task GIT-7 [M4]: Public short-lived repository credential lease
+
+**Files:** Modify git-service token boundary, control-api project route/client, OpenAPI/SDK/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Binding behavior: session-authenticated, audited, `edit_code`-authorized, `no-store`, repository-scoped credential lease with maximum 300-second TTL; never persist tokens in remotes or desktop state.
+- [ ] Commit: `feat(git): public short-lived repository lease`
 
 ---
 
