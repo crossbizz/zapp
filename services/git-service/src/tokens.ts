@@ -179,6 +179,13 @@ export interface TokenService {
     readonly projectId: string;
     readonly requestingService: ServiceName;
   }): Promise<number>;
+  /** Revokes one operation-scoped identity immediately after its caller finishes. */
+  revokeEphemeral(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly username: string;
+    readonly requestingService: ServiceName;
+  }): Promise<void>;
   /** Deletes every ephemeral user whose deadline has passed. Idempotent; safe to run often. */
   sweepExpired(now?: Date): Promise<number>;
 }
@@ -421,6 +428,22 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
         });
       }
       return ephemeral.length;
+    },
+
+    async revokeEphemeral(input): Promise<void> {
+      if (expiryOf(input.username) === undefined) {
+        throw new Error('Refusing to revoke a non-ephemeral Git identity');
+      }
+      const ref = internalRepoRef(input);
+      await deleteUser(input.username);
+      await audit.record({
+        organizationId: input.organizationId,
+        action: 'git_token.revoked',
+        projectId: input.projectId,
+        requestingService: input.requestingService,
+        occurredAt: now(),
+        metadata: { internalRepoRef: ref, revoked: 1 },
+      });
     },
 
     async sweepExpired(at?: Date): Promise<number> {

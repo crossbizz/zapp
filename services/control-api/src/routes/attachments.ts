@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { AttachmentRefSchema, idSchema } from '@zapp/contracts';
 import type { FastifyRequest } from 'fastify';
@@ -26,6 +31,10 @@ export interface AttachmentStoragePort {
     readonly contentType: string;
   }): Promise<void>;
   signGet(input: { readonly key: string; readonly expiresInSeconds: number }): Promise<string>;
+}
+
+export interface DeletableAttachmentStoragePort extends AttachmentStoragePort {
+  delete(input: { readonly key: string }): Promise<void>;
 }
 
 export interface AttachmentRoutesDeps {
@@ -169,7 +178,7 @@ export function createS3AttachmentStorage(config: {
   readonly bucket: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
-}): AttachmentStoragePort {
+}): DeletableAttachmentStoragePort {
   const client = new S3Client({
     endpoint: config.endpoint,
     region: config.region,
@@ -191,6 +200,9 @@ export function createS3AttachmentStorage(config: {
           ContentType: input.contentType,
         }),
       );
+    },
+    async delete(input) {
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: input.key }));
     },
     signGet(input) {
       return getSignedUrl(

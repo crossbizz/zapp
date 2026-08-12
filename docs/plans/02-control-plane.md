@@ -263,10 +263,19 @@ Execution expansion (2026-08-12; route-name assumption follows the existing proj
 
 ### Task CP-18 [M5]: Export APIs
 
-**Files:** Create: `src/routes/export.ts`
+**Files:** Create: `services/control-api/src/routes/export.ts`, `services/control-api/src/export/service.ts`, `services/control-api/test/export.test.ts`, `services/control-api/test/integration/export.test.ts`, `services/git-service/src/export.ts`, `services/git-service/test/export.test.ts`; Modify: control-api/Git-service app, composition, auth/idempotency/storage boundaries and test doubles, shared audit contract, generated OpenAPI/SDK artifacts, Git provider integration coverage.
 **Effort:** M. **[expand-at-execution]**
 
 Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact bundle: git bundle (via git-service), spec JSON, plan JSON, evidence manifests, env var **names**, audit log (Owner only); download via signed URL; secrets never included.
+
+Execution expansion (2026-08-12; the portable artifact is a deterministic uncompressed tar so binary Git history and typed JSON documents stay self-contained without a format-specific runtime dependency):
+
+- [x] **18a RED — public/API boundary:** add Owner-only route tests for required CSRF, tenant, and `Idempotency-Key`; cross-tenant and missing projects are indistinguishable 404s, Builder/Viewer calls are denied, and exact replay performs no second Git/storage write.
+- [x] **18b GREEN — safe bundle assembly:** implement `src/routes/export.ts` with strict Zod schemas, deterministic artifact identity/key, bounded tar construction, SHA-256 receipt, five-minute signed URL, atomic `project.exported` audit plus unclassified project-lifetime artifact row, and explicit exclusion of secret values/ciphertext/storage credentials.
+- [x] **18c RED/GREEN — export projection:** add a tenant-scoped PostgreSQL projection for the latest specification, durable phase/task plan, test/evidence manifests, releases/deployments, secret-metadata names only, and project-related audit rows; prove another tenant's rows and secret ciphertext cannot enter the projection.
+- [x] **18d RED/GREEN — Git bundle port:** add a service-authenticated, tenant/project-derived git-service export boundary that mints a bounded read credential, creates and verifies a Git bundle through the existing Git command adapter, returns no credential, and cleans scratch/token state on success and failure; add fake/provider/HTTP coverage.
+- [x] **18e integration/artifacts:** compose production Git and S3 ports, generate OpenAPI/SDK, and add a PostgreSQL + MinIO integration that downloads the signed tar, verifies every required entry and exact Git bytes, and proves only environment-variable names are present.
+- [x] **18f verify/review/ship:** run deterministic generation, full touched-package tests, lint/typecheck/build, one final real-provider gate, and at most two Critical/Important review rounds (exit zero); update tracker/log and commit `feat(control-api): portable project export bundles`.
 
 ---
 
@@ -290,6 +299,7 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 ## Execution log
 - 2026-08-04: CP-1 done pending review (9bc70a8). DEFERRED INTO CP-2 SCOPE: migration revoking UPDATE/DELETE on usage_ledger + audit_events from the app role (was CP-1 note; FND-6 was mid-flight). Forward flags: fastify-type-provider-zod pinned ^4 (Zod-3 API — revisit at Zod 4 migration); no direct pino dep (fastify bundles it).
 - 2026-08-12 CP-17 done — shipped classified TTL retention plus leased, absence-verified project/org deletion; required schema, generated SDK, git-service, sandbox-service, verification-service, and composition files beyond the terse task list. Two review rounds fixed durable post-delete replay, fail-closed composition/provider proof, and a row-locked organization deletion fence.
+- 2026-08-12 CP-18 done — shipped deterministic Owner-only tar exports with durable fresh-URL replay, bounded PostgreSQL/Git/S3 paths, deletion fencing/cleanup, generated SDK, and immediate Git credential revocation; expanded the terse Files list for required service/SDK composition, and corrected one provider-test-only strict-input fixture before the focused real Forgejo pass.
 - 2026-08-04: CP-1 done (9bc70a8, review Approved; 12 tests + 20 reviewer edge-probes clean). buildApp deps narrowed to growing AppDeps (sanctioned). Folded into CP-2: branch-4 + hook-throw tests, errorHandler serializer bypass (template hardening), dev script (tsx watch convention), @zapp/db first import, grants migration.
 - 2026-08-04: FND-6 note for CP-13: agent_events has NO project_id column (PRD §23.4 omits it; AgentEventSchema carries projectId) — CP-13 ingest either adds a one-line migration (preferred, enables per-project queries) or joins agent_runs. Decide at CP-13.
 - 2026-08-04: CP-13 additional binding notes from FND-6 review: (a) payload cap check must measure BYTES (Buffer.byteLength), not JSON.stringify().length — DB CHECK is pg_column_size; (b) resolve runId within the tenant BEFORE calling nextEventSequence (it takes no org — a cross-tenant bump would inject a sequence gap).

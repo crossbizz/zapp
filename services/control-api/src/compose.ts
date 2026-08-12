@@ -91,6 +91,10 @@ import type { PostHogEnv } from './env.js';
 import type { NotificationStatePort, NotificationTrigger } from './notifications/service.js';
 import type { AdminRoutesConfig } from './routes/admin.js';
 import { createDatabaseProjectDeletionRequestStore } from './jobs/deletion.js';
+import {
+  createDatabaseProjectExportSource,
+  createGitServiceProjectExportPort,
+} from './routes/export.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -390,6 +394,18 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       ...(runtime.gitServiceUrl === undefined
         ? {}
         : { projectDeletions: createDatabaseProjectDeletionRequestStore(database) }),
+      ...(runtime.gitServiceUrl === undefined
+        ? {}
+        : {
+            projectExport: {
+              source: createDatabaseProjectExportSource(database),
+              git: createGitServiceProjectExportPort({
+                baseUrl: runtime.gitServiceUrl,
+                serviceTokens: runtime.serviceTokens,
+              }),
+              storage: createS3AttachmentStorage(runtime.artifactStorage),
+            },
+          }),
       ...(runtime.incidentWebhookSecret === undefined
         ? {}
         : { incidentWebhookSecret: runtime.incidentWebhookSecret }),

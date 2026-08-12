@@ -246,7 +246,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-14 Retention archival + rehydration
 - [x] OPS-17 Support/admin console
 - [x] CP-17 Retention & deletion pipeline
-- [ ] CP-18 Export APIs
+- [x] CP-18 Export APIs
 - [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
 - [ ] MAC-11 Notifications + auto-update
 - [ ] MAC-12 Dyad project migration

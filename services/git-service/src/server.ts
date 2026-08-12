@@ -1,7 +1,13 @@
 import { createDb } from '@zapp/db';
 
 import { composeApp } from './compose.js';
-import { loadDatabaseUrl, loadEnv, loadForgejoEnv, loadServiceTokenConfig } from './env.js';
+import {
+  loadDatabaseUrl,
+  loadEnv,
+  loadForgejoEnv,
+  loadGitCommandDeadlineEnv,
+  loadServiceTokenConfig,
+} from './env.js';
 import { loggerOptions } from './logging.js';
 import { scheduleTokenSweep } from './sweep.js';
 
@@ -18,6 +24,7 @@ const env = loadEnv();
 // caller. Refusing to start says which it is, once, at the right moment.
 const forgejo = loadForgejoEnv();
 const serviceTokens = loadServiceTokenConfig();
+const commandDeadlines = loadGitCommandDeadlineEnv();
 // And cannot record who it handed a repository credential to (GIT-3). A mint
 // with no audit row is refused rather than served, so a service that came up
 // without a database would refuse every mint — which is a worse way to learn the
@@ -29,6 +36,7 @@ const { app, tokens } = composeApp({
   forgejo,
   serviceTokens,
   database: database.db,
+  gitBundleCommandTimeoutMs: commandDeadlines.restoreCommandDeadlineMs,
 });
 
 /**

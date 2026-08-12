@@ -14,6 +14,7 @@ import type {
   GitProvider,
 } from '../../src/provider/types.js';
 import type { MintedToken, TokenService } from '../../src/tokens.js';
+import type { GitBundleExporter } from '../../src/export.js';
 
 /** Long enough to clear the HS256 floor `loadServiceTokenConfig` enforces. */
 export const SERVICE_SECRET = 'test-service-secret-that-is-long-enough-32';
@@ -191,6 +192,10 @@ export function createFakeTokenService(): FakeTokenService {
       record('revokeForProject', input);
       return Promise.resolve(fake.revoked);
     },
+    revokeEphemeral(input) {
+      record('revokeEphemeral', input);
+      return Promise.resolve();
+    },
     sweepExpired(now) {
       record('sweepExpired', now);
       return Promise.resolve(fake.revoked);
@@ -208,7 +213,11 @@ export interface Harness {
 
 /** The app as it ships, with the provider and the token service substituted. */
 export function harness(
-  options: { readonly callers?: readonly ServiceName[]; readonly now?: () => Date } = {},
+  options: {
+    readonly callers?: readonly ServiceName[];
+    readonly now?: () => Date;
+    readonly bundleExporter?: GitBundleExporter;
+  } = {},
 ): Harness {
   const provider = createFakeProvider();
   const tokens = createFakeTokenService();
@@ -220,6 +229,9 @@ export function harness(
     signer,
     ...(options.callers === undefined ? {} : { callers: options.callers }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.bundleExporter === undefined
+      ? {}
+      : { bundleExporter: options.bundleExporter }),
   });
   return { app, provider, tokens, audit };
 }
