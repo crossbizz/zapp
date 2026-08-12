@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "agencies": [
+    {
+      "alias": "beta-01",
+      "status": "candidate",
+      "onboardingEvidence": [],
+      "willingnessToPay": null
+    },
+    {
+      "alias": "beta-02",
+      "status": "candidate",
+      "onboardingEvidence": [],
+      "willingnessToPay": null
+    },
+    {
+      "alias": "beta-03",
+      "status": "candidate",
+      "onboardingEvidence": [],
+      "willingnessToPay": null
+    },
+    {
+      "alias": "beta-04",
+      "status": "candidate",
+      "onboardingEvidence": [],
+      "willingnessToPay": null
+    },
+    {
+      "alias": "beta-05",
+      "status": "candidate",
+      "onboardingEvidence": [],
+      "willingnessToPay": null
+    }
+  ]
+}

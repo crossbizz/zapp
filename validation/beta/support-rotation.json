@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "responseTargets": [
+    {
+      "severity": "critical",
+      "minutes": 60
+    },
+    {
+      "severity": "high",
+      "minutes": 240
+    },
+    {
+      "severity": "medium",
+      "minutes": 1440
+    },
+    {
+      "severity": "low",
+      "minutes": 4320
+    }
+  ],
+  "assignments": []
+}
