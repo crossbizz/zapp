@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "baseline": "c54b5d5",
-  "capturedAt": "2026-08-12T14:56:25.000Z",
+  "baseline": "1155e94",
+  "capturedAt": "2026-08-12T20:16:23.000Z",
   "environment": {
     "platform": "darwin-arm64",
     "node": "26.5.0",
@@ -87,12 +87,12 @@
     },
     {
       "criterionId": "E10",
-      "outcome": "failed",
+      "outcome": "passed",
       "commands": [
         {
           "command": "orchestrator verifier integration",
-          "exitCode": 1,
-          "summary": "10/11 passed; teardown failed on append-only run_credit_ceiling_adjustments"
+          "exitCode": 0,
+          "summary": "11/11 passed"
         }
       ]
     },
@@ -114,12 +114,12 @@
     },
     {
       "criterionId": "E12",
-      "outcome": "failed",
+      "outcome": "passed",
       "commands": [
         {
           "command": "orchestrator repair integration",
-          "exitCode": 1,
-          "summary": "8/9 passed; teardown failed on append-only run_credit_ceiling_adjustments"
+          "exitCode": 0,
+          "summary": "9/9 passed"
         }
       ]
     },
@@ -134,6 +134,17 @@
         },
         {
           "command": "web preview-panel Playwright suite",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E16",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "release-service deployment workflow",
           "exitCode": 0,
           "summary": "4/4 passed"
         }
