@@ -6,12 +6,13 @@ vi.mock("update-electron-app", () => ({
   updateElectronApp: vi.fn(),
   UpdateSourceType: {
     ElectronPublicUpdateService: "ElectronPublicUpdateService",
+    StaticStorage: "StaticStorage",
   },
 }));
 
 import { updateElectronApp } from "update-electron-app";
 import type { UserSettings } from "@/lib/schemas";
-import { startAutoUpdate, ZAPP_DEFAULT_UPDATE_REPO } from "./auto_update";
+import { startAutoUpdate } from "./auto_update";
 
 const logger = {
   log: vi.fn(),
@@ -51,7 +52,7 @@ describe("startAutoUpdate", () => {
     expect(updateElectronApp).not.toHaveBeenCalled();
   });
 
-  it("starts against the zapp feed and repo when ZAPP_UPDATE_FEED is set", () => {
+  it("starts against the zapp R2 feed when ZAPP_UPDATE_FEED is set", () => {
     vi.stubEnv("ZAPP_UPDATE_FEED", "https://updates.zapp.build/v1/update");
 
     expect(startAutoUpdate({ settings: settingsWith(), logger })).toBe(true);
@@ -60,13 +61,12 @@ describe("startAutoUpdate", () => {
       expect.objectContaining({
         updateInterval: "60 minutes",
         updateSource: {
-          type: "ElectronPublicUpdateService",
-          repo: ZAPP_DEFAULT_UPDATE_REPO,
-          host: "https://updates.zapp.build/v1/update/stable",
+          type: "StaticStorage",
+          baseUrl:
+            "https://updates.zapp.build/v1/update/desktop-updates/stable",
         },
       }),
     );
-    expect(ZAPP_DEFAULT_UPDATE_REPO).toBe("crossbizz/zapp");
   });
 
   it("keeps upstream's release-channel postfix and tolerates a trailing slash", () => {
@@ -80,7 +80,7 @@ describe("startAutoUpdate", () => {
     expect(updateElectronApp).toHaveBeenCalledWith(
       expect.objectContaining({
         updateSource: expect.objectContaining({
-          host: "https://updates.zapp.build/v1/update/beta",
+          baseUrl: "https://updates.zapp.build/v1/update/desktop-updates/beta",
         }),
       }),
     );
@@ -99,13 +99,14 @@ describe("startAutoUpdate", () => {
     expect(updateElectronApp).toHaveBeenCalledWith(
       expect.objectContaining({
         updateSource: expect.objectContaining({
-          host: "https://updates.zapp.build/v1/update/stable",
+          baseUrl:
+            "https://updates.zapp.build/v1/update/desktop-updates/stable",
         }),
       }),
     );
   });
 
-  it("allows the repo to be overridden", () => {
+  it("does not let a repository override redirect the static feed", () => {
     vi.stubEnv("ZAPP_UPDATE_FEED", "https://updates.zapp.build/v1/update");
     vi.stubEnv("ZAPP_UPDATE_REPO", "crossbizz/zapp-canary");
 
@@ -114,7 +115,8 @@ describe("startAutoUpdate", () => {
     expect(updateElectronApp).toHaveBeenCalledWith(
       expect.objectContaining({
         updateSource: expect.objectContaining({
-          repo: "crossbizz/zapp-canary",
+          baseUrl:
+            "https://updates.zapp.build/v1/update/desktop-updates/stable",
         }),
       }),
     );

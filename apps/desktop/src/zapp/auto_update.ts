@@ -10,19 +10,14 @@
 // all: it runs only when `ZAPP_UPDATE_FEED` names a feed base, and the repo
 // defaults to this fork's own. There is no path back to a Dyad URL.
 //
-//   ZAPP_UPDATE_FEED=https://updates.zapp.build/v1/update   feed base, required
-//   ZAPP_UPDATE_REPO=crossbizz/zapp                         optional override
+//   ZAPP_UPDATE_FEED=https://updates.zapp.build   R2 origin/base, required
 //
 // The extraction out of `src/main.ts` is deliberate: main.ts cannot be imported
 // by a unit test (electron, the database and ~50 modules load at import time),
 // and this behaviour is exactly the kind that must be pinned by one.
 
-import { updateElectronApp, UpdateSourceType } from "update-electron-app";
-
 import type { UserSettings } from "@/lib/schemas";
-
-/** Releases live in this fork's repository, never `dyad-sh/dyad`. */
-export const ZAPP_DEFAULT_UPDATE_REPO = "crossbizz/zapp";
+import { startZappUpdater } from "./updater/start";
 
 // Structurally `update-electron-app`'s ILogger — electron-log satisfies it.
 interface AutoUpdateLogger {
@@ -50,21 +45,11 @@ export function startAutoUpdate({
     return false;
   }
 
-  // Technically we could just pass the releaseChannel directly to the host,
-  // but this is more explicit and falls back to stable if there's an unknown
-  // release channel. (Upstream's shape, kept.)
-  const postfix = settings.releaseChannel === "beta" ? "beta" : "stable";
-  const host = `${feed.replace(/\/+$/, "")}/${postfix}`;
-  logger.info("Auto-update release channel=", postfix);
-
-  updateElectronApp({
+  const channel = settings.releaseChannel === "beta" ? "beta" : "stable";
+  logger.info("Auto-update release channel=", channel);
+  return startZappUpdater({
+    channel,
+    feedOrigin: feed,
     logger,
-    updateInterval: "60 minutes",
-    updateSource: {
-      type: UpdateSourceType.ElectronPublicUpdateService,
-      repo: process.env.ZAPP_UPDATE_REPO?.trim() || ZAPP_DEFAULT_UPDATE_REPO,
-      host,
-    },
   });
-  return true;
 }

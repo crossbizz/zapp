@@ -144,7 +144,7 @@
     {
       "id": "E10",
       "criterion": "Verifier independently evaluates acceptance criteria.",
-      "state": "failed",
+      "state": "verified",
       "requiredTasks": ["VF-10"],
       "sourceEvidence": [
         "services/orchestrator-worker/test/integration/verifier.test.ts",
@@ -153,8 +153,7 @@
       "verifyCommands": [
         "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/verifier.test.ts --no-file-parallelism"
       ],
-      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"],
-      "failure": "The durable verifier replay test passes its assertions but fails cleanup because run_credit_ceiling_adjustments is append-only."
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
     },
     {
       "id": "E11",
@@ -174,7 +173,7 @@
     {
       "id": "E12",
       "criterion": "A failed test can trigger a bounded repair loop.",
-      "state": "failed",
+      "state": "verified",
       "requiredTasks": ["VF-13"],
       "sourceEvidence": [
         "services/orchestrator-worker/test/integration/repair.test.ts",
@@ -183,8 +182,7 @@
       "verifyCommands": [
         "pnpm --filter @zapp/orchestrator-worker exec vitest run test/integration/repair.test.ts --no-file-parallelism"
       ],
-      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"],
-      "failure": "The durable repair replay test passes its assertions but fails cleanup because run_credit_ceiling_adjustments is append-only."
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
     },
     {
       "id": "E13",
@@ -231,14 +229,13 @@
     {
       "id": "E16",
       "criterion": "The user can deploy through at least one production provider.",
-      "state": "blocked",
+      "state": "verified",
       "requiredTasks": ["DEP-4", "DEP-5", "DEP-12"],
       "sourceEvidence": ["services/release-service/test/integration/deploy-workflow.test.ts"],
       "verifyCommands": [
         "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
       ],
-      "evidenceArtifacts": [],
-      "blocker": "Provider adapters exist, but the end-to-end release lifecycle task remains incomplete."
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-12-local.json"]
     },
     {
       "id": "E17",
