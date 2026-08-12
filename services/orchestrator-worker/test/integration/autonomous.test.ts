@@ -18,6 +18,10 @@ import {
   type AutonomousWorkflowInput,
 } from '../../src/workflows/autonomous.js';
 import { budgetApprovalResolvedSignal } from '../../src/workflows/budget-approval.js';
+import {
+  retryFailedTaskSignal,
+  skipOptionalPhaseSignal,
+} from '../../src/workflows/builder-control.js';
 
 const PLAN = {
   phases: [
@@ -529,6 +533,264 @@ describe('AR-17 autonomous workflow', () => {
     ]);
   }, 30_000);
 
+  it('replays a keyed failed-task retry and enforces optional-phase skip boundaries', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const nativeConnection = environment.nativeConnection;
+    const taskQueue = `ar23-builder-controls-${Date.now().toString(36)}`;
+    const runId = newId('run');
+    const specificationVersionId = 'specification-version-ar23';
+    const planArtifactId = newId('art');
+    const phaseIds = [
+      'phase_01J00000000000000000000011',
+      'phase_01J00000000000000000000012',
+      'phase_01J00000000000000000000013',
+    ] as const;
+    const taskIds = [
+      'task_01J00000000000000000000011',
+      'task_01J00000000000000000000012',
+      'task_01J00000000000000000000013',
+    ] as const;
+    const controlPlan = {
+      phases: phaseIds.map((id, index) => ({
+        id,
+        sequence: index + 1,
+        title: `Phase ${String(index + 1)}`,
+        acceptanceCriteria: [`AC-${String(index + 1)}`],
+        approvalAfter: false,
+        optional: index > 0,
+      })),
+      tasks: taskIds.map((id, index) => ({
+        id,
+        phaseId: phaseIds[index],
+        title: `Task ${String(index + 1)}`,
+        dependsOn: index === 0 ? [] : [taskIds[index - 1]],
+        riskLevel: 'low' as const,
+        requiredTools: ['read_file'],
+        expectedFiles: [`src/task-${String(index + 1)}.ts`],
+        acceptanceCriteriaIds: [`AC-${String(index + 1)}`],
+        requiredTests: [],
+        estimate: { credits: 1, wallClockMinutes: 1 },
+      })),
+      budget: { credits: 10, wallClockHours: 1 },
+    };
+    const emitted: PendingAgentEvent[] = [];
+    const sessionAttempts = new Map<string, number>();
+    let resolveFailedTask: (() => void) | undefined;
+    const failedTask = new Promise<void>((resolve) => {
+      resolveFailedTask = resolve;
+    });
+    let resolveSecondTaskStarted: (() => void) | undefined;
+    const secondTaskStarted = new Promise<void>((resolve) => {
+      resolveSecondTaskStarted = resolve;
+    });
+    let releaseSecondTask: (() => void) | undefined;
+    const secondTaskReleased = new Promise<void>((resolve) => {
+      releaseSecondTask = resolve;
+    });
+    let resolveSecondPhaseCompleted: (() => void) | undefined;
+    const secondPhaseCompleted = new Promise<void>((resolve) => {
+      resolveSecondPhaseCompleted = resolve;
+    });
+    let releaseSecondPhaseCompletion: (() => void) | undefined;
+    const secondPhaseCompletionReleased = new Promise<void>((resolve) => {
+      releaseSecondPhaseCompletion = resolve;
+    });
+    let resolveSpecificationRequest: (() => void) | undefined;
+    const specificationRequested = new Promise<void>((resolve) => {
+      resolveSpecificationRequest = resolve;
+    });
+    let resolvePlanRequest: (() => void) | undefined;
+    const planRequested = new Promise<void>((resolve) => {
+      resolvePlanRequest = resolve;
+    });
+
+    const activities = {
+      ...allowAllFeatureFlags,
+      conductInterview: () => Promise.resolve({ interviewArtifactId: newId('art'), status: 'executable' as const }),
+      createSpecificationDraft: () => Promise.resolve({
+        specificationVersionId,
+        version: 1,
+        contentEtag: `sha256:${'a'.repeat(64)}`,
+      }),
+      approveSpecification: () => Promise.resolve({ specificationVersionId, version: 1, status: 'approved' as const }),
+      producePlan: () => Promise.resolve({ planArtifactId, plan: controlPlan }),
+      approvePlan: () => Promise.resolve({ planArtifactId, status: 'approved' as const }),
+      recordBaseCommit: () => Promise.resolve({ baseCommitSha: 'a'.repeat(40) }),
+      createTaskWorkspace: (input: { taskId: string }) => Promise.resolve({
+        workspaceId: `workspace:${input.taskId}`,
+        workspacePath: `/tmp/${input.taskId}`,
+      }),
+      transitionTaskState: () => Promise.resolve(),
+      async runTaskBuilderSession(input: { taskId: string }) {
+        const attempt = (sessionAttempts.get(input.taskId) ?? 0) + 1;
+        sessionAttempts.set(input.taskId, attempt);
+        if (input.taskId === taskIds[0] && attempt === 1) return { status: 'failed' as const };
+        if (input.taskId === taskIds[1]) {
+          resolveSecondTaskStarted?.();
+          await secondTaskReleased;
+        }
+        return { status: 'completed' as const };
+      },
+      commitAndPushTask: (input: { taskId: string }) => Promise.resolve({
+        commitSha: input.taskId === taskIds[0] ? 'b'.repeat(40) : 'c'.repeat(40),
+      }),
+      mergeTask: () => Promise.resolve({ outcome: 'merged' as const }),
+      createConflictTask: () => Promise.reject(new Error('AR-23 fixture creates no conflicts')),
+      emitTaskBlocked: () => Promise.reject(new Error('AR-23 fixture creates no blocked tasks')),
+      resolveIntegrationHead: (input: { phaseId: string }) => Promise.resolve({
+        commitSha: input.phaseId === phaseIds[0] ? 'b'.repeat(40) : 'c'.repeat(40),
+      }),
+      transitionPhaseTasks: () => Promise.resolve(),
+      checkpointPhase: (input: { phaseId: string }) => Promise.resolve({ checkpointRef: `checkpoint:${input.phaseId}` }),
+      repairPhase: () => Promise.reject(new Error('AR-23 fixture verification never rejects')),
+      createFinalEvidence: (input: {
+        runId: string;
+        organizationId: string;
+        projectId: string;
+        specificationVersionId: string;
+        planArtifactId: string;
+        commitSha: string;
+      }) => Promise.resolve({
+        releaseId: 'rel_01J00000000000000000000011',
+        evidenceArtifactId: 'art_01J00000000000000000000019',
+        commitSha: input.commitSha,
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        specificationVersionId: input.specificationVersionId,
+        planArtifactId: input.planArtifactId,
+      }),
+      verifyPhase: (_verifiedRunId: string, phaseId: string) => Promise.resolve({
+        verificationResultId: phaseId === phaseIds[0]
+          ? 'vr_01J00000000000000000000011'
+          : 'vr_01J00000000000000000000012',
+        decision: 'approved' as const,
+        criteriaResults: [{}],
+        risks: [],
+      }),
+      async emitEvents(input: { events: PendingAgentEvent[] }) {
+        emitted.push(...input.events);
+        for (const value of input.events) {
+          if (value.type === 'approval.requested' && value.payload['gate'] === 'specification') {
+            resolveSpecificationRequest?.();
+          }
+          if (value.type === 'approval.requested' && value.payload['gate'] === 'plan') {
+            resolvePlanRequest?.();
+          }
+          if (value.type === 'task.failed' && value.taskId === taskIds[0]) resolveFailedTask?.();
+          if (
+            value.type === 'phase.completed' &&
+            value.phaseId === phaseIds[1] &&
+            value.payload['status'] !== 'skipped'
+          ) {
+            resolveSecondPhaseCompleted?.();
+            await secondPhaseCompletionReleased;
+          }
+        }
+      },
+      transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('AR-23 fixture stores no assistant content')),
+    };
+
+    const startWorker = async (): Promise<void> => {
+      const worker = await Worker.create({
+        connection: nativeConnection,
+        taskQueue,
+        workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+        activities,
+      });
+      workers.push(worker);
+      workerRuns.push(worker.run());
+    };
+    const verificationWorker = await Worker.create({
+      connection: nativeConnection,
+      taskQueue: 'verification',
+      workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+      activities,
+    });
+    workers.push(verificationWorker);
+    workerRuns.push(verificationWorker.run());
+    await startWorker();
+
+    const handle = await environment.client.workflow.start(autonomousWorkflow, {
+      taskQueue,
+      workflowId: runId,
+      args: [{
+        workflowId: runId,
+        runId,
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+        prompt: 'Exercise durable builder controls.',
+        model: null,
+        budget: { maxCredits: 10 },
+        planMaxCredits: 10,
+        maxConcurrency: 1,
+      } satisfies AutonomousWorkflowInput],
+    });
+    await specificationRequested;
+    await handle.signal(autonomousSpecificationApprovalSignal, {
+      runId,
+      artifactId: specificationVersionId,
+      decision: 'approved',
+      operationKey: `op_${'1'.repeat(64)}`,
+    });
+    await planRequested;
+    await handle.signal(autonomousPlanApprovalSignal, {
+      runId,
+      artifactId: planArtifactId,
+      decision: 'approved',
+      operationKey: `op_${'2'.repeat(64)}`,
+    });
+
+    await Promise.race([
+      failedTask,
+      handle.result().then(() => Promise.reject(new Error('workflow completed before retry wait'))),
+    ]);
+    const firstWorker = workers.find((worker) => worker.options.taskQueue === taskQueue);
+    if (firstWorker !== undefined) {
+      workers.splice(workers.indexOf(firstWorker), 1);
+      firstWorker.shutdown();
+    }
+    await startWorker();
+    const retryOperationKey = `op_${'3'.repeat(64)}`;
+    await handle.signal(retryFailedTaskSignal, { runId, taskId: taskIds[0], operationKey: retryOperationKey });
+    await handle.signal(retryFailedTaskSignal, { runId, taskId: taskIds[0], operationKey: retryOperationKey });
+
+    await secondTaskStarted;
+    await handle.signal(skipOptionalPhaseSignal, {
+      runId,
+      phaseId: phaseIds[1],
+      operationKey: `op_${'4'.repeat(64)}`,
+    });
+    releaseSecondTask?.();
+    await secondPhaseCompleted;
+    await handle.signal(skipOptionalPhaseSignal, {
+      runId,
+      phaseId: phaseIds[2],
+      operationKey: `op_${'5'.repeat(64)}`,
+    });
+    releaseSecondPhaseCompletion?.();
+
+    await expect(handle.result()).resolves.toMatchObject({ status: 'completed', commitSha: 'c'.repeat(40) });
+    expect(sessionAttempts).toEqual(new Map([[taskIds[0], 2], [taskIds[1], 1]]));
+    expect(
+      emitted
+        .filter((value) => value.type === 'task.updated' && value.payload['control'] === 'retry_failed_task')
+        .map(({ payload }) => ({ outcome: payload['outcome'], operationKey: payload['operationKey'] })),
+    ).toEqual([{ outcome: 'accepted', operationKey: retryOperationKey }]);
+    expect(emitted.some((value) =>
+      value.type === 'task.updated' &&
+      value.payload['control'] === 'skip_optional_phase' &&
+      value.payload['outcome'] === 'rejected' &&
+      value.payload['reason'] === 'phase_task_started',
+    )).toBe(true);
+    expect(
+      emitted
+        .filter((value) => value.type === 'phase.completed' && value.payload['status'] === 'skipped')
+        .map(({ phaseId, payload }) => ({ phaseId, operationKey: payload['operationKey'] })),
+    ).toEqual([{ phaseId: phaseIds[2], operationKey: `op_${'5'.repeat(64)}` }]);
+  }, 30_000);
+
   it('rejects a caller-supplied continuation that tries to skip both approval gates', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar17-forged-continuation-${Date.now().toString(36)}`;
@@ -605,6 +867,12 @@ describe('AR-17 autonomous workflow', () => {
           creditBalanceOperationKey: null,
           creditApprovalResolution: null,
           pendingRedirects: [],
+          pendingRetries: [],
+          pendingSkips: [],
+          failedTaskIds: [],
+          startedTaskIds: [],
+          skippedPhaseIds: [],
+          taskAttempts: {},
         },
       },
     };

@@ -19,6 +19,7 @@ export const PlanPhaseSchema = z
     title: z.string().min(1).max(500),
     acceptanceCriteria: uniqueStringListSchema(1),
     approvalAfter: z.boolean(),
+    optional: z.boolean().optional(),
   })
   .strict();
 export type PlanPhase = z.infer<typeof PlanPhaseSchema>;
@@ -91,7 +92,22 @@ const PlanShapeSchema = z
   })
   .strict();
 
-export const PlanSchema = PlanShapeSchema.superRefine((plan, context) => {
+const PlanShapeWithDefaultsSchema = z.preprocess((value) => {
+  if (typeof value !== 'object' || value === null || !('phases' in value)) return value;
+  const phases = (value as { phases?: unknown }).phases;
+  if (!Array.isArray(phases)) return value;
+  const phaseValues: unknown[] = phases;
+  return {
+    ...value,
+    phases: phaseValues.map((phase) =>
+      typeof phase === 'object' && phase !== null && !('optional' in phase)
+        ? { ...phase, optional: false }
+        : phase,
+    ),
+  };
+}, PlanShapeSchema);
+
+export const PlanSchema = PlanShapeWithDefaultsSchema.superRefine((plan, context) => {
   const phaseIds = new Set<string>();
   const phaseSequences = new Set<number>();
   for (const [index, phase] of plan.phases.entries()) {

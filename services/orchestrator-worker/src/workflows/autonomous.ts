@@ -31,6 +31,14 @@ import {
   processRedirectPlanChange,
   type RedirectPlanChangeHooks,
 } from './redirect.js';
+import {
+  RetryFailedTaskSignalSchema,
+  SkipOptionalPhaseSignalSchema,
+  retryFailedTaskEligibility,
+  retryFailedTaskSignal,
+  skipOptionalPhaseEligibility,
+  skipOptionalPhaseSignal,
+} from './builder-control.js';
 
 const idSchema = (
   prefix: 'run' | 'org' | 'proj' | 'art' | 'rel' | 'phase' | 'task' | 'vr',
@@ -118,6 +126,12 @@ const AutonomousControlStateSchema = z
     creditBalanceOperationKey: OperationKeySchema.nullable().default(null),
     creditApprovalResolution: BudgetApprovalResolutionSchema.nullable().default(null),
     pendingRedirects: z.array(AutonomousRedirectSchema).max(100),
+    pendingRetries: z.array(RetryFailedTaskSignalSchema).max(100).default([]),
+    pendingSkips: z.array(SkipOptionalPhaseSignalSchema).max(100).default([]),
+    failedTaskIds: z.array(idSchema('task')).max(10_000).default([]),
+    startedTaskIds: z.array(idSchema('task')).max(10_000).default([]),
+    skippedPhaseIds: z.array(idSchema('phase')).max(1_000).default([]),
+    taskAttempts: z.record(idSchema('task'), z.number().int().nonnegative().max(100)).default({}),
   })
   .strict();
 type AutonomousControlState = z.infer<typeof AutonomousControlStateSchema>;
@@ -131,6 +145,12 @@ const EMPTY_CONTROL_STATE: AutonomousControlState = {
   creditBalanceOperationKey: null,
   creditApprovalResolution: null,
   pendingRedirects: [],
+  pendingRetries: [],
+  pendingSkips: [],
+  failedTaskIds: [],
+  startedTaskIds: [],
+  skippedPhaseIds: [],
+  taskAttempts: {},
 };
 
 export const AutonomousContinuationSchema = z
@@ -149,7 +169,7 @@ export const AutonomousContinuationSchema = z
   .superRefine((continuation, context) => {
     if (
       continuation.nextPhaseIndex > continuation.plan.phases.length ||
-      continuation.completedPhases.length !== continuation.nextPhaseIndex
+      continuation.completedPhases.length + continuation.control.skippedPhaseIds.length !== continuation.nextPhaseIndex
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -168,11 +188,11 @@ export const AutonomousContinuationSchema = z
       .sort((left, right) => left.sequence - right.sequence)
       .slice(0, continuation.nextPhaseIndex)
       .map(({ id }) => id);
-    if (
-      expectedPhases.some(
-        (phaseId, index) => continuation.completedPhases[index]?.phaseId !== phaseId,
-      )
-    ) {
+    const recordedPhases = new Set([
+      ...continuation.completedPhases.map(({ phaseId }) => phaseId),
+      ...continuation.control.skippedPhaseIds,
+    ]);
+    if (expectedPhases.some((phaseId) => !recordedPhases.has(phaseId))) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'autonomous_continuation_completed_phase_mismatch',
@@ -822,6 +842,7 @@ function taskInput(
   continuation: AutonomousContinuation,
   task: PlanTask,
   control: AutonomousControlState,
+  attempt: number,
 ): TaskWorkflowInput {
   const profile = agentProfile(task);
   const estimatedCredits = Math.max(1, task.estimate.credits);
@@ -836,6 +857,7 @@ function taskInput(
     budget: {
       maxCredits: estimatedCredits,
     },
+    attempt,
   };
 }
 
@@ -1175,7 +1197,8 @@ async function executePhase(
   if (initialRedirect !== undefined) return initialRedirect;
   if (phase === undefined) {
     const firstIncompleteTask = continuation.plan.tasks.find(
-      ({ id }) => !completedTaskIds.has(id),
+      ({ id, phaseId }) =>
+        !completedTaskIds.has(id) && !control.skippedPhaseIds.includes(phaseId),
     );
     if (firstIncompleteTask !== undefined) {
       const nextPhaseIndex = phases.findIndex(({ id }) => id === firstIncompleteTask.phaseId);
@@ -1200,7 +1223,10 @@ async function executePhase(
     const controlled = await honorControlBoundary(input, control, 'final-evidence');
     if (controlled !== undefined) return controlled;
     const lastPhase = continuation.completedPhases.at(-1);
-    if (lastPhase === undefined || continuation.completedPhases.length !== phases.length) {
+    if (
+      lastPhase === undefined ||
+      continuation.completedPhases.length + continuation.control.skippedPhaseIds.length !== phases.length
+    ) {
       throw ApplicationFailure.nonRetryable(
         'Autonomous final evidence requires every approved phase checkpoint',
         'autonomous_final_evidence_incomplete',
@@ -1269,6 +1295,47 @@ async function executePhase(
   if (phaseTasks.length === 0) {
     throw ApplicationFailure.nonRetryable('Autonomous phase has no tasks', 'autonomous_phase_empty');
   }
+  const processPhaseSkip = async (): Promise<AutonomousWorkflowResult | undefined> => {
+    const requestIndex = control.pendingSkips.findIndex(({ phaseId }) => phaseId === phase.id);
+    if (requestIndex < 0) return undefined;
+    const request = control.pendingSkips.splice(requestIndex, 1)[0];
+    if (request === undefined) return undefined;
+    const eligibility = skipOptionalPhaseEligibility(
+      continuation.plan,
+      phase.id,
+      control.startedTaskIds,
+      control.skippedPhaseIds,
+    );
+    await emit(
+      input,
+      event(input, 'task.updated', `${phase.id}:skip:${request.operationKey}`, {
+        control: 'skip_optional_phase',
+        outcome: eligibility.accepted ? 'accepted' : 'rejected',
+        reason: eligibility.reason,
+        operationKey: request.operationKey,
+        phaseId: phase.id,
+      }, { phaseId: phase.id, agentId: 'planner' }),
+    );
+    if (!eligibility.accepted) return undefined;
+    control.skippedPhaseIds.push(phase.id);
+    await emit(
+      input,
+      event(input, 'phase.completed', `${phase.id}:skipped:${request.operationKey}`, {
+        phaseId: phase.id,
+        status: 'skipped',
+        operationKey: request.operationKey,
+      }, { phaseId: phase.id, agentId: 'planner' }),
+    );
+    const next = AutonomousContinuationSchema.parse({
+      ...continuation,
+      nextPhaseIndex: continuation.nextPhaseIndex + 1,
+      completedTaskIds: [...completedTaskIds],
+      control,
+    });
+    return await continueAsNew<typeof autonomousWorkflow>({ ...input, continuation: next });
+  };
+  const initialSkip = await processPhaseSkip();
+  if (initialSkip !== undefined) return initialSkip;
   for (const flag of ['autonomous-mode', 'browser-agent-enabled'] as const) {
     const gated = await honorRiskFlagBoundary(input, control, flag, `${phase.id}:start`);
     if (gated !== undefined) return gated;
@@ -1307,6 +1374,8 @@ async function executePhase(
   for (;;) {
     const redirected = await processPendingRedirects();
     if (redirected !== undefined) return redirected;
+    const skipped = await processPhaseSkip();
+    if (skipped !== undefined) return skipped;
     if (phaseTasks.every(({ id }) => completedTaskIds.has(id))) break;
     const ready = phaseTasks.filter(
       (task) =>
@@ -1342,12 +1411,17 @@ async function executePhase(
     );
     const controlled = await honorControlBoundary(input, control, `${phase.id}:wave:${String(wave)}`);
     if (controlled !== undefined) return controlled;
+    for (const task of ready) {
+      if (!control.startedTaskIds.includes(task.id)) control.startedTaskIds.push(task.id);
+    }
     const results = await executeChild(runTaskBatchWorkflow, {
       workflowId: `${input.runId}:phase:${String(phase.sequence)}:${continuation.planArtifactId}:wave:${String(wave)}`,
       args: [{
         runId: input.runId,
         maxConcurrency: input.maxConcurrency,
-        tasks: ready.map((task) => taskInput(input, continuation, task, control)),
+        tasks: ready.map((task) =>
+          taskInput(input, continuation, task, control, control.taskAttempts[task.id] ?? 0),
+        ),
       }],
     });
     const parsedResults = results.map((result) => TaskWorkflowResultSchema.parse(result));
@@ -1357,6 +1431,53 @@ async function executePhase(
     }
     remainingCredits -= waveCredits;
     for (const result of parsedResults) {
+      if (result.status === 'failed') {
+        if (!control.failedTaskIds.includes(result.taskId)) control.failedTaskIds.push(result.taskId);
+        await emit(
+          input,
+          event(input, 'task.failed', `${phase.id}:${result.taskId}:failed:${String(control.taskAttempts[result.taskId] ?? 0)}`, {
+            phaseId: phase.id,
+            taskId: result.taskId,
+            failureType: result.failureType,
+          }, { phaseId: phase.id, taskId: result.taskId, agentId: 'builder' }),
+        );
+        for (;;) {
+          const requestIndex = control.pendingRetries.findIndex(({ taskId }) => taskId === result.taskId);
+          if (requestIndex < 0) {
+            await condition(
+              () => control.pendingRetries.some(({ taskId }) => taskId === result.taskId) || control.cancelRequested,
+            );
+            if (control.cancelRequested) {
+              const cancelled = await honorControlBoundary(input, control, `${phase.id}:retry-cancel`);
+              if (cancelled !== undefined) return cancelled;
+            }
+            continue;
+          }
+          const request = control.pendingRetries.splice(requestIndex, 1)[0];
+          if (request === undefined) continue;
+          const eligibility = retryFailedTaskEligibility(
+            continuation.plan,
+            result.taskId,
+            control.failedTaskIds,
+            [...completedTaskIds],
+          );
+          await emit(
+            input,
+            event(input, 'task.updated', `${phase.id}:${result.taskId}:retry:${request.operationKey}`, {
+              control: 'retry_failed_task',
+              outcome: eligibility.accepted ? 'accepted' : 'rejected',
+              reason: eligibility.reason,
+              operationKey: request.operationKey,
+              taskId: result.taskId,
+            }, { phaseId: phase.id, taskId: result.taskId, agentId: 'builder' }),
+          );
+          if (!eligibility.accepted) continue;
+          control.failedTaskIds = control.failedTaskIds.filter((taskId) => taskId !== result.taskId);
+          control.taskAttempts[result.taskId] = (control.taskAttempts[result.taskId] ?? 0) + 1;
+          break;
+        }
+        continue;
+      }
       completedTaskIds.add(result.taskId);
       phaseCompletedTaskIds.push(result.taskId);
       const task = ready.find(({ id }) => id === result.taskId);
@@ -1666,6 +1787,18 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
       operationKey: signal.operationKey,
     });
     control.pauseRequested = true;
+  });
+  setHandler(retryFailedTaskSignal, (value) => {
+    const signal = RetryFailedTaskSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('task retry does not match workflow');
+    if (!rememberOperation(signal.operationKey) || control.cancelRequested) return;
+    control.pendingRetries.push(signal);
+  });
+  setHandler(skipOptionalPhaseSignal, (value) => {
+    const signal = SkipOptionalPhaseSignalSchema.parse(value);
+    if (signal.runId !== input.runId) throw new Error('phase skip does not match workflow');
+    if (!rememberOperation(signal.operationKey) || control.cancelRequested) return;
+    control.pendingSkips.push(signal);
   });
 
   try {
