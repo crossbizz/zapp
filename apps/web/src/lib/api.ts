@@ -46,6 +46,10 @@ export type RunTestsData =
   paths['/v1/runs/{runId}/tests']['get']['responses'][200]['content']['application/json'];
 export type RunEvidenceData =
   paths['/v1/runs/{runId}/evidence/{artifactId}']['get']['responses'][200]['content']['application/json'];
+export type TemplateListData =
+  paths['/v1/templates']['get']['responses'][200]['content']['application/json'];
+export type TemplateDetailData =
+  paths['/v1/templates/{slug}']['get']['responses'][200]['content']['application/json'];
 export type ListIncidentsQuery =
   paths['/v1/projects/{projectId}/incidents']['get']['parameters']['query'];
 export type UsageSummaryQuery = paths['/v1/usage/summary']['get']['parameters']['query'];
@@ -132,6 +136,17 @@ export function createControlPlaneClient(organizationId?: string) {
   });
 
   return {
+    listTemplates: (signal?: AbortSignal) =>
+      client.request('/v1/templates', {
+        method: 'GET',
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getTemplate: (slug: string, signal?: AbortSignal) =>
+      client.request('/v1/templates/{slug}', {
+        method: 'GET',
+        path: { slug },
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getMe: () =>
       client.request('/v1/me', {
         method: 'GET',

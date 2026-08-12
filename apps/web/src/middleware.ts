@@ -5,7 +5,12 @@ const publicPaths = new Set(['/login', '/auth/callback']);
 const sessionCookieName = 'zapp_session';
 
 function isPublicPath(pathname: string): boolean {
-  return publicPaths.has(pathname) || pathname.startsWith('/preview/');
+  return (
+    publicPaths.has(pathname) ||
+    pathname === '/templates' ||
+    pathname.startsWith('/templates/') ||
+    pathname.startsWith('/preview/')
+  );
 }
 
 function loginUrl(request: NextRequest): URL {

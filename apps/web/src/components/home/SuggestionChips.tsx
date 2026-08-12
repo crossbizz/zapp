@@ -1,6 +1,7 @@
 'use client';
 
 import { Chip } from '@zapp/ui';
+import Link from 'next/link';
 import { useState, type ReactElement } from 'react';
 
 import styles from './home.module.css';
@@ -66,6 +67,7 @@ export function SuggestionChips({ onSelect }: SuggestionChipsProps): ReactElemen
       >
         ⇄
       </button>
+      <Link href="/templates">Browse templates</Link>
     </section>
   );
 }
