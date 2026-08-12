@@ -199,6 +199,11 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   disappearAfterTags = false;
   disappearDuringTags = false;
   readonly snapshotEvents: string[] = [];
+  readonly networkPolicyUpdates: Array<{
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }> = [];
+  networkPolicyError: Error | undefined;
 
   constructor(private readonly owner: FakeModalWorkspaceSdk) {}
 
@@ -216,6 +221,16 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     return this.waitUntilReadyError === undefined
       ? Promise.resolve()
       : Promise.reject(this.waitUntilReadyError);
+  }
+
+  updateNetworkPolicy(input: {
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }): Promise<void> {
+    this.networkPolicyUpdates.push(input);
+    return this.networkPolicyError === undefined
+      ? Promise.resolve()
+      : Promise.reject(this.networkPolicyError);
   }
 
   agentHealth(token: string): Promise<unknown> {
@@ -2457,6 +2472,8 @@ describe('create status terminate and idempotency', () => {
         },
         encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
         timeoutMs: 14_400_000,
       },
     );
@@ -2468,6 +2485,38 @@ describe('create status terminate and idempotency', () => {
     await provider.terminateWorkspace(handle.providerWorkspaceId);
     expect(sdk.sandbox.terminateCalls).toBe(1);
     expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('terminated');
+  });
+
+  it('creates empty-domain profiles in Modal allowlist mode so the exact policy can replace them', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: 'agent-test-token',
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    await provider.createWorkspace(
+      { ...createInput(), networkProfile: 'build_test' },
+      async (providerWorkspaceId) => {
+        await provider.updateNetworkPolicy({
+          providerWorkspaceId,
+          profile: 'build_test',
+          allowedDomains: [],
+        });
+      },
+    );
+
+    expect(sdk.creates[0]).toMatchObject({
+      outboundCidrAllowlist: [],
+      outboundDomainAllowlist: ['zapp.invalid'],
+    });
+    expect(sdk.sandbox.networkPolicyUpdates).toEqual([
+      { outboundCidrAllowlist: [], outboundDomainAllowlist: [] },
+    ]);
   });
 
   it('accepts the locked c58 image health payload without managed-dev-server evidence', async () => {
@@ -2659,7 +2708,7 @@ describe('create status terminate and idempotency', () => {
     expect(rows.transitions).toHaveLength(0);
   });
 
-  it('records the complete network policy before provider allocation and fails closed when recording fails', async () => {
+  it('records and provider-enforces the complete network policy before readiness and fails closed when recording fails', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     const provider = createModalSandboxProvider({
       environment: 'dev',
@@ -2715,9 +2764,19 @@ describe('create status terminate and idempotency', () => {
         outboundDomains: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
         blockAll: false,
       },
-      providerEnforced: false,
+      providerEnforced: true,
       recordedAt: NOW,
     });
+    expect(sdk.creates[0]).toMatchObject({
+      outboundCidrAllowlist: [],
+      outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
+    });
+    expect(sdk.sandbox.networkPolicyUpdates).toEqual([
+      {
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
+      },
+    ]);
     const blockedSdk = new FakeModalWorkspaceSdk();
     const blockedRows = new MemoryWorkspaceRows();
     const blocked = buildTestApp({
@@ -2739,6 +2798,29 @@ describe('create status terminate and idempotency', () => {
     expect(blockedResponse.statusCode).toBe(500);
     expect(blockedSdk.creates).toHaveLength(0);
     expect(blockedRows.transitions).toHaveLength(0);
+
+    const enforcementSdk = new FakeModalWorkspaceSdk();
+    enforcementSdk.sandbox.networkPolicyError = new Error('provider policy unavailable');
+    const enforcementRows = new MemoryWorkspaceRows();
+    const enforcement = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => enforcementSdk,
+      }),
+      rows: enforcementRows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      networkPolicies: NOOP_NETWORK_POLICIES,
+      now: () => NOW,
+    });
+    apps.push(enforcement);
+    await enforcement.ready();
+    const enforcementResponse = await enforcement.inject(request);
+    expect(enforcementResponse.statusCode).toBe(500);
+    expect(enforcementSdk.sandbox.terminateCalls).toBe(1);
+    expect(enforcementRows.transitions.at(-1)).toMatchObject({ status: 'terminated' });
   });
 
   it.each([

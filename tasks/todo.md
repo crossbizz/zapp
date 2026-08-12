@@ -241,7 +241,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
 - [x] OPS-10 Managed-app observability templates
 - [x] OPS-11 Incident → Fix run closed loop
-- [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
+- [x] OPS-12 Security suites complete (isolation/redaction/abuse)
 - [x] OPS-13 Injection evals + policy scans blocking
 - [x] OPS-14 Retention archival + rehydration
 - [x] OPS-17 Support/admin console

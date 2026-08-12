@@ -47,4 +47,31 @@ describe('OPS-12 permanent redaction gate', () => {
     );
     expect(output).toContain('1 passed');
   }, 60_000);
+
+  it('removes vault values and sensitive request fields before structured log export', async () => {
+    const output = await runGate(
+      '@zapp/config',
+      'test/logger.test.ts',
+      'redacts registered vault values and sensitive fields before stdout or OTLP can see them',
+    );
+    expect(output).toContain('1 passed');
+  }, 60_000);
+
+  it('removes provider values and arbitrary gate details from evidence artifacts', async () => {
+    const output = await runGate(
+      '@zapp/verification-engine',
+      'test/evidence.test.ts',
+      'redacts all returned and persisted text and never copies arbitrary gate details',
+    );
+    expect(output).toContain('1 passed');
+  }, 60_000);
+
+  it('keeps provider errors, model requests, tool inputs, and service tokens out of gateway logs', async () => {
+    const output = await runGate(
+      '@zapp/model-gateway',
+      'test/gateway.test.ts',
+      'does not log provider errors, request messages, tool inputs, or service tokens',
+    );
+    expect(output).toContain('1 passed');
+  }, 60_000);
 });
