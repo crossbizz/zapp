@@ -16,6 +16,7 @@ import {
   loadMasterKey,
   loadPreviewEnv,
   loadModelGatewayUrl,
+  loadNotificationEnv,
   loadPostHogEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
@@ -99,6 +100,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadPreviewEnv(environment)).not.toThrow();
     expect(() => loadModelGatewayUrl(environment)).not.toThrow();
     expect(() => loadUsageQueueEnv(environment)).not.toThrow();
+    expect(() => loadNotificationEnv(environment)).not.toThrow();
     expect(() => loadGitHubAppEnv(environment)).not.toThrow();
     expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
@@ -164,6 +166,9 @@ describe('the shipped .env.example', () => {
       'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',
+      'SQS_NOTIFICATION_QUEUE_NAME',
+      'SES_NOTIFICATION_SOURCE',
+      'SNS_NOTIFICATION_TOPIC_ARN',
       'GITHUB_APP_ID',
       'GITHUB_APP_SLUG',
       'GITHUB_APP_PRIVATE_KEY',
@@ -225,8 +230,7 @@ describe('Stripe platform billing configuration', () => {
       loadStripeBillingEnv({
         PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
         PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
-        STRIPE_PLAN_PRICE_IDS_JSON:
-          '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
         STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
           '{"starter":"price_starter123","scale":"price_scale123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
@@ -244,8 +248,7 @@ describe('Stripe platform billing configuration', () => {
       loadStripeBillingEnv({
         PLATFORM_BILLING_STRIPE_SECRET_KEY: GENERATED_APP_STRIPE_SECRET,
         PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
-        STRIPE_PLAN_PRICE_IDS_JSON:
-          '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
         STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
           '{"starter":"price_starter123","scale":"price_scale123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
@@ -256,8 +259,7 @@ describe('Stripe platform billing configuration', () => {
       loadStripeBillingEnv({
         PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
         PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
-        STRIPE_PLAN_PRICE_IDS_JSON:
-          '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
         FLEXPRICE_STRIPE_WEBHOOK_URL:
           'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
       }),
@@ -265,9 +267,9 @@ describe('Stripe platform billing configuration', () => {
   });
 
   it('refuses production without platform billing and permits an absent local provider', () => {
-    expect(() =>
-      requireStripeBillingForEnvironment({ NODE_ENV: 'production' }, undefined),
-    ).toThrow('PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production');
+    expect(() => requireStripeBillingForEnvironment({ NODE_ENV: 'production' }, undefined)).toThrow(
+      'PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production',
+    );
     expect(requireStripeBillingForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
   });
 });

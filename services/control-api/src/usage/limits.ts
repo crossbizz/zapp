@@ -41,19 +41,33 @@ export function planLimitsFor(config: PlanLimitsConfig, plan: string): PlanLimit
 /** The sole plan-policy adapter the sandbox governor consumes for organization quotas. */
 export function createPlanLimitsAdapter(options: {
   readonly plans: PlanLimitsConfig;
-  readonly organizations: { findById(organizationId: string): Promise<{ readonly plan: string } | undefined> };
-}): { getOrganizationLimits(organizationId: string): Promise<{ readonly concurrentSandboxes: number }> } {
+  readonly organizations: {
+    findById(organizationId: string): Promise<{ readonly plan: string } | undefined>;
+  };
+}): {
+  getOrganizationLimits(organizationId: string): Promise<{ readonly concurrentSandboxes: number }>;
+} {
   return {
     async getOrganizationLimits(organizationId) {
-      const organization = await options.organizations.findById(idSchema('org').parse(organizationId));
+      const organization = await options.organizations.findById(
+        idSchema('org').parse(organizationId),
+      );
       if (organization === undefined) throw new Error('organization plan is unavailable');
-      return { concurrentSandboxes: planLimitsFor(options.plans, organization.plan).concurrentSandboxes };
+      return {
+        concurrentSandboxes: planLimitsFor(options.plans, organization.plan).concurrentSandboxes,
+      };
     },
   };
 }
 
-export function clampResourceProfile(limit: PlanLimit, requested: ResourceProfile): ResourceProfile {
-  return ProfileAtRank[Math.min(ProfileRank[requested], ProfileRank[limit.maxResourceProfile])] ?? 'small';
+export function clampResourceProfile(
+  limit: PlanLimit,
+  requested: ResourceProfile,
+): ResourceProfile {
+  return (
+    ProfileAtRank[Math.min(ProfileRank[requested], ProfileRank[limit.maxResourceProfile])] ??
+    'small'
+  );
 }
 
 export function resolveRunBudget(
@@ -161,7 +175,7 @@ const BUDGET_ALERT_THRESHOLDS = [50, 80, 100] as const;
  * delivery port without changing the credit path.
  */
 export function createBudgetThresholdAlerts(options: {
-  readonly redis: Pick<RedisCommands, 'setIfAbsent'>;
+  readonly redis: Pick<RedisCommands, 'setIfAbsent' | 'delete'>;
   readonly alerts: UsageOpsAlertPort;
 }): BudgetThresholdAlertPort {
   return {
@@ -175,18 +189,23 @@ export function createBudgetThresholdAlerts(options: {
       for (const threshold of BUDGET_ALERT_THRESHOLDS) {
         if (consumed * 100n < ceiling * BigInt(threshold)) continue;
         try {
-          const claimed = await options.redis.setIfAbsent(
-            `run:${runId}:budget-alert:${String(threshold)}`,
-            '1',
-            BUDGET_ALERT_TTL_MS,
-          );
+          const claimKey = `run:${runId}:budget-alert:${String(threshold)}`;
+          const claimed = await options.redis.setIfAbsent(claimKey, '1', BUDGET_ALERT_TTL_MS);
           if (claimed) {
-            void options.alerts.emit({
-              type: 'run_budget_threshold',
-              organizationId,
-              runId,
-              threshold,
-            }).catch(() => undefined);
+            void options.alerts
+              .emit({
+                type: 'run_budget_threshold',
+                organizationId,
+                runId,
+                threshold,
+              })
+              .catch(async () => {
+                try {
+                  await options.redis.delete([claimKey]);
+                } catch {
+                  // Delivery remains non-blocking; expiry is the final retry boundary.
+                }
+              });
           }
         } catch {
           // Alert delivery must never make the accounting boundary unavailable.
@@ -225,14 +244,18 @@ export function createDatabaseActiveReservationSource(database: Database): Activ
     async total(organizationId) {
       const organization = idSchema('org').parse(organizationId);
       const [row] = await database
-        .select({ total: sql<string>`coalesce(sum(${runCreditAccounts.reservedCredits}), 0)::text` })
+        .select({
+          total: sql<string>`coalesce(sum(${runCreditAccounts.reservedCredits}), 0)::text`,
+        })
         .from(runCreditAccounts)
         .innerJoin(agentRuns, eq(agentRuns.id, runCreditAccounts.runId))
-        .where(and(
-          eq(runCreditAccounts.organizationId, organization),
-          eq(agentRuns.organizationId, organization),
-          inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
-        ));
+        .where(
+          and(
+            eq(runCreditAccounts.organizationId, organization),
+            eq(agentRuns.organizationId, organization),
+            inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+          ),
+        );
       return CreditDecimalSchema.parse(row?.total ?? '0');
     },
   };
@@ -261,33 +284,43 @@ export function createCachedCreditBalanceGate(options: {
 }): CreditBalanceGate {
   const graceFloorCredits = CreditDecimalSchema.parse(options.graceFloorCredits);
   const now = options.now ?? Date.now;
-  const timeoutMs = z.number().int().positive().max(30_000).parse(options.timeoutMs ?? 3_000);
-  const freshKey = (organizationId: string): string => `organization:${organizationId}:wallet:credits:fresh`;
-  const lastKnownKey = (organizationId: string): string => `organization:${organizationId}:wallet:credits:lkg`;
+  const timeoutMs = z
+    .number()
+    .int()
+    .positive()
+    .max(30_000)
+    .parse(options.timeoutMs ?? 3_000);
+  const freshKey = (organizationId: string): string =>
+    `organization:${organizationId}:wallet:credits:fresh`;
+  const lastKnownKey = (organizationId: string): string =>
+    `organization:${organizationId}:wallet:credits:lkg`;
 
   async function reservedCredits(organizationId: string): Promise<string> {
     const organization = idSchema('org').parse(organizationId);
     try {
-      return await within((async () => {
-        const runIds = await options.activeRuns.list(
-          organization,
-          MAX_REDIS_RESERVATION_READS + 1,
-        );
-        if (runIds.length > MAX_REDIS_RESERVATION_READS) {
-          throw new Error('active reservation cache read limit exceeded');
-        }
-        const reservations = await mapConcurrentStrict(
-          runIds,
-          MAX_REDIS_RESERVATION_CONCURRENCY,
-          async (runId) => {
-            const raw = await options.redis.get(`run:${runId}:credits`);
-            if (raw === null) throw new Error('active reservation cache miss');
-            const state = CreditStateSchema.parse(JSON.parse(raw) as unknown);
-            return creditUnits(state.reserved);
-          },
-        );
-        return formatCredits(reservations.reduce((total, reserved) => total + reserved, 0n));
-      })(), timeoutMs);
+      return await within(
+        (async () => {
+          const runIds = await options.activeRuns.list(
+            organization,
+            MAX_REDIS_RESERVATION_READS + 1,
+          );
+          if (runIds.length > MAX_REDIS_RESERVATION_READS) {
+            throw new Error('active reservation cache read limit exceeded');
+          }
+          const reservations = await mapConcurrentStrict(
+            runIds,
+            MAX_REDIS_RESERVATION_CONCURRENCY,
+            async (runId) => {
+              const raw = await options.redis.get(`run:${runId}:credits`);
+              if (raw === null) throw new Error('active reservation cache miss');
+              const state = CreditStateSchema.parse(JSON.parse(raw) as unknown);
+              return creditUnits(state.reserved);
+            },
+          );
+          return formatCredits(reservations.reduce((total, reserved) => total + reserved, 0n));
+        })(),
+        timeoutMs,
+      );
     } catch {
       if (options.reservations === undefined) return '0.0000';
       try {

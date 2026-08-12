@@ -84,6 +84,7 @@ import {
 } from './billing/topup.js';
 import { createPostHogRuntime } from './analytics/posthog.js';
 import type { PostHogEnv } from './env.js';
+import type { NotificationStatePort, NotificationTrigger } from './notifications/service.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -155,12 +156,17 @@ export interface ServiceRuntime {
   readonly github?: GitHubAppEnv;
   /** OPS-6 server-side analytics and organization flag evaluation. */
   readonly posthog?: PostHogEnv;
+  readonly notifications?: {
+    readonly state: NotificationStatePort;
+    enqueue(trigger: NotificationTrigger): Promise<void>;
+  };
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
 
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
+  const notifications = runtime.notifications;
   const posthog = runtime.posthog === undefined ? undefined : createPostHogRuntime(runtime.posthog);
   const previewRuntime =
     runtime.preview === undefined
@@ -184,16 +190,14 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
   const usageLedger = createUsageLedgerRepository({ database });
   const tenantDb = createTenantDbFactory(database);
   const organizations = createDbOrganizationStore(database);
-  const usageOpsAlerts: UsageOpsAlertPort =
-    runtime.usageOpsAlerts ??
-    {
-      emit: (alert) => {
-        process.emitWarning(
-          `usage ops alert: ${alert.type} for organization ${alert.organizationId}`,
-        );
-        return Promise.resolve();
-      },
-    };
+  const usageOpsAlerts: UsageOpsAlertPort = runtime.usageOpsAlerts ?? {
+    emit: (alert) => {
+      process.emitWarning(
+        `usage ops alert: ${alert.type} for organization ${alert.organizationId}`,
+      );
+      return Promise.resolve();
+    },
+  };
   const budgetAlerts = createBudgetThresholdAlerts({ redis, alerts: usageOpsAlerts });
   const creditBalance =
     runtime.creditBalance ??
@@ -203,8 +207,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           wallets: createFlexpriceWalletClient(runtime.flexprice),
           redis,
           activeRuns: {
-            list: (organizationId, limit) =>
-              tenantDb(organizationId).runs.listActiveRunIds(limit),
+            list: (organizationId, limit) => tenantDb(organizationId).runs.listActiveRunIds(limit),
           },
           reservations: createDatabaseActiveReservationSource(database),
           graceFloorCredits:
@@ -310,12 +313,16 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
               flexprice,
               plans: BillingPlanCatalogSchema.parse(runtime.planLimits),
               topups: grants,
+              ...(notifications === undefined
+                ? {}
+                : { enqueueNotification: (trigger) => notifications.enqueue(trigger) }),
             }),
           };
         })();
 
   const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
+    ...(notifications === undefined ? {} : { notifications }),
     ...(posthog === undefined
       ? {}
       : { productAnalytics: posthog.analytics, featureFlags: posthog.flags }),

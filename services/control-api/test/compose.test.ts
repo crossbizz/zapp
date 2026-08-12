@@ -7,6 +7,7 @@ import { composeApp } from '../src/compose.js';
 import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
+import { createInMemoryNotificationState } from '../src/notifications/service.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
 import {
   InMemoryUserStore,
@@ -77,9 +78,36 @@ function composed(): AppInstance {
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
     planLimits: {
-      trial: { concurrentAutonomousRuns: 1, concurrentSandboxes: 1, maxResourceProfile: 'small', maxRunBudgetCredits: '10.0000', maxPreviewLifetimeHours: 1, artifactRetentionDays: 7, monthlyCredits: '10.0000', seats: 1 },
-      builder: { concurrentAutonomousRuns: 3, concurrentSandboxes: 3, maxResourceProfile: 'standard', maxRunBudgetCredits: '100.0000', maxPreviewLifetimeHours: 24, artifactRetentionDays: 30, monthlyCredits: '100.0000', seats: 3 },
-      studio: { concurrentAutonomousRuns: 10, concurrentSandboxes: 10, maxResourceProfile: 'large', maxRunBudgetCredits: '1000.0000', maxPreviewLifetimeHours: 168, artifactRetentionDays: 90, monthlyCredits: '1000.0000', seats: 10 },
+      trial: {
+        concurrentAutonomousRuns: 1,
+        concurrentSandboxes: 1,
+        maxResourceProfile: 'small',
+        maxRunBudgetCredits: '10.0000',
+        maxPreviewLifetimeHours: 1,
+        artifactRetentionDays: 7,
+        monthlyCredits: '10.0000',
+        seats: 1,
+      },
+      builder: {
+        concurrentAutonomousRuns: 3,
+        concurrentSandboxes: 3,
+        maxResourceProfile: 'standard',
+        maxRunBudgetCredits: '100.0000',
+        maxPreviewLifetimeHours: 24,
+        artifactRetentionDays: 30,
+        monthlyCredits: '100.0000',
+        seats: 3,
+      },
+      studio: {
+        concurrentAutonomousRuns: 10,
+        concurrentSandboxes: 10,
+        maxResourceProfile: 'large',
+        maxRunBudgetCredits: '1000.0000',
+        maxPreviewLifetimeHours: 168,
+        artifactRetentionDays: 90,
+        monthlyCredits: '1000.0000',
+        seats: 10,
+      },
     },
     flexprice: {
       apiKey: 'not-a-real-flexprice-key',
@@ -112,6 +140,10 @@ function composed(): AppInstance {
       clientSecret: 'test-client-secret',
       privateKey: 'test-private-key',
       webhookSecret: 'test-webhook-secret',
+    },
+    notifications: {
+      state: createInMemoryNotificationState(),
+      enqueue: () => Promise.resolve(),
     },
   });
   apps.push(app);
@@ -149,6 +181,8 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['POST', '/v1/projects'],
   ['GET', '/v1/projects'],
   ['GET', '/v1/feature-flags'],
+  ['GET', '/v1/notification-preferences'],
+  ['PUT', '/v1/notification-preferences/:type'],
   ['GET', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],

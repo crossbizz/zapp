@@ -21,6 +21,7 @@ import {
 import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
 import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 import type { paths as GeneratedPaths } from '../../../packages/api-client/src/generated.js';
+import { createInMemoryNotificationState } from '../src/notifications/service.js';
 
 const GENERATED_TYPES = resolve(
   import.meta.dirname,
@@ -57,6 +58,7 @@ interface OpenApiOperation {
 
 function documentedHarness(): Harness {
   const built = buildHarness({
+    notificationState: createInMemoryNotificationState(),
     tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
     },
@@ -94,17 +96,20 @@ function documentedHarness(): Harness {
     },
     billing: {
       stripe: {
-        createCheckout: () => Promise.reject(new Error('OpenAPI must not create checkout sessions.')),
+        createCheckout: () =>
+          Promise.reject(new Error('OpenAPI must not create checkout sessions.')),
         createPortal: () => Promise.reject(new Error('OpenAPI must not create portal sessions.')),
         updateSeats: () => Promise.reject(new Error('OpenAPI must not update seats.')),
         createProduct: () => Promise.reject(new Error('OpenAPI must not create products.')),
         createMonthlyPrice: () => Promise.reject(new Error('OpenAPI must not create prices.')),
-        verifyWebhookEndpoint: () => Promise.reject(new Error('OpenAPI must not inspect webhooks.')),
+        verifyWebhookEndpoint: () =>
+          Promise.reject(new Error('OpenAPI must not inspect webhooks.')),
       },
       store: {
         status: () => Promise.reject(new Error('OpenAPI must not read billing status.')),
         syncSubscription: () => Promise.reject(new Error('OpenAPI must not sync subscriptions.')),
-        findOrganizationByCustomer: () => Promise.reject(new Error('OpenAPI must not find customers.')),
+        findOrganizationByCustomer: () =>
+          Promise.reject(new Error('OpenAPI must not find customers.')),
         markPaymentFailed: () => Promise.reject(new Error('OpenAPI must not mark dunning.')),
         clearDunning: () => Promise.reject(new Error('OpenAPI must not clear dunning.')),
         mirrorCreditGrant: () => Promise.reject(new Error('OpenAPI must not grant credits.')),
@@ -196,7 +201,8 @@ describe('generated API types', () => {
         }
       | undefined;
     const runSchema = responseSchema?.schema?.properties?.run;
-    const requestVariants = requestSchema?.anyOf ?? (requestSchema === undefined ? [] : [requestSchema]);
+    const requestVariants =
+      requestSchema?.anyOf ?? (requestSchema === undefined ? [] : [requestSchema]);
 
     expect(requestVariants).toHaveLength(2);
     for (const variant of requestVariants) {
@@ -214,9 +220,7 @@ describe('generated API types', () => {
       expect(variant.required).not.toContain('model');
       expect(variant.properties).not.toHaveProperty('requestFingerprint');
     }
-    const fixVariant = requestVariants.find((variant) =>
-      variant.required?.includes('fixRequest'),
-    );
+    const fixVariant = requestVariants.find((variant) => variant.required?.includes('fixRequest'));
     expect(fixVariant?.properties?.['mode']).toMatchObject({ enum: ['fix'] });
     expect(fixVariant?.properties?.['fixRequest']).toMatchObject({ type: 'object' });
 
@@ -229,15 +233,22 @@ describe('generated API types', () => {
     expect(runSchema?.properties).not.toHaveProperty('requestFingerprint');
   });
 
+  it('publishes the versioned notification preference API and generated operations', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+
+    expect(paths['/v1/notification-preferences']?.['get']?.responses?.['200']).toBeDefined();
+    expect(paths['/v1/notification-preferences/{type}']?.['put']?.requestBody).toBeDefined();
+  });
+
   it('projects validated model choices through the public membership schema', async () => {
     // Break caught: WEB-3 falls back to the Owner-only settings route when /v1/me
     // does not carry the model identifiers a Builder is permitted to select.
     const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
     expect(response.statusCode).toBe(200);
     const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
-    const meSchema = paths['/v1/me']?.['get']?.responses?.['200']?.content?.[
-      'application/json'
-    ] as
+    const meSchema = paths['/v1/me']?.['get']?.responses?.['200']?.content?.['application/json'] as
       | {
           schema?: {
             properties?: {
@@ -335,9 +346,7 @@ describe('generated API types', () => {
   it('requires a validated GitHub import idempotency header in OpenAPI and generated types', async () => {
     // Break caught: runtime-only header extraction leaves the public SDK unable
     // to require the operation key that makes import acceptance replay-safe.
-    type ImportPost = NonNullable<
-      GeneratedPaths['/v1/projects/{projectId}/import/github']['post']
-    >;
+    type ImportPost = NonNullable<GeneratedPaths['/v1/projects/{projectId}/import/github']['post']>;
     type ImportHeaders = NonNullable<ImportPost['parameters']['header']>;
     const generatedHeaders: ImportHeaders = {
       'idempotency-key': 'github-import-operation-0001',
@@ -407,21 +416,21 @@ describe('generated API types', () => {
     expect(summary?.['preview']).toMatchObject({ required: ['status', 'occurredAt'] });
     expect(summary?.['preview']).not.toHaveProperty('nullable');
     const production = summary?.['production'] as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    expect(
-      production?.properties?.['releaseId'],
-    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+      { properties?: Record<string, unknown> } | undefined;
+    expect(production?.properties?.['releaseId']).toMatchObject({
+      pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$',
+      type: 'string',
+    });
     const deployReadiness = summary?.['deployReadiness'] as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    expect(
-      deployReadiness?.properties?.['releaseId'],
-    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+      { properties?: Record<string, unknown> } | undefined;
+    expect(deployReadiness?.properties?.['releaseId']).toMatchObject({
+      pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$',
+      type: 'string',
+    });
 
-    const branchSchema = paths[
-      '/v1/integrations/github/repositories/{repositoryId}/branches'
-    ]?.['get']?.responses?.['200']?.content?.['application/json'] as
+    const branchSchema = paths['/v1/integrations/github/repositories/{repositoryId}/branches']?.[
+      'get'
+    ]?.responses?.['200']?.content?.['application/json'] as
       | {
           schema?: {
             properties?: {
@@ -432,9 +441,9 @@ describe('generated API types', () => {
           };
         }
       | undefined;
-    expect(branchSchema?.schema?.properties?.items?.items?.properties?.['headCommitSha']).toMatchObject(
-      { pattern: '^[0-9a-f]{40}$', type: 'string' },
-    );
+    expect(
+      branchSchema?.schema?.properties?.items?.items?.properties?.['headCommitSha'],
+    ).toMatchObject({ pattern: '^[0-9a-f]{40}$', type: 'string' });
   });
 
   it('documents every formerly schema-less redirect with its live status and location header', async () => {
@@ -487,27 +496,30 @@ describe('generated API types', () => {
     const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
     const workspace = '/v1/workspaces/{workspaceId}';
 
-    expect(paths[`${workspace}/dev-server/logs`]?.['get']?.responses?.['200']?.content).toHaveProperty(
-      'application/json',
+    expect(
+      paths[`${workspace}/dev-server/logs`]?.['get']?.responses?.['200']?.content,
+    ).toHaveProperty('application/json');
+    expect(
+      paths[`${workspace}/dev-server/restart`]?.['post']?.responses?.['200']?.content,
+    ).toHaveProperty('application/json');
+    expect(
+      paths[`${workspace}/preview/events`]?.['get']?.responses?.['200']?.content,
+    ).toHaveProperty('text/event-stream');
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['200']?.content).toEqual(
+      {
+        'image/png': { schema: { format: 'binary', type: 'string' } },
+      },
     );
-    expect(paths[`${workspace}/dev-server/restart`]?.['post']?.responses?.['200']?.content).toHaveProperty(
-      'application/json',
-    );
-    expect(paths[`${workspace}/preview/events`]?.['get']?.responses?.['200']?.content).toHaveProperty(
-      'text/event-stream',
-    );
-    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['200']?.content).toEqual({
-      'image/png': { schema: { format: 'binary', type: 'string' } },
-    });
     expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']).toBeDefined();
-    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']?.content).toBeUndefined();
+    expect(
+      paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']?.content,
+    ).toBeUndefined();
     expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']).toBeDefined();
-    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']?.content).toBeUndefined();
+    expect(
+      paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']?.content,
+    ).toBeUndefined();
 
-    for (const path of [
-      `${workspace}/dev-server/restart`,
-      `${workspace}/preview/screenshot`,
-    ]) {
+    for (const path of [`${workspace}/dev-server/restart`, `${workspace}/preview/screenshot`]) {
       expect(
         paths[path]?.['post']?.parameters?.find(
           (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',

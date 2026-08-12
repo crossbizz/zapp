@@ -162,9 +162,9 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `services/control-api/src/notifications/{service,email,templates}.ts`
 **Effort:** M
 
-- [ ] Binding behavior: delivery pipeline: triggers enqueue to SQS `zapp-notifications` (+DLQ); worker consumes → channels: email (AWS SES) + in-app (event-derived) + desktop push (MAC-11 consumes events); SNS topics for multi-subscriber fan-out (e.g. deploy events → email + webhook subscribers) as needed; triggers: approval requested, run completed/failed, budget 50/80/100%, synthetic check failure, deploy success/failure, payment failure, member invited; per-user per-type preferences; batching (no more than 1 email/type/15 min per org); templates text-first with deep links (`zapp://` + web URLs); LocalStack-backed integration tests for the full enqueue→SES path.
-- [ ] Failing tests: trigger→notification mapping; batching window; preference suppression.
-- [ ] Commit: `feat(notifications): multi-channel notification service`
+- [x] Binding behavior: delivery pipeline: triggers enqueue to SQS `zapp-notifications` (+DLQ); worker consumes → channels: email (AWS SES) + in-app (event-derived) + desktop push (MAC-11 consumes events); SNS topics for multi-subscriber fan-out (e.g. deploy events → email + webhook subscribers) as needed; triggers: approval requested, run completed/failed, budget 50/80/100%, synthetic check failure, deploy success/failure, payment failure, member invited; per-user per-type preferences; batching (no more than 1 email/type/15 min per org); templates text-first with deep links (`zapp://` + web URLs); LocalStack-backed integration tests for the full enqueue→SES path.
+- [x] Failing tests: trigger→notification mapping; batching window; preference suppression.
+- [x] Commit: `feat(notifications): multi-channel notification service`
 
 ### Task OPS-8 [M5, start M2]: OpenTelemetry → Grafana Cloud across services
 
@@ -270,6 +270,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-11 OPS-7 done — Added SQS/DLQ enqueue, SES delivery, SNS fan-out, event-derived in-app/desktop projections, persistent Redis preferences and fenced idempotency, 15-minute per-recipient/type/org batching, versioned preference API/SDK, and production trigger wiring; the capped review closed retry-safe budget alert claims, the full LocalStack SQS→SES plus real Redis gates passed, and one cold saturated DAG exposed unrelated Git/Chrome fixture timeouts that passed immediately in isolation and in the warm full gate, with no external-provider blocker or plan deviation.
 - 2026-08-11 OPS-6 done — Added privacy-safe typed PostHog analytics, dashboard definitions, org-scoped 60 s cached flags with outage defaults, no-flicker web/desktop bootstrap, and Temporal phase kill-switches; one capped review closed structural worker registration and rollout-boundary gaps, real PostHog verification skipped because `POSTHOG_KEY` was unavailable, and two cold-suite attempts exposed distinct pre-existing SSE waiter flakes that each passed immediately in isolation while task-owned tests and static gates stayed green.
 - 2026-08-11 OPS-5 done — Added config-defined one-time Stripe checkout, signed paid-amount validation, idempotent Flexprice wallet delivery and ledger mirrors, structurally unique durable per-user trial claims with recovery, exact estimate APIs, and generated SDK surfaces; the terse create-only file list required API, migration, configuration, composition, and generated-client joins, with no behavioral deviation, and the one review round's two provider-boundary findings were closed.
 - 2026-08-11 OPS-4-FIX-1 done — GitHub Security caught seven synthetic provider-shaped Stripe literals in OPS-4 tests; kept the scanner and allowlist strict, constructed the same boundary-test values only at runtime, and verified Gitleaks 8.24.3 plus focused control-api static/unit/integration gates with no provider calls, blockers, or deviations.

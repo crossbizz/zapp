@@ -75,6 +75,11 @@ import { registerInternalUsageRoutes } from './internal/usage.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
 import type { UsageLedgerRepository } from './usage/ledger.js';
 import type { DeploymentUsagePort } from './usage/collectors/git.js';
+import {
+  registerNotificationRoutes,
+  type NotificationStatePort,
+  type NotificationTrigger,
+} from './notifications/service.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -250,6 +255,11 @@ export interface BillingDeps extends BillingRoutesDeps {
   readonly trial?: CreditGrantService;
 }
 
+export interface NotificationDeps {
+  readonly state: NotificationStatePort;
+  readonly enqueue: (trigger: NotificationTrigger) => Promise<void>;
+}
+
 /**
  * What the rate-limit and idempotency plugins need (CP-5). Both are always
  * registered — a route that could be added without a limit or without replay
@@ -339,6 +349,8 @@ export interface AppDeps {
   readonly productAnalytics?: ProductAnalytics;
   /** OPS-6's cached organization-scoped flag boundary. */
   readonly featureFlags?: FeatureFlagEvaluator;
+  /** OPS-7's queue producer and per-user delivery preferences. */
+  readonly notifications?: NotificationDeps;
 }
 
 /**
@@ -441,20 +453,16 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.setSerializerCompiler(serializerCompiler);
   const parseJson = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
-  app.addContentTypeParser(
-    'application/json',
-    { parseAs: 'buffer' },
-    (request, body, done) => {
-      if (
-        request.url.split('?')[0] === '/v1/webhooks/github' ||
-        request.url.split('?')[0] === '/v1/webhooks/stripe'
-      ) {
-        done(null, body);
-        return;
-      }
-      void parseJson(request, body.toString('utf8'), done);
-    },
-  );
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
+    if (
+      request.url.split('?')[0] === '/v1/webhooks/github' ||
+      request.url.split('?')[0] === '/v1/webhooks/stripe'
+    ) {
+      done(null, body);
+      return;
+    }
+    void parseJson(request, body.toString('utf8'), done);
+  });
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
   void app.register(requestContext);
@@ -602,12 +610,23 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           ...(deps.productAnalytics === undefined
             ? {}
             : { productAnalytics: deps.productAnalytics }),
+          ...(deps.notifications === undefined
+            ? {}
+            : {
+                notifications: {
+                  appBaseUrl: auth.config.appBaseUrl,
+                  enqueue: deps.notifications.enqueue,
+                },
+              }),
         });
         // Registered only with a tenant handle to give them: a projects route
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
           registerFeatureFlagRoutes(app, featureFlags);
+          if (deps.notifications !== undefined) {
+            registerNotificationRoutes(app, deps.notifications.state);
+          }
           registerAuditRoutes(app, { organizations: orgs.organizations });
           // Static paths must be enrolled before `/v1/projects/:projectId`, or
           // Fastify treats `summaries` as a malformed project id.
@@ -745,6 +764,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               ...(deps.productAnalytics === undefined
                 ? {}
                 : { productAnalytics: deps.productAnalytics }),
+              ...(deps.notifications === undefined
+                ? {}
+                : { enqueueNotification: deps.notifications.enqueue }),
             });
             if (deps.modelCompletions !== undefined) {
               registerInternalModelCompletionRoutes(app, deps.modelCompletions);
@@ -784,9 +806,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         denylist,
         deviceStore,
         now,
-        ...(deps.productAnalytics === undefined
-          ? {}
-          : { productAnalytics: deps.productAnalytics }),
+        ...(deps.productAnalytics === undefined ? {} : { productAnalytics: deps.productAnalytics }),
       });
     });
   }

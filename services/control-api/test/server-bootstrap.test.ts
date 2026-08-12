@@ -33,6 +33,16 @@ describe('control-api production bootstrap', () => {
           return Promise.resolve();
         },
       },
+      notificationLifecycle: {
+        start() {
+          order.push('notifications:start');
+          return Promise.resolve();
+        },
+        close() {
+          order.push('notifications:close');
+          return Promise.resolve();
+        },
+      },
       eventPublisherLifecycle: {
         start() {
           order.push('events:start-and-listen');
@@ -45,12 +55,19 @@ describe('control-api production bootstrap', () => {
       },
     });
 
-    expect(order).toEqual(['github:start', 'usage:start', 'events:start-and-listen']);
-    await onClose?.();
     expect(order).toEqual([
+      'notifications:start',
       'github:start',
       'usage:start',
       'events:start-and-listen',
+    ]);
+    await onClose?.();
+    expect(order).toEqual([
+      'notifications:start',
+      'github:start',
+      'usage:start',
+      'events:start-and-listen',
+      'notifications:close',
       'github:close',
       'usage:close',
       'events:close-shared-handles',

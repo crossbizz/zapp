@@ -1,10 +1,19 @@
 import type { ProductAnalytics } from '@zapp/config';
-import { AgentEventInputSchema, AgentEventSchema, idSchema, type AgentEvent } from '@zapp/contracts';
+import {
+  AgentEventInputSchema,
+  AgentEventSchema,
+  idSchema,
+  type AgentEvent,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance, TenantDeps } from '../app.js';
 import { ApiError } from '../errors.js';
 import { projectAgentEvent } from '../analytics/events.js';
+import {
+  projectAgentEventNotification,
+  type NotificationTrigger,
+} from '../notifications/service.js';
 import { serviceOf } from './service-auth.js';
 
 /** The route-specific audience prevents a token for another internal operation being reused here. */
@@ -30,6 +39,7 @@ type StoredAgentEvent = Awaited<
 export interface InternalEventRoutesDeps {
   readonly tenantDb: TenantDeps['tenantDb'];
   readonly productAnalytics?: ProductAnalytics;
+  readonly enqueueNotification?: (trigger: NotificationTrigger) => Promise<void>;
 }
 
 function runNotFound(): ApiError {
@@ -225,12 +235,13 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         );
       }
       const { events: stored } = result;
-      await captureStoredAnalytics(
-        deps,
-        first.organizationId,
-        request.params.runId,
-        stored,
-      );
+      await captureStoredAnalytics(deps, first.organizationId, request.params.runId, stored);
+      if (deps.enqueueNotification !== undefined) {
+        for (const row of stored) {
+          const notification = projectAgentEventNotification(toAgentEvent(row));
+          if (notification !== undefined) await deps.enqueueNotification(notification);
+        }
+      }
 
       return await reply.status(201).send({
         events: stored.map(toAgentEvent),

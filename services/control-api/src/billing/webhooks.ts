@@ -13,6 +13,7 @@ import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
+import { paymentFailedNotification, type NotificationTrigger } from '../notifications/service.js';
 import { BillingPlanCatalogSchema, type BillingPlanCatalog } from './stripe.js';
 import type { CreditGrantService } from './topup.js';
 
@@ -42,9 +43,7 @@ const StripeSubscriptionObjectSchema = z
               .object({
                 id: StripeObjectIdSchema,
                 quantity: z.number().int().positive().nullable().optional(),
-                price: z
-                  .object({ product: StripeObjectIdSchema })
-                  .passthrough(),
+                price: z.object({ product: StripeObjectIdSchema }).passthrough(),
               })
               .passthrough(),
           )
@@ -181,7 +180,9 @@ export function createDbBillingStore(options: { readonly database: Database }): 
         })
         .from(subscriptions)
         .where(eq(subscriptions.organizationId, organizationId))
-        .orderBy(sql`case when ${subscriptions.status} in ('active', 'trialing', 'past_due') then 0 else 1 end`)
+        .orderBy(
+          sql`case when ${subscriptions.status} in ('active', 'trialing', 'past_due') then 0 else 1 end`,
+        )
         .limit(1);
       return {
         planId: organization.planId,
@@ -471,9 +472,9 @@ export function createFlexpriceBillingClient(options: {
       const walletsUrl = new URL('customers/wallets', baseUrl);
       walletsUrl.searchParams.set('lookup_key', input.organizationId);
       walletsUrl.searchParams.set('include_real_time_balance', 'true');
-      const wallets = z.array(FlexpriceWalletSchema).parse(
-        await (await request(walletsUrl, { headers: { 'x-api-key': apiKey } })).json(),
-      );
+      const wallets = z
+        .array(FlexpriceWalletSchema)
+        .parse(await (await request(walletsUrl, { headers: { 'x-api-key': apiKey } })).json());
       const active = wallets.filter(
         (wallet) => wallet.wallet_type === 'PRE_PAID' && wallet.wallet_status === 'active',
       );
@@ -560,6 +561,7 @@ export function createBillingWebhookProcessor(options: {
   readonly flexprice: FlexpriceBillingPort;
   readonly plans: BillingPlanCatalog;
   readonly topups?: Pick<CreditGrantService, 'grantPaidCheckout'>;
+  readonly enqueueNotification?: (trigger: NotificationTrigger) => Promise<void>;
   readonly now?: () => Date;
   readonly signatureToleranceSeconds?: number;
 }): {
@@ -578,10 +580,7 @@ export function createBillingWebhookProcessor(options: {
       if (options.topups === undefined) {
         throw new Error('Credit top-up checkout processing is not configured');
       }
-      await options.topups.grantPaidCheckout(
-        event.data.object,
-        new Date(event.created * 1_000),
-      );
+      await options.topups.grantPaidCheckout(event.data.object, new Date(event.created * 1_000));
       return;
     }
     if (event.type.startsWith('customer.subscription.')) {
@@ -618,12 +617,20 @@ export function createBillingWebhookProcessor(options: {
     const status = await options.store.status(organizationId);
     if (status === undefined) throw new Error('Billing organization disappeared');
     if (event.type === 'invoice.payment_failed') {
-      if (invoice.subscription === undefined || invoice.subscription !== status.subscriptionId) return;
+      if (invoice.subscription === undefined || invoice.subscription !== status.subscriptionId)
+        return;
       await options.store.markPaymentFailed({
         organizationId,
         invoiceId: invoice.id,
         failedAt: new Date(event.created * 1_000),
       });
+      await options.enqueueNotification?.(
+        paymentFailedNotification({
+          organizationId,
+          invoiceId: invoice.id,
+          occurredAt: new Date(event.created * 1_000).toISOString(),
+        }),
+      );
       return;
     }
 
@@ -641,7 +648,11 @@ export function createBillingWebhookProcessor(options: {
     const planId = PlanIdSchema.parse(recoveredStatus.planId);
     const credits = plans[planId].monthlyCredits;
     const creditOperationKey = `stripe-invoice:${invoice.id}:credit-grant`;
-    await options.flexprice.grantCredits({ organizationId, credits, operationKey: creditOperationKey });
+    await options.flexprice.grantCredits({
+      organizationId,
+      credits,
+      operationKey: creditOperationKey,
+    });
     const occurredAt = new Date(event.created * 1_000);
     const from = new Date((invoice.period_start ?? event.created) * 1_000);
     const to = new Date((invoice.period_end ?? event.created + 1) * 1_000);
@@ -654,7 +665,12 @@ export function createBillingWebhookProcessor(options: {
       to,
       operationKey: `stripe-invoice:${invoice.id}:reconcile`,
     });
-    await options.store.mirrorCreditGrant({ organizationId, invoiceId: invoice.id, credits, occurredAt });
+    await options.store.mirrorCreditGrant({
+      organizationId,
+      invoiceId: invoice.id,
+      credits,
+      occurredAt,
+    });
   }
 
   return {
@@ -748,17 +764,21 @@ export function registerStripeBillingWebhookRoute(
       } catch (error) {
         if (error instanceof StripeWebhookError) {
           if (error.reason === 'signature') {
-            throw new ApiError(
-              'stripe_signature_invalid',
-              401,
-              'The Stripe signature is invalid.',
-            );
+            throw new ApiError('stripe_signature_invalid', 401, 'The Stripe signature is invalid.');
           }
           if (error.reason === 'conflict') {
-            throw new ApiError('stripe_event_conflict', 409, 'The Stripe event conflicts with a replay.');
+            throw new ApiError(
+              'stripe_event_conflict',
+              409,
+              'The Stripe event conflicts with a replay.',
+            );
           }
           if (error.reason === 'in_progress') {
-            throw new ApiError('stripe_event_in_progress', 409, 'The Stripe event is still processing.');
+            throw new ApiError(
+              'stripe_event_in_progress',
+              409,
+              'The Stripe event is still processing.',
+            );
           }
           throw new ApiError('stripe_payload_invalid', 400, 'The Stripe payload is invalid.');
         }

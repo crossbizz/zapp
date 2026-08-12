@@ -76,10 +76,18 @@ describe('OPS-3 plan limits', () => {
     ['studio', 10],
   ] as const)('rejects a new autonomous run at the $0 concurrency limit', (plan, active) => {
     expect(() => {
-      assertConcurrentRunAdmission({ limit: plans[plan].concurrentAutonomousRuns, active, replay: false });
+      assertConcurrentRunAdmission({
+        limit: plans[plan].concurrentAutonomousRuns,
+        active,
+        replay: false,
+      });
     }).toThrow(PlanLimitConcurrentRunsError);
     expect(() => {
-      assertConcurrentRunAdmission({ limit: plans[plan].concurrentAutonomousRuns, active, replay: true });
+      assertConcurrentRunAdmission({
+        limit: plans[plan].concurrentAutonomousRuns,
+        active,
+        replay: true,
+      });
     }).not.toThrow();
   });
 
@@ -93,18 +101,18 @@ describe('OPS-3 plan limits', () => {
         requests.push(input);
         return Promise.resolve(
           Response.json([
-              {
-                id: 'wallet_postpaid',
-                wallet_type: 'POST_PAID',
-                wallet_status: 'active',
-              },
-              {
-                id: 'wallet_1',
-                wallet_type: 'PRE_PAID',
-                wallet_status: 'active',
-                real_time_credit_balance: '12.0000',
-              },
-            ]),
+            {
+              id: 'wallet_postpaid',
+              wallet_type: 'POST_PAID',
+              wallet_status: 'active',
+            },
+            {
+              id: 'wallet_1',
+              wallet_type: 'PRE_PAID',
+              wallet_status: 'active',
+              real_time_credit_balance: '12.0000',
+            },
+          ]),
         );
       },
     });
@@ -146,7 +154,12 @@ describe('OPS-3 plan limits', () => {
       redis: memoryRedis(),
       activeRuns: { list: () => Promise.resolve([]) },
       graceFloorCredits: '5.0000',
-      alerts: { emit: (alert) => { alerts.push(alert); return Promise.resolve(); } },
+      alerts: {
+        emit: (alert) => {
+          alerts.push(alert);
+          return Promise.resolve();
+        },
+      },
     });
 
     await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
@@ -182,7 +195,10 @@ describe('OPS-3 plan limits', () => {
       wallets: { getActivePrepaidBalance: () => Promise.resolve('2.0000') },
       redis: memoryRedis({
         [`run:${runId}:credits`]: JSON.stringify({
-          used: '0.0000', reserved: '2.0000', ceiling: '10.0000', version: 1,
+          used: '0.0000',
+          reserved: '2.0000',
+          ceiling: '10.0000',
+          version: 1,
         }),
       }),
       activeRuns: { list: () => Promise.resolve([runId]) },
@@ -260,7 +276,8 @@ describe('OPS-3 plan limits', () => {
       wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
       redis,
       activeRuns: {
-        list: () => Promise.resolve(Array.from({ length: 100 }, (_, index) => `run_${String(index)}`)),
+        list: () =>
+          Promise.resolve(Array.from({ length: 100 }, (_, index) => `run_${String(index)}`)),
       },
       reservations: { total: () => Promise.resolve('3.0000') },
       graceFloorCredits: '5.0000',
@@ -289,7 +306,8 @@ describe('OPS-3 plan limits', () => {
       wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
       redis,
       activeRuns: {
-        list: () => Promise.resolve(Array.from({ length: 101 }, (_, index) => `run_${String(index)}`)),
+        list: () =>
+          Promise.resolve(Array.from({ length: 101 }, (_, index) => `run_${String(index)}`)),
       },
       reservations: { total: () => Promise.resolve('3.0000') },
       graceFloorCredits: '5.0000',
@@ -332,7 +350,12 @@ describe('OPS-3 plan limits', () => {
     const alerts: unknown[] = [];
     const gate = createBudgetThresholdAlerts({
       redis: memoryRedis(),
-      alerts: { emit: (alert) => { alerts.push(alert); return Promise.resolve(); } },
+      alerts: {
+        emit: (alert) => {
+          alerts.push(alert);
+          return Promise.resolve();
+        },
+      },
     });
 
     await gate.notify({
@@ -352,20 +375,50 @@ describe('OPS-3 plan limits', () => {
       { type: 'run_budget_threshold', organizationId, runId, threshold: 100 },
     ]);
   });
+
+  it('releases a budget threshold claim when notification enqueue fails so a later write retries', async () => {
+    let calls = 0;
+    const gate = createBudgetThresholdAlerts({
+      redis: memoryRedis(),
+      alerts: {
+        emit: () => {
+          calls += 1;
+          return calls === 1 ? Promise.reject(new Error('queue unavailable')) : Promise.resolve();
+        },
+      },
+    });
+    const input = {
+      organizationId,
+      runId,
+      credits: { used: '5.0000', reserved: '0.0000', ceiling: '10.0000', version: 1 },
+    } as const;
+
+    await gate.notify(input);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await gate.notify(input);
+
+    expect(calls).toBe(2);
+  });
 });
 
 function memoryRedis(values: Record<string, string> = {}) {
   const entries = new Map(Object.entries(values));
   return {
     get: (key: string) => Promise.resolve(entries.get(key) ?? null),
-    set: (key: string, value: string) => { entries.set(key, value); return Promise.resolve(); },
+    set: (key: string, value: string) => {
+      entries.set(key, value);
+      return Promise.resolve();
+    },
     setIfAbsent: (key: string, value: string) => {
       if (entries.has(key)) return Promise.resolve(false);
       entries.set(key, value);
       return Promise.resolve(true);
     },
     exists: () => Promise.resolve(false),
-    delete: () => Promise.resolve(),
+    delete: (keys: readonly string[]) => {
+      for (const key of keys) entries.delete(key);
+      return Promise.resolve();
+    },
     eval: () => Promise.resolve(null),
   };
 }

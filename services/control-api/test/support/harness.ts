@@ -9,6 +9,7 @@ import {
   type AppInstance,
   type BillingDeps,
   type LocalAgentDeps,
+  type NotificationDeps,
 } from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
@@ -285,6 +286,8 @@ export interface HarnessOptions {
   readonly billing?: BillingDeps;
   readonly productAnalytics?: ProductAnalytics;
   readonly featureFlags?: FeatureFlagEvaluator;
+  readonly notificationState?: NotificationDeps['state'];
+  readonly notificationEnqueue?: NotificationDeps['enqueue'];
 }
 
 /**
@@ -326,7 +329,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
             ...(options.pricing === null ? {} : { pricing: options.pricing ?? TEST_PRICING }),
             ...(options.planLimits === undefined ? {} : { planLimits: options.planLimits }),
-            ...(options.creditBalance === undefined ? {} : { creditBalance: options.creditBalance }),
+            ...(options.creditBalance === undefined
+              ? {}
+              : { creditBalance: options.creditBalance }),
             ...(options.git === undefined ? {} : { git: options.git }),
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.attachmentStorage === undefined
@@ -380,6 +385,14 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       ? {}
       : { productAnalytics: options.productAnalytics }),
     ...(options.featureFlags === undefined ? {} : { featureFlags: options.featureFlags }),
+    ...(options.notificationState === undefined
+      ? {}
+      : {
+          notifications: {
+            state: options.notificationState,
+            enqueue: options.notificationEnqueue ?? (() => Promise.resolve()),
+          },
+        }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

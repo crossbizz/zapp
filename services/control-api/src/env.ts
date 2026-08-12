@@ -159,9 +159,55 @@ export function loadUsageQueueEnv(source: unknown = process.env): UsageQueueEnv 
   };
 }
 
+const NotificationEnvSchema = z
+  .object({
+    AWS_REGION: z.string().trim().min(1),
+    AWS_ENDPOINT_URL: z.union([z.string().url(), z.literal('')]).optional(),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    SQS_NOTIFICATION_QUEUE_NAME: z.string().trim().min(1).default('zapp-notifications'),
+    SES_NOTIFICATION_SOURCE: z.string().email(),
+    SNS_NOTIFICATION_TOPIC_ARN: z.string().regex(/^arn:[^:]+:sns:[^:]+:[^:]+:[^:]+$/u),
+  })
+  .superRefine((value, context) => {
+    if ((value.AWS_ACCESS_KEY_ID === undefined) !== (value.AWS_SECRET_ACCESS_KEY === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together',
+      });
+    }
+  });
+
+export interface NotificationEnv extends UsageQueueEnv {
+  readonly source: string;
+  readonly topicArn: string;
+}
+
+export function loadNotificationEnv(source: unknown = process.env): NotificationEnv {
+  const env = defineEnv(NotificationEnvSchema, source);
+  return {
+    region: env.AWS_REGION,
+    ...(env.AWS_ENDPOINT_URL === undefined || env.AWS_ENDPOINT_URL === ''
+      ? {}
+      : { endpoint: env.AWS_ENDPOINT_URL }),
+    ...(env.AWS_ACCESS_KEY_ID === undefined || env.AWS_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        }),
+    queueName: env.SQS_NOTIFICATION_QUEUE_NAME,
+    source: env.SES_NOTIFICATION_SOURCE,
+    topicArn: env.SNS_NOTIFICATION_TOPIC_ARN,
+  };
+}
+
 const GitHubAppEnvSchema = z.object({
   GITHUB_APP_ID: z.string().trim().min(1),
-  GITHUB_APP_SLUG: z.string().trim().regex(/^[A-Za-z0-9-]+$/u),
+  GITHUB_APP_SLUG: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9-]+$/u),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1),
   GITHUB_APP_CLIENT_ID: z.string().trim().min(1),
   GITHUB_APP_CLIENT_SECRET: z.string().min(1),
@@ -227,9 +273,7 @@ const GitHubWebhookQueueConfigSchema = z
 
 export type GitHubWebhookQueueEnv = z.infer<typeof GitHubWebhookQueueConfigSchema>;
 
-export function loadGitHubWebhookQueueEnv(
-  source: unknown = process.env,
-): GitHubWebhookQueueEnv {
+export function loadGitHubWebhookQueueEnv(source: unknown = process.env): GitHubWebhookQueueEnv {
   const env = defineEnv(GitHubWebhookQueueEnvSchema, source);
   return GitHubWebhookQueueConfigSchema.parse({
     region: env.AWS_REGION,
@@ -343,7 +387,10 @@ const StripeBillingEnvSchema = z.object({
   STRIPE_CREDIT_PACK_PRICE_IDS_JSON: OptionalBillingValueSchema,
   FLEXPRICE_STRIPE_WEBHOOK_URL: z
     .union([
-      z.string().url().refine((value) => /^https:\/\//u.test(value), 'must use HTTPS'),
+      z
+        .string()
+        .url()
+        .refine((value) => /^https:\/\//u.test(value), 'must use HTTPS'),
       z.literal(''),
     ])
     .optional(),
@@ -374,18 +421,18 @@ export function loadStripeBillingEnv(source: unknown = process.env): StripeBilli
     env.STRIPE_CREDIT_PACK_PRICE_IDS_JSON,
     env.FLEXPRICE_STRIPE_WEBHOOK_URL,
   ];
-  if (values.every((value) => value === undefined || value === '' || value.includes('replace-me'))) {
+  if (
+    values.every((value) => value === undefined || value === '' || value.includes('replace-me'))
+  ) {
     return undefined;
   }
   return {
-    platformSecretKey: StripePlatformSecretSchema.parse(
-      env.PLATFORM_BILLING_STRIPE_SECRET_KEY,
-      { path: ['PLATFORM_BILLING_STRIPE_SECRET_KEY'] },
-    ),
-    webhookSecret: StripeWebhookSecretSchema.parse(
-      env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET,
-      { path: ['PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET'] },
-    ),
+    platformSecretKey: StripePlatformSecretSchema.parse(env.PLATFORM_BILLING_STRIPE_SECRET_KEY, {
+      path: ['PLATFORM_BILLING_STRIPE_SECRET_KEY'],
+    }),
+    webhookSecret: StripeWebhookSecretSchema.parse(env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET, {
+      path: ['PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET'],
+    }),
     prices: StripePriceCatalogSchema.parse(
       parseJsonEnvironmentValue(env.STRIPE_PLAN_PRICE_IDS_JSON, 'STRIPE_PLAN_PRICE_IDS_JSON'),
       { path: ['STRIPE_PLAN_PRICE_IDS_JSON'] },
@@ -397,10 +444,10 @@ export function loadStripeBillingEnv(source: unknown = process.env): StripeBilli
       ),
       { path: ['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] },
     ),
-    flexpriceStripeWebhookUrl: z.string().url().parse(
-      env.FLEXPRICE_STRIPE_WEBHOOK_URL,
-      { path: ['FLEXPRICE_STRIPE_WEBHOOK_URL'] },
-    ),
+    flexpriceStripeWebhookUrl: z
+      .string()
+      .url()
+      .parse(env.FLEXPRICE_STRIPE_WEBHOOK_URL, { path: ['FLEXPRICE_STRIPE_WEBHOOK_URL'] }),
   };
 }
 

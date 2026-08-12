@@ -55,6 +55,9 @@ for queue in $QUEUES; do
   log "$queue -> DLQ $dlq_arn (maxReceiveCount=$MAX_RECEIVE_COUNT)"
 done
 
+awslocal sns create-topic --name zapp-notifications >/dev/null
+log "ensured SNS topic zapp-notifications"
+
 # verify-email-identity is a no-op when the address is already verified.
 awslocal ses verify-email-identity --email-address "$SES_SENDER"
 log "verified SES sender $SES_SENDER"

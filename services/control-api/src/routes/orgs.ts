@@ -25,6 +25,7 @@ import {
 } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, organizationNotFound, selectOrganizationId } from '../plugins/tenant.js';
+import { memberInvitedNotification } from '../notifications/service.js';
 import { ROLES } from '../policy/permissions.js';
 import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
 import type { TrialGrantPort } from '../billing/topup.js';
@@ -125,6 +126,10 @@ export interface OrgRoutesDeps {
   readonly now: () => Date;
   readonly trial?: TrialGrantPort;
   readonly productAnalytics?: ProductAnalytics;
+  readonly notifications?: {
+    readonly appBaseUrl: string;
+    enqueue(trigger: ReturnType<typeof memberInvitedNotification>): Promise<void>;
+  };
 }
 
 /** Nothing carrying a credential — an invite token — may be cached. */
@@ -432,6 +437,21 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         // invite by years.
         metadata: { email, role: request.body.role },
       });
+
+      if (deps.notifications !== undefined) {
+        await deps.notifications.enqueue(
+          memberInvitedNotification({
+            organizationId: request.params.orgId,
+            email,
+            inviteId: hashInviteToken(token),
+            inviteUrl: new URL(
+              `/invites/${encodeURIComponent(token)}`,
+              deps.notifications.appBaseUrl,
+            ).toString(),
+            occurredAt: now().toISOString(),
+          }),
+        );
+      }
 
       noStore(reply);
       return await reply.status(201).send({

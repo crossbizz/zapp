@@ -11,7 +11,10 @@ const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
 const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
 
 const production = vi.hoisted(() => {
-  const auth = { databaseUrl: 'database-url-from-auth' };
+  const auth = {
+    databaseUrl: 'database-url-from-auth',
+    config: { appBaseUrl: 'https://app.zapp.test' },
+  };
   const database = {
     db: { kind: 'production-database-client' },
     sql: { listen: vi.fn() },
@@ -40,6 +43,21 @@ const production = vi.hoisted(() => {
     receive: vi.fn(() => Promise.resolve([])),
     delete: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
+  };
+  const notificationQueue = {
+    send: vi.fn(() => Promise.resolve()),
+    receive: vi.fn(() => Promise.resolve([])),
+    delete: vi.fn(() => Promise.resolve()),
+    close: vi.fn(),
+  };
+  const notificationState = { kind: 'notification-state' };
+  const notificationProducer = { enqueue: vi.fn(() => Promise.resolve()) };
+  const notificationEmail = { send: vi.fn(), close: vi.fn() };
+  const notificationFanout = { publish: vi.fn(), close: vi.fn() };
+  const notificationWorker = { processOnce: vi.fn(() => Promise.resolve(0)) };
+  const notificationLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
   };
   const usageOutboxPublisher = { publishOnce: vi.fn(() => Promise.resolve(0)) };
   const usagePublisherLifecycle = {
@@ -80,7 +98,9 @@ const production = vi.hoisted(() => {
   const usageCoordinator = { kind: 'usage-coordinator' };
   const coordinatedReconciler = { kind: 'coordinated-reconciler' };
   const storageLedger = { kind: 'storage-ledger' };
-  const dailyStorageCollector = { collect: vi.fn(() => Promise.resolve({ projects: 0, recorded: 0 })) };
+  const dailyStorageCollector = {
+    collect: vi.fn(() => Promise.resolve({ projects: 0, recorded: 0 })),
+  };
   const dailyStorageLifecycle = {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
@@ -182,6 +202,13 @@ const production = vi.hoisted(() => {
     usageOutboxPublisher,
     usagePublisherLifecycle,
     usageQueue,
+    notificationQueue,
+    notificationState,
+    notificationProducer,
+    notificationEmail,
+    notificationFanout,
+    notificationWorker,
+    notificationLifecycle,
     bootstrapControlApiServer: vi
       .fn<(input: unknown) => Promise<void>>()
       .mockResolvedValue(undefined),
@@ -201,6 +228,16 @@ const production = vi.hoisted(() => {
       return temporal;
     }),
     createSqsUsageQueue: vi.fn(() => usageQueue),
+    createSqsNotificationQueue: vi.fn(() => notificationQueue),
+    createSesEmailSender: vi.fn(() => notificationEmail),
+    createSnsNotificationFanout: vi.fn(() => notificationFanout),
+    createRedisNotificationState: vi.fn(() => notificationState),
+    createNotificationProducer: vi.fn(() => notificationProducer),
+    createDatabaseNotificationDirectory: vi.fn(() => ({ kind: 'notification-directory' })),
+    createRedisNotificationProjection: vi.fn(() => ({ kind: 'notification-projection' })),
+    createNotificationWorker: vi.fn(() => notificationWorker),
+    createNotificationWorkerLifecycle: vi.fn(() => notificationLifecycle),
+    usageAlertNotification: vi.fn((input: unknown) => input),
     createFlexpriceIngestClient: vi.fn(() => flexprice),
     createUsageEventConsumer: vi.fn(() => usageConsumer),
     createUsageEventConsumerLifecycle: vi.fn(() => usageConsumerLifecycle),
@@ -216,7 +253,9 @@ const production = vi.hoisted(() => {
     createFlexpriceUsageAggregateClient: vi.fn(() => flexpriceUsageAggregate),
     createThreeWayUsageReconciler: vi.fn(() => threeWayUsageReconciler),
     createUsageReconciliationLifecycle: vi.fn(() => usageReconciliationLifecycle),
-    createCreditBalanceExhaustionProducer: vi.fn(() => ({ runOnce: vi.fn(() => Promise.resolve()) })),
+    createCreditBalanceExhaustionProducer: vi.fn(() => ({
+      runOnce: vi.fn(() => Promise.resolve()),
+    })),
     createCreditBalanceExhaustionLifecycle: vi.fn(() => creditExhaustionLifecycle),
     createDatabaseCreditExhaustionStore: vi.fn(() => ({ kind: 'credit-exhaustion-store' })),
     createDatabaseUsageCorrectionJournal: vi.fn(() => usageCorrections),
@@ -275,9 +314,7 @@ const production = vi.hoisted(() => {
       flexpriceStripeWebhookUrl:
         'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
     })),
-    requireStripeBillingForEnvironment: vi.fn(
-      (_environment: unknown, billing: unknown) => billing,
-    ),
+    requireStripeBillingForEnvironment: vi.fn((_environment: unknown, billing: unknown) => billing),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
     loadModelGatewayUrl: vi.fn(() => 'http://model-gateway.test:4100'),
     loadPreviewEnv: vi.fn(() => preview),
@@ -292,6 +329,15 @@ const production = vi.hoisted(() => {
       accessKeyId: 'test',
       secretAccessKey: 'test',
       queueName: 'zapp-usage-events',
+    })),
+    loadNotificationEnv: vi.fn(() => ({
+      region: 'us-east-1',
+      endpoint: 'http://localstack.test',
+      accessKeyId: 'test',
+      secretAccessKey: 'test',
+      queueName: 'zapp-notifications',
+      source: 'dev@zapp.local',
+      topicArn: 'arn:aws:sns:us-east-1:000000000000:zapp-notifications',
     })),
     loggerOptions: vi
       .fn<(input: unknown) => { level: string }>()
@@ -328,6 +374,21 @@ vi.mock('../src/env.js', () => ({
   loadServiceTokenConfig: production.loadServiceTokenConfig,
   loadTemporalEnv: production.loadTemporalEnv,
   loadUsageQueueEnv: production.loadUsageQueueEnv,
+  loadNotificationEnv: production.loadNotificationEnv,
+}));
+vi.mock('../src/notifications/service.js', () => ({
+  createDatabaseNotificationDirectory: production.createDatabaseNotificationDirectory,
+  createNotificationProducer: production.createNotificationProducer,
+  createNotificationWorker: production.createNotificationWorker,
+  createNotificationWorkerLifecycle: production.createNotificationWorkerLifecycle,
+  createRedisNotificationProjection: production.createRedisNotificationProjection,
+  createRedisNotificationState: production.createRedisNotificationState,
+  usageAlertNotification: production.usageAlertNotification,
+}));
+vi.mock('../src/notifications/email.js', () => ({
+  createSesEmailSender: production.createSesEmailSender,
+  createSnsNotificationFanout: production.createSnsNotificationFanout,
+  createSqsNotificationQueue: production.createSqsNotificationQueue,
 }));
 vi.mock('../src/events/lifecycle.js', () => ({
   createEventPublisherLifecycle: production.createEventPublisherLifecycle,
@@ -470,12 +531,18 @@ describe('control-api production entrypoint', () => {
             readonly start: () => Promise<void>;
             readonly close: () => Promise<void>;
           };
+          readonly notificationLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
         }
       | undefined;
     expect(bootstrapInput?.app).toBe(production.app);
     expect(bootstrapInput?.eventPublisherLifecycle).toBe(production.eventPublisherLifecycle);
     expect(bootstrapInput?.usageOutboxLifecycle?.start).toBeTypeOf('function');
     expect(bootstrapInput?.usageOutboxLifecycle?.close).toBeTypeOf('function');
+    expect(bootstrapInput?.notificationLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.notificationLifecycle?.close).toBeTypeOf('function');
     expect(production.createFlexpriceIngestClient).toHaveBeenCalledTimes(2);
     expect(production.createUsageEventConsumer).toHaveBeenCalledWith(
       production.flexprice,

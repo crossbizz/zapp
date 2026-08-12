@@ -16,6 +16,7 @@ import {
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadModelGatewayUrl,
+  loadNotificationEnv,
   loadPostHogEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
@@ -93,6 +94,20 @@ import {
   createDatabaseMeteredProjectPort,
   createR2ArtifactStorageMeasurement,
 } from './usage/collectors/storage.js';
+import {
+  createDatabaseNotificationDirectory,
+  createNotificationProducer,
+  createNotificationWorker,
+  createNotificationWorkerLifecycle,
+  createRedisNotificationProjection,
+  createRedisNotificationState,
+  usageAlertNotification,
+} from './notifications/service.js';
+import {
+  createSesEmailSender,
+  createSnsNotificationFanout,
+  createSqsNotificationQueue,
+} from './notifications/email.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -128,6 +143,7 @@ const gitServiceUrl = loadGitServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
+const notificationConfig = loadNotificationEnv();
 const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
 const stripeBillingConfig = requireStripeBillingForEnvironment(env, loadStripeBillingEnv());
 const temporalEnv = loadTemporalEnv();
@@ -152,10 +168,34 @@ const temporal = new Client({
   connection: temporalConnection,
   namespace: temporalEnv.namespace,
 });
+const notificationQueue = createSqsNotificationQueue(notificationConfig);
+const notificationState = createRedisNotificationState(redis);
+const notificationProducer = createNotificationProducer({ queue: notificationQueue });
+const notificationEmail = createSesEmailSender(notificationConfig);
+const notificationFanout = createSnsNotificationFanout(notificationConfig);
+const notificationWorker = createNotificationWorker({
+  queue: notificationQueue,
+  state: notificationState,
+  directory: createDatabaseNotificationDirectory(database.db),
+  email: notificationEmail,
+  projections: createRedisNotificationProjection(redis),
+  fanout: notificationFanout,
+  webBaseUrl: new URL(auth.config.appBaseUrl),
+});
 const usageOpsAlerts: UsageOpsAlertPort = {
-  emit(alert) {
+  async emit(alert) {
+    if (alert.type === 'run_budget_threshold') {
+      await notificationProducer.enqueue(
+        usageAlertNotification({
+          organizationId: alert.organizationId,
+          runId: alert.runId,
+          threshold: alert.threshold,
+          occurredAt: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
     process.emitWarning(`usage ops alert: ${alert.type} for organization ${alert.organizationId}`);
-    return Promise.resolve();
   },
 };
 const tenantDb = createTenantDbFactory(database.db);
@@ -166,8 +206,7 @@ const creditBalance =
         wallets: createFlexpriceWalletClient(flexpriceConfig),
         redis,
         activeRuns: {
-          list: (organizationId, limit) =>
-            tenantDb(organizationId).runs.listActiveRunIds(limit),
+          list: (organizationId, limit) => tenantDb(organizationId).runs.listActiveRunIds(limit),
         },
         reservations: createDatabaseActiveReservationSource(database.db),
         graceFloorCredits: pricing.walletBalanceGraceFloor ?? '0.0000',
@@ -200,6 +239,10 @@ const app = composeApp({
   artifactStorage,
   github,
   posthog,
+  notifications: {
+    state: notificationState,
+    enqueue: (trigger) => notificationProducer.enqueue(trigger),
+  },
 });
 
 app.addHook('onClose', async () => {
@@ -328,15 +371,16 @@ const creditExhaustionProducer =
         signalConcurrency: 8,
         signalTimeoutMs: 3_000,
       });
-const creditExhaustionLifecycle = creditExhaustionProducer === undefined
-  ? undefined
-  : createCreditBalanceExhaustionLifecycle({
-      producer: creditExhaustionProducer,
-      intervalMs: 30_000,
-      onError: (error) => {
-        app.log.error({ err: error }, 'credit exhaustion signal poll failed');
-      },
-    });
+const creditExhaustionLifecycle =
+  creditExhaustionProducer === undefined
+    ? undefined
+    : createCreditBalanceExhaustionLifecycle({
+        producer: creditExhaustionProducer,
+        intervalMs: 30_000,
+        onError: (error) => {
+          app.log.error({ err: error }, 'credit exhaustion signal poll failed');
+        },
+      });
 const usageReconciliationLifecycle =
   flexpriceConfig === undefined
     ? undefined
@@ -469,6 +513,21 @@ const githubImportLifecycle = {
     githubImportQueue.close?.();
   },
 };
+const notificationWorkerLifecycle = createNotificationWorkerLifecycle({
+  worker: notificationWorker,
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'notification delivery failed');
+  },
+});
+const notificationLifecycle = {
+  start: () => notificationWorkerLifecycle.start(),
+  async close() {
+    await notificationWorkerLifecycle.close();
+    notificationQueue.close?.();
+    notificationEmail.close();
+    notificationFanout.close();
+  },
+};
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
@@ -501,6 +560,7 @@ try {
     usageOutboxLifecycle,
     githubWebhookLifecycle,
     githubImportLifecycle,
+    notificationLifecycle,
   });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');
