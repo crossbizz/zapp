@@ -52,7 +52,10 @@ import { createDeploymentUsageCollector } from './usage/collectors/git.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
-import { createBuilderPreviewSandboxClient } from './sandbox/client.js';
+import {
+  createBuilderPreviewSandboxClient,
+  createSupportSandboxClient,
+} from './sandbox/client.js';
 import { createS3BuilderPreviewScreenshotStore } from './routes/builder-preview.js';
 import { createGitHubProvider } from './integrations/github/app.js';
 import { createGitHubIntegrationPort } from './integrations/github/install.js';
@@ -86,6 +89,7 @@ import {
 import { createPostHogRuntime } from './analytics/posthog.js';
 import type { PostHogEnv } from './env.js';
 import type { NotificationStatePort, NotificationTrigger } from './notifications/service.js';
+import type { AdminRoutesConfig } from './routes/admin.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -159,6 +163,8 @@ export interface ServiceRuntime {
   readonly posthog?: PostHogEnv;
   /** OPS-11 credential configured on the Grafana Alerting contact point. */
   readonly incidentWebhookSecret?: string;
+  /** OPS-17 separately enables support access and names the exact staff identities. */
+  readonly admin?: AdminRoutesConfig;
   readonly notifications?: {
     readonly state: NotificationStatePort;
     enqueue(trigger: NotificationTrigger): Promise<void>;
@@ -343,6 +349,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       // same transaction as the mutation (CP-5).
       audit: createDbAuditSink(database),
     },
+    ...(runtime.admin === undefined ? {} : { admin: runtime.admin }),
     // Not optional in a deployment, and `buildApp` says so: without it the
     // tenant plugin is unregistered and every tenant-scoped route is simply
     // absent.
@@ -386,6 +393,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         ? {}
         : {
             builderPreviewSandbox: createBuilderPreviewSandboxClient({
+              baseUrl: previewRuntime.config.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            supportSandbox: createSupportSandboxClient({
               baseUrl: previewRuntime.config.sandboxServiceUrl,
               serviceTokens: runtime.serviceTokens,
             }),

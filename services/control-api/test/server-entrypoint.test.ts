@@ -352,6 +352,10 @@ const production = vi.hoisted(() => {
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
     loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
     loadServiceTokenConfig: vi.fn(() => ({ kind: 'production-service-tokens' })),
+    loadSupportAdminConfig: vi.fn(() => ({
+      enabled: true,
+      staffUserIds: ['user_00000000000000000000000001'],
+    })),
     loadTemporalEnv: vi.fn(() => temporalEnv),
     loadUsageQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
@@ -384,6 +388,9 @@ vi.mock('../src/auth/config.js', () => ({ loadAuthEnv: production.loadAuthEnv })
 vi.mock('../src/compose.js', () => ({ composeApp: production.composeApp }));
 vi.mock('../src/config/rate-limits.js', () => ({
   loadRateLimitSettings: production.loadRateLimitSettings,
+}));
+vi.mock('../src/routes/admin.js', () => ({
+  loadSupportAdminConfig: production.loadSupportAdminConfig,
 }));
 vi.mock('../src/env.js', () => ({
   loadArtifactStorageEnv: production.loadArtifactStorageEnv,
@@ -544,6 +551,10 @@ describe('control-api production entrypoint', () => {
         modelGatewayUrl: 'http://model-gateway.test:4100',
         temporal: production.temporal,
         artifactStorage: production.artifactStorage,
+        admin: {
+          enabled: true,
+          staffUserIds: ['user_00000000000000000000000001'],
+        },
       }),
     );
     expect(production.connectTemporal).toHaveBeenCalledWith({

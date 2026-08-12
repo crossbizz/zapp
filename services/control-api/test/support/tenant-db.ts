@@ -1046,8 +1046,9 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     },
 
     runs: {
-      byProject(projectId): Promise<AgentRun[]> {
-        return Promise.resolve(mine(orgId, data.runs).filter((row) => row.projectId === projectId));
+      byProject(projectId, limit): Promise<AgentRun[]> {
+        const rows = mine(orgId, data.runs).filter((row) => row.projectId === projectId);
+        return Promise.resolve(limit === undefined ? rows : rows.slice(0, limit));
       },
       countActiveAutonomousRuns(): Promise<number> {
         return Promise.resolve(
@@ -1238,6 +1239,14 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     workspaces: {
       getById(id) {
         return Promise.resolve(mine(orgId, data.workspaces).find((row) => row.id === id));
+      },
+      byProject(projectId, limit) {
+        return Promise.resolve(
+          mine(orgId, data.workspaces)
+            .filter((row) => row.projectId === projectId)
+            .sort((left, right) => right.id.localeCompare(left.id))
+            .slice(0, limit),
+        );
       },
       async create(input) {
         const base: Workspace = {

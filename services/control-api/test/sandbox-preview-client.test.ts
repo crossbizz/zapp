@@ -10,6 +10,7 @@ import {
 import {
   createBuilderPreviewSandboxClient,
   createSandboxStorageMeasurementClient,
+  createSupportSandboxClient,
 } from '../src/sandbox/client.js';
 import type { SandboxWorkspace } from '../src/sandbox/port.js';
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
@@ -199,6 +200,70 @@ describe('builder preview sandbox client', () => {
     expect(typeof requestBody).toBe('string');
     if (typeof requestBody !== 'string') throw new Error('restart request body must be JSON');
     expect(JSON.parse(requestBody)).toEqual({ contract });
+  });
+
+  it('binds staff termination to the service-authenticated WS-15 kill boundaries', async () => {
+    const requests: Array<{ input: string; init: RequestInit }> = [];
+    const client = createSupportSandboxClient({
+      baseUrl: 'http://sandbox.internal/',
+      serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+      fetch: (input, init) => {
+        requests.push({ input, init });
+        return Promise.resolve(
+          input.endsWith('/terminate-all')
+            ? Response.json({ terminated: 3 })
+            : Response.json({
+                workspace: {
+                  status: 'terminated',
+                  terminatedAt: '2026-08-12T08:15:00.000Z',
+                },
+              }),
+        );
+      },
+    });
+    const workspaceOperationKey = `op_${'b'.repeat(64)}`;
+    const organizationOperationKey = `op_${'c'.repeat(64)}`;
+    const actorUserId = newId('user');
+
+    await expect(
+      client.terminateWorkspace({ workspace, operationKey: workspaceOperationKey }),
+    ).resolves.toEqual({
+      status: 'terminated',
+      terminatedAt: new Date('2026-08-12T08:15:00.000Z'),
+    });
+    await expect(
+      client.terminateOrganization({
+        organizationId: workspace.organizationId,
+        actorUserId,
+        reason: 'Customer requested an emergency sandbox shutdown',
+        operationKey: organizationOperationKey,
+      }),
+    ).resolves.toEqual({ terminated: 3 });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.input).toBe(
+      `http://sandbox.internal/internal/workspaces/${workspace.id}/terminate`,
+    );
+    expect(requests[1]?.input).toBe(
+      `http://sandbox.internal/internal/orgs/${workspace.organizationId}/terminate-all`,
+    );
+    const workspaceHeaders = new Headers(requests[0]?.init.headers);
+    expect(workspaceHeaders.get('x-zapp-service-token')).toMatch(/^ey/u);
+    expect(workspaceHeaders.get('x-zapp-organization-id')).toBe(workspace.organizationId);
+    expect(workspaceHeaders.get('x-zapp-project-id')).toBe(workspace.projectId);
+    expect(workspaceHeaders.get('idempotency-key')).toBe(workspaceOperationKey);
+    const organizationHeaders = new Headers(requests[1]?.init.headers);
+    expect(organizationHeaders.get('x-zapp-service-token')).toMatch(/^ey/u);
+    expect(organizationHeaders.get('idempotency-key')).toBe(organizationOperationKey);
+
+    const organizationBody = requests[1]?.init.body;
+    expect(typeof organizationBody).toBe('string');
+    if (typeof organizationBody !== 'string') throw new Error('terminate-all body must be JSON');
+    expect(JSON.parse(organizationBody)).toEqual({
+      actorUserId,
+      reason: 'Customer requested an emergency sandbox shutdown',
+      operationKey: organizationOperationKey,
+    });
   });
 });
 

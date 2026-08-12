@@ -1,0 +1,179 @@
+.console {
+  min-height: 100vh;
+  padding: 2rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-subtle);
+  font-family: var(--zapp-font-sans);
+}
+
+.header,
+.accessCard,
+.results,
+.diagnostics {
+  max-width: 72rem;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.header {
+  margin-bottom: 1.5rem;
+}
+
+.header h1,
+.accessCard h2,
+.customerHeading h2,
+.projectCard h3 {
+  margin: 0;
+}
+
+.header > p:last-child,
+.customerHeading p,
+.projectCard p,
+.usageCard p {
+  color: var(--zapp-text-secondary);
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.accessCard,
+.usageCard,
+.projectCard,
+.diagnostics {
+  display: grid;
+  gap: 1rem;
+}
+
+.form {
+  display: grid;
+  max-width: 42rem;
+  gap: 1rem;
+}
+
+.form label {
+  display: grid;
+  gap: 0.375rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  font-weight: 650;
+}
+
+.form input,
+.form textarea {
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-12);
+  padding: 0.75rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  font-weight: 450;
+}
+
+.results {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.customerHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.boundary {
+  border-left: 3px solid var(--zapp-status-warning);
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--zapp-text-secondary);
+  background: var(--zapp-surface-raised);
+}
+
+.emergencyActions {
+  display: grid;
+  justify-items: end;
+  gap: 0.5rem;
+}
+
+.emergencyActions p,
+.notice {
+  margin: 0;
+}
+
+.notice {
+  max-width: 72rem;
+  margin: 1rem auto 0;
+  color: var(--zapp-status-success);
+}
+
+.projectGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(25rem, 1fr));
+  gap: 1rem;
+}
+
+.projectCard section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.projectCard h4 {
+  margin: 0;
+}
+
+.resource {
+  display: grid;
+  gap: 0.5rem;
+  border-top: 1px solid var(--zapp-border);
+  padding-top: 0.75rem;
+}
+
+.resource code {
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.diagnostics {
+  margin-top: 1.5rem;
+}
+
+.diagnostics article,
+.diagnostics pre {
+  overflow: auto;
+}
+
+.diagnostics pre {
+  padding: 0.75rem;
+  background: var(--zapp-surface-subtle);
+}
+
+@media (max-width: 42rem) {
+  .console {
+    padding: 1rem;
+  }
+
+  .customerHeading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .emergencyActions {
+    justify-items: start;
+  }
+
+  .projectGrid {
+    grid-template-columns: 1fr;
+  }
+}

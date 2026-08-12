@@ -71,6 +71,7 @@ export const AUDIT_ACTIONS = [
   'incident.created',
   'incident.fix_run_created',
   'incident.resolved',
+  'support.impersonation',
   'integration.connected',
   'secret.decrypted',
   ...GIT_AUDIT_ACTIONS,
