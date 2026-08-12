@@ -104,6 +104,8 @@ export function loadLocalConfig({
     ...env,
     NODE_ENV: 'development',
     RUN_WORKFLOW_PROFILE: 'm1',
+    APP_BASE_URL: 'http://127.0.0.1:3000',
+    API_BASE_URL: 'http://127.0.0.1:4000',
     NEXT_PUBLIC_CONTROL_API_URL: 'http://127.0.0.1:4000',
   };
   const missing = REQUIRED_PROVIDER_VARIABLES.filter((name) => missingCredential(combined[name]));

@@ -349,6 +349,44 @@ describe('the composition server.ts performs', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: 'ok' });
   });
+
+  it('admits credentialed browser requests only from the configured app origin', async () => {
+    const app = composed();
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/projects',
+      headers: {
+        origin: TEST_AUTH_CONFIG.appBaseUrl,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers':
+          'content-type,idempotency-key,x-organization-id,x-zapp-csrf',
+      },
+    });
+
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe(TEST_AUTH_CONFIG.appBaseUrl);
+    expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(preflight.headers['access-control-allow-methods']).toContain('POST');
+    expect(preflight.headers['access-control-allow-headers']).toContain('x-zapp-csrf');
+
+    const browserRead = await app.inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: { origin: TEST_AUTH_CONFIG.appBaseUrl },
+    });
+    expect(browserRead.headers['access-control-allow-origin']).toBe(TEST_AUTH_CONFIG.appBaseUrl);
+    expect(browserRead.headers['access-control-allow-credentials']).toBe('true');
+
+    const untrusted = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/projects',
+      headers: {
+        origin: 'https://untrusted.example',
+        'access-control-request-method': 'POST',
+      },
+    });
+    expect(untrusted.headers['access-control-allow-origin']).toBeUndefined();
+  });
 });
 
 describe('the startup guards', () => {

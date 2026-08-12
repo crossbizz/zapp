@@ -14,6 +14,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "local": "node scripts/local/supervisor.mjs",
+    "test:m1:live": "node scripts/m1-live.mjs",
     "lint": "pnpm lint:architecture && turbo run lint",
     "lint:architecture": "pnpm test:architecture && node scripts/check-model-provider-boundary.mjs",
     "test:architecture": "node --test scripts/model-provider-boundary.test.mjs",

@@ -1,5 +1,6 @@
 import { createServiceTokenSigner, type ServiceTokenConfig, type TemplateRegistry } from '@zapp/config';
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
+import cors from '@fastify/cors';
 
 import { buildApp, type AppInstance } from './app.js';
 import { createBuilderArtifactClient } from './builder-artifacts/client.js';
@@ -621,5 +622,20 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       await posthog.shutdown();
     });
   }
+  void app.register(cors, {
+    origin: [runtime.auth.config.appBaseUrl],
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'accept',
+      'authorization',
+      'content-type',
+      'idempotency-key',
+      'last-event-id',
+      'x-organization-id',
+      'x-zapp-csrf',
+    ],
+    maxAge: 600,
+  });
   return app;
 }

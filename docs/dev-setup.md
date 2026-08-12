@@ -39,6 +39,77 @@ pnpm install
    (e.g. after `down -v`) it mints a fresh one while keeping the admin password
    in the file valid.
 
+## Run the M1 prompt-to-preview platform
+
+The M1 local command starts the Docker dependencies, applies migrations, builds
+the required packages, verifies the locked Modal development images, and then
+supervises every application process needed by the browser flow. It opens the
+web UI after all readiness checks pass:
+
+```bash
+pnpm local
+```
+
+Use `--no-open` when you want to open the UI yourself:
+
+```bash
+pnpm local --no-open
+```
+
+The application URLs are:
+
+- web UI: http://127.0.0.1:3000
+- control API: http://127.0.0.1:4000
+- model gateway: http://127.0.0.1:4100
+- sandbox service: http://127.0.0.1:4400
+- Git service: http://127.0.0.1:4500
+
+In addition to the generated local platform secrets, M1 requires these real
+development/test values in the untracked root `.env`:
+
+```text
+STYTCH_PROJECT_ID
+STYTCH_SECRET
+STYTCH_PUBLIC_TOKEN
+ANTHROPIC_API_KEY
+MODAL_TOKEN_ID
+MODAL_TOKEN_SECRET
+```
+
+Configure the Stytch test project to allow
+`http://127.0.0.1:4000/v1/auth/callback`. The Modal credentials must access the
+`zapp-dev` environment and the immutable image names recorded in
+`infra/modal/images.lock.json`; local startup verifies those records and never
+rebuilds or republishes them.
+
+Press Ctrl-C once to stop the seven supervised application processes in reverse
+dependency order. Postgres, Redis, Forgejo, Temporal, MinIO, and LocalStack stay
+running with their data intact, so `pnpm local` can be retried without a reset.
+
+### Real M1 acceptance flow
+
+With `pnpm local --no-open` reporting ready in one terminal, run this in a
+second terminal:
+
+```bash
+pnpm test:m1:live
+```
+
+The command opens a persistent Chromium profile. Complete the ordinary Stytch
+sign-in when prompted; the runner does not bypass or automate authentication.
+It then uses the real UI to submit a unique initial prompt and follow-up edit,
+checks the authenticated preview for both markers, records distinct internal
+Git commits through the public Mission Control API, terminates the active Modal
+workspace through the public workspace API, and submits one more UI request to
+prove durable restore into a replacement workspace. Redacted JSON evidence and
+screenshots are written under ignored `.artifacts/m1-live/`.
+
+The live command is intentionally fail-closed: it accepts no fixture or session
+bypass flags, does not auto-rerun provider work, and exits nonzero at the named
+stage when an assertion fails. Fix the reported stage, keep the local platform
+running, and invoke the command again deliberately if a new provider run is
+appropriate.
+
 ## Services
 
 | Service | URL / address | Credentials |
@@ -155,6 +226,23 @@ wrapped with it, so a new key leaves the rows undecryptable. Locally the clean
 way out is `down -v` and a fresh `.env`.
 
 ## Troubleshooting
+
+- **`Local M1 provider configuration is missing`** — add each named variable to
+  the root `.env`; values are never printed.
+- **`Local application port ... is already in use`** — stop the process using
+  that exact application port. Infrastructure port overrides do not change the
+  five fixed application ports listed above.
+- **`Command failed: docker info`** — start Docker Desktop, OrbStack, or Colima.
+- **A named application exits before shutdown** — inspect its prefixed log tail;
+  the supervisor stops the remaining application processes and leaves Docker
+  data running for a retry.
+- **`M1 live gate failed at authenticated session`** — confirm the Stytch test
+  callback URL, then complete sign-in in the Chromium window.
+- **`M1 live gate failed at initial preview`, `edited preview`, or `restored
+  preview`** — the provider-backed run did not produce the required commit,
+  healthy preview, visible marker, or replacement workspace before the bounded
+  deadline. The failed run is not reported as passed and is not retried
+  automatically.
 
 - **`the Docker daemon is not running`** — start Docker Desktop/OrbStack first.
 - **`pnpm dev` exits naming an environment variable** — `Invalid environment:

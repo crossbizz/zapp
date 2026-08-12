@@ -66,6 +66,8 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
 
   assert.equal(config.openBrowser, false);
   assert.equal(config.env.RUN_WORKFLOW_PROFILE, 'm1');
+  assert.equal(config.env.APP_BASE_URL, 'http://127.0.0.1:3000');
+  assert.equal(config.env.API_BASE_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.NEXT_PUBLIC_CONTROL_API_URL, 'http://127.0.0.1:4000');
   assert.deepEqual(config.ports, [3000, 4000, 4100, 4400, 4500]);
   assert.equal(config.imageLock.modalEnvironment, 'zapp-dev');
