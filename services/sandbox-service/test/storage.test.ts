@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createProjectStorageMeasurementService } from '../src/storage/measurements.js';
+import {
+  createProjectSnapshotDeletionService,
+  createProjectStorageMeasurementService,
+} from '../src/storage/measurements.js';
 
 const scope = {
   organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
@@ -21,5 +24,52 @@ describe('ADR-0030 project storage measurements', () => {
       volumeBytes: '17',
     });
     expect(volume).toHaveBeenCalledWith(scope);
+  });
+});
+
+describe('CP-17 project snapshot deletion', () => {
+  it('deletes every recorded image and drops its record only after verified absence', async () => {
+    const rows = ['im-1', 'im-2'];
+    const deleted: string[] = [];
+    const service = createProjectSnapshotDeletionService({
+      snapshots: {
+        listProject: () => Promise.resolve([...rows]),
+        removeVerified: (_scope, providerSnapshotId) => {
+          rows.splice(rows.indexOf(providerSnapshotId), 1);
+          return Promise.resolve(true);
+        },
+      },
+      provider: {
+        deleteSnapshot(providerSnapshotId) {
+          deleted.push(providerSnapshotId);
+          return Promise.resolve();
+        },
+        snapshotExists: () => Promise.resolve(false),
+      },
+    });
+
+    await expect(service.remove(scope)).resolves.toBeUndefined();
+    await expect(service.absent(scope)).resolves.toBe(true);
+    expect(deleted).toEqual(['im-1', 'im-2']);
+    expect(rows).toEqual([]);
+  });
+
+  it('retains the measurement when Modal still reports the image', async () => {
+    let removed = false;
+    const service = createProjectSnapshotDeletionService({
+      snapshots: {
+        listProject: () => Promise.resolve(['im-still-there']),
+        removeVerified: () => {
+          removed = true;
+          return Promise.resolve(true);
+        },
+      },
+      provider: {
+        deleteSnapshot: () => Promise.resolve(),
+        snapshotExists: () => Promise.resolve(true),
+      },
+    });
+    await expect(service.remove(scope)).rejects.toThrow('snapshot remained after deletion');
+    expect(removed).toBe(false);
   });
 });

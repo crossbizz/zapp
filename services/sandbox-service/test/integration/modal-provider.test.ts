@@ -1538,6 +1538,104 @@ describe('create status terminate and idempotency', () => {
     expect(response.json()).toEqual({ snapshotBytes: '13', volumeBytes: '17' });
   });
 
+  it('deletes and probes project snapshots only for a tenant-scoped control-api caller', async () => {
+    const remove = vi.fn(() => Promise.resolve());
+    const absent = vi.fn(() => Promise.resolve(true));
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      snapshotDeletion: { remove, absent },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+    };
+
+    const deletion = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: { ...headers, 'idempotency-key': OPERATION_KEY },
+    });
+    const probe = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/snapshots/absent`,
+      headers,
+    });
+    const mismatched = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: {
+        ...headers,
+        'x-zapp-project-id': OTHER_PROJECT_ID,
+        'idempotency-key': OPERATION_KEY,
+      },
+    });
+
+    expect(deletion.statusCode).toBe(200);
+    expect(deletion.json()).toEqual({ absent: true });
+    expect(probe.statusCode).toBe(200);
+    expect(probe.json()).toEqual({ absent: true });
+    expect(mismatched.statusCode).toBe(400);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(absent).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledWith({
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+    });
+  });
+
+  it('hides snapshot deletion from non-control-api service callers', async () => {
+    const remove = vi.fn(() => Promise.resolve());
+    const absent = vi.fn(() => Promise.resolve(true));
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens: {
+        verifyServiceToken: () =>
+          Promise.resolve({
+            ok: true as const,
+            claims: { service: 'orchestrator-worker', audience: 'sandbox-service' },
+          }),
+      },
+      snapshotDeletion: { remove, absent },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(remove).not.toHaveBeenCalled();
+    expect(absent).not.toHaveBeenCalled();
+  });
+
   it('hides the billing storage measurement route from non-control-api callers', async () => {
     const measureProjectBytes = vi.fn(() =>
       Promise.resolve({ snapshotBytes: '13', volumeBytes: '17' }),

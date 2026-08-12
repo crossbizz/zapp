@@ -158,6 +158,11 @@ import {
   type GitHubWebhookDependencies,
 } from './integrations/github/webhooks.js';
 import { registerGitHubImportRoutes } from './integrations/github/import.js';
+import {
+  createUnavailableProjectDeletionRequestStore,
+  registerProjectDeletionRoutes,
+  type ProjectDeletionRequestStore,
+} from './jobs/deletion.js';
 
 const httpServerTelemetry = createHttpServerTelemetry();
 
@@ -255,6 +260,8 @@ export interface TenantDeps {
   readonly creditBalance?: CreditBalanceGate;
   /** FND-7's tenant-prefixed R2/MinIO object store for public image attachments. */
   readonly attachmentStorage?: AttachmentStoragePort;
+  /** CP-17 durable public deletion request and polling surface. */
+  readonly projectDeletions?: ProjectDeletionRequestStore;
 }
 
 export interface LocalAgentDeps {
@@ -687,6 +694,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           // Fastify treats `summaries` as a malformed project id.
           registerProjectSummaryRoutes(app, {
             releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
+          });
+          registerProjectDeletionRoutes(app, {
+            store: tenant.projectDeletions ?? createUnavailableProjectDeletionRequestStore(),
+            now,
           });
           registerProjectRoutes(app, {
             now,

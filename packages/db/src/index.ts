@@ -169,3 +169,21 @@ export {
   type SecretCiphertext,
   type SecretMetadata,
 } from './schema/security.js';
+export {
+  INCIDENT_SOURCES,
+  INCIDENT_STATUSES,
+  incidents,
+  type IncidentRow,
+  type NewIncidentRow,
+} from './schema/incidents.js';
+export {
+  DELETION_STATUSES,
+  DELETION_TARGET_STATUSES,
+  EXPIRABLE_ARTIFACT_CLASSES,
+  artifactRetention,
+  projectDeletions,
+  type ArtifactRetention,
+  type NewArtifactRetention,
+  type NewProjectDeletion,
+  type ProjectDeletion,
+} from './schema/lifecycle.js';

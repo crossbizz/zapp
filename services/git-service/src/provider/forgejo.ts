@@ -283,6 +283,11 @@ export function createForgejoGitProvider(options: ForgejoProviderOptions): GitPr
       await client.send({ method: 'DELETE', path: pathOf(ref), allow: [404] });
     },
 
+    async repositoryExists(ref: string): Promise<boolean> {
+      const response = await client.send({ method: 'GET', path: pathOf(ref), allow: [404] });
+      return response.status !== 404;
+    },
+
     async createBranch(ref: string, name: string, fromSha: string): Promise<void> {
       const created = await client.send({
         method: 'POST',

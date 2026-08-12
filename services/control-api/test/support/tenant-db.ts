@@ -123,6 +123,8 @@ export const EMPTY_WORKSPACE_USAGE = {
 
 /** Rows shared by every handle the factory hands out, as one database would be. */
 export class InMemoryTenantData {
+  /** Mirrors CP-17's durable organization deletion fence. */
+  organizationDeleting = false;
   readonly projects: Project[] = [];
   readonly repositories: Repository[] = [];
   readonly branches: Branch[] = [];
@@ -546,6 +548,9 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
 
       async create(input: NewProjectInput): Promise<CreatedProject> {
+        if (data.organizationDeleting) {
+          return 'organization_deleting';
+        }
         const taken = mine(orgId, data.projects).some((project) => project.slug === input.slug);
         if (taken) {
           return 'slug_taken';

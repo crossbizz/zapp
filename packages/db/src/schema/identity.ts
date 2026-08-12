@@ -46,6 +46,8 @@ export const organizations = pgTable(
     slug: text('slug').notNull(),
     plan: text('plan').notNull().default('trial'),
     billingCustomerId: text('billing_customer_id'),
+    /** CP-17's durable fence: once set, no project creation may enter this organization. */
+    deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /**
      * Durable organization-owned settings (ADR-0004). This is an intentional

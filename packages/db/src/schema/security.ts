@@ -26,7 +26,7 @@ export const secretMetadata = pgTable(
     id: text('id').primaryKey(), // sec_*
     organizationId: organizationId(),
     /** Null for organization-wide secrets that no single project owns. */
-    projectId: text('project_id').references(() => projects.id),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
     /** Null when the secret applies to every environment of its project. */
     environmentId: text('environment_id').references(() => environments.id),
     name: text('name').notNull(),
@@ -134,7 +134,7 @@ export const integrationConnections = pgTable(
     id: text('id').primaryKey(), // intc_*
     organizationId: organizationId(),
     /** Null for an organization-level connection, e.g. a GitHub App installation (PRD §19.2). */
-    projectId: text('project_id').references(() => projects.id),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
     /** `github`, `supabase`, `neon`, `stripe`, … (PRD §25–26). */
     provider: text('provider').notNull(),
     status: text('status').notNull(),

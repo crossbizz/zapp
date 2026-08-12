@@ -38,7 +38,7 @@ export const specifications = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Monotonic per project. An approved version is immutable and every task and test cites one (PRD §12.3). */
     version: integer('version').notNull(),
     status: text('status').notNull(),
@@ -64,7 +64,7 @@ export const decisions = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null when the question was settled before the specification existed. */
     specificationId: text('specification_id').references(() => specifications.id),
     question: text('question').notNull(),
@@ -91,7 +91,7 @@ export const agentRuns = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null in ask mode, which answers questions without touching a branch (PRD §11.1). */
     branchId: text('branch_id').references(() => branches.id),
     mode: text('mode', { enum: RUN_MODES }).notNull(),
@@ -137,7 +137,7 @@ export const agentPhases = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Position in the plan, 1-based. Unique per run: two phases cannot claim one slot. */
     sequence: integer('sequence').notNull(),
     title: text('title').notNull(),
@@ -155,7 +155,7 @@ export const agentTasks = pgTable(
     organizationId: organizationId(),
     phaseId: text('phase_id')
       .notNull()
-      .references(() => agentPhases.id),
+      .references(() => agentPhases.id, { onDelete: 'cascade' }),
     /** Set when a task was split during execution (PRD §13.4); Drizzle's self-reference form. */
     parentTaskId: text('parent_task_id').references((): AnyPgColumn => agentTasks.id),
     title: text('title').notNull(),
@@ -194,13 +194,13 @@ export const desktopLocalAgentSessions = pgTable(
       .references(() => users.id),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     taskId: text('task_id')
       .notNull()
-      .references(() => agentTasks.id),
+      .references(() => agentTasks.id, { onDelete: 'cascade' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -227,9 +227,9 @@ export const approvals = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Null for run-level gates (specification approval, production deploy). */
-    taskId: text('task_id').references(() => agentTasks.id),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     type: text('type').notNull(),
     status: text('status').notNull(),
     /** What is being asked, rendered by the client: the tool call, the diff, the deploy target. */

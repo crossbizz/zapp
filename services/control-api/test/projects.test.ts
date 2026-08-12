@@ -184,6 +184,23 @@ async function create(
 }
 
 describe('creating a project', () => {
+  it('rejects creation after organization deletion has established its durable fence', async () => {
+    const wired = await wire();
+    wired.data.organizationDeleting = true;
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { name: 'Too Late' },
+    });
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(errorOf(response)).toBe('organization_deletion_in_progress');
+    expect(wired.data.projects).toEqual([]);
+    expect(wired.data.repositories).toEqual([]);
+  });
+
   it('writes the project, its repository, its default branch and both environments', async () => {
     const wired = await wire();
 

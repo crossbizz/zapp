@@ -156,7 +156,7 @@ export const runCreditAccounts = pgTable(
   {
     runId: text('run_id')
       .primaryKey()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
@@ -186,11 +186,11 @@ export const modelCompletionJournal = pgTable(
       .references(() => organizations.id),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
-    taskId: text('task_id').references(() => agentTasks.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     requestFingerprint: text('request_fingerprint').notNull(),
     claimOwner: text('claim_owner'),
     claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
@@ -218,10 +218,10 @@ export const runCreditCeilingAdjustments = pgTable(
       .references(() => organizations.id),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     approvalId: text('approval_id')
       .notNull()
-      .references(() => approvals.id),
+      .references(() => approvals.id, { onDelete: 'cascade' }),
     operationKey: text('operation_key').notNull(),
     absoluteCeiling: numeric('absolute_ceiling', { precision: 12, scale: 4 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

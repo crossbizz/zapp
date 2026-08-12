@@ -47,7 +47,7 @@ export const workspaces = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null for workspaces that scan or preview without checking out a branch. */
     branchId: text('branch_id').references(() => branches.id),
     /** `modal` in P0 (PRD §18.1); the column exists so a second provider needs no migration. */
@@ -146,7 +146,7 @@ export const agentEvents = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** 1-based, gapless per run, allocated by `nextEventSequence` — clients resume from it (plan 02 CP-15). */
     sequence: bigint('sequence', { mode: 'number' }).notNull(),
     /**
@@ -167,11 +167,13 @@ export const agentEvents = pgTable(
      */
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
     /** CP-13 replay context (PRD §14.4); physical column absent from conceptual PRD §23.4 row. */
-    projectId: text('project_id').notNull().references(() => projects.id),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** CP-13 replay context; nullable for run-level events. */
-    phaseId: text('phase_id').references(() => agentPhases.id),
+    phaseId: text('phase_id').references(() => agentPhases.id, { onDelete: 'cascade' }),
     /** CP-13 replay context; nullable for non-task events. */
-    taskId: text('task_id').references(() => agentTasks.id),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     /** CP-13 replay context; an agent role string, not an entity foreign key. */
     agentId: text('agent_id'),
   },
@@ -207,7 +209,7 @@ export const agentEvents = pgTable(
 export const runEventCounters = pgTable('run_event_counters', {
   runId: text('run_id')
     .primaryKey()
-    .references(() => agentRuns.id),
+    .references(() => agentRuns.id, { onDelete: 'cascade' }),
   /** Highest sequence handed out for this run; 0 means none yet. */
   lastSequence: bigint('last_sequence', { mode: 'number' }).notNull().default(0),
 });
@@ -261,10 +263,10 @@ export const artifacts = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null for artifacts that belong to the project rather than to one run (imports, scans). */
-    runId: text('run_id').references(() => agentRuns.id),
-    taskId: text('task_id').references(() => agentTasks.id),
+    runId: text('run_id').references(() => agentRuns.id, { onDelete: 'cascade' }),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     /** Screenshot, trace, log bundle, evidence manifest… plan 05 owns the vocabulary. */
     type: text('type').notNull(),
     /** Tenant-prefixed object-storage key (master plan §5.2), never a public URL. */
@@ -291,9 +293,9 @@ export const testRuns = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Null for run-level gates that are not attributable to one task (release verification). */
-    taskId: text('task_id').references(() => agentTasks.id),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     /** The exact commit the gate ran against — evidence is worthless without it (PRD §24.3). */
     commitSha: text('commit_sha').notNull(),
     /** PRD §24.2 gate category: unit, integration, browser, smoke… plan 05 owns the list. */
@@ -314,7 +316,7 @@ export const testCases = pgTable(
     organizationId: organizationId(),
     testRunId: text('test_run_id')
       .notNull()
-      .references(() => testRuns.id),
+      .references(() => testRuns.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     status: text('status').notNull(),
     /** Null when the runner reports no timing (skipped cases). */
@@ -334,9 +336,9 @@ export const verificationResults = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Null for a release-level verdict covering the whole run. */
-    taskId: text('task_id').references(() => agentTasks.id),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     commitSha: text('commit_sha').notNull(),
     /** The verifier's verdict; plan 05 (VF-10) fixes the vocabulary. */
     decision: text('decision').notNull(),

@@ -276,6 +276,13 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
           }
           continue;
         }
+        if (created === 'organization_deleting') {
+          throw new ApiError(
+            'organization_deletion_in_progress',
+            409,
+            'This organization is being deleted and cannot accept new projects.',
+          );
+        }
 
         if (deps.productAnalytics !== undefined) {
           await deps.productAnalytics.capture({

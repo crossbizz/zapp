@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 interface ModalSdkState {
   createCalls: unknown[][];
   experimentalCreateCalls: unknown[][];
+  imageDeleteCalls: string[];
+  imageMissing: boolean;
   sandbox: unknown;
   volumeCloseCount: number;
   volumeFromNameCalls: unknown[][];
@@ -19,6 +21,8 @@ interface ModalSdkState {
 const modalSdkState = vi.hoisted<ModalSdkState>(() => ({
   createCalls: [],
   experimentalCreateCalls: [],
+  imageDeleteCalls: [],
+  imageMissing: false,
   sandbox: undefined,
   volumeCloseCount: 0,
   volumeFromNameCalls: [],
@@ -39,6 +43,7 @@ vi.mock('modal', async (importOriginal) => {
     tokenId: string;
     tokenSecret: string;
   }) => unknown;
+  const ActualNotFoundError = actualModule.NotFoundError as new (message: string) => Error;
 
   class MockModalClient {
     readonly apps = {
@@ -46,12 +51,24 @@ vi.mock('modal', async (importOriginal) => {
     };
 
     readonly images = {
-      fromId: (imageId: string) =>
-        Promise.resolve({
+      fromId: (imageId: string) => {
+        if (modalSdkState.imageMissing) {
+          return Promise.reject(new ActualNotFoundError('image not found'));
+        }
+        return Promise.resolve({
           imageId,
           build: () => Promise.resolve(),
-        }),
+        });
+      },
       fromName: () => Promise.resolve({ imageId: 'im-built0123' }),
+      delete: (imageId: string) => {
+        modalSdkState.imageDeleteCalls.push(imageId);
+        if (modalSdkState.imageMissing) {
+          return Promise.reject(new ActualNotFoundError('image not found'));
+        }
+        modalSdkState.imageMissing = true;
+        return Promise.resolve();
+      },
     };
 
     readonly volumes = {
@@ -278,6 +295,8 @@ function runDash(script: string): Promise<{ status: number; stdout: string; stde
 beforeEach(() => {
   modalSdkState.createCalls.length = 0;
   modalSdkState.experimentalCreateCalls.length = 0;
+  modalSdkState.imageDeleteCalls.length = 0;
+  modalSdkState.imageMissing = false;
   modalSdkState.sandbox = undefined;
   modalSdkState.volumeCloseCount = 0;
   modalSdkState.volumeFromNameCalls.length = 0;
@@ -285,6 +304,43 @@ beforeEach(() => {
 });
 
 describe('Modal workspace agent adapter', () => {
+  test('deletes snapshot images idempotently and verifies provider absence', async () => {
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: {
+        version: 1,
+        environments: {
+          dev: {
+            modalEnvironment: 'zapp-dev',
+            sourceRevision: 'c58a416cba65f57ea64ba3e3e90f3646efca9b62',
+            tag: '2026-08-08-c58a416',
+            images: {
+              'forge-node-base': {
+                appName: 'zapp-workspaces',
+                digest: 'im-9NCxx8merCgh67jj0YLM84',
+                publishedName: 'forge-node-base:2026-08-08-c58a416',
+              },
+              'forge-web-test': {
+                appName: 'zapp-browser-verify',
+                digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+                publishedName: 'forge-web-test:2026-08-08-c58a416',
+              },
+            },
+          },
+        },
+      },
+      agentToken: 'agent-test-token',
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+    const snapshotId = 'im-9NCxx8merCgh67jj0YLM84';
+
+    await expect(provider.snapshotExists(snapshotId)).resolves.toBe(true);
+    await expect(provider.deleteSnapshot(snapshotId)).resolves.toBeUndefined();
+    await expect(provider.deleteSnapshot(snapshotId)).resolves.toBeUndefined();
+    await expect(provider.snapshotExists(snapshotId)).resolves.toBe(false);
+    expect(modalSdkState.imageDeleteCalls).toEqual([snapshotId, snapshotId]);
+  });
+
   test('does not create an absent project volume during a read-only billing probe', async () => {
     modalSdkState.volumeMissing = true;
     const provider = createModalSandboxProvider({

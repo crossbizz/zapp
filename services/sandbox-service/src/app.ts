@@ -50,7 +50,9 @@ import {
 } from './cost/client.js';
 import {
   createDatabaseSnapshotMeasurementStore,
+  createProjectSnapshotDeletionService,
   createProjectStorageMeasurementService,
+  type SnapshotDeletionStore,
   type SnapshotMeasurementStore,
 } from './storage/measurements.js';
 import {
@@ -119,6 +121,11 @@ interface BuildAppCommonOptions {
   };
   readonly storageMetering?: { readonly database: Database };
   readonly snapshotMeasurements?: SnapshotMeasurementStore;
+  /** CP-17 test seam; production derives this from the Modal provider and DB store. */
+  readonly snapshotDeletion?: {
+    remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
+    absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
+  };
   readonly checkpointing?: Omit<
     CheckpointServiceDependencies,
     'now' | 'snapshots' | 'snapshotMeasurements'
@@ -195,6 +202,22 @@ export function buildApp(options: BuildAppOptions) {
           },
           now,
         }));
+  const snapshotDeletion =
+    options.snapshotDeletion ??
+    (snapshotMeasurements !== undefined &&
+    isSnapshotDeletionStore(snapshotMeasurements) &&
+    options.provider.deleteSnapshot !== undefined &&
+    options.provider.snapshotExists !== undefined
+      ? createProjectSnapshotDeletionService({
+          snapshots: snapshotMeasurements,
+          provider: {
+            deleteSnapshot: (providerSnapshotId) =>
+              options.provider.deleteSnapshot?.(providerSnapshotId) ?? Promise.resolve(),
+            snapshotExists: (providerSnapshotId) =>
+              options.provider.snapshotExists?.(providerSnapshotId) ?? Promise.resolve(true),
+          },
+        })
+      : undefined);
   const rawCostRecorder =
     options.usageMetering === undefined
       ? undefined
@@ -370,6 +393,7 @@ export function buildApp(options: BuildAppOptions) {
       : { previewFailurePollIntervalMs: options.previewFailurePollIntervalMs }),
     now,
     ...(storageMeasurements === undefined ? {} : { storageMeasurements }),
+    ...(snapshotDeletion === undefined ? {} : { snapshotDeletion }),
     ...(checkpointService === undefined ? {} : { checkpointService }),
     ...(rawCostRecorder === undefined || options.usageMetering === undefined
       ? {}
@@ -398,4 +422,9 @@ export function buildApp(options: BuildAppOptions) {
     registerSandboxTelemetryRoute(app, { relay: options.telemetryRelay });
   }
   return app;
+}
+
+function isSnapshotDeletionStore(value: SnapshotMeasurementStore): value is SnapshotMeasurementStore & SnapshotDeletionStore {
+  const candidate = value as Partial<SnapshotDeletionStore>;
+  return typeof candidate.listProject === 'function' && typeof candidate.removeVerified === 'function';
 }

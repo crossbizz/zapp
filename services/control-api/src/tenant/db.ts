@@ -24,6 +24,7 @@ import {
   githubImportOutbox,
   githubImports,
   integrationConnections,
+  organizations,
   MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
   projects,
@@ -246,7 +247,7 @@ export interface UpdateProjectInput {
  * thrown, so no route module has to import an error class from the database
  * layer to handle it.
  */
-export type CreatedProject = ProjectResources | 'slug_taken';
+export type CreatedProject = ProjectResources | 'slug_taken' | 'organization_deleting';
 
 /** `undefined` when the project is not this tenant's, or does not exist. */
 export type UpdatedProject = Project | 'slug_taken' | undefined;
@@ -1531,6 +1532,14 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         async create(input: NewProjectInput): Promise<CreatedProject> {
           try {
             return await db.transaction(async (tx) => {
+              const [organization] = await tx
+                .select({ deletionRequestedAt: organizations.deletionRequestedAt })
+                .from(organizations)
+                .where(eq(organizations.id, orgId))
+                .for('update');
+              if (organization === undefined || organization.deletionRequestedAt !== null) {
+                return 'organization_deleting';
+              }
               const [project] = await tx
                 .insert(projects)
                 .values({
