@@ -16,6 +16,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "start:verification": "node --import ./dist/instrumentation.js dist/server.js",
+    "start:run": "node --enable-source-maps dist/run-server.js",
+    "dev:run": "tsx watch --env-file-if-exists=../../.env src/run-server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --exclude test/integration/ar9-postgres-worker.test.ts --exclude test/integration/autonomous.test.ts --exclude test/integration/fix.test.ts --exclude test/integration/redirect.test.ts --exclude test/integration/verifier.test.ts --exclude test/integration/repair.test.ts",
@@ -48,6 +50,7 @@
     "@temporalio/testing": "1.22.0",
     "@types/node": "^22.9.0",
     "postgres": "^3.4.9",
+    "tsx": "^4.23.5",
     "vitest": "^3.2.7"
   }
 }

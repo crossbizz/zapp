@@ -81,6 +81,7 @@ export type TaskQueue = z.infer<typeof TaskQueueSchema>;
 interface CommonRunWorkerOptions {
   readonly connection: NativeConnection;
   readonly activities: RunActivities;
+  readonly namespace?: string;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
   readonly maxHeartbeatThrottleInterval?: WorkerOptions['maxHeartbeatThrottleInterval'];
 }
@@ -133,6 +134,7 @@ export function createRunWorker(options: RunWorkerOptions): Promise<Worker> {
     taskQueue: options.taskQueue,
     workflowsPath: workflowPath(),
     activities: options.activities,
+    ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
     ...(interceptors === undefined ? {} : { interceptors }),
     ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
@@ -159,6 +161,7 @@ export function createProductionRunWorker(
     taskQueue: TaskQueueSchema.parse(options.taskQueue),
     activities: options.activities,
     idempotencyStore: createActivityIdempotencyRepository(options.database),
+    ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -319,6 +322,32 @@ export function createTemporalOrchestrator(options: {
   readonly client: Pick<Client, 'workflow'>;
 }): TemporalOrchestrator {
   return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns, true);
+}
+
+const LocalM1ProfileSchema = z
+  .object({
+    NODE_ENV: z.literal('development'),
+    RUN_WORKFLOW_PROFILE: z.literal('m1'),
+  })
+  .strict();
+
+/**
+ * Development-only routing for the M1 walking skeleton. Production keeps the
+ * dedicated Build workflow and cannot select this path through run input.
+ */
+export function createLocalM1TemporalOrchestrator(options: {
+  readonly client: Pick<Client, 'workflow'>;
+}): TemporalOrchestrator {
+  const parsed = LocalM1ProfileSchema.safeParse({
+    NODE_ENV: process.env['NODE_ENV'],
+    RUN_WORKFLOW_PROFILE: process.env['RUN_WORKFLOW_PROFILE'],
+  });
+  if (!parsed.success) {
+    throw new TypeError(
+      'Local M1 routing requires RUN_WORKFLOW_PROFILE=m1 with NODE_ENV=development',
+    );
+  }
+  return createTemporalOrchestratorForQueue(options.client, TASK_QUEUES.agentRuns, false);
 }
 
 export function createTestTemporalOrchestrator(options: {

@@ -6,7 +6,7 @@ import { Client, Connection } from '@temporalio/client';
 import { OpenTelemetryWorkflowClientInterceptor } from '@temporalio/interceptors-opentelemetry';
 
 import { loadAuthEnv } from './auth/config.js';
-import { composeApp } from './compose.js';
+import { composeApp, composeRunOrchestrator } from './compose.js';
 import { loadRateLimitSettings } from './config/rate-limits.js';
 import {
   loadEnv,
@@ -112,7 +112,6 @@ import {
 import { createDbGitHubImportWorkerStore } from './integrations/github/import-store.js';
 import { createTenantDbFactory } from './tenant/db.js';
 import { createTemporalCapabilityScanPort } from './orchestrator/capability-scan.js';
-import { createTemporalRunOrchestrator } from './orchestrator/temporal.js';
 import { createSandboxStorageMeasurementClient } from './sandbox/client.js';
 import { createUsageLedgerRepository } from './usage/ledger.js';
 import {
@@ -248,8 +247,11 @@ const creditBalance =
         graceFloorCredits: pricing.walletBalanceGraceFloor ?? '0.0000',
         alerts: usageOpsAlerts,
       });
-const runOrchestrator = createTemporalRunOrchestrator({ client: temporal });
-
+const runOrchestrator = composeRunOrchestrator({
+  temporal,
+  nodeEnv: env.NODE_ENV,
+  workflowProfile: env.RUN_WORKFLOW_PROFILE,
+});
 const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   database: database.db,
@@ -269,6 +271,8 @@ const app = composeApp({
   pricing,
   planLimits,
   templates,
+  nodeEnv: env.NODE_ENV,
+  runWorkflowProfile: env.RUN_WORKFLOW_PROFILE,
   orchestrator: runOrchestrator,
   ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
   ...(stripeBillingConfig === undefined ? {} : { billing: stripeBillingConfig }),

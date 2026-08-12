@@ -22,6 +22,7 @@ import {
   type CapabilityScanWorkflowClient,
 } from './orchestrator/capability-scan.js';
 import type { OrchestratorPort } from './orchestrator/port.js';
+import { createTemporalRunOrchestrator } from './orchestrator/temporal.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
@@ -174,6 +175,8 @@ export interface ServiceRuntime {
   /** Temporal client used for the tenant-bound VF-3 verification workflow. */
   readonly temporal: CapabilityScanWorkflowClient;
   readonly orchestrator?: OrchestratorPort;
+  readonly nodeEnv?: 'development' | 'test' | 'production';
+  readonly runWorkflowProfile?: 'default' | 'm1';
   readonly artifactStorage: ArtifactStorageEnv;
   readonly github?: GitHubAppEnv;
   /** OPS-6 server-side analytics and organization flag evaluation. */
@@ -190,6 +193,51 @@ export interface ServiceRuntime {
   readonly logger?: LoggerConfig;
 }
 
+export function composeRunOrchestrator(options: {
+  readonly temporal: CapabilityScanWorkflowClient;
+  readonly nodeEnv: 'development' | 'test' | 'production';
+  readonly workflowProfile: 'default' | 'm1';
+}): OrchestratorPort {
+  if (options.workflowProfile === 'm1' && options.nodeEnv !== 'development') {
+    throw new TypeError('M1 run workflow routing is allowed only in development');
+  }
+  if (options.workflowProfile === 'default') {
+    return createTemporalRunOrchestrator({ client: options.temporal as never });
+  }
+  const source = options.temporal.workflow;
+  const profiledWorkflow = {
+    start: ((workflowType: unknown, startOptions: unknown) =>
+      source.start(
+        (workflowType === 'buildWorkflow' ? 'runWorkflow' : workflowType) as Parameters<
+          typeof source.start
+        >[0],
+        startOptions as never,
+      )) as typeof source.start,
+    getHandle: ((...args: Parameters<typeof source.getHandle>) => {
+      const handle = source.getHandle(...args);
+      return new Proxy(handle, {
+        get(target, property, receiver) {
+          if (property === 'describe') {
+            return async () => {
+              const description = await target.describe();
+              return description.type === 'runWorkflow'
+                ? { ...description, type: 'buildWorkflow' }
+                : description;
+            };
+          }
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (typeof value !== 'function') return value;
+          const callable = value as (...parameters: unknown[]) => unknown;
+          return (...parameters: unknown[]) => callable.apply(target, parameters);
+        },
+      });
+    }) as typeof source.getHandle,
+  };
+  return createTemporalRunOrchestrator({
+    client: { workflow: profiledWorkflow } as never,
+  });
+}
+
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
   const notifications = runtime.notifications;
@@ -198,6 +246,13 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     serviceTokens: runtime.serviceTokens,
   });
   const posthog = runtime.posthog === undefined ? undefined : createPostHogRuntime(runtime.posthog);
+  const runOrchestrator =
+    runtime.orchestrator ??
+    composeRunOrchestrator({
+      temporal: runtime.temporal,
+      nodeEnv: runtime.nodeEnv ?? 'production',
+      workflowProfile: runtime.runWorkflowProfile ?? 'default',
+    });
   const previewRuntime =
     runtime.preview === undefined
       ? undefined
@@ -427,7 +482,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
-      ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
+      orchestrator: runOrchestrator,
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
       runArtifactReader: createS3RunArtifactReader(runtime.artifactStorage),
       incidents: createDbIncidentStore(database, runtime.masterKey),

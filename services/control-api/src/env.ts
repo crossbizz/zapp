@@ -21,19 +21,30 @@ export { loadReleaseServiceUrl } from './release/client.js';
  * empty environment; nothing here is a secret, and nothing secret may be added
  * without going through the vault (CP-7) instead.
  */
-const EnvSchema = z.object({
-  /**
-   * Defaults to `production` deliberately: every switch that reads this — pretty
-   * logging today, and anything looser later — is safer in its production position,
-   * and an unset variable should never be what turns a relaxation on. Local
-   * development sets it explicitly (`.env.example`).
-   */
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
-  /** Binds every interface: the service runs in a container and is fronted by a proxy. */
-  HOST: z.string().min(1).default('0.0.0.0'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
-});
+const EnvSchema = z
+  .object({
+    /**
+     * Defaults to `production` deliberately: every switch that reads this — pretty
+     * logging today, and anything looser later — is safer in its production position,
+     * and an unset variable should never be what turns a relaxation on. Local
+     * development sets it explicitly (`.env.example`).
+     */
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
+    /** Binds every interface: the service runs in a container and is fronted by a proxy. */
+    HOST: z.string().min(1).default('0.0.0.0'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+    LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+    RUN_WORKFLOW_PROFILE: z.enum(['default', 'm1']).default('default'),
+  })
+  .superRefine((env, context) => {
+    if (env.RUN_WORKFLOW_PROFILE === 'm1' && env.NODE_ENV !== 'development') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['RUN_WORKFLOW_PROFILE'],
+        message: 'RUN_WORKFLOW_PROFILE=m1 is allowed only with NODE_ENV=development',
+      });
+    }
+  });
 
 export type ServiceEnv = z.infer<typeof EnvSchema>;
 

@@ -1,9 +1,10 @@
 import { createDb } from '@zapp/db';
 import { ApiErrorSchema, newId } from '@zapp/contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import { WorkflowExecutionAlreadyStartedError } from '@temporalio/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type AppDeps, type AppInstance } from '../src/app.js';
-import { composeApp } from '../src/compose.js';
+import { composeApp, composeRunOrchestrator } from '../src/compose.js';
 import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
@@ -232,6 +233,80 @@ const ROUTES: readonly (readonly [string, string])[] = [
 ];
 
 describe('the composition server.ts performs', () => {
+  it('routes Build through runWorkflow only for the explicit development M1 profile', async () => {
+    const start = vi.fn().mockResolvedValue({});
+    const orchestrator = composeRunOrchestrator({
+      temporal: { workflow: { start, getHandle: vi.fn() } },
+      nodeEnv: 'development',
+      workflowProfile: 'm1',
+    });
+
+    await orchestrator.startRun({
+      runId: `run_${'0'.repeat(26)}`,
+      workflowId: 'run:test',
+      organizationId: `org_${'0'.repeat(26)}`,
+      projectId: `proj_${'0'.repeat(26)}`,
+      branchId: `br_${'0'.repeat(26)}`,
+      mode: 'build',
+      appType: 'web',
+      model: null,
+      prompt: 'Build a landing page',
+      budget: null,
+      planMaxCredits: 100,
+      operationKey: `op_${'a'.repeat(64)}`,
+    });
+
+    expect(start.mock.calls[0]?.[0]).toBe('runWorkflow');
+    expect(() =>
+      composeRunOrchestrator({
+        temporal: { workflow: { start, getHandle: vi.fn() } },
+        nodeEnv: 'production',
+        workflowProfile: 'm1',
+      }),
+    ).toThrow(/development/);
+  });
+
+  it('reconciles an idempotent M1 Build retry against the routed workflow identity', async () => {
+    const workflowId = 'run:test';
+    const start = vi
+      .fn()
+      .mockRejectedValue(
+        new WorkflowExecutionAlreadyStartedError('already started', workflowId, 'runWorkflow'),
+      );
+    const orchestrator = composeRunOrchestrator({
+      temporal: {
+        workflow: {
+          start,
+          getHandle: vi.fn(
+            () =>
+              ({
+                describe: () => Promise.resolve({ type: 'runWorkflow' }),
+              }) as never,
+          ),
+        },
+      },
+      nodeEnv: 'development',
+      workflowProfile: 'm1',
+    });
+
+    await expect(
+      orchestrator.startRun({
+        runId: `run_${'0'.repeat(26)}`,
+        workflowId,
+        organizationId: `org_${'0'.repeat(26)}`,
+        projectId: `proj_${'0'.repeat(26)}`,
+        branchId: `br_${'0'.repeat(26)}`,
+        mode: 'build',
+        appType: 'web',
+        model: null,
+        prompt: 'Build a landing page',
+        budget: null,
+        planMaxCredits: 100,
+        operationKey: `op_${'a'.repeat(64)}`,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('serves every route the service claims, tenant-scoped ones included', async () => {
     const app = composed();
     await app.ready();
