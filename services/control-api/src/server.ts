@@ -22,6 +22,7 @@ import {
   loadIncidentWebhookSecret,
   loadRedisUrl,
   loadRunIntentHmacKey,
+  loadReleaseServiceUrl,
   loadPreviewEnv,
   loadServiceTokenConfig,
   loadStripeBillingEnv,
@@ -165,6 +166,7 @@ const modelGatewayUrl = loadModelGatewayUrl();
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
 const gitServiceUrl = loadGitServiceUrl();
+const releaseServiceUrl = loadReleaseServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
 const usageQueueConfig = loadUsageQueueEnv();
@@ -255,6 +257,7 @@ const app = composeApp({
   modelGatewayUrl,
   preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
+  ...(releaseServiceUrl === undefined ? {} : { releaseServiceUrl }),
   rateLimits,
   pricing,
   planLimits,

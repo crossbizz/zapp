@@ -9,6 +9,7 @@ import {
   type NotificationTrigger,
 } from '../src/notifications/service.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
+import { NO_TRANSACTION } from '../src/plugins/audit.js';
 import { createInMemoryIncidentStore, type IncidentStore } from '../src/routes/incidents.js';
 import type {
   CreateReleaseMutationInput,
@@ -36,6 +37,7 @@ afterEach(async () => {
 });
 
 class IncidentReleasePort implements ReleasePort {
+  constructor(private readonly incidents: IncidentStore) {}
   readonly releases = new Map<string, ReleaseRow>();
 
   async createReleaseCandidate(input: CreateReleaseMutationInput): Promise<ReleaseRow> {
@@ -51,7 +53,16 @@ class IncidentReleasePort implements ReleasePort {
       createdBy: input.actorId,
       createdAt: new Date('2026-08-12T18:00:00.000Z'),
     };
-    await input.audit(Symbol.for('incident-test-transaction') as never, row);
+    for (const fixRunId of input.resolvedFixRunIds) {
+      await this.incidents.resolveForRun(NO_TRANSACTION, {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        fixRunId,
+        releaseId: row.id,
+        actorId: input.actorId,
+        occurredAt: row.createdAt,
+      });
+    }
     this.releases.set(row.id, row);
     return row;
   }
@@ -77,22 +88,8 @@ class IncidentReleasePort implements ReleasePort {
     return Promise.resolve({ deploymentId: newId('dep') });
   }
 
-  getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest> {
-    return Promise.resolve({
-      release_id: input.releaseId,
-      commit_sha: 'a'.repeat(40),
-      specification_version: 1,
-      criteria: [],
-      build: { status: 'passed' },
-      typecheck: { status: 'passed' },
-      tests: { status: 'passed' },
-      browser_tests: { status: 'passed' },
-      security: { status: 'passed' },
-      migration: { status: 'not_required' },
-      preview: { url: 'https://preview.incidents.test' },
-      rollback: { supported: true },
-      known_risks: [],
-    });
+  getEvidence(): Promise<EvidenceManifest> {
+    return Promise.reject(new Error('not used by incident tests'));
   }
 
   seed(row: ReleaseRow): void {
@@ -137,7 +134,7 @@ interface Wired {
 async function wire(): Promise<Wired> {
   const data = new InMemoryTenantData();
   const incidents = createInMemoryIncidentStore();
-  const releases = new IncidentReleasePort();
+  const releases = new IncidentReleasePort(incidents);
   const orchestrator = new RecordingOrchestrator();
   const notifications: NotificationTrigger[] = [];
   const built = buildHarness({

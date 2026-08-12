@@ -125,6 +125,7 @@ import {
 import {
   createUnavailableReleasePort,
   registerReleaseRoutes,
+  type ReleaseForkPort,
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
@@ -250,6 +251,7 @@ export interface TenantDeps {
   readonly fork?: ForkActivity;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
+  readonly releaseFork?: ReleaseForkPort;
   readonly deploymentUsage?: DeploymentUsagePort;
   /** OPS-11's append-only production incident ledger. */
   readonly incidents?: IncidentStore;
@@ -801,6 +803,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           }
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
+            ...(tenant.releaseFork === undefined ? {} : { fork: tenant.releaseFork }),
             now,
             ...(deps.productAnalytics === undefined
               ? {}
@@ -810,7 +813,6 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               : { deploymentUsage: tenant.deploymentUsage }),
             permissionContextFor: async (organizationId) =>
               (await orgs.organizations.getSettings(organizationId)) ?? {},
-            ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
           });
           if (tenant.incidents !== undefined && secrets !== undefined) {
             registerIncidentRoutes(app, {

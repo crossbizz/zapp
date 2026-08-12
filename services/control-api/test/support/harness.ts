@@ -29,7 +29,7 @@ import type {
   SandboxServicePort,
   SupportSandboxServicePort,
 } from '../../src/sandbox/port.js';
-import type { ReleasePort } from '../../src/routes/releases.js';
+import type { ReleaseForkPort, ReleasePort } from '../../src/routes/releases.js';
 import type { IncidentStore } from '../../src/routes/incidents.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
 import type { AdminRoutesConfig } from '../../src/routes/admin.js';
@@ -266,6 +266,7 @@ export interface HarnessOptions {
   readonly builderPreviewRecheckIntervalMs?: number;
   readonly fork?: ForkActivity;
   readonly releasePort?: ReleasePort;
+  readonly releaseFork?: ReleaseForkPort;
   readonly incidentStore?: IncidentStore;
   readonly incidentWebhookSecret?: string;
   readonly deploymentUsage?: DeploymentUsagePort;
@@ -370,6 +371,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
               : { builderPreviewRecheckIntervalMs: options.builderPreviewRecheckIntervalMs }),
             ...(options.fork === undefined ? {} : { fork: options.fork }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
+            ...(options.releaseFork === undefined ? {} : { releaseFork: options.releaseFork }),
             ...(options.incidentStore === undefined ? {} : { incidents: options.incidentStore }),
             ...(options.incidentWebhookSecret === undefined
               ? {}

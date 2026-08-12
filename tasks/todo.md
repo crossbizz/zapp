@@ -223,7 +223,9 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-9 Rollback with DB-compatibility gating
 - [x] DEP-10 Custom domains + SSL
 - [x] DEP-11 Synthetic checks
-- [ ] DEP-12 E2E release lifecycle + fork-to-repair
+- [x] DEP-12a Authenticated release lifecycle transport + public SDK
+- [ ] DEP-12b Production adapter composition + real synthetic/E2E journey
+- [ ] DEP-12 E2E release lifecycle + fork-to-repair (umbrella completion)
 - [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [ ] WEB-15 Production health + guarded rollback UI
 - [ ] MAC-7 Docker runtime mode

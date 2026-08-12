@@ -11,9 +11,15 @@ importers:
 
   .:
     devDependencies:
+      '@zapp/config':
+        specifier: workspace:*
+        version: link:packages/config
       '@zapp/contracts':
         specifier: workspace:*
         version: link:packages/contracts
+      '@zapp/verification-engine':
+        specifier: workspace:*
+        version: link:packages/verification-engine
       eslint:
         specifier: 9.39.5
         version: 9.39.5(jiti@2.7.0)
@@ -1106,6 +1112,9 @@ importers:
       '@zapp/project-adapters':
         specifier: workspace:*
         version: link:../../packages/project-adapters
+      '@zapp/release-service':
+        specifier: workspace:*
+        version: link:../release-service
       '@zapp/sandbox-service':
         specifier: workspace:*
         version: link:../sandbox-service
@@ -1371,6 +1380,9 @@ importers:
       fastify:
         specifier: ^5.11.2
         version: 5.11.2
+      fastify-type-provider-zod:
+        specifier: ^4.0.2
+        version: 4.0.2(fastify@5.11.2)(zod@3.25.76)
       zod:
         specifier: ^3.23.8
         version: 3.25.76

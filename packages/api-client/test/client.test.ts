@@ -105,6 +105,46 @@ async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<bool
 }
 
 describe('createZappClient', () => {
+  it('calls the generated release-repair fork operation with its exact branch result', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const releaseId = 'rel_01J8ME7YQZJ2V9Q0X3T5B6K7N9';
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          fork: {
+            releaseId,
+            branchId: 'br_01J8ME7YQZJ2V9Q0X3T5B6K7NA',
+            branchName: `fix/rel-${releaseId}`,
+            fixRunId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7NB',
+          },
+        }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'release-user-token',
+      fetch,
+    });
+
+    const result = await client.request('/v1/releases/{releaseId}/fork', {
+      method: 'POST',
+      path: { releaseId },
+      headers: { 'idempotency-key': 'release-repair-fork-01' },
+      body: { startFixRun: true },
+    });
+
+    expect(result).toMatchObject({ fork: { branchName: `fix/rel-${releaseId}` } });
+    const call = fetch.mock.calls[0];
+    expect(String(call?.[0])).toBe(`https://api.zapp.test/v1/releases/${releaseId}/fork`);
+    expect(call?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ startFixRun: true }),
+    });
+  });
+
   it('returns screenshot bytes from the ordinary generated operation and preserves 501', async () => {
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');

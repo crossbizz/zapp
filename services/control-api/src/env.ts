@@ -14,6 +14,7 @@ import {
 
 import { LOG_LEVELS } from './logging.js';
 import { KEY_BYTES, createEnvMasterKey, type MasterKeyPort } from './secrets/crypto.js';
+export { loadReleaseServiceUrl } from './release/client.js';
 
 /**
  * Everything the process needs to boot. Defaults keep `pnpm start` working with an

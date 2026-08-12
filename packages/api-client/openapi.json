@@ -18516,6 +18516,181 @@
         }
       }
     },
+    "/v1/releases/{releaseId}/fork": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "startFixRun": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "releaseId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fork": {
+                      "type": "object",
+                      "properties": {
+                        "releaseId": {
+                          "type": "string",
+                          "pattern": "^rel_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "branchId": {
+                          "type": "string",
+                          "pattern": "^br_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "branchName": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        },
+                        "fixRunId": {
+                          "type": "string",
+                          "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "releaseId",
+                        "branchId",
+                        "branchName",
+                        "fixRunId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "fork"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/releases/{releaseId}/evidence": {
       "get": {
         "parameters": [
@@ -18566,24 +18741,74 @@
                           "items": {
                             "type": "object",
                             "properties": {
-                              "id": {
+                              "criterionId": {
                                 "type": "string",
-                                "minLength": 1
+                                "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"
                               },
-                              "status": {
+                              "specificationVersion": {
+                                "type": "integer",
+                                "exclusiveMinimum": true,
+                                "minimum": 0
+                              },
+                              "taskIds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1024
+                                },
+                                "maxItems": 10000
+                              },
+                              "testCaseIds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1024
+                                },
+                                "maxItems": 10000
+                              },
+                              "result": {
                                 "type": "string",
                                 "enum": [
                                   "passed",
-                                  "failed"
+                                  "failed",
+                                  "unverified",
+                                  "waived"
                                 ]
+                              },
+                              "evidenceArtifactIds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1024
+                                },
+                                "maxItems": 10000
+                              },
+                              "verifierComments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 10000
+                                },
+                                "maxItems": 1000
                               }
                             },
                             "required": [
-                              "id",
-                              "status"
+                              "criterionId",
+                              "specificationVersion",
+                              "taskIds",
+                              "testCaseIds",
+                              "result",
+                              "evidenceArtifactIds",
+                              "verifierComments"
                             ],
                             "additionalProperties": false
-                          }
+                          },
+                          "minItems": 1,
+                          "maxItems": 1000
                         },
                         "build": {
                           "type": "object",
@@ -18593,13 +18818,181 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18611,13 +19004,181 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18629,13 +19190,181 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18647,13 +19376,181 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18665,13 +19562,181 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18683,38 +19748,553 @@
                               "enum": [
                                 "passed",
                                 "failed",
-                                "skipped",
-                                "not_required"
+                                "waived",
+                                "not_applicable"
                               ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "status"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
                         "preview": {
                           "type": "object",
                           "properties": {
-                            "url": {
+                            "status": {
                               "type": "string",
-                              "format": "uri"
+                              "enum": [
+                                "passed",
+                                "failed",
+                                "waived",
+                                "not_applicable"
+                              ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "url"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
                         "rollback": {
                           "type": "object",
                           "properties": {
-                            "supported": {
-                              "type": "boolean"
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "passed",
+                                "failed",
+                                "waived",
+                                "not_applicable"
+                              ]
+                            },
+                            "gates": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev_server_start",
+                                          "production_build",
+                                          "typecheck",
+                                          "lint",
+                                          "unit_tests",
+                                          "integration_tests",
+                                          "browser_smoke",
+                                          "browser_acceptance",
+                                          "authorization_tests",
+                                          "migration_validation",
+                                          "secret_scan",
+                                          "dependency_scan",
+                                          "preview_health",
+                                          "rollback_readiness",
+                                          "observability_check"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "required",
+                                          "best_effort",
+                                          "if_available",
+                                          "required_or_explicit_waiver",
+                                          "project_policy",
+                                          "existing_only",
+                                          "required_for_critical_logic",
+                                          "as_applicable",
+                                          "required_for_managed_integrations",
+                                          "optional",
+                                          "if_applicable",
+                                          "required_for_managed_auth",
+                                          "no",
+                                          "advisory",
+                                          "required_policy",
+                                          "required_for_code",
+                                          "required_for_supported_release_state",
+                                          "recommended"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      },
+                                      "waiver": {
+                                        "type": "object",
+                                        "properties": {
+                                          "gateId": {
+                                            "type": "string",
+                                            "enum": [
+                                              "dev_server_start",
+                                              "production_build",
+                                              "typecheck",
+                                              "lint",
+                                              "unit_tests",
+                                              "integration_tests",
+                                              "browser_smoke",
+                                              "browser_acceptance",
+                                              "authorization_tests",
+                                              "migration_validation",
+                                              "secret_scan",
+                                              "dependency_scan",
+                                              "preview_health",
+                                              "rollback_readiness",
+                                              "observability_check"
+                                            ]
+                                          },
+                                          "actorId": {
+                                            "type": "string",
+                                            "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                                          },
+                                          "reason": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                          }
+                                        },
+                                        "required": [
+                                          "gateId",
+                                          "actorId",
+                                          "reason",
+                                          "createdAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "gateId": {
+                                        "type": "string",
+                                        "enum": [
+                                          "accessibility"
+                                        ]
+                                      },
+                                      "class": {
+                                        "type": "string",
+                                        "enum": [
+                                          "support_level_policy"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed",
+                                          "failed",
+                                          "waived",
+                                          "not_applicable"
+                                        ]
+                                      },
+                                      "evidenceArtifactIds": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "maxItems": 10000
+                                      }
+                                    },
+                                    "required": [
+                                      "gateId",
+                                      "class",
+                                      "status",
+                                      "evidenceArtifactIds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "minItems": 1,
+                              "maxItems": 16
                             }
                           },
                           "required": [
-                            "supported"
+                            "status",
+                            "gates"
                           ],
                           "additionalProperties": false
                         },
@@ -18725,11 +20305,13 @@
                             "properties": {
                               "id": {
                                 "type": "string",
-                                "minLength": 1
+                                "minLength": 1,
+                                "maxLength": 1024
                               },
                               "detail": {
                                 "type": "string",
-                                "minLength": 1
+                                "minLength": 1,
+                                "maxLength": 10000
                               }
                             },
                             "required": [
@@ -18737,7 +20319,8 @@
                               "detail"
                             ],
                             "additionalProperties": false
-                          }
+                          },
+                          "maxItems": 2000
                         }
                       },
                       "required": [

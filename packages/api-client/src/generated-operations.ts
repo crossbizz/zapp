@@ -1685,6 +1685,28 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/releases/{releaseId}/fork": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/releases/{releaseId}/rollback": {
     "post": {
       "security": [

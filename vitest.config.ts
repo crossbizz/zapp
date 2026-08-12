@@ -18,6 +18,12 @@ export default defineConfig({
           include: ['test/security/**/*.test.ts'],
         },
       },
+      {
+        test: {
+      name: 'release-transport',
+      include: ['test/integration/release-transport.test.ts'],
+        },
+      },
       'packages/*/vitest.config.ts',
       'services/*/vitest.config.ts',
       'infra/*/vitest.config.ts',

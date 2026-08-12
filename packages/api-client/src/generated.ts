@@ -7642,47 +7642,253 @@ export interface paths {
                         "application/json": {
                             evidence: {
                                 browser_tests: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 build: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 commit_sha: string;
                                 criteria: {
-                                    id: string;
+                                    criterionId: string;
+                                    evidenceArtifactIds: string[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed";
+                                    result: "passed" | "failed" | "unverified" | "waived";
+                                    specificationVersion: number;
+                                    taskIds: string[];
+                                    testCaseIds: string[];
+                                    verifierComments: string[];
                                 }[];
                                 known_risks: {
                                     detail: string;
                                     id: string;
                                 }[];
                                 migration: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 preview: {
-                                    /** Format: uri */
-                                    url: string;
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
+                                    /** @enum {string} */
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 release_id: string;
                                 rollback: {
-                                    supported: boolean;
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
+                                    /** @enum {string} */
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 security: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 specification_version: number;
                                 tests: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 typecheck: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                             };
                         };
@@ -7692,6 +7898,93 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{releaseId}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @default false */
+                        startFixRun?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            fork: {
+                                branchId: string;
+                                branchName: string;
+                                fixRunId: string | null;
+                                releaseId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;

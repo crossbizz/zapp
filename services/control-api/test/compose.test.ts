@@ -201,6 +201,13 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['POST', '/v1/workspaces/:workspaceId/dev-server/restart'],
   ['GET', '/v1/workspaces/:workspaceId/preview/events'],
   ['POST', '/v1/workspaces/:workspaceId/preview/screenshot'],
+  ['POST', '/v1/projects/:projectId/releases'],
+  ['GET', '/v1/releases/:releaseId'],
+  ['POST', '/v1/releases/:releaseId/approve'],
+  ['POST', '/v1/releases/:releaseId/deploy'],
+  ['POST', '/v1/releases/:releaseId/rollback'],
+  ['GET', '/v1/releases/:releaseId/evidence'],
+  ['POST', '/v1/releases/:releaseId/fork'],
   // CP-7's vault (PRD §32.5), including the internal decrypt — deployed with a
   // deny-all verifier until CP-8, which is a route that admits nobody rather
   // than a route that does not exist.

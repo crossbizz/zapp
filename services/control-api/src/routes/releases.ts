@@ -1,18 +1,17 @@
 import type { ProductAnalytics } from '@zapp/config';
 import { CommitShaSchema, idSchema, RunModeSchema } from '@zapp/contracts';
+import { EvidenceManifestSchema } from '@zapp/verification-engine';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { OperationKeySchema } from '../orchestrator/port.js';
 import { actorOf } from '../plugins/auth.js';
-import type { AuditHook } from '../plugins/audit.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import type { PermissionContext } from '../policy/permissions.js';
 import type { DeploymentUsagePort } from '../usage/collectors/git.js';
 import { ReleaseSchema } from '../tenant/view.js';
 import { operationOf } from './runs.js';
-import type { IncidentStore } from './incidents.js';
 
 const ProjectParams = z.object({ projectId: idSchema('proj') }).strict();
 const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
@@ -56,6 +55,15 @@ const RollbackBody = z
     reason: z.string().trim().min(1).max(2_000),
   })
   .strict();
+const ForkBody = z.object({ startFixRun: z.boolean().default(false) }).strict();
+export const ForkReleaseResultSchema = z
+  .object({
+    releaseId: idSchema('rel'),
+    branchId: idSchema('br'),
+    branchName: z.string().trim().min(1).max(255),
+    fixRunId: idSchema('run').nullable(),
+  })
+  .strict();
 
 export const ReleaseRowSchema = z
   .object({
@@ -87,28 +95,7 @@ export const ReadinessSchema = z
     ),
   })
   .strict();
-const EvidenceSectionSchema = z
-  .object({ status: z.enum(['passed', 'failed', 'skipped', 'not_required']) })
-  .strict();
-export const EvidenceManifestSchema = z
-  .object({
-    release_id: idSchema('rel'),
-    commit_sha: CommitShaSchema,
-    specification_version: z.number().int().positive(),
-    criteria: z.array(
-      z.object({ id: z.string().min(1), status: z.enum(['passed', 'failed']) }).strict(),
-    ),
-    build: EvidenceSectionSchema,
-    typecheck: EvidenceSectionSchema,
-    tests: EvidenceSectionSchema,
-    browser_tests: EvidenceSectionSchema,
-    security: EvidenceSectionSchema,
-    migration: EvidenceSectionSchema,
-    preview: z.object({ url: z.string().url() }).strict(),
-    rollback: z.object({ supported: z.boolean() }).strict(),
-    known_risks: z.array(z.object({ id: z.string().min(1), detail: z.string().min(1) }).strict()),
-  })
-  .strict();
+export { EvidenceManifestSchema } from '@zapp/verification-engine';
 
 export const CreateReleaseInputSchema = z
   .object({
@@ -119,6 +106,7 @@ export const CreateReleaseInputSchema = z
     specificationId: idSchema('spec').nullable(),
     actorId: idSchema('user'),
     operationKey: OperationKeySchema,
+    resolvedFixRunIds: z.array(idSchema('run')).max(100),
   })
   .strict();
 export const ReleaseLookupInputSchema = z
@@ -147,11 +135,11 @@ export type ReleaseMutationInput = z.infer<typeof ReleaseMutationInputSchema>;
 export type DeployInput = z.infer<typeof DeployInputSchema>;
 export type RollbackInput = z.infer<typeof RollbackInputSchema>;
 export type DeploymentResult = z.infer<typeof DeploymentResultSchema>;
-export type Audited<TInput, TResult> = TInput & { readonly audit: AuditHook<TResult> };
-export type CreateReleaseMutationInput = Audited<CreateReleaseInput, ReleaseRow>;
-export type ApproveReleaseMutationInput = Audited<ReleaseMutationInput, ReleaseRow>;
-export type DeployReleaseMutationInput = Audited<DeployInput, DeploymentResult>;
-export type RollbackReleaseMutationInput = Audited<RollbackInput, DeploymentResult>;
+export type ForkReleaseResult = z.infer<typeof ForkReleaseResultSchema>;
+export type CreateReleaseMutationInput = CreateReleaseInput;
+export type ApproveReleaseMutationInput = ReleaseMutationInput;
+export type DeployReleaseMutationInput = DeployInput;
+export type RollbackReleaseMutationInput = RollbackInput;
 
 /** Temporary Plan 07 DEP-1 boundary. Implementations commit release state and audit together. */
 export interface ReleasePort {
@@ -164,13 +152,19 @@ export interface ReleasePort {
   getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest>;
 }
 
+export interface ReleaseForkPort {
+  forkRelease(
+    input: ReleaseMutationInput & { readonly startFixRun: boolean },
+  ): Promise<ForkReleaseResult>;
+}
+
 export interface ReleaseRoutesDeps {
   readonly port: ReleasePort;
+  readonly fork?: ReleaseForkPort;
   readonly permissionContextFor: (organizationId: string) => Promise<PermissionContext>;
   readonly deploymentUsage?: DeploymentUsagePort;
   readonly productAnalytics?: ProductAnalytics;
   readonly now: () => Date;
-  readonly incidents?: IncidentStore;
 }
 
 export function createUnavailableReleasePort(): ReleasePort {
@@ -243,40 +237,16 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       };
       const row = await releaseMutationResult(
         () =>
-          deps.port.createReleaseCandidate({
-            ...CreateReleaseInputSchema.parse({
+          deps.port.createReleaseCandidate(
+            CreateReleaseInputSchema.parse({
               organizationId: ctx.organizationId,
               projectId: project.id,
               ...request.body,
               actorId: actorOf(request),
               operationKey,
+              resolvedFixRunIds: [...commitRunIds],
             }),
-            audit: async (tx, release) => {
-              assertReleaseIdentity(release, expected);
-              await request.audit(tx, {
-                organizationId: ctx.organizationId,
-                action: 'release.created',
-                target: { type: 'release', id: release.id },
-                metadata: {
-                  projectId: release.projectId,
-                  environmentId: release.environmentId,
-                  operationKey,
-                },
-              });
-              if (deps.incidents !== undefined) {
-                for (const fixRunId of commitRunIds) {
-                  await deps.incidents.resolveForRun(tx, {
-                    organizationId: ctx.organizationId,
-                    projectId: project.id,
-                    fixRunId,
-                    releaseId: release.id,
-                    actorId: actorOf(request),
-                    occurredAt: deps.now(),
-                  });
-                }
-              }
-            },
-          }),
+          ),
         expected,
       );
       await captureReleaseLifecycle(
@@ -346,15 +316,6 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
             releaseId: row.id,
             actorId: actorOf(request),
             operationKey,
-            audit: async (tx, release) => {
-              assertReleaseIdentity(release, expected);
-              await request.audit(tx, {
-                organizationId: ctx.organizationId,
-                action: 'release.approved',
-                target: { type: 'release', id: release.id },
-                metadata: { operationKey },
-              });
-            },
           }),
         expected,
       );
@@ -388,8 +349,8 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       const operationKey = operationOf(request);
       const result = await portResult(
         () =>
-          deps.port.deploy({
-            ...DeployInputSchema.parse({
+          deps.port.deploy(
+            DeployInputSchema.parse({
               organizationId: ctx.organizationId,
               releaseId: row.id,
               actorId: actorOf(request),
@@ -397,19 +358,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
               deploymentType: request.body.deploymentType,
               confirmation: { dataDisposition: request.body.dataDisposition ?? null },
             }),
-            audit: async (tx) => {
-              await request.audit(tx, {
-                organizationId: ctx.organizationId,
-                action: 'release.deploy_requested',
-                target: { type: 'release', id: row.id },
-                metadata: {
-                  operationKey,
-                  deploymentType: request.body.deploymentType,
-                  dataDisposition: request.body.dataDisposition ?? null,
-                },
-              });
-            },
-          }),
+          ),
         DeploymentResultSchema,
       );
       await meterDeployment(deps, ctx, row, result);
@@ -438,8 +387,8 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       const operationKey = operationOf(request);
       const result = await portResult(
         () =>
-          deps.port.rollback({
-            ...RollbackInputSchema.parse({
+          deps.port.rollback(
+            RollbackInputSchema.parse({
               organizationId: ctx.organizationId,
               releaseId: row.id,
               actorId: actorOf(request),
@@ -447,15 +396,7 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
               toDeploymentId: request.body.toDeploymentId ?? null,
               reason: request.body.reason,
             }),
-            audit: async (tx) => {
-              await request.audit(tx, {
-                organizationId: ctx.organizationId,
-                action: 'release.rollback_requested',
-                target: { type: 'release', id: row.id },
-                metadata: { operationKey, toDeploymentId: request.body.toDeploymentId ?? null },
-              });
-            },
-          }),
+          ),
         DeploymentResultSchema,
       );
       await meterDeployment(deps, ctx, row, result);
@@ -468,6 +409,45 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
         row.projectId,
       );
       return result;
+    },
+  );
+
+  app.post(
+    '/v1/releases/:releaseId/fork',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ReleaseParams,
+        body: ForkBody,
+        response: { 201: z.object({ fork: ForkReleaseResultSchema }).strict() },
+      },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const release = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, 'edit_code');
+      if (deps.fork === undefined) throw releaseServiceFailed();
+      const forkPort = deps.fork;
+      const operationKey = operationOf(request);
+      const fork = await portResult(
+        () =>
+          forkPort.forkRelease({
+            organizationId: ctx.organizationId,
+            releaseId: release.id,
+            actorId: actorOf(request),
+            operationKey,
+            startFixRun: request.body.startFixRun,
+          }),
+        ForkReleaseResultSchema,
+      );
+      if (
+        fork.releaseId !== release.id ||
+        fork.branchName !== `fix/rel-${release.id}` ||
+        (fork.fixRunId === null) === request.body.startFixRun
+      ) {
+        throw releaseServiceFailed();
+      }
+      return await reply.status(201).send({ fork });
     },
   );
 

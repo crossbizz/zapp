@@ -320,6 +320,7 @@ const production = vi.hoisted(() => {
       PORT: 4_321,
     })),
     loadGitServiceUrl: vi.fn(() => 'http://git-service.test:4500'),
+    loadReleaseServiceUrl: vi.fn(() => 'http://release-service.test:4300'),
     loadGitHubAppEnv: vi.fn(() => github),
     loadGitHubWebhookQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
@@ -407,6 +408,7 @@ vi.mock('../src/env.js', () => ({
   loadMasterKey: production.loadMasterKey,
   loadModelGatewayUrl: production.loadModelGatewayUrl,
   loadPreviewEnv: production.loadPreviewEnv,
+  loadReleaseServiceUrl: production.loadReleaseServiceUrl,
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
@@ -549,6 +551,7 @@ describe('control-api production entrypoint', () => {
         preview: production.preview,
         previewRedis: production.redis,
         modelGatewayUrl: 'http://model-gateway.test:4100',
+        releaseServiceUrl: 'http://release-service.test:4300',
         temporal: production.temporal,
         artifactStorage: production.artifactStorage,
         admin: {

@@ -95,6 +95,7 @@ import {
   createDatabaseProjectExportSource,
   createGitServiceProjectExportPort,
 } from './routes/export.js';
+import { resolveReleaseService } from './release/client.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -145,6 +146,8 @@ export interface ServiceRuntime {
    * an undefined value is a refusal to start.
    */
   readonly gitServiceUrl?: string;
+  /** Plan 07 release plane. Undefined only for local/test development. */
+  readonly releaseServiceUrl?: string;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   readonly preview?: PreviewEnv;
@@ -181,6 +184,10 @@ export interface ServiceRuntime {
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
   const notifications = runtime.notifications;
+  const releaseService = resolveReleaseService({
+    baseUrl: runtime.releaseServiceUrl,
+    serviceTokens: runtime.serviceTokens,
+  });
   const posthog = runtime.posthog === undefined ? undefined : createPostHogRuntime(runtime.posthog);
   const previewRuntime =
     runtime.preview === undefined
@@ -406,6 +413,8 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
               storage: createS3AttachmentStorage(runtime.artifactStorage),
             },
           }),
+      releasePort: releaseService.release,
+      releaseFork: releaseService.fork,
       ...(runtime.incidentWebhookSecret === undefined
         ? {}
         : { incidentWebhookSecret: runtime.incidentWebhookSecret }),
