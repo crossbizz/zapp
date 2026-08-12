@@ -36,6 +36,7 @@ import type { AdminRoutesConfig } from '../../src/routes/admin.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
+import type { ProjectExportDeps } from '../../src/routes/export.js';
 import type { BuilderPreviewScreenshotStore } from '../../src/routes/builder-preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
@@ -300,6 +301,7 @@ export interface HarnessOptions {
   readonly notificationEnqueue?: NotificationDeps['enqueue'];
   readonly admin?: AdminRoutesConfig;
   readonly projectDeletions?: ProjectDeletionRequestStore;
+  readonly projectExport?: ProjectExportDeps;
 }
 
 /**
@@ -381,6 +383,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.projectDeletions === undefined
               ? {}
               : { projectDeletions: options.projectDeletions }),
+            ...(options.projectExport === undefined
+              ? {}
+              : { projectExport: options.projectExport }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that

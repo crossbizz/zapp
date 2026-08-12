@@ -10,6 +10,11 @@ import { createForgejoGitProvider } from './provider/forgejo.js';
 import { parseInternalRepoRef } from '@zapp/contracts';
 import { createGitMirror } from './import/mirror.js';
 import { createTokenService, type TokenService } from './tokens.js';
+import { createGitBundleCommands } from './backup.js';
+import {
+  createGitBundleExporter,
+  createTokenServiceGitBundleCredentials,
+} from './export.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -45,6 +50,8 @@ export interface ServiceRuntime {
   readonly database: Database;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
+  /** Bounded Git subprocess deadline for an on-demand portable bundle. */
+  readonly gitBundleCommandTimeoutMs?: number;
 }
 
 /**
@@ -83,6 +90,15 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
       });
     },
   });
+  const bundleExporter = createGitBundleExporter({
+    credentials: createTokenServiceGitBundleCredentials(tokens),
+    commands: ({ username, token }) =>
+      createGitBundleCommands({
+        username,
+        password: token,
+        timeoutMs: runtime.gitBundleCommandTimeoutMs ?? 240_000,
+      }),
+  });
 
   const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -94,6 +110,7 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
     tokens,
     signer: createServiceTokenSigner(runtime.serviceTokens),
     mirror: createGitMirror(),
+    bundleExporter,
   });
 
   return { app, tokens };

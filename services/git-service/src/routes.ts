@@ -25,6 +25,7 @@ import {
   type TokenService,
 } from './tokens.js';
 import { serviceOf } from './internal/service-auth.js';
+import type { GitBundleExporter } from './export.js';
 
 /**
  * `/internal/git/*` — the whole surface of this service (plan 06 GIT-2).
@@ -205,6 +206,7 @@ export interface GitRoutesDeps {
   readonly callers?: readonly ServiceName[];
   readonly mirror?: GitMirror;
   readonly importPoll?: ImportBranchPoll;
+  readonly bundleExporter?: GitBundleExporter;
 }
 
 export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
@@ -216,6 +218,40 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
     attempts: 20,
     delay: () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
   };
+
+  app.post(
+    '/internal/git/repositories/:organizationId/:projectId/export-bundle',
+    {
+      preHandler: [app.requireService({ callers: ['control-api'] })],
+      schema: {
+        params: ProjectParams,
+        headers: z
+          .object({
+            'idempotency-key': z
+              .string()
+              .min(8)
+              .max(255)
+              .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+          })
+          .passthrough(),
+      },
+    },
+    async (request, reply) => {
+      if (deps.bundleExporter === undefined) {
+        throw new ApiError('git_export_unavailable', 503, 'Git bundle export is unavailable.');
+      }
+      let bundle: Buffer;
+      try {
+        bundle = await deps.bundleExporter.bundle({
+          ...request.params,
+          operationKey: request.headers['idempotency-key'],
+        });
+      } catch (error) {
+        return refuse(request, error, 'exportBundle');
+      }
+      return await reply.header('content-type', 'application/x-git-bundle').send(bundle);
+    },
+  );
 
   /**
    * Turns a provider failure into an answer, having logged the cause.

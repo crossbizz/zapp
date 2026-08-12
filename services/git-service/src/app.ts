@@ -18,6 +18,7 @@ import { serviceAuth } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import type { GitProvider } from './provider/types.js';
 import type { GitMirror } from './import/mirror.js';
+import type { GitBundleExporter } from './export.js';
 import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
 
@@ -61,6 +62,7 @@ export interface AppDeps {
   readonly now?: () => Date;
   readonly mirror?: GitMirror;
   readonly importPoll?: ImportBranchPoll;
+  readonly bundleExporter?: GitBundleExporter;
 }
 
 /**
@@ -132,6 +134,7 @@ export function buildApp(deps: AppDeps): AppInstance {
       ...(deps.callers === undefined ? {} : { callers: deps.callers }),
       ...(deps.mirror === undefined ? {} : { mirror: deps.mirror }),
       ...(deps.importPoll === undefined ? {} : { importPoll: deps.importPoll }),
+      ...(deps.bundleExporter === undefined ? {} : { bundleExporter: deps.bundleExporter }),
     });
   });
 

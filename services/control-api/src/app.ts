@@ -109,6 +109,11 @@ import { registerAdminRoutes, type AdminRoutesConfig } from './routes/admin.js';
 import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
 import { registerForkRoutes } from './routes/forks.js';
 import { registerFeatureFlagRoutes } from './routes/feature-flags.js';
+import {
+  createUnavailableProjectExportDeps,
+  registerProjectExportRoutes,
+  type ProjectExportDeps,
+} from './routes/export.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerProjectSummaryRoutes } from './routes/project-summaries.js';
@@ -262,6 +267,8 @@ export interface TenantDeps {
   readonly attachmentStorage?: AttachmentStoragePort;
   /** CP-17 durable public deletion request and polling surface. */
   readonly projectDeletions?: ProjectDeletionRequestStore;
+  /** CP-18 tenant projection, verified Git bundle, and artifact storage boundary. */
+  readonly projectExport?: ProjectExportDeps;
 }
 
 export interface LocalAgentDeps {
@@ -697,6 +704,10 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           registerProjectDeletionRoutes(app, {
             store: tenant.projectDeletions ?? createUnavailableProjectDeletionRequestStore(),
+            now,
+          });
+          registerProjectExportRoutes(app, {
+            ...(tenant.projectExport ?? createUnavailableProjectExportDeps()),
             now,
           });
           registerProjectRoutes(app, {
