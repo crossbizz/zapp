@@ -1050,6 +1050,16 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
     },
 
+    runArtifacts: {
+      getForRun(runId, artifactId) {
+        return Promise.resolve(
+          mine(orgId, data.artifacts).find(
+            (row) => row.runId === runId && row.id === artifactId,
+          ),
+        );
+      },
+    },
+
     runs: {
       byProject(projectId, limit): Promise<AgentRun[]> {
         const rows = mine(orgId, data.runs).filter((row) => row.projectId === projectId);

@@ -32,6 +32,7 @@ import type {
 import type { ReleaseForkPort, ReleasePort } from '../../src/routes/releases.js';
 import type { IncidentStore } from '../../src/routes/incidents.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
+import type { RunArtifactReaderPort } from '../../src/routes/run-artifacts.js';
 import type { AdminRoutesConfig } from '../../src/routes/admin.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
 import type { IntegrationPort } from '../../src/routes/integrations.js';
@@ -293,6 +294,7 @@ export interface HarnessOptions {
   readonly usageLedger?: UsageLedgerRepository;
   readonly localAgent?: LocalAgentDeps;
   readonly attachmentStorage?: AttachmentStoragePort;
+  readonly artifactReader?: RunArtifactReaderPort;
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
   readonly billing?: BillingDeps;
@@ -352,6 +354,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             ...(options.attachmentStorage === undefined
               ? {}
               : { attachmentStorage: options.attachmentStorage }),
+            ...(options.artifactReader === undefined
+              ? {}
+              : { runArtifactReader: options.artifactReader }),
             capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
             ...(options.supportSandbox === undefined

@@ -36,6 +36,7 @@ import type { FlexpriceEnv, PreviewEnv, StripeBillingEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
 import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
+import { createS3RunArtifactReader } from './routes/run-artifacts.js';
 import { CreditPackCatalogSchema, type PricingConfig } from './usage/pricing.js';
 import {
   createBudgetThresholdAlerts,
@@ -397,6 +398,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
       ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
+      runArtifactReader: createS3RunArtifactReader(runtime.artifactStorage),
       incidents: createDbIncidentStore(database, runtime.masterKey),
       ...(runtime.gitServiceUrl === undefined
         ? {}

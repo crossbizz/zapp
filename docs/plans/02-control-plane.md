@@ -299,8 +299,15 @@ Execution expansion (2026-08-12):
 **Files:** Modify message/spec/run routes and ports, contracts, OpenAPI/SDK and tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: keyed typed responses to AR-24 cards plus tenant-safe bounded specification, plan, and referenced artifact reads; no assistant-prose parsing.
-- [ ] Commit: `feat(control-api): public conversation-card responses`
+- [x] Binding behavior: keyed typed responses to AR-24 cards plus tenant-safe bounded specification, plan, and referenced artifact reads; no assistant-prose parsing.
+- [x] Commit: `feat(control-api): public conversation-card responses`
+
+Execution expansion (2026-08-12):
+
+- [x] **23a RED — public card response:** require session, tenant, CSRF, and `Idempotency-Key`; accept only `ConversationCardResponseSchema`, signal the exact AR-24 card id/response, and prove stable replay without assistant-prose parsing.
+- [x] **23b GREEN — typed run reads:** add run-scoped specification and implementation-plan reads that first resolve the tenant-owned run and exact referenced identity; return stable 404s for missing/foreign/mismatched rows.
+- [x] **23c RED/GREEN — bounded artifact port:** add a tenant-scoped artifact repository read plus a fail-closed object-content port capped before response serialization; never expose `storage_ref` or service credentials.
+- [x] **23d SDK/verification:** regenerate OpenAPI/SDK deterministically; run focused contracts/control/API-client tests plus touched lint/typecheck/build and diff/boundary checks; record and commit once.
 
 ### Task CP-24 [M2]: Public builder artifact surfaces
 
@@ -407,3 +414,4 @@ Execution expansion (2026-08-12):
 - 2026-08-10 CP-21 done — Added the tenant-scoped public logs/restart/capture/screenshot bridge and generated SDK; capped review re-scoped ambiguous screenshot replay into CP-21-FIX-1, and no provider run was required.
 - 2026-08-10 CP-21-FIX-1 done — Fenced screenshot capture with a durable conditional artifact-store reservation, bounded replay reads, retry-safe completion audits, final round-2 PASS, and no provider call.
 - 2026-08-12 CP-22 done — Added server-derived builder eligibility, keyed retry/skip routes, typed stored-kind approvals, deterministic SDK output, and rollout-compatible budget decisions; no provider call.
+- 2026-08-12 CP-23 done — Added keyed typed card responses, run-scoped specification/plan projections, SHA-verified 64-KiB artifact reads, and deterministic SDK routes; no provider call.

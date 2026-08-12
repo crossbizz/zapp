@@ -4,6 +4,9 @@ import {
   AppTypeSchema,
   AttachmentRefSchema,
   BudgetApprovalReasonSchema,
+  ConversationCardEventPayloadSchema,
+  ConversationCardResponseSchema,
+  ConversationResponseEventPayloadSchema,
   CreditDecimalSchema,
   FixRequestSchema,
   MessageUserPayloadSchema,
@@ -33,7 +36,12 @@ import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
 import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
-import { RunSchema, toRun } from '../tenant/view.js';
+import {
+  RunSchema,
+  SpecificationResponseSchema,
+  toRun,
+  toSpecification,
+} from '../tenant/view.js';
 import {
   BuilderRetryReasonSchema,
   BuilderSkipReasonSchema,
@@ -50,6 +58,10 @@ import {
   type CreditBalanceGate,
 } from '../usage/limits.js';
 import type { IncidentRecord, IncidentStore } from './incidents.js';
+import {
+  MAX_PUBLIC_RUN_ARTIFACT_BYTES,
+  type RunArtifactReaderPort,
+} from './run-artifacts.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -151,6 +163,52 @@ const ResolvedTypedApprovalResponse = z
 const BuilderTaskParams = RunParams.extend({ taskId: idSchema('task') }).strict();
 const BuilderPhaseParams = RunParams.extend({ phaseId: idSchema('phase') }).strict();
 const BuilderControlResponse = z.object({ operationKey: OperationKeySchema }).strict();
+const ConversationResponseAccepted = z.object({ operationKey: OperationKeySchema }).strict();
+const RunSpecificationParams = RunParams.extend({ specificationId: idSchema('spec') }).strict();
+const RunPlanParams = RunParams.extend({ artifactId: idSchema('art') }).strict();
+const PlanReferenceEventSchema = z.object({
+  artifactId: idSchema('art'),
+  artifactType: z.literal('implementation_plan'),
+  phases: z.array(z.object({ phaseId: idSchema('phase'), optional: z.boolean() }).strict()).max(1_000),
+}).passthrough();
+const BoundedCriteriaSchema = z.array(z.string().min(1).max(2_000)).max(1_000);
+const RunPlanResponse = z.object({
+  plan: z.object({
+    artifactId: idSchema('art'),
+    approvalId: idSchema('appr'),
+    approvalKind: z.enum(['plan', 'plan_diff']),
+    phaseCount: z.number().int().nonnegative(),
+    taskCount: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    phases: z.array(z.object({
+      id: idSchema('phase'), sequence: z.number().int().positive(), title: z.string().min(1).max(500),
+      status: z.string().min(1).max(64), acceptanceCriteria: BoundedCriteriaSchema,
+      optional: z.boolean(),
+    }).strict()).max(100),
+    tasks: z.array(z.object({
+      id: idSchema('task'), phaseId: idSchema('phase'), title: z.string().min(1).max(500),
+      status: z.string().min(1).max(64), riskLevel: z.enum(['low', 'medium', 'high']),
+      acceptanceCriteria: BoundedCriteriaSchema, dependencies: z.array(idSchema('task')).max(1_000),
+      assignedAgentRole: z.string().min(1).max(160).nullable(),
+    }).strict()).max(1_000),
+  }).strict(),
+}).strict();
+const RunArtifactResponse = z.object({
+  artifact: z.object({
+    id: idSchema('art'),
+    type: z.string().min(1).max(160),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+    byteSize: z.number().int().nonnegative().max(MAX_PUBLIC_RUN_ARTIFACT_BYTES),
+    contentType: z.string().min(1).max(255),
+    encoding: z.enum(['utf8', 'base64']),
+    content: z.string().max(100_000),
+  }).strict(),
+}).strict();
+const RunArtifactReferenceSchema = z.object({
+  artifactId: idSchema('art'),
+  type: z.string().min(1).max(160),
+  contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+}).passthrough();
 
 const SIGNALS = {
   pause: {
@@ -196,6 +254,7 @@ export interface RunRoutesDeps {
   readonly creditBalance?: CreditBalanceGate;
   readonly modelCompletions?: ModelCompletionRepository;
   readonly incidents?: IncidentStore;
+  readonly artifactReader: RunArtifactReaderPort;
 }
 
 export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
@@ -794,6 +853,236 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
   );
 
   app.post(
+    '/v1/runs/:runId/conversation-responses',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: RunParams,
+        body: ConversationCardResponseSchema,
+        response: { 202: ConversationResponseAccepted },
+      },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'start_run');
+      if (run.mode !== 'autonomous') throw conversationCardsUnsupported();
+      const events = await ctx.db.events.byRun(run.id);
+      const card = events
+        .filter(({ type }) => type === 'conversation.card')
+        .map(({ payloadJson }) => ConversationCardEventPayloadSchema.safeParse(payloadJson))
+        .find((parsed) => parsed.success && parsed.data.card.cardId === request.body.cardId);
+      if (card === undefined || !card.success || card.data.card.kind !== 'question') {
+        throw conversationCardNotFound();
+      }
+      const expectedQuestionIds = card.data.card.questions.map(({ questionId }) => questionId);
+      const suppliedQuestionIds = request.body.answers.map(({ questionId }) => questionId);
+      if (
+        expectedQuestionIds.length !== suppliedQuestionIds.length ||
+        expectedQuestionIds.some((questionId) => !suppliedQuestionIds.includes(questionId))
+      ) throw conversationResponseMismatch();
+      const resolved = events
+        .filter(({ type }) => type === 'conversation.response')
+        .map(({ payloadJson }) => ConversationResponseEventPayloadSchema.safeParse(payloadJson))
+        .some((parsed) => parsed.success && parsed.data.response.cardId === request.body.cardId);
+      if (resolved) throw conversationResponseConflict();
+      const operationKey = operationOf(request);
+      const claim = await ctx.db.runs.claimOperation({
+        runId: run.id,
+        operationKey,
+        allowedStatuses: ['queued', 'running', 'paused', 'waiting_for_approval'],
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.conversation_response_requested',
+            target: { type: 'run', id: row.id },
+            metadata: {
+              operationKey,
+              operationState: 'requested',
+              cardId: request.body.cardId,
+            },
+          });
+        },
+      });
+      if (claim === undefined) throw runNotFound();
+      if (claim.outcome === 'completed') {
+        return await reply.status(202).send({ operationKey });
+      }
+      if (claim.outcome !== 'dispatch') throw invalidRunState();
+      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
+        runId: claim.entity.id,
+        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+        mode: 'autonomous',
+        signal: 'conversation_card_response',
+        cardId: request.body.cardId,
+        response: request.body,
+        operationKey,
+      }));
+      const completed = await ctx.db.runs.completeOperation({
+        runId: claim.entity.id,
+        operationKey,
+        expectedStatus: claim.entity.status,
+        status: claim.entity.status,
+        completedAt: claim.entity.completedAt,
+        audit: async (tx, row) => {
+          await request.audit(tx, {
+            organizationId: ctx.organizationId,
+            action: 'run.conversation_response_signalled',
+            target: { type: 'run', id: row.id },
+            metadata: {
+              operationKey,
+              operationState: 'completed',
+              cardId: request.body.cardId,
+            },
+          });
+        },
+      });
+      if (completed === undefined) throw invalidRunState();
+      return await reply.status(202).send({ operationKey });
+    },
+  );
+
+  app.get(
+    '/v1/runs/:runId/specifications/:specificationId',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: {
+        params: RunSpecificationParams,
+        response: { 200: SpecificationResponseSchema },
+      },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'view_project');
+      const rows = await ctx.db.missionControl.forRun(run.id);
+      const reference = rows.approvals.find((approval) =>
+        approval.type === 'specification' &&
+        referencedArtifactId(approval.requestJson) === request.params.specificationId
+      );
+      if (reference === undefined) throw runArtifactNotFound();
+      const specification = await ctx.db.specifications.getForProject(
+        run.projectId,
+        request.params.specificationId,
+      );
+      if (
+        specification === undefined ||
+        referencedArtifactVersion(reference.requestJson) !== specification.version
+      ) throw runArtifactNotFound();
+      return { specification: toSpecification(specification) };
+    },
+  );
+
+  app.get(
+    '/v1/runs/:runId/plans/:artifactId',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: RunPlanParams, response: { 200: RunPlanResponse } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'view_project');
+      const [events, rows] = await Promise.all([
+        ctx.db.events.byRun(run.id),
+        ctx.db.missionControl.forRun(run.id),
+      ]);
+      const approval = rows.approvals.find((candidate) =>
+        (candidate.type === 'plan' || candidate.type === 'plan_diff') &&
+        referencedArtifactId(candidate.requestJson) === request.params.artifactId
+      );
+      const reference = events.find(({ type, payloadJson }) =>
+        type === 'artifact.created' &&
+        PlanReferenceEventSchema.safeParse(payloadJson).data?.artifactId === request.params.artifactId
+      );
+      if (approval === undefined || reference === undefined) throw runArtifactNotFound();
+      const parsedReference = PlanReferenceEventSchema.parse(reference.payloadJson);
+      const optionalByPhase = new Map(parsedReference.phases.map(({ phaseId, optional }) => [phaseId, optional]));
+      const phases = rows.phases.slice(0, 100).map((phase) => ({
+        id: phase.id,
+        sequence: phase.sequence,
+        title: phase.title,
+        status: phase.status,
+        acceptanceCriteria: BoundedCriteriaSchema.parse(phase.acceptanceCriteriaJson),
+        optional: optionalByPhase.get(phase.id) ?? false,
+      }));
+      const tasks = rows.tasks.slice(0, 1_000).map((task) => ({
+        id: task.id,
+        phaseId: task.phaseId,
+        title: task.title,
+        status: task.status,
+        riskLevel: task.riskLevel,
+        acceptanceCriteria: BoundedCriteriaSchema.parse(task.acceptanceCriteriaJson),
+        dependencies: z.array(idSchema('task')).max(1_000).parse(task.dependenciesJson),
+        assignedAgentRole: task.assignedAgentRole,
+      }));
+      return RunPlanResponse.parse({
+        plan: {
+          artifactId: request.params.artifactId,
+          approvalId: approval.id,
+          approvalKind: approval.type,
+          phaseCount: rows.phases.length,
+          taskCount: rows.tasks.length,
+          truncated: rows.phases.length > phases.length || rows.tasks.length > tasks.length,
+          phases,
+          tasks,
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/v1/runs/:runId/artifacts/:artifactId',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: RunPlanParams, response: { 200: RunArtifactResponse } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const run = await ctx.db.runs.getById(request.params.runId);
+      if (run === undefined) throw runNotFound();
+      authorize(ctx, 'view_project');
+      const [artifact, events] = await Promise.all([
+        ctx.db.runArtifacts.getForRun(run.id, request.params.artifactId),
+        ctx.db.events.byRun(run.id),
+      ]);
+      const reference = events
+        .filter(({ type }) => type === 'artifact.created')
+        .map(({ payloadJson }) => RunArtifactReferenceSchema.safeParse(payloadJson))
+        .find((parsed) => parsed.success && parsed.data.artifactId === request.params.artifactId);
+      if (
+        artifact === undefined || reference === undefined || !reference.success ||
+        artifact.projectId !== run.projectId || artifact.type !== reference.data.type ||
+        artifact.contentHash !== reference.data.contentHash
+      ) throw runArtifactNotFound();
+      const object = await deps.artifactReader.read({
+        key: artifact.storageRef,
+        maxBytes: MAX_PUBLIC_RUN_ARTIFACT_BYTES,
+      });
+      if (object === undefined) throw runArtifactNotFound();
+      if (object === 'too_large') throw runArtifactTooLarge();
+      if (createHash('sha256').update(object.body).digest('hex') !== artifact.contentHash) {
+        throw runArtifactContentInvalid();
+      }
+      const encoded = encodePublicArtifact(object.body, object.contentType);
+      return RunArtifactResponse.parse({
+        artifact: {
+          id: artifact.id,
+          type: artifact.type,
+          contentHash: artifact.contentHash,
+          byteSize: object.body.length,
+          contentType: object.contentType,
+          encoding: encoded.encoding,
+          content: encoded.content,
+        },
+      });
+    },
+  );
+
+  app.post(
     '/v1/runs/:runId/approvals/:approvalId',
     {
       preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
@@ -837,7 +1126,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         request.body.kind === 'plan' ||
         request.body.kind === 'plan_diff'
       ) {
-        artifactId = z.object({ artifactId: idSchema('art') }).passthrough()
+        artifactId = z.object({
+          artifactId: request.body.kind === 'specification'
+            ? z.string().min(1).max(512)
+            : idSchema('art'),
+        }).passthrough()
           .parse(approval.requestJson).artifactId;
       }
       const resolved = await ctx.db.approvals.resolve({
@@ -987,6 +1280,68 @@ function stableId(prefix: 'run' | 'ws' | 'msg' | 'art', operationKey: string): s
 }
 function runNotFound(): ApiError {
   return new ApiError('run_not_found', 404, 'That run does not exist.');
+}
+function referencedArtifactId(value: unknown): string | undefined {
+  return z.object({ artifactId: z.string().min(1).max(512) }).passthrough()
+    .safeParse(value).data?.artifactId;
+}
+function referencedArtifactVersion(value: unknown): number | undefined {
+  return z.object({ artifactVersion: z.number().int().positive() }).passthrough()
+    .safeParse(value).data?.artifactVersion;
+}
+function runArtifactNotFound(): ApiError {
+  return new ApiError('run_artifact_not_found', 404, 'That run artifact does not exist.');
+}
+function runArtifactTooLarge(): ApiError {
+  return new ApiError(
+    'run_artifact_too_large',
+    413,
+    'That run artifact exceeds the public inline-read limit.',
+  );
+}
+function runArtifactContentInvalid(): ApiError {
+  return new ApiError(
+    'run_artifact_content_invalid',
+    502,
+    'That run artifact failed integrity verification.',
+  );
+}
+function encodePublicArtifact(body: Buffer, contentType: string): {
+  readonly encoding: 'utf8' | 'base64';
+  readonly content: string;
+} {
+  if (contentType.startsWith('text/') || contentType === 'application/json' || contentType.endsWith('+json')) {
+    try {
+      return { encoding: 'utf8', content: new TextDecoder('utf-8', { fatal: true }).decode(body) };
+    } catch {
+      // Invalid text is still safe to return as explicitly encoded bytes.
+    }
+  }
+  return { encoding: 'base64', content: body.toString('base64') };
+}
+function conversationCardsUnsupported(): ApiError {
+  return new ApiError(
+    'conversation_cards_unsupported',
+    409,
+    'That run does not accept structured conversation-card responses.',
+  );
+}
+function conversationCardNotFound(): ApiError {
+  return new ApiError('conversation_card_not_found', 404, 'That conversation card does not exist.');
+}
+function conversationResponseMismatch(): ApiError {
+  return new ApiError(
+    'conversation_response_mismatch',
+    422,
+    'The response does not answer the exact questions on that conversation card.',
+  );
+}
+function conversationResponseConflict(): ApiError {
+  return new ApiError(
+    'conversation_response_conflict',
+    409,
+    'That conversation card already has a response.',
+  );
 }
 function projectNotFound(): ApiError {
   return new ApiError('project_not_found', 404, 'That project does not exist.');

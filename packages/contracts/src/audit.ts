@@ -34,6 +34,8 @@ export const AUDIT_ACTIONS = [
   'run.dispatch_failed',
   'run.dispatch_retried',
   'run.message_created',
+  'run.conversation_response_requested',
+  'run.conversation_response_signalled',
   'run.events_ingested',
   'run.pause_requested',
   'run.paused',

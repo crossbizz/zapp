@@ -115,7 +115,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-23 Durable retry/skip builder-control protocol
 - [x] CP-22 Public builder controls + generic approval contract
 - [x] AR-24 Typed interactive conversation-card workflow
-- [ ] CP-23 Public card responses + artifact reads
+- [x] CP-23 Public card responses + artifact reads
 - [ ] WS-16 Workspace file/list/read/direct-edit-commit boundary
 - [ ] GIT-6 Approved template registry source pipeline
 - [ ] GIT-5 Commit comparison + approved template seeding

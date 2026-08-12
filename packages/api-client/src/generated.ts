@@ -3940,7 +3940,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -4002,7 +4002,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -8275,6 +8275,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{runId}/artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    artifactId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artifact: {
+                                byteSize: number;
+                                content: string;
+                                contentHash: string;
+                                contentType: string;
+                                /** @enum {string} */
+                                encoding: "utf8" | "base64";
+                                id: string;
+                                type: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}/cancel": {
         parameters: {
             query?: never;
@@ -8367,6 +8452,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{runId}/conversation-responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        answers: {
+                            answer: string;
+                            questionId: string;
+                        }[];
+                        cardId: string;
+                        /** @enum {string} */
+                        kind: "question_answers";
+                        /** @enum {number} */
+                        version: 1;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}/events": {
         parameters: {
             query?: never;
@@ -8444,7 +8618,7 @@ export interface paths {
                             sequence: number;
                             taskId?: string;
                             /** @enum {string} */
-                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
+                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "conversation.card" | "conversation.response" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
                             /** @enum {string} */
                             visibility: "user" | "internal" | "support";
                         };
@@ -9111,6 +9285,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{runId}/plans/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    artifactId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            plan: {
+                                approvalId: string;
+                                /** @enum {string} */
+                                approvalKind: "plan" | "plan_diff";
+                                artifactId: string;
+                                phaseCount: number;
+                                phases: {
+                                    acceptanceCriteria: string[];
+                                    id: string;
+                                    optional: boolean;
+                                    sequence: number;
+                                    status: string;
+                                    title: string;
+                                }[];
+                                taskCount: number;
+                                tasks: {
+                                    acceptanceCriteria: string[];
+                                    assignedAgentRole: string | null;
+                                    dependencies: string[];
+                                    id: string;
+                                    phaseId: string;
+                                    /** @enum {string} */
+                                    riskLevel: "low" | "medium" | "high";
+                                    status: string;
+                                    title: string;
+                                }[];
+                                truncated: boolean;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}/redirect": {
         parameters: {
             query?: never;
@@ -9295,6 +9572,116 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/specifications/{specificationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                    specificationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            specification: {
+                                /** Format: date-time */
+                                approvedAt: string | null;
+                                approvedBy: string | null;
+                                content: {
+                                    acceptanceCriteria: {
+                                        criticalFlow: boolean;
+                                        id: string;
+                                        /** @enum {string} */
+                                        priority: "critical" | "high" | "medium" | "low";
+                                        text: string;
+                                    }[];
+                                    assumptions: string[];
+                                    dataModel: string[];
+                                    definitionOfDone: string[];
+                                    functionalRequirements: string[];
+                                    goals: string[];
+                                    integrations: string[];
+                                    journeys: string[];
+                                    nonfunctionalRequirements: string[];
+                                    nonGoals: string[];
+                                    pagesRoutes: string[];
+                                    problem: string;
+                                    risks: string[];
+                                    rolesPermissions: string[];
+                                    targetUsers: string[];
+                                };
+                                createdBy: string;
+                                id: string;
+                                organizationId: string;
+                                projectId: string;
+                                /** @enum {string} */
+                                status: "draft" | "approved";
+                                version: number;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;

@@ -129,6 +129,10 @@ import {
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
+import {
+  createUnavailableRunArtifactReader,
+  type RunArtifactReaderPort,
+} from './routes/run-artifacts.js';
 import { registerPublicUsageRoutes } from './routes/usage.js';
 import { registerIncidentRoutes, type IncidentStore } from './routes/incidents.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
@@ -267,6 +271,8 @@ export interface TenantDeps {
   readonly creditBalance?: CreditBalanceGate;
   /** FND-7's tenant-prefixed R2/MinIO object store for public image attachments. */
   readonly attachmentStorage?: AttachmentStoragePort;
+  /** CP-23 bounded content reader for run-referenced immutable artifacts. */
+  readonly runArtifactReader?: RunArtifactReaderPort;
   /** CP-17 durable public deletion request and polling surface. */
   readonly projectDeletions?: ProjectDeletionRequestStore;
   /** CP-18 tenant projection, verified Git bundle, and artifact storage boundary. */
@@ -752,6 +758,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               ? {}
               : { modelCompletions: deps.modelCompletions }),
             ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
+            artifactReader:
+              tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
           });
           registerAttachmentRoutes(app, {
             now,

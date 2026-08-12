@@ -328,6 +328,11 @@ export interface TenantAttachmentRepository {
   create(input: CreateAttachmentInput): Promise<Artifact | undefined>;
 }
 
+export interface TenantRunArtifactRepository {
+  /** One immutable artifact only when it belongs to this tenant and exact run. */
+  getForRun(runId: string, artifactId: string): Promise<Artifact | undefined>;
+}
+
 export interface RecordCapabilityScanInput {
   readonly projectId: string;
   readonly scanId: string;
@@ -746,6 +751,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly environments: TenantEnvironmentRepository;
   readonly contracts: TenantContractRepository;
   readonly attachments: TenantAttachmentRepository;
+  readonly runArtifacts: TenantRunArtifactRepository;
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
@@ -2775,6 +2781,23 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await input.audit(tx, created);
             return created;
           });
+        },
+      },
+
+      runArtifacts: {
+        async getForRun(runId, artifactId) {
+          const [row] = await db
+            .select()
+            .from(artifacts)
+            .where(
+              scoped(
+                artifacts.organizationId,
+                eq(artifacts.runId, runId),
+                eq(artifacts.id, artifactId),
+              ),
+            )
+            .limit(1);
+          return row;
         },
       },
     };

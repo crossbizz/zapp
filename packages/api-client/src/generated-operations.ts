@@ -1772,6 +1772,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/runs/{runId}/artifacts/{artifactId}": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/runs/{runId}/cancel": {
     "post": {
       "security": [
@@ -1785,6 +1806,28 @@ export const PUBLIC_API_OPERATIONS = {
       ],
       "successResponses": {
         "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/runs/{runId}/conversation-responses": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "202": {
           "body": "required",
           "mediaTypes": [
             "application/json"
@@ -1944,6 +1987,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/runs/{runId}/plans/{artifactId}": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/runs/{runId}/redirect": {
     "post": {
       "security": [
@@ -1975,6 +2039,27 @@ export const PUBLIC_API_OPERATIONS = {
         {
           "sessionCookie": [],
           "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/runs/{runId}/specifications/{specificationId}": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
         }
       ],
       "successResponses": {

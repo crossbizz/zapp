@@ -10,6 +10,7 @@ const taskId = 'task_01J8ME7YQZJ2V9Q0X3T5B6K7NC';
 const phaseId = 'phase_01J8ME7YQZJ2V9Q0X3T5B6K7ND';
 const approvalId = 'appr_01J8ME7YQZJ2V9Q0X3T5B6K7NE';
 const artifactId = 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NF';
+const specificationId = 'spec_01J8ME7YQZJ2V9Q0X3T5B6K7NG';
 const operationKey = `op_${'a'.repeat(64)}`;
 
 describe('builder control Temporal signals', () => {
@@ -76,6 +77,7 @@ describe('typed approval Temporal signals', () => {
     ['plan', 'autonomousPlanApproval'],
     ['plan_diff', 'autonomousPlanApproval'],
   ] as const)('projects %s to its artifact approval signal', (approvalKind, signalName) => {
+    const referencedArtifactId = approvalKind === 'specification' ? specificationId : artifactId;
     expect(projectTemporalRunSignal({
       runId,
       workflowId: `autonomous:${runId}`,
@@ -84,7 +86,7 @@ describe('typed approval Temporal signals', () => {
       signal: 'approval_decision',
       approvalId,
       approvalKind,
-      artifactId,
+      artifactId: referencedArtifactId,
       decision: 'approved',
     })).toEqual({
       signalName,
@@ -92,7 +94,7 @@ describe('typed approval Temporal signals', () => {
         runId,
         approvalId,
         approvalKind,
-        artifactId,
+        artifactId: referencedArtifactId,
         decision: 'approved',
         operationKey,
       },

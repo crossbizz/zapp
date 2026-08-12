@@ -155,7 +155,12 @@ export const SignalRunInputSchema = z.union([
   }),
   z.object({
     ...ApprovalDecisionShape,
-    approvalKind: z.enum(['specification', 'plan', 'plan_diff']),
+    approvalKind: z.literal('specification'),
+    artifactId: z.string().min(1).max(512),
+  }).strict(),
+  z.object({
+    ...ApprovalDecisionShape,
+    approvalKind: z.enum(['plan', 'plan_diff']),
     artifactId: idSchema('art'),
   }).strict(),
   z.object({

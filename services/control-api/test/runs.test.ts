@@ -79,6 +79,8 @@ class FakeOrchestratorPort {
     readonly phaseId?: string;
     readonly approvalKind?: string;
     readonly artifactId?: string;
+    readonly cardId?: string;
+    readonly response?: unknown;
   }[] = [];
   failStarts = 0;
   ambiguousStarts = 0;
@@ -109,6 +111,8 @@ class FakeOrchestratorPort {
     readonly phaseId?: string;
     readonly approvalKind?: string;
     readonly artifactId?: string;
+    readonly cardId?: string;
+    readonly response?: unknown;
   }): Promise<{ applied: boolean }> {
     this.signals.push({
       runId: input.runId,
@@ -122,6 +126,8 @@ class FakeOrchestratorPort {
       ...(input.phaseId === undefined ? {} : { phaseId: input.phaseId }),
       ...(input.approvalKind === undefined ? {} : { approvalKind: input.approvalKind }),
       ...(input.artifactId === undefined ? {} : { artifactId: input.artifactId }),
+      ...(input.cardId === undefined ? {} : { cardId: input.cardId }),
+      ...(input.response === undefined ? {} : { response: input.response }),
     });
     return Promise.resolve(this.signalResult as { applied: boolean });
   }
@@ -150,6 +156,19 @@ class FakeModelCompletionRepository implements ModelCompletionRepository {
       ceiling: input.absoluteCeiling,
       version: 2,
     });
+  }
+}
+
+class FakeRunArtifactReader {
+  readonly calls: { readonly key: string; readonly maxBytes: number }[] = [];
+  readonly objects = new Map<string, { readonly body: Buffer; readonly contentType: string }>();
+
+  read(input: { readonly key: string; readonly maxBytes: number }) {
+    this.calls.push(input);
+    const object = this.objects.get(input.key);
+    if (object === undefined) return Promise.resolve(undefined);
+    if (object.body.length > input.maxBytes) return Promise.resolve('too_large' as const);
+    return Promise.resolve(object);
   }
 }
 
@@ -271,12 +290,13 @@ async function wire(
     planLimits?: PlanLimitsConfig;
     creditBalance?: CreditBalanceGate;
     modelCompletions?: FakeModelCompletionRepository;
+    artifactReader?: FakeRunArtifactReader;
   } = {},
 ): Promise<Wired> {
   const data = new InMemoryTenantData();
   const orchestrator = new FakeOrchestratorPort();
   const modelCompletions = options.modelCompletions ?? new FakeModelCompletionRepository();
-  const built = buildHarness({
+  const harnessOptions = {
     tenantDb: data.factory,
     ...(options.organizations === undefined ? {} : { organizations: options.organizations }),
     // CP-9 will add this injected dependency. Keeping the fake in the test
@@ -287,7 +307,9 @@ async function wire(
     ...(options.planLimits === undefined ? {} : { planLimits: options.planLimits }),
     ...(options.creditBalance === undefined ? {} : { creditBalance: options.creditBalance }),
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
-  });
+    ...(options.artifactReader === undefined ? {} : { artifactReader: options.artifactReader }),
+  };
+  const built = buildHarness(harnessOptions);
   harnesses.push(built);
 
   const owner = await signIn(built, OWNER);
@@ -1889,6 +1911,242 @@ describe('workspace passthrough routes', () => {
     expect(wired.orchestrator.signals.at(-1)).toMatchObject({
       runId, signal: 'approval_decision', approvalKind: 'plan', artifactId, decision: 'approved',
     });
+  });
+
+  it('submits one keyed structured conversation-card response and never accepts prose', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-run' },
+      payload: { mode: 'autonomous', prompt: 'Interview me' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const response = {
+      version: 1,
+      kind: 'question_answers',
+      cardId: 'card_interview-0',
+      answers: [{ questionId: 'target_users', answer: 'Independent developers' }],
+    } as const;
+    wired.data.events.push({
+      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
+      sequence: 1, type: 'conversation.card', visibility: 'user', occurredAt: wired.built.now(),
+      phaseId: null, taskId: null, agentId: 'planner', payloadJson: {
+        card: {
+          version: 1, kind: 'question', cardId: response.cardId,
+          questions: [{
+            questionId: 'target_users', prompt: 'Who are the target users?',
+            options: [
+              { label: 'Independent developers', tradeoff: 'Fast individual workflow', recommended: true },
+              { label: 'Enterprise teams', tradeoff: 'More governance', recommended: false },
+            ],
+          }],
+        },
+      },
+    });
+    const headers = { ...wired.as(wired.owner), 'idempotency-key': 'card-response-01' };
+
+    const first = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`, headers, payload: response,
+    });
+    wired.data.events.push({
+      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
+      sequence: 2, type: 'conversation.response', visibility: 'internal', occurredAt: wired.built.now(),
+      phaseId: null, taskId: null, agentId: null, payloadJson: { response },
+    });
+    const replay = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`, headers, payload: response,
+    });
+    const conflictingReplay = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-conflict' },
+      payload: response,
+    });
+    const prose = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-prose' },
+      payload: { content: 'Use independent developers.' },
+    });
+    const unknown = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-unknown' },
+      payload: { ...response, cardId: 'card_unknown' },
+    });
+
+    expect(first.statusCode, first.body).toBe(202);
+    expect(replay.statusCode, replay.body).toBe(202);
+    expect(replay.headers['x-idempotent-replay']).toBe('true');
+    expect(conflictingReplay.statusCode, conflictingReplay.body).toBe(409);
+    expect(prose.statusCode, prose.body).toBe(400);
+    expect(unknown.statusCode, unknown.body).toBe(404);
+    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'conversation_card_response')).toEqual([
+      expect.objectContaining({ runId, cardId: response.cardId, response }),
+    ]);
+  });
+
+  it('reads only the run-referenced specification and bounded typed plan projection', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-artifact-run' },
+      payload: { mode: 'autonomous', prompt: 'Produce a specification and plan' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const specificationId = newId('spec');
+    const planArtifactId = newId('art');
+    const specificationApprovalId = newId('appr');
+    const phaseId = newId('phase');
+    const taskId = newId('task');
+    const specificationContent = {
+      problem: 'Ship the requested app.', targetUsers: ['Developers'], goals: ['Ship'],
+      nonGoals: ['Unrelated work'], journeys: ['Create a project'], pagesRoutes: ['/'],
+      rolesPermissions: ['Owner controls the project'], dataModel: ['Project'], integrations: ['None'],
+      functionalRequirements: ['Render the project'], nonfunctionalRequirements: ['Tenant isolation'],
+      acceptanceCriteria: [{ id: 'AC-1', text: 'The project renders.', priority: 'high', criticalFlow: true }],
+      assumptions: ['A project exists'], risks: ['None'], definitionOfDone: ['AC-1 passes'],
+    };
+    wired.data.specifications.push({
+      id: specificationId, organizationId: wired.organizationId, projectId: project.id,
+      version: 1, status: 'draft', contentJson: specificationContent,
+      createdBy: wired.data.runs.find(({ id }) => id === runId)?.startedBy ?? newId('user'),
+      approvedBy: null, approvedAt: null,
+    });
+    wired.data.approvals.push(
+      {
+        id: specificationApprovalId, organizationId: wired.organizationId, runId, taskId: null,
+        type: 'specification', status: 'pending',
+        requestJson: { artifactId: specificationId, artifactVersion: 1 }, responseJson: null,
+        requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      },
+      {
+        id: newId('appr'), organizationId: wired.organizationId, runId, taskId: null,
+        type: 'plan', status: 'pending', requestJson: { artifactId: planArtifactId, artifactVersion: null },
+        responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      },
+    );
+    wired.data.phases.push({
+      id: phaseId, organizationId: wired.organizationId, runId, sequence: 1,
+      title: 'Build', status: 'queued', acceptanceCriteriaJson: ['AC-1'],
+    });
+    wired.data.tasks.push({
+      id: taskId, organizationId: wired.organizationId, phaseId, parentTaskId: null,
+      title: 'Implement', status: 'queued', riskLevel: 'medium', baseCommitSha: null,
+      outputCommitSha: null, acceptanceCriteriaJson: ['AC-1'], dependenciesJson: [],
+      assignedAgentRole: 'builder',
+    });
+    wired.data.events.push({
+      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
+      sequence: 1, type: 'artifact.created', visibility: 'user', occurredAt: wired.built.now(),
+      phaseId: null, taskId: null, agentId: 'planner', payloadJson: {
+        artifactId: planArtifactId, artifactType: 'implementation_plan',
+        phases: [{ phaseId, optional: true }], phaseCount: 1, taskCount: 1,
+      },
+    });
+
+    const specification = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/specifications/${specificationId}`,
+      headers: wired.as(wired.owner),
+    });
+    const plan = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/plans/${planArtifactId}`,
+      headers: wired.as(wired.owner),
+    });
+    const unreferenced = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/specifications/${newId('spec')}`,
+      headers: wired.as(wired.owner),
+    });
+    const approved = await wired.built.app.inject({
+      method: 'POST', url: `/v1/runs/${runId}/approvals/${specificationApprovalId}`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'approve-specification-card' },
+      payload: { kind: 'specification', decision: 'approved' },
+    });
+
+    expect(specification.statusCode, specification.body).toBe(200);
+    expect(specification.json()).toMatchObject({ specification: { id: specificationId, content: specificationContent } });
+    expect(plan.statusCode, plan.body).toBe(200);
+    expect(plan.json()).toMatchObject({
+      plan: {
+        artifactId: planArtifactId,
+        phases: [{ id: phaseId, optional: true, acceptanceCriteria: ['AC-1'] }],
+        tasks: [{ id: taskId, phaseId, riskLevel: 'medium', acceptanceCriteria: ['AC-1'] }],
+      },
+    });
+    expect(unreferenced.statusCode, unreferenced.body).toBe(404);
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(wired.orchestrator.signals.at(-1)).toMatchObject({
+      signal: 'approval_decision', approvalKind: 'specification', artifactId: specificationId,
+    });
+  });
+
+  it('reads referenced artifact bytes through a hard-capped port without exposing storage keys', async () => {
+    const artifactReader = new FakeRunArtifactReader();
+    const wired = await wire({ artifactReader });
+    const project = await createProject(wired);
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'bounded-artifact-run' },
+      payload: { mode: 'autonomous', prompt: 'Create a referenced plan diff' },
+    });
+    const runId = created.json<{ run: { id: string } }>().run.id;
+    const artifactId = newId('art');
+    const largeArtifactId = newId('art');
+    const storageRef = `${wired.organizationId}/${project.id}/plans/${artifactId}.json`;
+    const largeStorageRef = `${wired.organizationId}/${project.id}/plans/${largeArtifactId}.json`;
+    const body = Buffer.from('{"added":["checkout"]}', 'utf8');
+    artifactReader.objects.set(storageRef, { body, contentType: 'application/json' });
+    artifactReader.objects.set(largeStorageRef, {
+      body: Buffer.alloc(64 * 1024 + 1, 0x61), contentType: 'text/plain',
+    });
+    const addArtifact = (id: string, key: string, content: Buffer) => {
+      wired.data.artifacts.push({
+        id, organizationId: wired.organizationId, projectId: project.id, runId, taskId: null,
+        type: 'plan_diff', storageRef: key,
+        contentHash: createHash('sha256').update(content).digest('hex'),
+        metadataJson: {}, createdAt: wired.built.now(),
+      });
+      wired.data.events.push({
+        id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
+        sequence: wired.data.events.length + 1, type: 'artifact.created', visibility: 'user',
+        occurredAt: wired.built.now(), phaseId: null, taskId: null, agentId: 'planner',
+        payloadJson: { artifactId: id, type: 'plan_diff', contentHash: createHash('sha256').update(content).digest('hex') },
+      });
+    };
+    addArtifact(artifactId, storageRef, body);
+    addArtifact(largeArtifactId, largeStorageRef, Buffer.alloc(64 * 1024 + 1, 0x61));
+
+    const response = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/artifacts/${artifactId}`,
+      headers: wired.as(wired.owner),
+    });
+    const tooLarge = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/artifacts/${largeArtifactId}`,
+      headers: wired.as(wired.owner),
+    });
+    const unreferenced = await wired.built.app.inject({
+      method: 'GET', url: `/v1/runs/${runId}/artifacts/${newId('art')}`,
+      headers: wired.as(wired.owner),
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      artifact: {
+        id: artifactId,
+        type: 'plan_diff',
+        contentHash: createHash('sha256').update(body).digest('hex'),
+        byteSize: body.length,
+        contentType: 'application/json',
+        encoding: 'utf8',
+        content: body.toString('utf8'),
+      },
+    });
+    expect(response.body).not.toContain(storageRef);
+    expect(tooLarge.statusCode, tooLarge.body).toBe(413);
+    expect(unreferenced.statusCode, unreferenced.body).toBe(404);
+    expect(artifactReader.calls).toEqual([
+      { key: storageRef, maxBytes: 64 * 1024 },
+      { key: largeStorageRef, maxBytes: 64 * 1024 },
+    ]);
   });
 
   it('uses the production-deploy permission for deploy approval decisions', async () => {
