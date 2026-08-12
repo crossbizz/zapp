@@ -7,6 +7,7 @@ import {
   type CapabilityScanPort,
 } from '@zapp/project-adapters';
 import { z } from 'zod';
+import type { ProductAnalytics } from '@zapp/config';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
@@ -165,6 +166,7 @@ export interface ProjectRoutesDeps {
   readonly git: GitServicePort;
   /** Starts VF-3's tenant-bound Temporal scan activity. */
   readonly capabilityScan: CapabilityScanPort;
+  readonly productAnalytics?: ProductAnalytics;
 }
 
 export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps): void {
@@ -273,6 +275,19 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
             throw slugTaken();
           }
           continue;
+        }
+
+        if (deps.productAnalytics !== undefined) {
+          await deps.productAnalytics.capture({
+            eventId: `project_created:${created.project.id}`,
+            distinctId: actorOf(request),
+            event: 'project_created',
+            properties: {
+              orgId: ctx.organizationId,
+              projectId: created.project.id,
+              supportLevel: created.project.supportLevel,
+            },
+          });
         }
 
         return await reply.status(201).send({

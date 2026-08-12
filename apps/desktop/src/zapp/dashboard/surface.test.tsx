@@ -151,6 +151,15 @@ describe("MAC-5 cloud dashboard API", () => {
         method: init.method ?? "GET",
         path: `${url.pathname}${url.search}`,
       });
+      if (url.pathname === "/v1/feature-flags") {
+        return response(200, {
+          flags: {
+            "voice-input": false,
+            "mobile-app-tab": true,
+            "visual-editing": false,
+          },
+        });
+      }
       if (init.method === "GET")
         return response(200, { items: [cloudProject], nextCursor: null });
       if (url.pathname === "/v1/projects") {
@@ -164,6 +173,13 @@ describe("MAC-5 cloud dashboard API", () => {
       fetch,
     });
 
+    await expect(api.getFeatureFlags()).resolves.toEqual({
+      flags: {
+        "voice-input": false,
+        "mobile-app-tab": true,
+        "visual-editing": false,
+      },
+    });
     await expect(api.listProjects({ limit: 24 })).resolves.toEqual({
       items: [cloudProject],
       nextCursor: null,
@@ -176,20 +192,21 @@ describe("MAC-5 cloud dashboard API", () => {
       }),
     ).resolves.toEqual({ mode: "cloud", projectId: cloudProject.id });
 
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(4);
     for (const request of requests) {
       expect(request.headers.get("authorization")).toBe("Bearer access-token");
       expect(request.headers.get("x-organization-id")).toBe("org_alpha");
     }
     expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "GET /v1/feature-flags",
       "GET /v1/projects?limit=24",
       "POST /v1/projects",
       `POST /v1/projects/${cloudProject.id}/runs`,
     ]);
-    expect(requests[1]?.headers.get("idempotency-key")).toBe(
+    expect(requests[2]?.headers.get("idempotency-key")).toBe(
       "00000000-0000-4000-8000-000000000001:project",
     );
-    expect(requests[2]?.headers.get("idempotency-key")).toBe(
+    expect(requests[3]?.headers.get("idempotency-key")).toBe(
       "00000000-0000-4000-8000-000000000001:run",
     );
   });

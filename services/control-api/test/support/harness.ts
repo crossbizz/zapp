@@ -1,8 +1,8 @@
-import type { ServiceName } from '@zapp/config';
+import type { FeatureFlagEvaluator, ProductAnalytics, ServiceName } from '@zapp/config';
 import { capabilityScanArtifactStorageRef, type CapabilityScanPort } from '@zapp/project-adapters';
 
 import type { AuthIdentity } from '../../src/auth/port.js';
-import type { UserProfile, UserStore } from '../../src/auth/users.js';
+import type { UserProfile, UserStore, UserUpsertResult } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
 import {
   buildApp,
@@ -176,7 +176,7 @@ export class InMemoryUserStore implements UserStore {
   /** Bumped on every upsert, so a test can tell "linked" from "created". */
   upsertCount = 0;
 
-  upsertFromIdentity(identity: AuthIdentity): Promise<UserProfile['user']> {
+  upsertFromIdentity(identity: AuthIdentity): Promise<UserUpsertResult> {
     this.upsertCount += 1;
     const existing = [...this.users.values()].find((user) => user.email === identity.email);
     const user = {
@@ -186,7 +186,7 @@ export class InMemoryUserStore implements UserStore {
       avatarUrl: identity.avatarUrl ?? null,
     };
     this.users.set(user.id, user);
-    return Promise.resolve(user);
+    return Promise.resolve({ user, created: existing === undefined });
   }
 
   profile(userId: string): Promise<UserProfile | undefined> {
@@ -283,6 +283,8 @@ export interface HarnessOptions {
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
   readonly billing?: BillingDeps;
+  readonly productAnalytics?: ProductAnalytics;
+  readonly featureFlags?: FeatureFlagEvaluator;
 }
 
 /**
@@ -374,6 +376,10 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     ...(options.github === undefined ? {} : { github: options.github }),
     ...(options.githubWebhook === undefined ? {} : { githubWebhook: options.githubWebhook }),
     ...(options.billing === undefined ? {} : { billing: options.billing }),
+    ...(options.productAnalytics === undefined
+      ? {}
+      : { productAnalytics: options.productAnalytics }),
+    ...(options.featureFlags === undefined ? {} : { featureFlags: options.featureFlags }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

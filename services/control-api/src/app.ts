@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto';
 
-import type { ServiceName } from '@zapp/config';
+import {
+  createFeatureFlagEvaluator,
+  type FeatureFlagEvaluator,
+  type ProductAnalytics,
+  type ServiceName,
+} from '@zapp/config';
 import {
   createUnavailableCapabilityScanPort,
   type CapabilityScanPort,
@@ -93,6 +98,7 @@ import {
 import { registerAuditRoutes } from './routes/audit.js';
 import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
 import { registerForkRoutes } from './routes/forks.js';
+import { registerFeatureFlagRoutes } from './routes/feature-flags.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerProjectSummaryRoutes } from './routes/project-summaries.js';
@@ -329,6 +335,10 @@ export interface AppDeps {
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
   readonly billing?: BillingDeps;
+  /** OPS-6's non-blocking, privacy-filtered product event boundary. */
+  readonly productAnalytics?: ProductAnalytics;
+  /** OPS-6's cached organization-scoped flag boundary. */
+  readonly featureFlags?: FeatureFlagEvaluator;
 }
 
 /**
@@ -510,6 +520,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   }
 
   const now = deps.now ?? deps.auth?.now ?? (() => new Date());
+  const featureFlags =
+    deps.featureFlags ?? createFeatureFlagEvaluator({ now: () => now().getTime() });
 
   // Registered here — after `/healthz`, before every other route — so the two
   // route-enrolling plugins see everything that follows and nothing that came
@@ -587,11 +599,15 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           port: auth.port,
           now,
           ...(deps.billing?.trial === undefined ? {} : { trial: deps.billing.trial }),
+          ...(deps.productAnalytics === undefined
+            ? {}
+            : { productAnalytics: deps.productAnalytics }),
         });
         // Registered only with a tenant handle to give them: a projects route
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
+          registerFeatureFlagRoutes(app, featureFlags);
           registerAuditRoutes(app, { organizations: orgs.organizations });
           // Static paths must be enrolled before `/v1/projects/:projectId`, or
           // Fastify treats `summaries` as a malformed project id.
@@ -602,6 +618,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
+            ...(deps.productAnalytics === undefined
+              ? {}
+              : { productAnalytics: deps.productAnalytics }),
           });
           registerGitHubImportRoutes(app, now);
           registerSpecificationRoutes(app, { now });
@@ -686,6 +705,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
             now,
+            ...(deps.productAnalytics === undefined
+              ? {}
+              : { productAnalytics: deps.productAnalytics }),
             ...(tenant.deploymentUsage === undefined
               ? {}
               : { deploymentUsage: tenant.deploymentUsage }),
@@ -718,7 +740,12 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           }
 
           if (secrets !== undefined) {
-            registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
+            registerInternalEventRoutes(app, {
+              tenantDb: tenant.tenantDb,
+              ...(deps.productAnalytics === undefined
+                ? {}
+                : { productAnalytics: deps.productAnalytics }),
+            });
             if (deps.modelCompletions !== undefined) {
               registerInternalModelCompletionRoutes(app, deps.modelCompletions);
             }
@@ -757,6 +784,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         denylist,
         deviceStore,
         now,
+        ...(deps.productAnalytics === undefined
+          ? {}
+          : { productAnalytics: deps.productAnalytics }),
       });
     });
   }

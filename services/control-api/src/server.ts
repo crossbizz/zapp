@@ -16,6 +16,7 @@ import {
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadModelGatewayUrl,
+  loadPostHogEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadPreviewEnv,
@@ -134,6 +135,7 @@ const artifactStorage = loadArtifactStorageEnv();
 const github = loadGitHubAppEnv();
 const githubQueueConfig = loadGitHubWebhookQueueEnv();
 const githubImportQueueConfig = loadGitHubImportQueueEnv();
+const posthog = loadPostHogEnv();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -197,6 +199,7 @@ const app = composeApp({
   temporal,
   artifactStorage,
   github,
+  posthog,
 });
 
 app.addHook('onClose', async () => {

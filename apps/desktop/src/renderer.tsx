@@ -1,5 +1,6 @@
 import { StrictMode, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import { clientFeatureFlagDefaults } from "@zapp/config";
 import { router } from "./router";
 import { RouterProvider } from "@tanstack/react-router";
 import { PostHogProvider } from "posthog-js/react";
@@ -133,6 +134,7 @@ const posthogClient = posthog.init(
       return event;
     },
     persistence: "localStorage",
+    bootstrap: { featureFlags: clientFeatureFlagDefaults() },
   },
 );
 

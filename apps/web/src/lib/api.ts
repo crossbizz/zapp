@@ -104,6 +104,11 @@ export function createControlPlaneClient(organizationId?: string) {
         method: 'GET',
         ...(organizationHeaders === undefined ? {} : { headers: headers() }),
       }),
+    getFeatureFlags: () =>
+      client.request('/v1/feature-flags', {
+        method: 'GET',
+        headers: headers(),
+      }),
     listProjects: (query: ListProjectsQuery = {}, signal?: AbortSignal) =>
       client.request('/v1/projects', {
         method: 'GET',
@@ -288,6 +293,9 @@ export function createControlPlaneClient(organizationId?: string) {
 }
 
 export type MeResponse = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['getMe']>>;
+export type FeatureFlagsResponse = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['getFeatureFlags']>
+>;
 export type BuilderRun = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>
 >['items'][number];

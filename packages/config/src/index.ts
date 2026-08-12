@@ -1,4 +1,28 @@
 export { defineEnv } from './env.js';
+export {
+  ANALYTICS_EVENT_NAMES,
+  AnalyticsCaptureInputSchema,
+  AnalyticsEventNameSchema,
+  POSTHOG_DASHBOARDS,
+  createProductAnalytics,
+  type AnalyticsCaptureInput,
+  type AnalyticsEventName,
+  type ProductAnalytics,
+  type ProductAnalyticsProvider,
+} from './analytics.js';
+export {
+  FEATURE_FLAGS,
+  ClientFeatureFlagsResponseSchema,
+  FeatureFlagNameSchema,
+  clientFeatureFlagDefaults,
+  createFeatureFlagEvaluator,
+  staleFeatureFlags,
+  type FeatureFlagEvaluationContext,
+  type FeatureFlagEvaluator,
+  type FeatureFlagName,
+  type FeatureFlagProvider,
+  type ClientFeatureFlagsResponse,
+} from './flags.js';
 
 // Plan 02 CP-8 — the credential one zapp service presents to another. Here
 // rather than in the control plane because signing and verification have to

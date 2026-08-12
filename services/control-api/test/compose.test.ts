@@ -148,6 +148,7 @@ const ROUTES: readonly (readonly [string, string])[] = [
   // CP-4's tenant surface — the six that were missing from the running service.
   ['POST', '/v1/projects'],
   ['GET', '/v1/projects'],
+  ['GET', '/v1/feature-flags'],
   ['GET', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],

@@ -23,6 +23,7 @@ import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
 import type { RepairActivities } from './activities/repair.js';
+import type { FeatureFlagActivities } from './activities/feature-flags.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
   fixWorkflow,
@@ -54,6 +55,7 @@ export type ProductionRunActivities =
   & RunActivities
   & TaskWorkflowActivities
   & AutonomousActivities
+  & FeatureFlagActivities
   & RedirectActivities
   & BuildModeActivities
   & FixModeActivities;
@@ -136,6 +138,9 @@ export function createProductionRunWorker(
     readonly database: Database;
   },
 ): Promise<Worker> {
+  if (typeof options.activities.evaluateFeatureFlag !== 'function') {
+    throw new TypeError('Production run workers require feature-flag activities');
+  }
   return createRunWorker({
     connection: options.connection,
     taskQueue: TaskQueueSchema.parse(options.taskQueue),

@@ -1,6 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import { ModelIdentifierSchema } from '@zapp/contracts';
 import { z } from 'zod';
+import type { ProductAnalytics } from '@zapp/config';
 
 import type { AppInstance } from '../app.js';
 import type { AuthConfig } from '../auth/config.js';
@@ -107,6 +108,7 @@ export interface AuthRoutesDeps {
   readonly denylist: TokenDenylist;
   readonly deviceStore: DeviceStore;
   readonly now: () => Date;
+  readonly productAnalytics?: ProductAnalytics;
 }
 
 /** Fastify accumulates repeated `set-cookie` headers into one array. */
@@ -246,7 +248,15 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
         throw new ApiError('authentication_failed', 401, 'Sign-in could not be completed.');
       });
 
-      const user = await users.upsertFromIdentity(identity, now());
+      const { user, created } = await users.upsertFromIdentity(identity, now());
+      if (created && deps.productAnalytics !== undefined) {
+        await deps.productAnalytics.capture({
+          eventId: `signup:${user.id}`,
+          distinctId: user.id,
+          event: 'signup',
+          properties: {},
+        });
+      }
       const tokens = await signer.mintSession({ userId: user.id, now: now() });
 
       noStore(reply);

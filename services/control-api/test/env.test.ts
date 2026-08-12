@@ -16,6 +16,7 @@ import {
   loadMasterKey,
   loadPreviewEnv,
   loadModelGatewayUrl,
+  loadPostHogEnv,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
@@ -101,6 +102,7 @@ describe('the shipped .env.example', () => {
     expect(() => loadGitHubAppEnv(environment)).not.toThrow();
     expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
+    expect(() => loadPostHogEnv(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
     expect(loadStripeBillingEnv(environment)).toBeUndefined();
   });
@@ -174,6 +176,8 @@ describe('the shipped .env.example', () => {
       'ARTIFACT_BUCKET',
       'ARTIFACT_KEY',
       'ARTIFACT_SECRET',
+      'POSTHOG_KEY',
+      'POSTHOG_HOST',
     ]) {
       expect(template, name).toHaveProperty(name);
     }
@@ -191,6 +195,17 @@ describe('the shipped .env.example', () => {
     ]) {
       expect(template, name).toHaveProperty(name, '');
     }
+  });
+});
+
+describe('PostHog configuration', () => {
+  it('loads the server project key and normalizes the host', () => {
+    expect(
+      loadPostHogEnv({
+        POSTHOG_KEY: 'phc_test-project-key',
+        POSTHOG_HOST: 'https://us.i.posthog.com/',
+      }),
+    ).toEqual({ projectKey: 'phc_test-project-key', host: 'https://us.i.posthog.com' });
   });
 });
 

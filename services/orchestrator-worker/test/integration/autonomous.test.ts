@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
 import type { ApprovalActivities } from '../../src/activities/approvals.js';
+import type { FeatureFlagActivities } from '../../src/activities/feature-flags.js';
 import { createTemporalOrchestrator, TASK_QUEUES } from '../../src/worker.js';
 import {
   autonomousCancelSignal,
@@ -77,6 +78,10 @@ const PLAN = {
     },
   ],
   budget: { credits: 25, wallClockHours: 1 },
+};
+
+const allowAllFeatureFlags: FeatureFlagActivities = {
+  evaluateFeatureFlag: () => Promise.resolve({ enabled: true }),
 };
 
 describe('AR-17 autonomous workflow', () => {
@@ -206,7 +211,7 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...autonomousActivities },
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
     });
     workers.push(worker);
     workerRuns.push(worker.run());
@@ -439,7 +444,7 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...autonomousActivities },
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
     });
     workers.push(worker);
     workerRuns.push(worker.run());
@@ -554,7 +559,7 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...autonomousActivities },
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
     });
     workers.push(forgedWorker);
     workerRuns.push(forgedWorker.run());
@@ -639,6 +644,7 @@ describe('AR-17 autonomous workflow', () => {
       },
       transitionRunStatus: () => Promise.resolve(),
       storeAssistantContent: () => Promise.reject(new Error('No assistant content expected')),
+      ...allowAllFeatureFlags,
     } satisfies Partial<AutonomousActivities> & Partial<EventActivities>;
     const cancelWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -680,7 +686,7 @@ describe('AR-17 autonomous workflow', () => {
     expect(outcome).toEqual({ status: 'cancelled', checkpointRef: `run:${runId}:cancelled` });
   }, 10_000);
 
-  it('survives a worker restart between task-scoped phases and creates final evidence once', async () => {
+  it('survives a worker restart, pauses the next phase after a flag flip, and creates final evidence once', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar17-phases-${Date.now().toString(36)}`;
     const runId = newId('run');
@@ -713,6 +719,10 @@ describe('AR-17 autonomous workflow', () => {
     let resolvePhaseTwoEntered: (() => void) | undefined;
     const phaseTwoEntered = new Promise<void>((resolve) => {
       resolvePhaseTwoEntered = resolve;
+    });
+    let resolveFlagPause: (() => void) | undefined;
+    const flagPaused = new Promise<void>((resolve) => {
+      resolveFlagPause = resolve;
     });
     let releasePhaseTwoTransition: (() => void) | undefined;
     const phaseTwoTransitionReleased = new Promise<void>((resolve) => {
@@ -761,6 +771,17 @@ describe('AR-17 autonomous workflow', () => {
       ['task_01J00000000000000000000002', '2'.repeat(40)],
       ['task_01J00000000000000000000003', '3'.repeat(40)],
     ]);
+    let autonomousFlagEnabled = true;
+    const flagChecks: string[] = [];
+    const featureFlagActivities: FeatureFlagActivities = {
+      evaluateFeatureFlag(input) {
+        flagChecks.push(input.flag);
+        timeline.push(`flag:${input.flag}`);
+        return Promise.resolve({
+          enabled: input.flag === 'autonomous-mode' ? autonomousFlagEnabled : true,
+        });
+      },
+    };
 
     const autonomousActivities = {
       conductInterview() {
@@ -826,6 +847,7 @@ describe('AR-17 autonomous workflow', () => {
       },
       checkpointPhase(input) {
         timeline.push(`checkpoint:${input.phaseId}:${input.commitSha}`);
+        if (input.phaseId.endsWith('1')) autonomousFlagEnabled = false;
         return Promise.resolve({ checkpointRef: `checkpoint:${input.phaseId}` });
       },
       createFinalEvidence(input) {
@@ -851,6 +873,12 @@ describe('AR-17 autonomous workflow', () => {
           }
           if (event.type === 'approval.requested' && event.payload['gate'] === 'plan') {
             resolvePlanRequest?.();
+          }
+          if (
+            event.type === 'run.paused' &&
+            event.payload['reason'] === 'feature_flag_disabled'
+          ) {
+            resolveFlagPause?.();
           }
         }
         if (
@@ -938,7 +966,12 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...taskActivities, ...autonomousActivities },
+      activities: {
+        ...eventActivities,
+        ...taskActivities,
+        ...autonomousActivities,
+        ...featureFlagActivities,
+      },
     });
     const verificationWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -1056,10 +1089,23 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...taskActivities, ...autonomousActivities },
+      activities: {
+        ...eventActivities,
+        ...taskActivities,
+        ...autonomousActivities,
+        ...featureFlagActivities,
+      },
     });
     workers.push(restartedWorker);
     workerRuns.push(restartedWorker.run());
+
+    await flagPaused;
+    expect(timeline).not.toContain('session:task_01J00000000000000000000003');
+    autonomousFlagEnabled = true;
+    await handle.signal(autonomousResumeSignal, {
+      runId,
+      operationKey: `op_${'9'.repeat(64)}`,
+    });
 
     await expect(handle.result()).resolves.toEqual({
       status: 'completed',
@@ -1114,6 +1160,8 @@ describe('AR-17 autonomous workflow', () => {
     ]);
     expect(timeline.filter((entry) => entry === 'interview')).toHaveLength(1);
     expect(timeline.filter((entry) => entry === 'plan:produced')).toHaveLength(1);
+    expect(timeline.indexOf('flag:autonomous-mode')).toBeLessThan(timeline.indexOf('interview'));
+    expect(flagChecks.filter((flag) => flag === 'autonomous-mode')).toHaveLength(4);
     expect(finalEvidenceInputs).toEqual([
       expect.objectContaining({
         commitSha: phaseTwoCommit,

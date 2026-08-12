@@ -4,6 +4,9 @@ import type { CloudDashboardApi } from "./api";
 import { dashboardContracts } from "./contracts";
 
 export function registerCloudDashboardHandlers(api: CloudDashboardApi): void {
+  createTypedHandler(dashboardContracts.getFeatureFlags, async () =>
+    api.getFeatureFlags(),
+  );
   createTypedHandler(dashboardContracts.listProjects, async (_event, input) =>
     api.listProjects(input),
   );

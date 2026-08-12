@@ -1,6 +1,7 @@
 import { PageSchema, idSchema } from '@zapp/contracts';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { ProductAnalytics } from '@zapp/config';
 
 import type { AppInstance } from '../app.js';
 import { AuthPortError, type AuthPort } from '../auth/port.js';
@@ -123,6 +124,7 @@ export interface OrgRoutesDeps {
   readonly port: AuthPort;
   readonly now: () => Date;
   readonly trial?: TrialGrantPort;
+  readonly productAnalytics?: ProductAnalytics;
 }
 
 /** Nothing carrying a credential — an invite token — may be cached. */
@@ -286,6 +288,15 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
             'trial credit delivery deferred',
           );
         }
+      }
+
+      if (deps.productAnalytics !== undefined) {
+        await deps.productAnalytics.capture({
+          eventId: `org_created:${created.organization.id}`,
+          distinctId: user.id,
+          event: 'org_created',
+          properties: { orgId: created.organization.id },
+        });
       }
 
       return await reply

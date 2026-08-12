@@ -41,6 +41,25 @@ export function loadEnv(source: unknown = process.env): ServiceEnv {
   return defineEnv(EnvSchema, source);
 }
 
+const PostHogEnvSchema = z.object({
+  POSTHOG_KEY: z.string().trim().min(1),
+  POSTHOG_HOST: z.string().url(),
+});
+
+export interface PostHogEnv {
+  readonly projectKey: string;
+  readonly host: string;
+}
+
+/** Server-side product analytics and organization-scoped feature evaluation. */
+export function loadPostHogEnv(source: unknown = process.env): PostHogEnv {
+  const env = defineEnv(PostHogEnvSchema, source);
+  return {
+    projectKey: env.POSTHOG_KEY,
+    host: env.POSTHOG_HOST.replace(/\/+$/u, ''),
+  };
+}
+
 /**
  * Shared state, and therefore deliberately outside {@link EnvSchema}: it has no
  * default and never will. Redis holds the token denylist, the device grants,

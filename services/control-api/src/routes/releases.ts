@@ -1,3 +1,4 @@
+import type { ProductAnalytics } from '@zapp/config';
 import { CommitShaSchema, idSchema, RunModeSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
@@ -159,6 +160,7 @@ export interface ReleaseRoutesDeps {
   readonly port: ReleasePort;
   readonly permissionContextFor: (organizationId: string) => Promise<PermissionContext>;
   readonly deploymentUsage?: DeploymentUsagePort;
+  readonly productAnalytics?: ProductAnalytics;
   readonly now: () => Date;
 }
 
@@ -233,6 +235,14 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
           },
         }),
       expected,
+    );
+    await captureReleaseLifecycle(
+      deps,
+      ctx,
+      actorOf(request),
+      'release_created',
+      row.id,
+      row.projectId,
     );
     return await reply.status(201).send({ release: releaseView(row) });
   });
@@ -355,6 +365,14 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       DeploymentResultSchema,
     );
     await meterDeployment(deps, ctx, row, result);
+    await captureReleaseLifecycle(
+      deps,
+      ctx,
+      actorOf(request),
+      'rollback_executed',
+      result.deploymentId,
+      row.projectId,
+    );
     return result;
   });
 
@@ -367,6 +385,33 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
     authorize(ctx, 'view_project');
     return { evidence: await evidenceFor(deps.port, row) };
   });
+}
+
+async function captureReleaseLifecycle(
+  deps: ReleaseRoutesDeps,
+  ctx: ReturnType<typeof tenantOf>,
+  distinctId: string,
+  event: 'release_created' | 'rollback_executed',
+  resourceId: string,
+  projectId: string,
+): Promise<void> {
+  if (deps.productAnalytics === undefined) return;
+  try {
+    const project = await ctx.db.projects.getById(projectId);
+    if (project === undefined) return;
+    await deps.productAnalytics.capture({
+      eventId: `${event}:${resourceId}`,
+      distinctId,
+      event,
+      properties: {
+        orgId: ctx.organizationId,
+        projectId,
+        supportLevel: project.supportLevel,
+      },
+    });
+  } catch {
+    // Analytics is observational and can never change a release mutation.
+  }
 }
 
 async function meterDeployment(

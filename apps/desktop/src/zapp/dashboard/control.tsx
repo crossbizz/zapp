@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
+import posthog from "posthog-js";
 
 import { appClient, type ListedApp } from "@/ipc/types/app";
 import { platformAuthClient, platformAuthEventClient } from "../auth/contracts";
@@ -35,13 +36,32 @@ export function DesktopProjectsDashboard(props: {
 
   useEffect(() => {
     let active = true;
-    const unsubscribe = platformAuthEventClient.onStateChanged((state) => {
+    const applyAuthState = async (state: PlatformAuthState): Promise<void> => {
+      if (state.status === "authenticated") {
+        const evaluated = await dashboardClient.getFeatureFlags({});
+        if (!active) return;
+        posthog.featureFlags.overrideFeatureFlags({ flags: evaluated.flags });
+        posthog.group("organization", state.selectedOrganizationId);
+      }
       if (active) setAuth(state);
+    };
+    const unsubscribe = platformAuthEventClient.onStateChanged((state) => {
+      if (!active) return;
+      setLoading(true);
+      setLoadFailed(false);
+      void applyAuthState(state)
+        .catch(() => {
+          if (active) setLoadFailed(true);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
     });
     void Promise.all([platformAuthClient.snapshot({}), appClient.listApps()])
-      .then(([state, local]) => {
+      .then(async ([state, local]) => {
         if (!active) return;
-        setAuth(state);
+        await applyAuthState(state);
+        if (!active) return;
         setLocalProjects(local.apps.map(localProject));
       })
       .catch(() => {

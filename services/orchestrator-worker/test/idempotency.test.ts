@@ -227,4 +227,19 @@ describe('AR-9 activity idempotency middleware', () => {
     } satisfies Partial<ApplicationFailure>);
     expect(mutation).not.toHaveBeenCalled();
   });
+
+  it('passes the explicit read-only feature-flag activity without a mutation key', async () => {
+    const store = new MemoryActivityIdempotencyStore();
+    const evaluation = vi.fn(() => Promise.resolve({ enabled: true }));
+
+    await expect(
+      execute(store, {
+        activityType: 'evaluateFeatureFlag',
+        args: [{ organizationId: 'org_01J00000000000000000000000' }],
+        next: evaluation,
+      }),
+    ).resolves.toEqual({ enabled: true });
+    expect(evaluation).toHaveBeenCalledOnce();
+    expect(store.rows.size).toBe(0);
+  });
 });

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ApprovalActivities } from '../../src/activities/approvals.js';
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
+import type { FeatureFlagActivities } from '../../src/activities/feature-flags.js';
 import type { TaskWorkflowActivities } from '../../src/activities/merge.js';
 import {
   autonomousCreditBalanceExhaustedSignal,
@@ -31,6 +32,10 @@ const TASK_A_ARTIFACT_ID = 'art_01J00000000000000000000004';
 const RELEASE_EVIDENCE_ID = 'art_01J00000000000000000000005';
 const RELEASE_ID = 'rel_01J00000000000000000000001';
 const VERIFIED_COMMIT = 'f'.repeat(40);
+
+const allowAllFeatureFlags: FeatureFlagActivities = {
+  evaluateFeatureFlag: () => Promise.resolve({ enabled: true }),
+};
 
 const task = (id: string, title: string, dependsOn: readonly string[]) => ({
   id,
@@ -391,6 +396,7 @@ describe('AR-20 redirect + plan change', () => {
         ...approvalActivities,
         ...redirectActivities,
         ...taskActivities,
+        ...allowAllFeatureFlags,
       },
     });
     const verificationWorker = await Worker.create({

@@ -111,6 +111,7 @@ describe('AR-9 production Postgres worker composition', () => {
         estimateRunCost: taskActivityNotExpected,
         requestBudgetIncrease: taskActivityNotExpected,
         checkpointBudgetStop: taskActivityNotExpected,
+        evaluateFeatureFlag: () => Promise.resolve({ enabled: true }),
       } as unknown as ProductionRunActivities;
       const worker = await createProductionRunWorker({
         connection: environment.nativeConnection,

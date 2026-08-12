@@ -15,6 +15,7 @@ import { z } from 'zod';
 
 import type { EventActivities, PendingAgentEvent } from '../activities/events.js';
 import type { ApprovalActivities } from '../activities/approvals.js';
+import type { FeatureFlagActivities } from '../activities/feature-flags.js';
 import {
   BudgetApprovalResolutionSchema,
   budgetApprovalResolvedSignal,
@@ -496,6 +497,10 @@ const approvalActivities = proxyActivities<ApprovalActivities>({
   startToCloseTimeout: '2 minutes',
   retry: ACTIVITY_RETRY_POLICY,
 });
+const featureFlagActivities = proxyActivities<FeatureFlagActivities>({
+  startToCloseTimeout: '30 seconds',
+  retry: ACTIVITY_RETRY_POLICY,
+});
 
 function activityKey(input: AutonomousWorkflowInput, step: string): string {
   return `${input.runId}:autonomous:${step}`;
@@ -674,6 +679,66 @@ async function honorControlBoundary(
     }),
   );
   return await honorControlBoundary(input, control, boundary);
+}
+
+async function honorRiskFlagBoundary(
+  input: AutonomousWorkflowInput,
+  control: AutonomousControlState,
+  flag: 'autonomous-mode' | 'browser-agent-enabled' | 'auto-repair-enabled',
+  boundary: string,
+): Promise<AutonomousWorkflowResult | undefined> {
+  let paused = false;
+  for (;;) {
+    const result = await featureFlagActivities.evaluateFeatureFlag({
+      organizationId: input.organizationId,
+      distinctId: input.runId,
+      flag,
+    });
+    if (result.enabled) {
+      if (paused) {
+        control.pauseRequested = false;
+        control.resumeRequested = false;
+        await eventActivities.transitionRunStatus({
+          runId: input.runId,
+          status: 'running',
+          idempotencyKey: activityKey(input, `status-flag-resumed:${boundary}:${flag}`),
+        });
+        await emit(
+          input,
+          event(input, 'run.resumed', `flag-resumed:${boundary}:${flag}`, {
+            checkpointRef: `run:${input.runId}:${boundary}`,
+            reason: 'feature_flag_enabled',
+            flag,
+          }),
+        );
+      }
+      return undefined;
+    }
+
+    paused = true;
+    control.pauseRequested = true;
+    control.resumeRequested = false;
+    await eventActivities.transitionRunStatus({
+      runId: input.runId,
+      status: 'paused',
+      idempotencyKey: activityKey(input, `status-flag-paused:${boundary}:${flag}`),
+    });
+    await emit(
+      input,
+      event(input, 'run.paused', `flag-paused:${boundary}:${flag}`, {
+        checkpointRef: `run:${input.runId}:${boundary}`,
+        reason: 'feature_flag_disabled',
+        flag,
+      }),
+    );
+    await condition(() => control.resumeRequested || control.cancelRequested);
+    if (control.cancelRequested) {
+      return await honorControlBoundary(input, control, `${boundary}:flag-cancel`);
+    }
+    // A resume is permission to re-check, never permission to bypass the
+    // provider decision. The loop pauses again if the kill switch stays off.
+    control.resumeRequested = false;
+  }
 }
 
 function matchingResolution(
@@ -1204,6 +1269,10 @@ async function executePhase(
   if (phaseTasks.length === 0) {
     throw ApplicationFailure.nonRetryable('Autonomous phase has no tasks', 'autonomous_phase_empty');
   }
+  for (const flag of ['autonomous-mode', 'browser-agent-enabled'] as const) {
+    const gated = await honorRiskFlagBoundary(input, control, flag, `${phase.id}:start`);
+    if (gated !== undefined) return gated;
+  }
   await emit(
     input,
     event(input, 'phase.created', `${phase.id}:${continuation.planArtifactId}:created`, {
@@ -1363,6 +1432,13 @@ async function executePhase(
     );
     const preRepairControl = await honorControlBoundary(input, control, `${phase.id}:repair`);
     if (preRepairControl !== undefined) return preRepairControl;
+    const repairFlag = await honorRiskFlagBoundary(
+      input,
+      control,
+      'auto-repair-enabled',
+      `${phase.id}:repair`,
+    );
+    if (repairFlag !== undefined) return repairFlag;
     const repair = RepairPhaseResultSchema.parse(
       await autonomousActivities.repairPhase(
         RepairPhaseInputSchema.parse({
@@ -1603,6 +1679,13 @@ export async function autonomousWorkflow(inputValue: unknown): Promise<Autonomou
     if (input.continuation !== undefined) {
       return await executePhase(input, input.continuation, planResolutions);
     }
+    const initialRollout = await honorRiskFlagBoundary(
+      input,
+      control,
+      'autonomous-mode',
+      'initial',
+    );
+    if (initialRollout !== undefined) return initialRollout;
     const preparation = await prepareExecution(
       input,
       specificationResolutions,

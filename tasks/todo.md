@@ -236,7 +236,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-4 Stripe platform billing
 - [x] OPS-4-FIX-1 Stripe fixture secret-scan repair
 - [x] OPS-5 Top-ups + trial
-- [ ] OPS-6 PostHog analytics + feature flags + dashboards
+- [x] OPS-6 PostHog analytics + feature flags + dashboards
 - [ ] OPS-7 Notification service
 - [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
 - [ ] OPS-10 Managed-app observability templates

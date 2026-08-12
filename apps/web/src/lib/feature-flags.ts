@@ -2,68 +2,42 @@
 
 import posthog from 'posthog-js';
 
+import type { FeatureFlagsResponse } from './api';
+
 export interface HomeFeatureFlags {
   readonly mobileApp: boolean;
   readonly voiceInput: boolean;
 }
 
-interface FeatureFlagClient {
-  group?(type: string, key: string): void;
-  isFeatureEnabled(flag: string): boolean | undefined;
-  onFeatureFlags?(callback: () => void): (() => void) | undefined;
+export function homeFeatureFlags(response: FeatureFlagsResponse): HomeFeatureFlags {
+  return {
+    mobileApp: response.flags['mobile-app-tab'],
+    voiceInput: response.flags['voice-input'],
+  };
 }
 
-interface PostHogWindow extends Window {
-  readonly posthog?: FeatureFlagClient;
-}
-
-const defaultFlags: HomeFeatureFlags = { mobileApp: false, voiceInput: false };
-let initialized = false;
-
-function configuredClient(): FeatureFlagClient | undefined {
-  const injected = (window as PostHogWindow).posthog;
-  if (injected !== undefined) return injected;
-
+/**
+ * The public API is authoritative. Its evaluated values bootstrap the browser
+ * SDK so the initial UI cannot flash from catalog defaults to provider state.
+ */
+export function bootstrapHomeFeatureFlags(
+  organizationId: string,
+  response: FeatureFlagsResponse,
+): void {
   const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-  if (key === undefined || key.length === 0) return undefined;
-
-  if (!initialized) {
+  if (key === undefined || key.length === 0) return;
+  if (!posthog.__loaded) {
     const configuredHost = process.env.NEXT_PUBLIC_POSTHOG_HOST;
     posthog.init(key, {
-      api_host: configuredHost === undefined || configuredHost.length === 0
-        ? 'https://us.i.posthog.com'
-        : configuredHost,
+      api_host:
+        configuredHost === undefined || configuredHost.length === 0
+          ? 'https://us.i.posthog.com'
+          : configuredHost,
+      bootstrap: { featureFlags: response.flags },
       capture_pageleave: false,
       capture_pageview: false,
       person_profiles: 'identified_only',
     });
-    initialized = true;
   }
-  return posthog;
-}
-
-function readFlags(client: FeatureFlagClient): HomeFeatureFlags {
-  return {
-    mobileApp: client.isFeatureEnabled('mobile-app-tab') === true,
-    voiceInput: client.isFeatureEnabled('voice-input') === true,
-  };
-}
-
-export function subscribeToHomeFeatureFlags(
-  organizationId: string,
-  onChange: (flags: HomeFeatureFlags) => void,
-): () => void {
-  const client = configuredClient();
-  if (client === undefined) {
-    onChange(defaultFlags);
-    return () => undefined;
-  }
-
-  client.group?.('organization', organizationId);
-  const refresh = (): void => {
-    onChange(readFlags(client));
-  };
-  refresh();
-  const unsubscribe = client.onFeatureFlags?.(refresh);
-  return typeof unsubscribe === 'function' ? unsubscribe : () => undefined;
+  posthog.group('organization', organizationId);
 }

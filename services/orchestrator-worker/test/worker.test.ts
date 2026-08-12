@@ -94,17 +94,31 @@ describe('AR-9 worker queue and activity policy', () => {
   it('composes the concrete Postgres repository into a production worker', async () => {
     const created = { run: vi.fn() };
     const create = vi.spyOn(Worker, 'create').mockResolvedValueOnce(created as never);
+    const evaluateFeatureFlag = vi.fn(() => Promise.resolve({ enabled: true }));
+    const activities = { evaluateFeatureFlag } as unknown as ProductionRunActivities;
 
     await expect(
+      createProductionRunWorker({
+        connection: {} as never,
+        taskQueue: TASK_QUEUES.agentRuns,
+        activities,
+        database: {} as never,
+      }),
+    ).resolves.toBe(created);
+    expect(create.mock.calls[0]?.[0].interceptors?.activity).toHaveLength(1);
+    expect(create.mock.calls[0]?.[0].activities).toBe(activities);
+    create.mockRestore();
+  });
+
+  it('refuses a production worker without the feature-flag runtime', () => {
+    expect(() =>
       createProductionRunWorker({
         connection: {} as never,
         taskQueue: TASK_QUEUES.agentRuns,
         activities: {} as ProductionRunActivities,
         database: {} as never,
       }),
-    ).resolves.toBe(created);
-    expect(create.mock.calls[0]?.[0].interceptors?.activity).toHaveLength(1);
-    create.mockRestore();
+    ).toThrow('feature-flag activities');
   });
 
   it('registers the capability scan activity on the production verification queue', async () => {

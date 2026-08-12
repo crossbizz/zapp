@@ -180,42 +180,7 @@ async function mockCreation(
 }
 
 async function enableMobileApp(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'posthog', {
-      configurable: true,
-      value: {
-        isFeatureEnabled(flag: string): boolean {
-          return flag === 'mobile-app-tab';
-        },
-      },
-    });
-  });
-}
-
-async function enableMobileAppAfterFeatureLoad(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    let enabled = false;
-    Object.defineProperty(window, 'posthog', {
-      configurable: true,
-      value: {
-        group(kind: string, key: string): void {
-          (window as Window & { __posthogGroup?: readonly string[] }).__posthogGroup = [kind, key];
-        },
-        isFeatureEnabled(flag: string): boolean {
-          return flag === 'mobile-app-tab' && enabled;
-        },
-        onFeatureFlags(callback: () => void): () => void {
-          const timer = window.setTimeout(() => {
-            enabled = true;
-            callback();
-          }, 0);
-          return () => {
-            window.clearTimeout(timer);
-          };
-        },
-      },
-    });
-  });
+  await page.request.get(`${apiBaseUrl}/__feature-flags?mobileApp=true`);
 }
 
 async function openModelControls(page: Page): Promise<void> {
@@ -284,14 +249,15 @@ test('enables Mobile App behind its flag and submits mobile appType', async ({ p
   });
 });
 
-test('reacts to asynchronously loaded organization-scoped PostHog flags', async ({ page }) => {
-  await enableMobileAppAfterFeatureLoad(page);
+test('loads organization-scoped flags before rendering the home controls', async ({ page }) => {
+  await enableMobileApp(page);
   await signIn(page);
 
   await expect(page.getByRole('tab', { name: /Mobile App/u })).toBeEnabled();
-  expect(await page.evaluate(() => {
-    return (window as Window & { __posthogGroup?: readonly string[] }).__posthogGroup;
-  })).toEqual(['organization', 'org-alpha']);
+  await expect.poll(async () => (await fakeRequests(page)).some((request) => {
+    const typed = request as { path?: string; organizationId?: string | null };
+    return typed.path === '/v1/feature-flags' && typed.organizationId === 'org-alpha';
+  })).toBe(true);
 });
 
 test('keeps short prompts disabled and fills without submitting from a suggestion', async ({ page }) => {

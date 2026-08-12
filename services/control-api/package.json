@@ -46,6 +46,7 @@
     "fastify-type-provider-zod": "^4.0.2",
     "ioredis": "^6.0.0",
     "jose": "^5.10.0",
+    "posthog-node": "5.48.1",
     "stytch": "^14.2.0",
     "ws": "8.21.0",
     "zod": "^3.23.8"

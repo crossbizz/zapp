@@ -82,6 +82,8 @@ import {
   createDbCreditGrantStore,
   createFlexpriceCreditWalletClient,
 } from './billing/topup.js';
+import { createPostHogRuntime } from './analytics/posthog.js';
+import type { PostHogEnv } from './env.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -151,12 +153,15 @@ export interface ServiceRuntime {
   readonly orchestrator?: OrchestratorPort;
   readonly artifactStorage: ArtifactStorageEnv;
   readonly github?: GitHubAppEnv;
+  /** OPS-6 server-side analytics and organization flag evaluation. */
+  readonly posthog?: PostHogEnv;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
 
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
+  const posthog = runtime.posthog === undefined ? undefined : createPostHogRuntime(runtime.posthog);
   const previewRuntime =
     runtime.preview === undefined
       ? undefined
@@ -309,8 +314,11 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           };
         })();
 
-  return buildApp({
+  const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
+    ...(posthog === undefined
+      ? {}
+      : { productAnalytics: posthog.analytics, featureFlags: posthog.flags }),
     auth: {
       port: createStytchAuthPort(runtime.auth.stytch),
       users: createDbUserStore(database),
@@ -456,4 +464,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           },
         }),
   });
+  if (posthog !== undefined) {
+    app.addHook('onClose', async () => {
+      await posthog.shutdown();
+    });
+  }
+  return app;
 }

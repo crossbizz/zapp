@@ -1,3 +1,4 @@
+import type { AnalyticsCaptureInput, ProductAnalytics } from '@zapp/config';
 import { ApiErrorSchema, newId } from '@zapp/contracts';
 import type { AgentEventRow, AgentRun } from '@zapp/db';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -173,12 +174,13 @@ interface Wired {
   as: (session: TestSession) => Record<string, string>;
 }
 
-async function wire(): Promise<Wired> {
+async function wire(productAnalytics?: ProductAnalytics): Promise<Wired> {
   const data = new InMemoryTenantData();
   const releases = new RecordingReleasePort();
   const built = buildHarness({
     tenantDb: data.factory,
     releasePort: releases,
+    ...(productAnalytics === undefined ? {} : { productAnalytics }),
   });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
@@ -689,6 +691,55 @@ describe('release route shells', () => {
     expect(wired.releases.deploys).toEqual([]);
     const rollback = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/rollback`, headers: mutationHeaders(wired, wired.owner, 'release-rollback-empty'), payload: { reason: ' ' } });
     expect(rollback.statusCode).toBe(400);
+  });
+
+  it('captures privacy-safe release and rollback lifecycle analytics once', async () => {
+    const captures: AnalyticsCaptureInput[] = [];
+    const wired = await wire({
+      capture(input) {
+        captures.push(input);
+        return Promise.resolve();
+      },
+    });
+    captures.length = 0;
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-analytics-create-01'),
+      payload: candidateBody(wired),
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const rolledBack = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/rollback`,
+      headers: mutationHeaders(wired, wired.owner, 'release-analytics-rollback-01'),
+      payload: { reason: 'Synthetic health check regressed.' },
+    });
+    expect(rolledBack.statusCode, rolledBack.body).toBe(200);
+
+    expect(captures).toEqual([
+      {
+        eventId: `release_created:${releaseId}`,
+        distinctId: wired.owner.userId,
+        event: 'release_created',
+        properties: {
+          orgId: wired.organizationId,
+          projectId: wired.projectId,
+          supportLevel: 'compatible',
+        },
+      },
+      {
+        eventId: `rollback_executed:${rolledBack.json<{ deploymentId: string }>().deploymentId}`,
+        distinctId: wired.owner.userId,
+        event: 'rollback_executed',
+        properties: {
+          orgId: wired.organizationId,
+          projectId: wired.projectId,
+          supportLevel: 'compatible',
+        },
+      },
+    ]);
   });
 
   it('does not report a failed or malformed port result as a success', async () => {

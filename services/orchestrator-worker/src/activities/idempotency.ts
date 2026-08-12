@@ -93,6 +93,10 @@ type StoredActivityResult =
   | { readonly kind: 'void' }
   | { readonly kind: 'value'; readonly value: CanonicalJson };
 
+/** Read-only activity allowlist. Every activity not named here fails closed on a missing key. */
+export const READ_ONLY_ACTIVITY_TYPES = ['evaluateFeatureFlag'] as const;
+const readOnlyActivityTypes = new Set<string>(READ_ONLY_ACTIVITY_TYPES);
+
 function encodeResult(value: unknown): StoredActivityResult {
   return value === undefined ? { kind: 'void' } : { kind: 'value', value: canonicalize(value) };
 }
@@ -191,6 +195,7 @@ export interface ExecuteIdempotentActivityOptions {
 export async function executeIdempotentActivity(
   options: ExecuteIdempotentActivityOptions,
 ): Promise<unknown> {
+  if (readOnlyActivityTypes.has(options.activityType)) return await options.next();
   const idempotencyKey = idempotencyKeyOf(options.activityType, options.args);
   const inputHash = hashActivityInput(options.activityType, options.args);
   const claim = await options.store.claim({

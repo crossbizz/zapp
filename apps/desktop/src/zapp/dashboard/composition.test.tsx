@@ -8,6 +8,16 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({ ipcMain: undefined }));
+const posthog = vi.hoisted(() => ({
+  group: vi.fn(),
+  overrideFeatureFlags: vi.fn(),
+}));
+vi.mock("posthog-js", () => ({
+  default: {
+    group: posthog.group,
+    featureFlags: { overrideFeatureFlags: posthog.overrideFeatureFlags },
+  },
+}));
 
 import { getRegisteredHandlerForTesting } from "@/ipc/handlers/base";
 import { VALID_INVOKE_CHANNELS } from "@/ipc/preload/channels";
@@ -31,12 +41,23 @@ const project = {
 
 afterEach(() => {
   cleanup();
+  posthog.group.mockClear();
+  posthog.overrideFeatureFlags.mockClear();
   delete (window as Window & { electron?: unknown }).electron;
 });
 
 describe("MAC-5 production composition", () => {
   it("whitelists strict main-process dashboard handlers", async () => {
     const api = {
+      getFeatureFlags: vi.fn(() =>
+        Promise.resolve({
+          flags: {
+            "voice-input": false,
+            "mobile-app-tab": true,
+            "visual-editing": false,
+          },
+        }),
+      ),
       listProjects: vi.fn(() =>
         Promise.resolve({ items: [project], nextCursor: null }),
       ),
@@ -52,6 +73,17 @@ describe("MAC-5 production composition", () => {
     for (const contract of Object.values(dashboardContracts)) {
       expect(VALID_INVOKE_CHANNELS).toContain(contract.channel);
     }
+    await expect(
+      getRegisteredHandlerForTesting(
+        dashboardContracts.getFeatureFlags.channel,
+      )({} as never, {}),
+    ).resolves.toEqual({
+      flags: {
+        "voice-input": false,
+        "mobile-app-tab": true,
+        "visual-editing": false,
+      },
+    });
     await expect(
       getRegisteredHandlerForTesting(dashboardContracts.listProjects.channel)(
         {} as never,
@@ -74,6 +106,24 @@ describe("MAC-5 production composition", () => {
     const channels: string[] = [];
     const onOpenCloud = vi.fn();
     const onOpenLocal = vi.fn();
+    let resolveFlags:
+      | ((value: {
+          flags: {
+            "voice-input": boolean;
+            "mobile-app-tab": boolean;
+            "visual-editing": boolean;
+          };
+        }) => void)
+      | undefined;
+    const evaluatedFlags = new Promise<{
+      flags: {
+        "voice-input": boolean;
+        "mobile-app-tab": boolean;
+        "visual-editing": boolean;
+      };
+    }>((resolve) => {
+      resolveFlags = resolve;
+    });
     (window as Window & { electron?: unknown }).electron = {
       ipcRenderer: {
         invoke: (channel: string, input: unknown) => {
@@ -136,6 +186,9 @@ describe("MAC-5 production composition", () => {
           if (channel === dashboardContracts.listProjects.channel) {
             return Promise.resolve({ items: [project], nextCursor: null });
           }
+          if (channel === dashboardContracts.getFeatureFlags.channel) {
+            return evaluatedFlags;
+          }
           if (channel === dashboardContracts.openProject.channel) {
             expect(input).toEqual({ projectId: "proj_01" });
             return Promise.resolve({ mode: "cloud", projectId: "proj_01" });
@@ -153,7 +206,23 @@ describe("MAC-5 production composition", () => {
       />,
     );
 
+    expect(screen.queryByText("Cloud Portal")).toBeNull();
+    resolveFlags?.({
+      flags: {
+        "voice-input": false,
+        "mobile-app-tab": true,
+        "visual-editing": false,
+      },
+    });
     expect(await screen.findByText("Cloud Portal")).toBeTruthy();
+    expect(posthog.overrideFeatureFlags).toHaveBeenCalledWith({
+      flags: {
+        "voice-input": false,
+        "mobile-app-tab": true,
+        "visual-editing": false,
+      },
+    });
+    expect(posthog.group).toHaveBeenCalledWith("organization", "org_alpha");
     expect(screen.getByText("Local Shop")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open Cloud Portal" }));
     await waitFor(() => {
@@ -165,6 +234,7 @@ describe("MAC-5 production composition", () => {
     expect(channels).toContain("zapp-auth:snapshot");
     expect(channels).toContain("list-apps");
     expect(channels).toContain(dashboardContracts.listProjects.channel);
+    expect(channels).toContain(dashboardContracts.getFeatureFlags.channel);
     expect(JSON.stringify(channels)).not.toContain("access-token");
   });
 });

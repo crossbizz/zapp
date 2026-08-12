@@ -1,5 +1,6 @@
 import { newId } from '@zapp/contracts';
 import { users, type Database } from '@zapp/db';
+import { eq } from 'drizzle-orm';
 
 import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
 import type { AuthIdentity } from './port.js';
@@ -31,12 +32,18 @@ export interface UserProfile {
   readonly memberships: readonly ProfileMembership[];
 }
 
+export interface UserUpsertResult {
+  readonly user: SessionUser;
+  readonly created: boolean;
+}
+
 export interface UserStore {
   /**
    * First login creates the row; every later one updates it. Returns the row
-   * either way — the caller cannot tell, and must not care.
+   * either way, plus whether this transaction inserted it so signup analytics
+   * can be emitted exactly once without inspecting identity content.
    */
-  upsertFromIdentity(identity: AuthIdentity, now: Date): Promise<SessionUser>;
+  upsertFromIdentity(identity: AuthIdentity, now: Date): Promise<UserUpsertResult>;
   /** `undefined` when the user no longer exists, which makes a live session stale. */
   profile(userId: string): Promise<UserProfile | undefined>;
 }
@@ -52,7 +59,7 @@ export interface UserStore {
 export function createDbUserStore(db: Database): UserStore {
   return {
     async upsertFromIdentity(identity, now) {
-      const [row] = await db
+      const [inserted] = await db
         .insert(users)
         .values({
           id: newId('user'),
@@ -61,14 +68,7 @@ export function createDbUserStore(db: Database): UserStore {
           avatarUrl: identity.avatarUrl ?? null,
           lastSeenAt: now,
         })
-        .onConflictDoUpdate({
-          target: users.email,
-          set: {
-            displayName: identity.displayName,
-            avatarUrl: identity.avatarUrl ?? null,
-            lastSeenAt: now,
-          },
-        })
+        .onConflictDoNothing({ target: users.email })
         .returning({
           id: users.id,
           email: users.email,
@@ -76,10 +76,26 @@ export function createDbUserStore(db: Database): UserStore {
           avatarUrl: users.avatarUrl,
         });
 
-      if (row === undefined) {
+      if (inserted !== undefined) return { user: inserted, created: true };
+
+      const [updated] = await db
+        .update(users)
+        .set({
+          displayName: identity.displayName,
+          avatarUrl: identity.avatarUrl ?? null,
+          lastSeenAt: now,
+        })
+        .where(eq(users.email, identity.email))
+        .returning({
+          id: users.id,
+          email: users.email,
+          displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+        });
+      if (updated === undefined) {
         throw new Error('user upsert returned no row');
       }
-      return row;
+      return { user: updated, created: false };
     },
 
     async profile(userId) {

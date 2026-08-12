@@ -71,6 +71,7 @@
     "@zapp/agent-tools": "workspace:*",
     "@zapp/api-client": "workspace:*",
     "@zapp/contracts": "workspace:*",
+    "@zapp/config": "workspace:*",
     "@zapp/model-gateway": "workspace:*",
     "@zapp/orchestrator-worker": "workspace:*",
     "@zapp/workspace-runtime": "workspace:*",

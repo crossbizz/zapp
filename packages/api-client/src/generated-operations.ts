@@ -313,6 +313,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/feature-flags": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/forks": {
     "post": {
       "security": [

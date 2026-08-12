@@ -1,6 +1,7 @@
 export * from './activities/capability-scan.js';
 export * from './activities/capability-scan-production.js';
 export * from './activities/events.js';
+export * from './activities/feature-flags.js';
 export * from './activities/idempotency.js';
 export * from './activities/merge.js';
 export * from './activities/repair.js';
