@@ -269,6 +269,12 @@ describe('billing tables', () => {
       'absolute_ceiling',
       'created_at',
     ]);
+    // Immutable billing history retains textual run/approval attribution after
+    // project deletion, just like usage_ledger; purgeable parents cannot cascade
+    // into an append-only table.
+    expect(foreignKeys(runCreditCeilingAdjustments)).toEqual([
+      'organization_id -> organizations.id',
+    ]);
     expect(columnNames(usageOutbox)).toEqual([
       'id',
       'organization_id',

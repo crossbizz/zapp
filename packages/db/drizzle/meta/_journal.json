@@ -225,6 +225,13 @@
       "when": 1786547825660,
       "tag": "0031_luxuriant_skullbuster",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786553278441,
+      "tag": "0032_lush_juggernaut",
+      "breakpoints": true
     }
   ]
 }

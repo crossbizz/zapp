@@ -15,7 +15,7 @@ import { CHECKPOINT_KINDS } from '@zapp/contracts';
 
 import { oneOf } from './columns.js';
 import { organizations, users } from './identity.js';
-import { agentRuns, agentTasks, approvals } from './planning.js';
+import { agentRuns, agentTasks } from './planning.js';
 import { projectTenantForeignKey, projects } from './projects.js';
 
 export const subscriptions = pgTable(
@@ -216,12 +216,8 @@ export const runCreditCeilingAdjustments = pgTable(
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
-    runId: text('run_id')
-      .notNull()
-      .references(() => agentRuns.id, { onDelete: 'cascade' }),
-    approvalId: text('approval_id')
-      .notNull()
-      .references(() => approvals.id, { onDelete: 'cascade' }),
+    runId: text('run_id').notNull(),
+    approvalId: text('approval_id').notNull(),
     operationKey: text('operation_key').notNull(),
     absoluteCeiling: numeric('absolute_ceiling', { precision: 12, scale: 4 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
