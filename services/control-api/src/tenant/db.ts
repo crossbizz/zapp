@@ -702,6 +702,11 @@ export interface ConnectGitHubInstallationInput {
 export interface TenantIntegrationRepository {
   getGitHubInstallation(installationId: string): Promise<IntegrationConnectionView | undefined>;
   connectGitHub(input: ConnectGitHubInstallationInput): Promise<IntegrationConnectionView>;
+  list(): Promise<readonly IntegrationConnectionView[]>;
+  disconnect(input: {
+    readonly connectionId: string;
+    readonly audit: AuditHook<IntegrationConnectionView>;
+  }): Promise<IntegrationConnectionView | undefined>;
 }
 
 export const AcceptGitHubImportInputSchema = GitHubImportRequestSchema.extend({
@@ -821,6 +826,27 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       ...base,
 
       integrations: {
+        async list() {
+          const rows = await db
+            .select()
+            .from(integrationConnections)
+            .where(eq(integrationConnections.organizationId, orgId))
+            .orderBy(asc(integrationConnections.provider), asc(integrationConnections.id));
+          return rows.map(integrationView);
+        },
+        async disconnect(input) {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(integrationConnections)
+              .set({ status: 'disconnected', credentialRef: null })
+              .where(scoped(integrationConnections.organizationId, eq(integrationConnections.id, input.connectionId)))
+              .returning();
+            if (row === undefined) return undefined;
+            const view = integrationView(row);
+            await input.audit(tx, view);
+            return view;
+          });
+        },
         async getGitHubInstallation(installationId) {
           const [row] = await db
             .select()

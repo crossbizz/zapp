@@ -486,6 +486,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/integrations": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/integrations/github/install": {
     "post": {
       "security": [
@@ -633,6 +654,26 @@ export const PUBLIC_API_OPERATIONS = {
           "mediaTypes": [
             "application/json"
           ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/integrations/{connectionId}": {
+    "delete": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "204": {
+          "body": "forbidden",
+          "mediaTypes": [],
           "requiredHeaders": []
         }
       }
@@ -885,6 +926,27 @@ export const PUBLIC_API_OPERATIONS = {
       ],
       "successResponses": {
         "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
+  "/v1/organizations/{orgId}/members": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
           "body": "required",
           "mediaTypes": [
             "application/json"

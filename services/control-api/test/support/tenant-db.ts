@@ -336,6 +336,36 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     organizationId: orgId,
 
     integrations: {
+      list() {
+        return Promise.resolve(
+          mine(orgId, data.integrationConnections).map((row) => IntegrationConnectionSchema.parse({
+            id: row.id,
+            organizationId: row.organizationId,
+            projectId: row.projectId,
+            provider: row.provider,
+            status: row.status,
+            credentialRef: row.credentialRef,
+            configuration: row.configurationJson,
+          })),
+        );
+      },
+      async disconnect(input) {
+        const row = mine(orgId, data.integrationConnections).find((connection) => connection.id === input.connectionId);
+        if (row === undefined) return undefined;
+        row.status = 'disconnected';
+        row.credentialRef = null;
+        const view = IntegrationConnectionSchema.parse({
+          id: row.id,
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          provider: row.provider,
+          status: row.status,
+          credentialRef: row.credentialRef,
+          configuration: row.configurationJson,
+        });
+        await input.audit(NO_TRANSACTION, view);
+        return view;
+      },
       getGitHubInstallation(installationId) {
         const row = mine(orgId, data.integrationConnections).find(
           (connection) =>

@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { newId } from '@zapp/contracts';
-import { auditEvents, memberships, organizations, type Database, type Executor } from '@zapp/db';
+import { auditEvents, memberships, organizations, users, type Database, type Executor } from '@zapp/db';
 import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
@@ -58,6 +58,12 @@ export interface OrganizationMembership {
   readonly organization: OrganizationRecord;
   readonly role: Role;
   readonly status: MembershipStatus;
+}
+
+export interface DirectoryMember extends MembershipRecord {
+  readonly email: string;
+  readonly displayName: string;
+  readonly avatarUrl: string | null;
 }
 
 function isJsonValue(value: unknown): boolean {
@@ -236,6 +242,7 @@ export interface OrganizationStore {
    * then denies them.
    */
   listForUser(userId: string, page?: PageRequest): Promise<StorePage<OrganizationMembership>>;
+  listMembers(organizationId: string): Promise<readonly DirectoryMember[]>;
   /** `undefined` when there is no active membership — removed and invited are the same answer. */
   membership(organizationId: string, userId: string): Promise<MembershipRecord | undefined>;
   /** @throws {SlugTakenError} */
@@ -514,6 +521,23 @@ export function createDbOrganizationStore(db: Database): OrganizationStore {
         items,
         nextCursor: rows.length > limit ? (items.at(-1)?.organization.id ?? null) : null,
       };
+    },
+
+    async listMembers(organizationId) {
+      return await db
+        .select({
+          organizationId: memberships.organizationId,
+          userId: memberships.userId,
+          role: memberships.role,
+          status: memberships.status,
+          email: users.email,
+          displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+        })
+        .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
+        .where(and(eq(memberships.organizationId, organizationId), ne(memberships.status, 'removed')))
+        .orderBy(asc(users.email));
     },
 
     async membership(organizationId, userId) {

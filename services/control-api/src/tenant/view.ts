@@ -303,7 +303,7 @@ export const IntegrationConnectionSchema = z
     id: z.string(),
     organizationId: z.string(),
     projectId: z.string().nullable(),
-    provider: z.enum(['github', 'supabase', 'neon', 'stripe']),
+    provider: z.enum(['github', 'supabase', 'neon', 'stripe', 'vercel']),
     status: z.string().min(1),
     credentialRef: z.string().nullable(),
     configuration: z.union([
@@ -318,6 +318,11 @@ export const IntegrationConnectionSchema = z
         })
         .strict(),
       z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict(),
+      z.object({
+        projectId: z.string().min(1),
+        projectName: z.string().min(1),
+        teamId: z.string().min(1).optional(),
+      }).strict(),
     ]),
   })
   .strict();

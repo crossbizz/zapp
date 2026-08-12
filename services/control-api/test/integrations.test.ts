@@ -92,6 +92,30 @@ function requestFor(provider: 'github' | 'supabase' | 'neon' | 'stripe', project
 }
 
 describe('integration route shells', () => {
+  it('lists secret-free Vercel status and disconnects it with audit', async () => {
+    const wired = await wire();
+    const connectionId = newId('intc');
+    wired.data.integrationConnections.push({
+      id: connectionId,
+      organizationId: wired.organizationId,
+      projectId: wired.projectId,
+      provider: 'vercel',
+      status: 'connected',
+      credentialRef: CREDENTIAL,
+      configurationJson: { projectId: 'prj_external', projectName: 'integration-target', teamId: 'team_test' },
+    });
+
+    const listed = await wired.built.app.inject({ method: 'GET', url: '/v1/integrations', headers: wired.as(wired.owner) });
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(listed.json()).toMatchObject({ connections: [{ id: connectionId, provider: 'vercel', status: 'connected' }] });
+    expect(listed.body).not.toContain(CREDENTIAL);
+
+    const disconnected = await wired.built.app.inject({ method: 'DELETE', url: `/v1/integrations/${connectionId}`, headers: headers(wired, wired.owner, 'disconnect-vercel-01') });
+    expect(disconnected.statusCode, disconnected.body).toBe(204);
+    expect(wired.data.integrationConnections[0]).toMatchObject({ id: connectionId, status: 'disconnected', credentialRef: null });
+    expect(wired.built.audit.events.at(-1)).toMatchObject({ action: 'integration.disconnected', targetId: connectionId, metadata: { provider: 'vercel' } });
+  });
+
   it.each(['github', 'supabase', 'neon', 'stripe'] as const)('connects %s with a safe strict connection view', async (provider) => {
     const wired = await wire();
     const request = requestFor(provider, wired.projectId);

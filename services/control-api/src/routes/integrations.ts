@@ -14,6 +14,7 @@ const GitHubBody = z.object({ installationId: z.string().trim().min(1).max(200),
 const SupabaseBody = z.object({ projectId: idSchema('proj'), accessToken: z.string().trim().min(1).max(10_000), configuration: z.object({ projectRef: z.string().trim().min(1).max(200) }).strict() }).strict();
 const NeonBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ projectId: z.string().trim().min(1).max(200), databaseName: z.string().min(1).max(63).regex(/^[a-z_][a-z0-9_]*$/u) }).strict() }).strict();
 const StripeBody = z.object({ projectId: idSchema('proj'), apiKey: z.string().trim().min(1).max(10_000), configuration: z.object({ accountId: z.string().trim().min(1).max(200), mode: z.enum(['test', 'live']) }).strict() }).strict();
+const IntegrationStatusSchema = IntegrationConnectionSchema.omit({ credentialRef: true }).strict();
 
 const IntegrationInputSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('github'), organizationId: idSchema('org'), projectId: z.null(), actorId: idSchema('user'), operationKey: OperationKeySchema, credential: z.string().min(1), configuration: z.object({ installationId: z.string().min(1) }).strict(), state: z.string().min(1) }).strict(),
@@ -32,6 +33,37 @@ export function createUnavailableIntegrationPort(): IntegrationPort { return { c
 export interface IntegrationRoutesDeps { readonly port: IntegrationPort; }
 
 export function registerIntegrationRoutes(app: AppInstance, deps: IntegrationRoutesDeps): void {
+  app.get('/v1/integrations', { preHandler: [app.requireSession, app.requireTenant], schema: { response: { 200: z.object({ connections: z.array(IntegrationStatusSchema).max(1_000) }).strict() } } }, async (request) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'manage_organization');
+    const connections = (await ctx.db.integrations.list()).map((connection) => ({
+      id: connection.id,
+      organizationId: connection.organizationId,
+      projectId: connection.projectId,
+      provider: connection.provider,
+      status: connection.status,
+      configuration: connection.configuration,
+    }));
+    return { connections };
+  });
+  app.delete('/v1/integrations/:connectionId', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { params: z.object({ connectionId: idSchema('intc') }), response: { 204: z.void() } } }, async (request, reply) => {
+    const ctx = tenantOf(request);
+    authorize(ctx, 'manage_organization');
+    const operationKey = operationOf(request);
+    const disconnected = await ctx.db.integrations.disconnect({
+      connectionId: request.params.connectionId,
+      audit: async (tx, connection) => {
+        await request.audit(tx, {
+          organizationId: ctx.organizationId,
+          action: 'integration.disconnected',
+          target: { type: 'integration_connection', id: connection.id },
+          metadata: { provider: connection.provider, projectId: connection.projectId, operationKey },
+        });
+      },
+    });
+    if (disconnected === undefined) throw new ApiError('integration_not_found', 404, 'That integration does not exist.');
+    return await reply.status(204).send();
+  });
   app.post('/v1/integrations/github/install', { preHandler: [app.requireSession, app.requireCsrf, app.requireTenant], schema: { body: GitHubBody, response: { 201: z.object({ connection: IntegrationConnectionSchema }).strict() } } }, async (request, reply) => {
     const ctx = tenantOf(request);
     authorize(ctx, 'manage_organization');

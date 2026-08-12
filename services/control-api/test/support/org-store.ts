@@ -153,6 +153,14 @@ export class InMemoryOrganizationStore implements OrganizationStore {
     });
   }
 
+  listMembers(organizationId: string) {
+    return Promise.resolve(
+      [...this.memberships.values()]
+        .filter((row) => row.organizationId === organizationId && row.status !== 'removed')
+        .map((row) => ({ ...row, email: row.userId, displayName: row.userId, avatarUrl: null })),
+    );
+  }
+
   membership(organizationId: string, userId: string): Promise<MembershipRecord | undefined> {
     const row = this.memberships.get(this.key(organizationId, userId));
     return Promise.resolve(row === undefined || row.status === 'removed' ? undefined : row);

@@ -105,6 +105,14 @@ const CreateInviteBody = z.object({
 });
 
 const SetRoleBody = z.object({ role: RoleSchema });
+const OrganizationDirectoryResponse = z.object({
+  members: z.array(z.object({
+    user: z.object({ id: idSchema('user'), email: z.string().email(), displayName: z.string(), avatarUrl: z.string().nullable() }).strict(),
+    role: RoleSchema,
+    status: z.literal('active'),
+  }).strict()).max(1_000),
+  pendingInvites: z.array(z.object({ email: z.string().email(), role: RoleSchema, invitedBy: idSchema('user'), expiresAt: z.string().datetime() }).strict()).max(1_000),
+}).strict();
 
 /**
  * Keyset pagination, as the FND-10 envelope describes it: `cursor` is the
@@ -458,6 +466,31 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         invite: { email, role: request.body.role, expiresAt: expiresAt.toISOString() },
         token,
       });
+    },
+  );
+
+  app.get(
+    '/v1/organizations/:orgId/members',
+    {
+      preHandler: [app.requireSession],
+      schema: { params: OrganizationParams, response: { 200: OrganizationDirectoryResponse } },
+    },
+    async (request) => {
+      const membership = await membershipOf(request, request.params.orgId);
+      authorize(membership, 'manage_members');
+      const rows = await organizations.listMembers(request.params.orgId);
+      const members = await Promise.all(rows.filter((row) => row.status === 'active').map(async (row) => {
+        const profile = await users.profile(row.userId);
+        if (profile === undefined) throw new Error('membership references a missing user');
+        return { user: profile.user, role: row.role, status: 'active' as const };
+      }));
+      const pendingInvites = (await invites.list(request.params.orgId)).map((invite) => ({
+        email: invite.email,
+        role: invite.role,
+        invitedBy: invite.invitedBy,
+        expiresAt: invite.expiresAt.toISOString(),
+      }));
+      return { members, pendingInvites };
     },
   );
 

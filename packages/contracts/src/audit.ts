@@ -83,6 +83,7 @@ export const AUDIT_ACTIONS = [
   'incident.resolved',
   'support.impersonation',
   'integration.connected',
+  'integration.disconnected',
   'secret.decrypted',
   ...GIT_AUDIT_ACTIONS,
 ] as const;

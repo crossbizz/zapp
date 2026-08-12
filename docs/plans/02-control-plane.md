@@ -344,8 +344,11 @@ Execution expansion (2026-08-12):
 **Files:** Modify org/integration/project routes and tenant views, DB where required, OpenAPI/SDK and tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: member/pending-invite directory; integration status/disconnect including Vercel; project archive/delete timeline; existing secret values stay write-only.
-- [ ] Commit: `feat(control-api): settings and member directory APIs`
+- [x] **26a RED/GREEN — directory:** list active members with public identity fields and unexpired pending invites; enforce tenant membership and member-management RBAC.
+- [x] **26b RED/GREEN — integration settings:** list secret-free connection status for every provider (including Vercel) and disconnect by stable idempotency key with audit.
+- [x] **26c existing lifecycle proof:** retain the landed settings, archive, deletion request, and deletion-status timeline contracts; regenerate the public SDK and verify focused control/API-client gates.
+- [x] Binding behavior: member/pending-invite directory; integration status/disconnect including Vercel; project archive/delete timeline; existing secret values stay write-only.
+- [x] Commit: `feat(control-api): settings and member directory APIs`
 
 ### Task CP-27 [M5]: Public desktop notification projection
 
@@ -371,6 +374,7 @@ Execution expansion (2026-08-12):
 - Session cookies: httpOnly, Secure, SameSite=Lax; CSRF: state-changing routes require `x-zapp-csrf` double-submit token for cookie auth (bearer/device tokens exempt).
 
 ## Execution log
+- 2026-08-12 CP-26 done — Added public member/pending-invite directory and secret-free integration list/disconnect including Vercel, retained existing settings/archive/deletion timeline, regenerated the SDK, and passed focused 52/52 control, 56/56 SDK, 5/5 Redis invite, lint, and typecheck gates.
 
 - (empty)
 

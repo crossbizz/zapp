@@ -735,6 +735,35 @@ describe('POST /v1/invites/:token/accept', () => {
   });
 });
 
+describe('GET /v1/organizations/:orgId/members', () => {
+  it('returns active public identities and pending invites without bearer tokens', async () => {
+    const founded = await found(harness());
+    await join(founded, OTHER, 'builder');
+    const pending = await founded.built.app.inject({
+      method: 'POST',
+      url: `/v1/organizations/${founded.organizationId}/invites`,
+      headers: founded.owner.headers,
+      payload: { email: THIRD.email, role: 'viewer' },
+    });
+    expect(pending.statusCode, pending.body).toBe(201);
+
+    const response = await founded.built.app.inject({
+      method: 'GET',
+      url: `/v1/organizations/${founded.organizationId}/members`,
+      headers: founded.owner.headers,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<{ members: Array<{ user: { email: string }; role: string }>; pendingInvites: Array<{ email: string; role: string; invitedBy: string }> }>();
+    expect(body.members.map((member) => ({ email: member.user.email, role: member.role }))).toEqual([
+      { email: OWNER.email, role: 'owner' },
+      { email: OTHER.email, role: 'builder' },
+    ]);
+    expect(body.pendingInvites).toMatchObject([{ email: THIRD.email, role: 'viewer', invitedBy: founded.owner.userId }]);
+    expect(response.body).not.toContain(pending.json<{ token: string }>().token);
+  });
+});
+
 describe('PATCH /v1/organizations/:orgId/members/:userId', () => {
   it('lets an Owner change a member’s role', async () => {
     const built = harness();
