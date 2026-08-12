@@ -57,7 +57,9 @@ export interface StripeSubscriptionStore {
   findSubscriptionByCustomer(stripeCustomerId: string): Promise<StripeSubscriptionState | undefined>;
 }
 
-export function createPostgresStripeSubscriptionStore(databaseUrl: string): StripeSubscriptionStore {
+export function createPostgresStripeSubscriptionStore(
+  databaseUrl: string,
+): StripeSubscriptionStore & { close(): Promise<void> } {
   const sql = postgres(databaseUrl, { max: 5 });
   return {
     async applyEvent(eventId, eventCreated, input) {
@@ -129,6 +131,9 @@ export function createPostgresStripeSubscriptionStore(databaseUrl: string): Stri
             currentPeriodEnd: row.current_period_end,
             trialEnd: row.trial_end,
           };
+    },
+    async close() {
+      await sql.end();
     },
   };
 }

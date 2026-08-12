@@ -211,7 +211,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-6 Supabase migrations + RLS gen/tests
 - [x] INT-7 Neon branch workflows
 - [x] INT-8 Generated-app Stripe adapter
-- [ ] INT-9 Stripe E2E integration tests
+- [x] INT-9 Stripe E2E integration tests
 - [x] DEP-1 Release records + ReleasePort
 - [x] DEP-2 Three-state readiness check
 - [x] DEP-3 Deployment type classification

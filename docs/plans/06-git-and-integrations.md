@@ -234,11 +234,11 @@ be built:
 
 ### Task INT-9 [M4]: Stripe adapter integration tests
 
-**Files:** Create: `test/integration/stripe-flow.test.ts` (Stripe test mode, env-gated)
+**Files:** Create: `packages/agent-tools/test/integration/stripe-flow.test.ts` (Stripe test mode, env-gated). Modify: `packages/agent-tools/package.json`, `templates/stripe/{webhook,sync}.ts.hbs`, `turbo.json` (review-required checkout completion, resource cleanup, and integration-gate wiring).
 **Effort:** M
 
-- [ ] Binding behavior: full loop in a fixture next app: seed products → checkout session (test card via Stripe test clock/API, not browser) → webhook `checkout.session.completed` → sync row `active` → access middleware admits; cancel → webhook → access revoked. This suite is what VF's `integration_tests` gate runs for Stripe-enabled Managed projects (PRD §24.2).
-- [ ] Commit: `test(integrations): stripe subscription end-to-end in test mode`
+- [x] Binding behavior: full loop in a fixture next app: seed products → checkout session (test card via Stripe test clock/API, not browser) → webhook `checkout.session.completed` → sync row `active` → access middleware admits; cancel → webhook → access revoked. This suite is what VF's `integration_tests` gate runs for Stripe-enabled Managed projects (PRD §24.2).
+- [x] Commit: `test(integrations): stripe subscription end-to-end in test mode`
 
 ---
 
@@ -276,3 +276,4 @@ be built:
 - 2026-08-11 INT-6 done — Supabase migrations now stage keyed monotonic repo files, apply only to linked non-production projects, feed pending history through the VF-16 shadow receipt recorded in release evidence, and generate owner-scoped RLS plus pgTAP denial tests; one capped review fixed fixture-vacuity and migration-ordering risks, local PostgreSQL proved cross-user denial, no blockers or plan deviations occurred, and live Supabase verification skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
 - 2026-08-11 INT-7 done — Neon API connect now vaults explicit-database app/migration URLs for default and dedicated preview branches, VF-16 validates on TTL verification branches with response-loss reconciliation and cleanup, schema SQL and real DDL denial passed, and one capped review fixed concurrent password persistence, post-create compensation, explicit database targeting, and cursor pagination; no blockers or plan deviations, while live Neon skipped because `NEON_API_KEY` and `NEON_PROJECT_ID` are unset.
 - 2026-08-11 INT-8 done — Generated-app Stripe credentials now use an audited vault scope isolated from platform billing, and the installer emits typechecked Next or Express Checkout, portal, signed webhook, atomic stale-safe sync, access-control, and migration artifacts; one capped review fixed authenticated portal ownership, current Stripe item periods, stale-event fencing, migration installation, and explicit Express/Fastify handling, while the first pre-push run exposed and bounded the compiler-heavy test's default timeout; no blockers or plan deviations, and live Stripe skipped because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
+- 2026-08-12 INT-9 done — The generated Next fixture now exercises checkout completion, signed subscription sync, real isolated Postgres state, admission, cancellation, and revocation through the discoverable integration gate; one capped review exposed and drove the provider/DB/gate remediation, and the live Stripe proof skipped visibly because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
