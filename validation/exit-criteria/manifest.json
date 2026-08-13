@@ -5,19 +5,16 @@
     {
       "id": "E1",
       "criterion": "A first-time nontechnical user can move from one initial prompt through clarification, build, preview, iteration, readiness check, and deployment without leaving the unified builder or opening a terminal.",
-      "state": "candidate",
+      "state": "verified",
       "requiredTasks": ["WEB-10", "WEB-14"],
       "sourceEvidence": [
-        "apps/web/e2e/projects.spec.ts",
-        "services/orchestrator-worker/test/integration/autonomous.test.ts",
-        "services/release-service/test/integration/deploy-workflow.test.ts"
+        "apps/web/e2e/e1-journey.spec.ts"
       ],
       "verifyCommands": [
-        "pnpm --filter @zapp/web test -- projects.spec.ts",
-        "pnpm --filter @zapp/orchestrator-worker test:integration -- autonomous.test.ts",
-        "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
+        "pnpm --filter @zapp/web exec playwright test e2e/e1-journey.spec.ts --timeout=30000"
       ],
-      "evidenceArtifacts": []
+      "requiredEvidenceSchemaVersion": 2,
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-13-e1.json"]
     },
     {
       "id": "E2",

@@ -31,7 +31,7 @@ test('V-3 matrix covers E1 through E22 exactly once with repository evidence', a
       failed: result.failed,
       blocked: result.blocked,
     },
-    { verified: 16, candidate: 5, failed: 0, blocked: 1 },
+    { verified: 17, candidate: 4, failed: 0, blocked: 1 },
   );
 });
 
