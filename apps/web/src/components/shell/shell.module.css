@@ -1,0 +1,471 @@
+.shell {
+  min-height: 100vh;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-canvas);
+  font-family: var(--zapp-font-sans);
+}
+
+.desktopSidebar {
+  position: fixed;
+  z-index: 30;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--zapp-shell-sidebar-width);
+  border-right: 1px solid var(--zapp-border);
+  background: var(--zapp-shell-sidebar);
+}
+
+.sidebarInner {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding: 1rem 0.75rem 0.75rem;
+}
+
+.sidebarHeader {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.brand,
+.mobileBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--zapp-text-primary);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.brand {
+  min-height: 2.5rem;
+  padding: 0 0.375rem;
+  font-size: var(--zapp-text-18);
+}
+
+.brandMark,
+.organizationAvatar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--zapp-text-inverse);
+  background: var(--zapp-brand-gradient);
+  font-weight: 800;
+}
+
+.brandMark {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.55rem;
+  font-size: var(--zapp-text-14);
+}
+
+.organizationPicker {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: 0.625rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--zapp-surface-raised);
+}
+
+.organizationAvatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.375rem;
+  font-size: var(--zapp-text-12);
+}
+
+.organizationPicker select {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  color: var(--zapp-text-primary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--zapp-text-14);
+  font-weight: 600;
+  outline: 0;
+  cursor: pointer;
+}
+
+.organizationPicker:focus-within {
+  outline: 3px solid var(--zapp-focus);
+  outline-offset: 2px;
+}
+
+.selectedOrganization {
+  margin: 0;
+  padding: 0 0.5rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+.primaryNavigation {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 1.25rem;
+}
+
+.destination {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  color: var(--zapp-shell-nav-muted);
+  font-size: var(--zapp-text-14);
+  font-weight: 570;
+  text-decoration: none;
+}
+
+.destination:hover,
+.destination:focus-visible {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-shell-nav-hover);
+}
+
+.destinationActive {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-shell-nav-active);
+  font-weight: 680;
+}
+
+.destinationIcon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+}
+
+.recentProjects {
+  display: grid;
+  gap: 0.25rem;
+  min-height: 0;
+  margin-top: 1.5rem;
+  overflow: auto;
+}
+
+.recentProjects h2 {
+  margin: 0 0 0.25rem;
+  padding: 0 0.75rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.recentProjects a {
+  overflow: hidden;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recentProjects a:hover,
+.recentProjects a:focus-visible {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-shell-nav-hover);
+}
+
+.sidebarFooter {
+  margin-top: auto;
+  border-top: 1px solid var(--zapp-border);
+  padding-top: 0.75rem;
+}
+
+.accountArea {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.accountArea :global(.zapp-credits-pill) {
+  justify-content: center;
+}
+
+.accountMenuContainer {
+  position: relative;
+}
+
+.accountButton {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.625rem;
+  border: 0;
+  border-radius: 0.625rem;
+  padding: 0.375rem;
+  color: var(--zapp-text-primary);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.accountButton:hover,
+.accountButton:focus-visible {
+  background: var(--zapp-shell-nav-hover);
+}
+
+.accountIdentity {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.accountIdentity strong,
+.accountIdentity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountIdentity strong {
+  font-size: var(--zapp-text-14);
+}
+
+.accountIdentity small {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+.accountChevron {
+  margin-left: auto;
+  color: var(--zapp-text-muted);
+}
+
+.accountMenu {
+  position: absolute;
+  z-index: 40;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  display: grid;
+  width: max(14rem, 100%);
+  gap: 0.25rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.5rem;
+  background: var(--zapp-surface-raised);
+  box-shadow: var(--zapp-shell-shadow);
+}
+
+.accountMenuHeading {
+  margin: 0;
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.accountMenuItem {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.625rem;
+  color: var(--zapp-text-primary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--zapp-text-14);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.accountMenuItem:hover,
+.accountMenuItem:focus-visible {
+  background: var(--zapp-surface-subtle);
+}
+
+.accountError {
+  margin: 0.25rem;
+  color: var(--zapp-status-danger);
+  font-size: var(--zapp-text-12);
+}
+
+.accountError button {
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.main {
+  min-height: 100vh;
+  margin-left: var(--zapp-shell-sidebar-width);
+}
+
+.contextWarning {
+  position: fixed;
+  z-index: 25;
+  top: 1rem;
+  left: calc(var(--zapp-shell-sidebar-width) + 50%);
+  margin: 0;
+  transform: translateX(-50%);
+  border: 1px solid var(--zapp-status-warning);
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.625rem 1rem;
+  background: var(--zapp-surface-raised);
+  box-shadow: var(--zapp-shadow-card);
+  font-size: var(--zapp-text-14);
+}
+
+.mobileHeader {
+  display: none;
+}
+
+.mobileDrawer {
+  left: 0;
+  width: min(19rem, calc(100vw - 2rem));
+  border-radius: 0 var(--zapp-radius-panel) var(--zapp-radius-panel) 0;
+  padding: 0;
+}
+
+.mobileDrawer :global(.zapp-overlay-panel__title) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.mobileDrawer :global(.zapp-overlay-panel__body) {
+  height: 100%;
+  margin: 0;
+}
+
+.mobileDrawer :global(.zapp-overlay-panel__close) {
+  z-index: 2;
+}
+
+.mobileMenuButton {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border: 1px solid var(--zapp-border);
+  border-radius: 0.625rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  cursor: pointer;
+}
+
+.brand:focus-visible,
+.mobileBrand:focus-visible,
+.organizationPicker:focus-within,
+.destination:focus-visible,
+.recentProjects a:focus-visible,
+.accountButton:focus-visible,
+.accountMenuItem:focus-visible,
+.mobileMenuButton:focus-visible {
+  outline: 3px solid var(--zapp-focus);
+  outline-offset: 2px;
+}
+
+@media (min-width: 64rem) and (max-width: 79.999rem) {
+  .desktopSidebar {
+    width: var(--zapp-shell-rail-width);
+  }
+
+  .sidebarInner {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+
+  .brand {
+    justify-content: center;
+  }
+
+  .brandName,
+  .organizationPicker select,
+  .selectedOrganization,
+  .destinationLabel,
+  .recentProjects,
+  .accountIdentity,
+  .accountChevron,
+  .accountArea :global(.zapp-credits-pill) {
+    display: none;
+  }
+
+  .organizationPicker {
+    justify-content: center;
+    border: 0;
+    padding: 0.375rem;
+    background: transparent;
+  }
+
+  .organizationPicker select {
+    position: absolute;
+    inset: 0;
+    display: block;
+    opacity: 0;
+  }
+
+  .destination,
+  .accountButton {
+    justify-content: center;
+    padding: 0.625rem;
+  }
+
+  .accountMenu {
+    left: calc(100% + 0.5rem);
+    right: auto;
+    bottom: 0;
+  }
+
+  .main {
+    margin-left: var(--zapp-shell-rail-width);
+  }
+
+  .contextWarning {
+    left: calc(var(--zapp-shell-rail-width) + 50%);
+  }
+}
+
+@media (max-width: 63.999rem) {
+  .desktopSidebar {
+    display: none;
+  }
+
+  .mobileHeader {
+    position: sticky;
+    z-index: 30;
+    top: 0;
+    display: flex;
+    min-height: 3.75rem;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--zapp-border);
+    padding: 0.625rem 1rem;
+    background: rgb(255 255 255 / 0.92);
+    backdrop-filter: blur(12px);
+  }
+
+  .main {
+    min-height: calc(100vh - 3.75rem);
+    margin-left: 0;
+  }
+
+  .contextWarning {
+    top: 4.5rem;
+    left: 50%;
+    width: max-content;
+    max-width: calc(100vw - 2rem);
+  }
+}

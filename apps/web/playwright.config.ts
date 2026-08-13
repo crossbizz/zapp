@@ -11,7 +11,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'pnpm exec tsx e2e/support/server.ts',
+    command: './node_modules/.bin/tsx e2e/support/server.ts',
     url: `http://127.0.0.1:${String(appPort)}/login`,
     reuseExistingServer: false,
     timeout: 60_000,

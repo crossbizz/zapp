@@ -1,0 +1,102 @@
+.page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+  color: var(--zapp-text-primary);
+  background:
+    radial-gradient(circle at 50% 20%, rgb(124 124 255 / 0.22), transparent 34rem),
+    var(--zapp-surface-canvas);
+  font-family: var(--zapp-font-sans);
+}
+
+.card {
+  display: grid;
+  width: min(27rem, 100%);
+  justify-items: center;
+  border: 1px solid var(--zapp-border);
+  border-radius: 1.5rem;
+  padding: 3rem;
+  background: rgb(255 255 255 / 0.94);
+  box-shadow: var(--zapp-shadow-overlay);
+  text-align: center;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 2.5rem;
+  font-size: var(--zapp-text-18);
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.brandMark {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 0.625rem;
+  color: var(--zapp-text-inverse);
+  background: var(--zapp-brand-gradient);
+  font-size: var(--zapp-text-14);
+  font-weight: 800;
+}
+
+.card h1 {
+  margin: 0;
+  font-size: var(--zapp-text-32);
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+}
+
+.card p {
+  margin: 1rem 0 2rem;
+  color: var(--zapp-text-secondary);
+  line-height: 1.6;
+}
+
+.signIn {
+  display: inline-flex;
+  width: 100%;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zapp-radius-pill);
+  color: var(--zapp-accent-contrast);
+  background: var(--zapp-surface-inverse);
+  font-size: var(--zapp-text-14);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.signIn:hover {
+  opacity: 0.9;
+}
+
+.signInDisabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.signIn:focus-visible {
+  outline: 3px solid var(--zapp-focus);
+  outline-offset: 3px;
+}
+
+.card small {
+  margin-top: 1rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+@media (max-width: 32rem) {
+  .page {
+    padding: 1rem;
+  }
+
+  .card {
+    padding: 2rem 1.25rem;
+  }
+}

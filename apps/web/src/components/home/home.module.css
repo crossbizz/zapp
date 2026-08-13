@@ -1,5 +1,5 @@
 .home {
-  min-height: 100vh;
+  min-height: 100%;
   color: var(--zapp-text-primary);
   background: var(--zapp-hero);
   font-family: var(--zapp-font-sans);
@@ -121,8 +121,8 @@
 
 .heroContent {
   width: min(48rem, calc(100% - 2rem));
-  margin: 3.5rem auto 0;
-  padding-bottom: 6rem;
+  margin: 0 auto;
+  padding: 6rem 0;
 }
 
 .heading {
@@ -410,7 +410,7 @@
   }
 
   .heroContent {
-    margin-top: 2rem;
+    padding-top: 3rem;
   }
 
   .heading {

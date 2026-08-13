@@ -157,15 +157,17 @@ export function createControlPlaneClient(organizationId?: string) {
         path: { slug },
         ...(signal === undefined ? {} : { signal }),
       }),
-    getMe: () =>
+    getMe: (signal?: AbortSignal) =>
       client.request('/v1/me', {
         method: 'GET',
         ...(organizationHeaders === undefined ? {} : { headers: headers() }),
+        ...(signal === undefined ? {} : { signal }),
       }),
-    getFeatureFlags: () =>
+    getFeatureFlags: (signal?: AbortSignal) =>
       client.request('/v1/feature-flags', {
         method: 'GET',
         headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
       }),
     listProjects: (query: ListProjectsQuery = {}, signal?: AbortSignal) =>
       client.request('/v1/projects', {

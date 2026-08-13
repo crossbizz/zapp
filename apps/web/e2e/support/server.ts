@@ -372,7 +372,7 @@ built.app.get('/__stytch', async (request, reply) => {
 await resetNextDevOutput();
 await built.app.listen({ host: '127.0.0.1', port: apiPort });
 
-const next = spawn('pnpm', ['exec', 'next', 'dev', '--port', String(appPort)], {
+const next = spawn('./node_modules/.bin/next', ['dev', '--port', String(appPort)], {
   env: {
     ...process.env,
     NEXT_PUBLIC_APP_BASE_URL: appBaseUrl,

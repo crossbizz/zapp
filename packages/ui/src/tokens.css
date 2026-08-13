@@ -27,7 +27,10 @@
   --zapp-radius-card: 1rem;
   --zapp-radius-pill: 9999px;
   --zapp-radius-panel: 0.75rem;
+  --zapp-shell-sidebar-width: 15.5rem;
+  --zapp-shell-rail-width: 4rem;
   --zapp-hero: linear-gradient(180deg, #7cb8e8 0%, #b7d9f2 45%, #eef6fc 100%);
+  --zapp-brand-gradient: linear-gradient(135deg, #7c7cff 0%, #d950d5 52%, #ff6a5e 100%);
   --zapp-accent: #2563eb;
   --zapp-accent-hover: #1d4ed8;
   --zapp-accent-contrast: #ffffff;
@@ -39,6 +42,10 @@
   --zapp-surface-subtle: #f4f4f5;
   --zapp-surface-raised: #ffffff;
   --zapp-surface-inverse: #18181b;
+  --zapp-shell-sidebar: #f7f7f8;
+  --zapp-shell-nav-active: #e7e7ea;
+  --zapp-shell-nav-hover: #eeeeef;
+  --zapp-shell-nav-muted: #52525b;
   --zapp-text-primary: #18181b;
   --zapp-text-secondary: #52525b;
   --zapp-text-muted: #71717a;
@@ -57,6 +64,7 @@
   --zapp-danger-surface: #fef2f2;
   --zapp-shadow-card: 0 12px 32px rgb(24 24 27 / 0.1);
   --zapp-shadow-overlay: 0 24px 64px rgb(24 24 27 / 0.24);
+  --zapp-shell-shadow: 0 16px 40px rgb(24 24 27 / 0.16);
 }
 
 .zapp-sr-only {

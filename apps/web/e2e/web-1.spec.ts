@@ -28,6 +28,8 @@ test.beforeEach(async ({ page }) => {
 
 test('follows the fake Stytch login redirect and callback cookie flow', async ({ page, context }) => {
   await page.goto('/login');
+  await expect(page.getByText('zapp.build', { exact: true })).toBeVisible();
+  await expect(page.getByText('Turn an idea into working software.')).toBeVisible();
   await page.getByRole('link', { name: 'Sign in' }).click();
 
   await expect(page).toHaveURL('/');
@@ -45,6 +47,21 @@ test('follows the fake Stytch login redirect and callback cookie flow', async ({
       && typed.query.hasProviderToken
       && typed.query.providerTokenType === 'discovery_oauth';
   })).toBe(true);
+});
+
+test('renders the authenticated product navigation around the prompt dashboard', async ({ page }) => {
+  await signIn(page);
+
+  const navigation = page.getByRole('navigation', { name: 'Primary' });
+  await expect(navigation.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/');
+  await expect(navigation.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
+  await expect(navigation.getByRole('link', { name: 'Templates' })).toHaveAttribute('href', '/templates');
+  await expect(navigation.getByRole('link', { name: 'Usage' })).toHaveAttribute('href', '/org/usage');
+  await expect(navigation.getByRole('link', { name: 'Billing' })).toHaveAttribute('href', '/org/billing');
+  await expect(page.getByRole('combobox', { name: 'Organization' })).toHaveValue(
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+  );
+  await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
 });
 
 test('redirects unauthenticated requests to login', async ({ page }) => {
