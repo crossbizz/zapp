@@ -480,6 +480,12 @@ Execution expansion (2026-08-12):
 - [ ] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
 - [ ] Commit: `build(images): publish immutable forge node mirror`
 
+Execution expansion (2026-08-12):
+
+- [ ] **17a RED — immutable lock:** reject an absent mirror, a mutable tag, a digest-only reference, and any registry/repository other than the public zapp GHCR image.
+- [ ] **17b GREEN — provider-neutral build:** render the existing validated `forge-node-base` recipe as a Dockerfile without importing a provider SDK, and publish the exact source revision from a least-privilege GHCR workflow.
+- [ ] **17c acceptance:** observe the registry digest, record `tag@sha256:digest`, pull that exact public reference once, then run image tests plus lint/typecheck/build.
+
 ## Testing strategy
 - Unit vs fakes for state machines/policies; env-gated integration against real Modal dev env (WS-4, WS-5, WS-7, WS-12); nightly E2E (WS-14).
 - The env-allowlist test (WS-11) and preview-auth test (WS-12) are permanent security suite members (referenced by OPS-12).
