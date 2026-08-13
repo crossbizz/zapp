@@ -86,7 +86,12 @@ test('renders usage burn-down and persists budget alert channels through the pub
   await signIn(page);
   await page.goto('/org/usage');
 
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Usage' })).toBeVisible();
+  await expect(
+    page.getByText('Track credit balance, spend, and budget alerts for your organization.'),
+  ).toBeVisible();
   await expect(page.getByText('82.5000 credits')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'By category' })).toBeVisible();
   await expect(page.getByText('model input tokens')).toBeVisible();
@@ -141,7 +146,11 @@ test('manages plan seats, payment method, and top-up checkout', async ({ page })
   await signIn(page);
   await page.goto('/org/billing');
 
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Billing' })).toBeVisible();
+  await expect(
+    page.getByText('Manage the organization plan, Stripe payment method, seats, and prepaid credits.'),
+  ).toBeVisible();
   await expect(page.getByText('Studio')).toBeVisible();
   await expect(page.getByRole('spinbutton', { name: 'Seats' })).toHaveValue('6');
   await page.getByRole('spinbutton', { name: 'Seats' }).fill('4');
@@ -180,12 +189,14 @@ test('shows the filterable audit table only to an organization owner', async ({ 
 
   await signIn(page);
   await page.goto('/org/audit');
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Audit log' })).toBeVisible();
+  await expect(page.getByText('Immutable organization activity, newest first.')).toBeVisible();
   await expect(page.getByRole('cell', { name: 'project.created' })).toBeVisible();
   await page.getByRole('combobox', { name: 'Action' }).selectOption('project.created');
   await expect.poll(() => auditReads).toBe(2);
 
-  await page.goto('/org/audit?organization=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await page.goto('/org/audit?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(page.getByRole('heading', { name: 'Owner access required' })).toBeVisible();
   expect(auditReads).toBe(2);
 });

@@ -23,6 +23,10 @@ test('renders production evidence and guards incompatible and compensation rollb
   await page.route(new RegExp(`${apiBaseUrl}/v1/releases/${releaseId}/rollback-preview`, 'u'), (route) => { const selected = new URL(route.request().url()).searchParams.get('toDeploymentId'); const state = selected === compensationId ? 'requires_compensation' : 'incompatible'; return apiResponse(route, { currentDeploymentId, targetDeploymentId: selected, targetReleaseId: selected === compensationId ? 'rel_compensation' : 'rel_incompatible', targetCommitSha: 'b'.repeat(40), databaseState: state, compensationApproved: false, allowed: false }); });
 
   await signIn(page); await page.goto(`/projects/${projectId}/health`);
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeVisible();
+  await expect(
+    page.getByText('Monitor production evidence and make guarded rollback decisions.'),
+  ).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Health checks failed' })).toBeVisible();
   await expect(page.getByText('Error rate: failed')).toBeVisible();
   await expect(page.getByText('Checkout returned 500.')).toBeVisible();

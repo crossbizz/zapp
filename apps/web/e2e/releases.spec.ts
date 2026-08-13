@@ -37,6 +37,10 @@ test('renders release history and every evidence criterion including failure', a
 
   await signIn(page);
   await page.goto(`/projects/${projectId}/releases`);
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toBeVisible();
+  await expect(
+    page.getByText('Review release evidence, deployment readiness, and production history.'),
+  ).toBeVisible();
   await expect(page.getByText('Active in production')).toBeVisible();
   await expect(page.getByText('managed', { exact: false })).toBeVisible();
   await page.getByRole('link', { name: releaseId }).click();

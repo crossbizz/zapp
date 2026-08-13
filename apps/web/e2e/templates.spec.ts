@@ -43,6 +43,9 @@ test.beforeEach(async ({ page }) => {
 test('renders the public gallery and template detail preview', async ({ page }) => {
   await page.goto('/templates');
   await expect(page.getByRole('heading', { name: 'Templates' })).toBeVisible();
+  await expect(
+    page.getByText('Start with a proven foundation, then remix it into your own product.'),
+  ).toBeVisible();
   await page.getByRole('link', { name: /Next\.js Starter/u }).click();
   await expect(page.getByText('Auth pre-built')).toBeVisible();
   await expect(page.getByText('Dashboard')).toBeVisible();

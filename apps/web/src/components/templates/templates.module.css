@@ -1,8 +1,14 @@
-.page { min-height: 100vh; padding: 2rem; color: var(--zapp-text-primary); background: var(--zapp-surface-subtle); font-family: var(--zapp-font-sans); }
+.page { min-height: 100vh; color: var(--zapp-text-primary); background: var(--zapp-surface-canvas); font-family: var(--zapp-font-sans); }
 .header, .grid, .detail { width: min(72rem, 100%); margin: 0 auto; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
-.card { display: grid; gap: .75rem; padding: 1.25rem; border: 1px solid var(--zapp-border); border-radius: var(--zapp-radius-16); color: inherit; background: var(--zapp-surface-raised); text-decoration: none; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr)); gap: 1rem; }
+.card { display: grid; gap: .75rem; overflow: hidden; border: 1px solid var(--zapp-border); border-radius: var(--zapp-radius-16); padding: 1rem; color: inherit; background: var(--zapp-surface-raised); text-decoration: none; transition: transform 160ms ease, box-shadow 160ms ease; }
+.card:hover, .card:focus-visible { transform: translateY(-2px); box-shadow: var(--zapp-shadow-card); }
+.card:focus-visible { outline: 3px solid var(--zapp-focus); outline-offset: 2px; }
+.card h2, .card p { margin: 0; }
+.cardPreview { display: grid; min-height: 9rem; grid-template-columns: repeat(3, 1fr); align-content: end; gap: .625rem; border-radius: .75rem; padding: 1rem; background: linear-gradient(135deg, #bfd8ff, #d8d1ff 48%, #ffb6de); }
+.cardPreview span { height: 3.5rem; border: 1px solid rgb(255 255 255 / .65); border-radius: .625rem; background: rgb(255 255 255 / .78); }
+.cardPreview span:nth-child(2) { height: 5rem; }
 .chips { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; list-style: none; }
 .chips li { padding: .25rem .625rem; border-radius: var(--zapp-radius-pill); color: var(--zapp-text-secondary); background: var(--zapp-surface-subtle); font-size: var(--zapp-text-12); }
 .detail { display: grid; grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr); gap: 1.5rem; }
