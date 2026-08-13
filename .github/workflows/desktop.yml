@@ -262,7 +262,7 @@ jobs:
       # v5 to match the pins in ci.yml / security.yml (FND-8); newer majors
       # exist and upgrading them is a repo-wide sweep, not this workflow's job.
       - name: Upload macOS zip
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: zapp-macos-${{ github.sha }}
           path: apps/desktop/out/make/zip/darwin/**/*.zip
@@ -411,7 +411,7 @@ jobs:
       # the traces and failure screenshots the fixtures attach.
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-playwright-report-${{ matrix.shard }}-${{ github.sha }}
           path: |
