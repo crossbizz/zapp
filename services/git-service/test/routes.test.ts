@@ -545,6 +545,7 @@ describe('POST /internal/git/tokens', () => {
 
   it('mints from the verified caller, not from the body', async () => {
     const runId = newId('run');
+    const requestedBy = newId('user');
     const response = await h.app.inject({
       method: 'POST',
       url: '/internal/git/tokens',
@@ -555,6 +556,7 @@ describe('POST /internal/git/tokens', () => {
         access: 'write',
         ttlSec: 120,
         runId,
+        requestedBy,
       },
     });
 
@@ -573,6 +575,7 @@ describe('POST /internal/git/tokens', () => {
       ttlSec: 120,
       requestingService: 'sandbox-service',
       runId,
+      requestedBy,
     });
   });
 

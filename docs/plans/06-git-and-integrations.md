@@ -286,8 +286,14 @@ Execution expansion (2026-08-12):
 **Files:** Modify git-service token boundary, control-api project route/client, OpenAPI/SDK/tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: session-authenticated, audited, `edit_code`-authorized, `no-store`, repository-scoped credential lease with maximum 300-second TTL; never persist tokens in remotes or desktop state.
-- [ ] Commit: `feat(git): public short-lived repository lease`
+- [x] Binding behavior: session-authenticated, audited, `edit_code`-authorized, `no-store`, repository-scoped credential lease with maximum 300-second TTL; never persist tokens in remotes or desktop state.
+- [x] Commit: `feat(git): public short-lived repository lease`
+
+Execution expansion (2026-08-12):
+
+- [x] **7a RED — public boundary:** require session, CSRF, tenant membership, project ownership, and `edit_code`; reject TTLs outside 1–300 seconds.
+- [x] **7b GREEN — scoped lease:** wrap the service-authenticated repository-derived mint, attribute the requesting user in its non-secret audit metadata, and return the credential once with `cache-control: no-store`.
+- [x] **7c generated client/security:** regenerate OpenAPI/SDK and prove foreign/viewer denial, exact scope/expiry, and absence from persisted project/repository state.
 
 ---
 
@@ -303,6 +309,7 @@ Execution expansion (2026-08-12):
 
 ## Execution log
 
+- 2026-08-12 GIT-7 done — Added a session-authenticated edit-code lease API over the existing repository-derived 300-second mint, with no-store responses, user-attributed non-secret audit metadata, generated SDK coverage, and no credential persistence.
 - 2026-08-12 GIT-6 done — Added three exact-SHA official template releases with strict source/demo validation and a server-only registry projection that omits repository identity.
 - 2026-08-12 GIT-5 done — Added exact-SHA bounded commit comparison and service-authenticated, registry-only idempotent template seeding with scoped credential cleanup; no provider call.
 - 2026-08-12 INT-10 done — Published GitHub sync state/policy/manual-refresh/export APIs over the existing divergence-safe engines and composed the server Git boundary; focused control 22/22, local-Git 5/5, SDK 56/56, lint/typecheck/build passed without a provider call.

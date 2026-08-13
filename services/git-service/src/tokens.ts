@@ -124,6 +124,8 @@ export interface MintTokenInput {
   /** Run and task attribution, when the caller has one. */
   readonly runId?: string;
   readonly taskId?: string;
+  /** Session user attribution forwarded by a trusted service, never a credential. */
+  readonly requestedBy?: string;
 }
 
 export interface MintedToken {
@@ -335,6 +337,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
           tokenUser: username,
           runId: input.runId ?? null,
           taskId: input.taskId ?? null,
+          ...(input.requestedBy === undefined ? {} : { requestedBy: input.requestedBy }),
         },
       });
 

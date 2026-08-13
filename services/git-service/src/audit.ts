@@ -46,6 +46,7 @@ export const GitTokenMintedAuditMetadataSchema = z
     tokenUser: z.string().regex(EPHEMERAL_USERNAME_PATTERN, 'Invalid ephemeral Git username'),
     runId: idSchema('run').nullable(),
     taskId: idSchema('task').nullable(),
+    requestedBy: idSchema('user').optional(),
   })
   .strict();
 export type GitTokenMintedAuditMetadata = z.infer<typeof GitTokenMintedAuditMetadataSchema>;

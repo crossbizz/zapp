@@ -14,7 +14,11 @@ import type { ProductAnalytics } from '@zapp/config';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
-import { GitServiceError, type GitServicePort } from '../git/port.js';
+import {
+  GitServiceError,
+  RepositoryCredentialLeaseSchema,
+  type GitServicePort,
+} from '../git/port.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
 import { DEFAULT_PAGE_SIZE } from '../pagination.js';
@@ -68,6 +72,9 @@ import {
  */
 
 const ProjectParams = z.object({ projectId: idSchema('proj') });
+const RepositoryLeaseBody = z.object({
+  ttlSec: z.number().int().min(1).max(300).default(300),
+}).strict();
 
 const NameSchema = z.string().trim().min(1).max(80);
 const DescriptionSchema = z.string().trim().max(2000);
@@ -468,6 +475,41 @@ export function registerProjectRoutes(app: AppInstance, deps: ProjectRoutesDeps)
         throw projectNotFound();
       }
       return { project: toProject(updated) };
+    },
+  );
+
+  app.post(
+    '/v1/projects/:projectId/repository-lease',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: {
+        params: ProjectParams,
+        body: RepositoryLeaseBody,
+        response: { 201: RepositoryCredentialLeaseSchema },
+      },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      authorize(ctx, 'edit_code');
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      const repository = await ctx.db.repositories.forProject(request.params.projectId);
+      if (project === undefined || repository === undefined) throw projectNotFound();
+      if (git.mintRepositoryLease === undefined) {
+        throw new ApiError('git_service_unavailable', 503, 'Repository credentials are unavailable.');
+      }
+      let lease;
+      try {
+        lease = await git.mintRepositoryLease({
+          organizationId: ctx.organizationId,
+          projectId: project.id,
+          requestedBy: actorOf(request),
+          ttlSec: request.body.ttlSec,
+        });
+      } catch {
+        throw new ApiError('git_service_unavailable', 503, 'Repository credentials are unavailable.');
+      }
+      void reply.header('cache-control', 'no-store');
+      return await reply.status(201).send(lease);
     },
   );
 

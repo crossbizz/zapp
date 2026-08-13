@@ -101,6 +101,15 @@ export class GitServiceImportConflictError extends GitServiceError {
  */
 export const GIT_CREATE_DEADLINE_MS = 10_000;
 export const GIT_IMPORT_DEADLINE_MS = 120_000;
+export const GIT_LEASE_DEADLINE_MS = 10_000;
+
+export const RepositoryCredentialLeaseSchema = z.object({
+  token: z.string().min(1),
+  username: z.string().min(1),
+  cloneUrl: z.string().url(),
+  expiresAt: z.string().datetime(),
+}).strict();
+export type RepositoryCredentialLease = z.infer<typeof RepositoryCredentialLeaseSchema>;
 
 export const GitRepositoryImportInputSchema = z
   .object({
@@ -164,6 +173,13 @@ export interface GitServicePort {
   importRepository?(input: GitRepositoryImportInput): Promise<GitRepositoryImportResult>;
   /** Present on the shipping client; required only for template-sourced project creation. */
   seedTemplate?(input: GitTemplateSeedInput): Promise<GitTemplateSeedResult>;
+  /** Present on the shipping client; returns one write credential and never stores it. */
+  mintRepositoryLease?(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly requestedBy: string;
+    readonly ttlSec: number;
+  }): Promise<RepositoryCredentialLease>;
 }
 
 export interface GitImportServicePort extends GitServicePort {
@@ -221,6 +237,9 @@ export function createRecordOnlyGitService(): GitImportServicePort {
       return Promise.reject(new GitServiceError('the git service is unavailable'));
     },
     seedTemplate() {
+      return Promise.reject(new GitServiceError('the git service is unavailable'));
+    },
+    mintRepositoryLease() {
       return Promise.reject(new GitServiceError('the git service is unavailable'));
     },
   };

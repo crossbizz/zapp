@@ -150,6 +150,7 @@ const MintTokenBody = z
     /** Attribution, when the caller has a run or a task to attribute to. */
     runId: idSchema('run').optional(),
     taskId: idSchema('task').optional(),
+    requestedBy: idSchema('user').optional(),
   })
   .strict();
 
@@ -694,7 +695,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
     },
     async (request, reply) => {
       const caller = serviceOf(request);
-      const { organizationId, projectId, access, ttlSec, runId, taskId } = request.body;
+      const { organizationId, projectId, access, ttlSec, runId, taskId, requestedBy } = request.body;
 
       let minted;
       try {
@@ -709,6 +710,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
           requestingService: caller.service,
           ...(runId === undefined ? {} : { runId }),
           ...(taskId === undefined ? {} : { taskId }),
+          ...(requestedBy === undefined ? {} : { requestedBy }),
         });
       } catch (error) {
         return refuse(request, error, 'mintToken');

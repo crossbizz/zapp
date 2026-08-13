@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createGitServiceClient, loadGitServiceUrl, resolveGitService } from '../src/git/client.js';
 import {
   GIT_CREATE_DEADLINE_MS,
+  GIT_LEASE_DEADLINE_MS,
   GIT_IMPORT_DEADLINE_MS,
   GitServiceImportConflictError,
   GitServiceError,
@@ -166,6 +167,25 @@ describe('the record-only stand-in', () => {
 });
 
 describe('the git service client', () => {
+  it('mints a bounded attributed write lease through the service-only route', async () => {
+    const stub = stubFetch(() =>
+      new Response(JSON.stringify({
+        token: 'one-time-token', username: 'zt-user',
+        cloneUrl: 'https://git.test/org/repo.git', expiresAt: '2026-08-12T12:05:00.000Z',
+      }), { status: 201, headers: { 'content-type': 'application/json' } }),
+    );
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const client = createGitServiceClient({
+      baseUrl: 'http://git-service:4500', serviceTokens: SERVICE_TOKENS, fetch: stub.fetch,
+    });
+
+    await expect(client.mintRepositoryLease?.({
+      organizationId: ORGANIZATION, projectId: PROJECT, requestedBy: newId('user'), ttlSec: 120,
+    })).resolves.toMatchObject({ token: 'one-time-token' });
+    expect(stub.calls[0]?.url).toBe('http://git-service:4500/internal/git/tokens');
+    expect(JSON.parse(stub.calls[0]?.init.body as string)).toMatchObject({ access: 'write', ttlSec: 120 });
+    expect(timeout).toHaveBeenCalledWith(GIT_LEASE_DEADLINE_MS);
+  });
   it('seeds only a server-approved template slug with a stable operation key', async () => {
     const stub = stubFetch(
       () =>

@@ -806,6 +806,76 @@ describe('updating a project', () => {
   });
 });
 
+describe('repository credential leases', () => {
+  it('returns one bounded no-store write credential to an editor without persisting it', async () => {
+    const mintRepositoryLease = vi.fn(() =>
+      Promise.resolve({
+        token: 'one-time-repository-token',
+        username: 'zt-lease-user',
+        cloneUrl: 'https://git.example.test/acme/project.git',
+        expiresAt: '2026-08-12T12:05:00.000Z',
+      }),
+    );
+    const wired = await wire({
+      git: {
+        createRepository: (input) =>
+          Promise.resolve({
+            internalRepoRef: `${input.organizationId.toLowerCase()}/${input.projectId.toLowerCase()}`,
+          }),
+        mintRepositoryLease,
+      },
+    });
+    const created = await create(wired, { name: 'Lease Me' });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(wired.owner),
+      payload: { ttlSec: 120 },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json()).toMatchObject({ token: 'one-time-repository-token' });
+    expect(mintRepositoryLease).toHaveBeenCalledWith({
+      organizationId: wired.organizationId,
+      projectId: created.project.id,
+      requestedBy: wired.owner.userId,
+      ttlSec: 120,
+    });
+    expect(JSON.stringify(wired.data.projects)).not.toContain('one-time-repository-token');
+    expect(JSON.stringify(wired.data.repositories)).not.toContain('one-time-repository-token');
+  });
+
+  it('rejects viewers, foreign projects, and TTLs above 300 seconds before minting', async () => {
+    const mintRepositoryLease = vi.fn(() => Promise.reject(new Error('must not mint')));
+    const wired = await wire({
+      git: { createRepository: () => Promise.resolve({ internalRepoRef: 'org/repo' }), mintRepositoryLease },
+    });
+    const created = await create(wired, { name: 'Protected Lease' });
+    const viewer = await join(wired, VIEWER, 'viewer');
+
+    const viewerResponse = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(viewer), payload: { ttlSec: 300 },
+    });
+    expect(viewerResponse.statusCode).toBe(403);
+
+    const foreign = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${'proj_0'.padEnd(31, '0')}/repository-lease`,
+      headers: wired.as(wired.owner), payload: { ttlSec: 300 },
+    });
+    expect(foreign.statusCode).toBe(404);
+
+    const overlong = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(wired.owner), payload: { ttlSec: 301 },
+    });
+    expect(overlong.statusCode).toBe(400);
+    expect(mintRepositoryLease).not.toHaveBeenCalled();
+  });
+});
+
 describe('the execution contract', () => {
   it('is 404 until a scan has produced one, then the newest version', async () => {
     const wired = await wire();

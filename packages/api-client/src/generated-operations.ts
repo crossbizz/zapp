@@ -1705,6 +1705,28 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/projects/{projectId}/repository-lease": {
+    "post": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": [],
+          "csrfToken": []
+        }
+      ],
+      "successResponses": {
+        "201": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/projects/{projectId}/runs": {
     "get": {
       "security": [
