@@ -1,4 +1,5 @@
 import { Button, EnvBadge, SupportLevelBadge, Tooltip } from '@zapp/ui';
+import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
 export type RepositorySyncState = 'synced' | 'ahead' | 'diverged' | 'unavailable';
@@ -56,6 +57,7 @@ export function TopBar({
   return (
     <header className="zapp-builder-top-bar">
       <div className="zapp-builder-project-identity">
+        <Link href="/projects">Projects</Link>
         <h1 className="zapp-builder-project-name">{projectName}</h1>
         <SupportLevelBadge level={supportLevel} />
         <EnvBadge environment="preview" />

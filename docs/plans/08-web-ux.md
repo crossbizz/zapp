@@ -242,8 +242,8 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Create: `src/app/org/{usage,billing,audit}/page.tsx`; a11y fixes across app
 **Effort:** L
 
-- [ ] Binding behavior: Usage: credits balance, burn-down by project/run/category (ledger aggregates), budget alerts config; Billing: plan card, seats, payment method (Stripe portal link), top-up credits (OPS-5 checkout); Audit: filterable table (Owner only); a11y: axe clean on home/dashboard/builder/deploy (CI gate), full keyboard e2e for prompt→preview→deploy path; activation analytics (PostHog via OPS-6): `signup, project_created, first_preview_ready, first_change_applied, plan_approved, first_deploy_succeeded` fired from event stream (client-side, org-scoped).
-- [ ] Commit: `feat(web): usage/billing/audit + accessibility gate + activation funnel`
+- [x] Binding behavior: Usage: credits balance, burn-down by project/run/category (ledger aggregates), budget alerts config; Billing: plan card, seats, payment method (Stripe portal link), top-up credits (OPS-5 checkout); Audit: filterable table (Owner only); a11y: axe clean on home/dashboard/builder/deploy (CI gate), full keyboard e2e for prompt→preview→deploy path; activation analytics (PostHog via OPS-6): `signup, project_created, first_preview_ready, first_change_applied, plan_approved, first_deploy_succeeded` fired from event stream (client-side, org-scoped).
+- [x] Commit: `feat(web): usage/billing/audit + accessibility gate + activation funnel`
 
 ---
 
@@ -258,6 +258,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-12 WEB-16 done — Closed the final WEB-14-dependent acceptance gap with a single keyboard-only prompt→preview→release→successful-deploy path, preserved the existing usage/billing/Owner-audit and exact activation contracts, and passed focused web E2E 6/6 plus activation 3/3, lint, and typecheck; no provider call was required.
 - 2026-08-12 WEB-15 done — Added the public production health/synthetic/monitoring annotation view, Fix creation, healthy-target selection, and non-mutating database compatibility preview that blocks incompatible and unapproved-compensation rollback; focused E2E passed 1/1 and web lint/typecheck/build passed.
 - 2026-08-12 WEB-14 done — Connected readiness/actions, server-classified confirmation, keyed deployment, live progress polling, safe failure actions, terminal success, custom-domain and rollback links through the generated public SDK; focused E2E passed 4/4 and web lint/typecheck/build passed.
 - 2026-08-12 WEB-16-FIX-1 done — The DEP-12a pre-push cold gate exposed WEB-16's manifest/test contract drift: the new activation test restored a broad glob while the gate still required the enumerated non-rebuilding command. Enumerated activation alongside the existing Node tests so it runs without weakening the cold task-graph assertion.

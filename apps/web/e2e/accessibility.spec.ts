@@ -6,6 +6,8 @@ const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
 const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
 const projectId = 'project-a11y';
+const releaseId = 'rel_01J00000000000000000000000';
+const deploymentId = 'dep_01J00000000000000000000000';
 const builderFixture = {
   branches: [
     {
@@ -177,6 +179,84 @@ async function mockCreation(page: Page): Promise<void> {
   });
 }
 
+async function mockDeployment(page: Page): Promise<void> {
+  const release = {
+    commitSha: 'a'.repeat(40),
+    createdAt: '2026-08-12T12:03:00.000Z',
+    createdBy: 'user-ada',
+    environmentId: 'env-preview',
+    evidenceManifestArtifactId: null,
+    id: releaseId,
+    organizationId: 'org-alpha',
+    projectId,
+    specificationId: null,
+    status: 'approved',
+  } as const;
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases(?:\\?.*)?$`, 'u'), async (route) => {
+    await response(route, {
+      items: [{ ...release, activeProduction: false, deployments: [], evidence: null, supportLevel: 'verified' }],
+      nextCursor: null,
+      rollbackTargets: [],
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}`, async (route) => {
+    await response(route, { release, readiness: { findings: [], state: 'ready' } });
+  });
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/evidence`, async (route) => {
+    const block = (gateId: string) => ({ gates: [{ class: 'support_level_policy', evidenceArtifactIds: [], gateId, status: 'passed' }], status: 'passed' });
+    await response(route, {
+      evidence: {
+        browser_tests: block('browser_smoke'),
+        build: block('production_build'),
+        commit_sha: release.commitSha,
+        criteria: [],
+        known_risks: [],
+        migration: block('migration_validation'),
+        preview: block('preview_health'),
+        release_id: releaseId,
+        rollback: block('rollback_readiness'),
+        security: block('secret_scan'),
+        specification_version: 1,
+        tests: block('unit_tests'),
+        typecheck: block('typecheck'),
+      },
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`, async (route) => {
+    await response(route, {
+      deploymentType: 'first_deploy',
+      effects: { activeUsers: 'No users affected', productionData: 'Created', secrets: 'Applied', url: 'Created' },
+      requiresExplicitDataDisposition: false,
+      title: 'First deploy',
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deploy`, async (route) => {
+    await response(route, { deploymentId });
+  });
+  await page.route(`${apiBaseUrl}/v1/deployments/${deploymentId}`, async (route) => {
+    await response(route, {
+      deploymentId,
+      environmentId: release.environmentId,
+      events: [],
+      projectId,
+      releaseId,
+      status: 'healthy',
+      terminalSuccess: {
+        customDomainAction: { href: `/v1/projects/${projectId}/domains`, method: 'POST' },
+        evidence: { statusLink: `/v1/releases/${releaseId}/evidence` },
+        monitoring: { faroAppLink: 'https://grafana.example.test/faro', grafanaDashboardLinks: [], posthogAnnotationLink: 'https://posthog.example.test/release' },
+        permanentUrl: 'https://accessible.example.test',
+        previewChanges: { note: 'Preview changes require a new release.', requireRedeploy: true },
+        previousHealthyRelease: null,
+        productionHealth: { status: 'healthy' },
+        release: { commitSha: release.commitSha, id: releaseId },
+        status: 'succeeded',
+      },
+      url: 'https://accessible.example.test',
+    });
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
 });
@@ -199,9 +279,11 @@ test('keeps home, dashboard, builder, and deploy-readiness entry axe clean', asy
   await axeClean(page);
 });
 
-test('creates a project and activates Preview using only keyboard controls', async ({ page }) => {
+test('runs prompt to Preview to successful deploy using only keyboard controls', async ({ page }) => {
   await mockBuilder(page);
   await mockCreation(page);
+  await mockDashboard(page);
+  await mockDeployment(page);
   await signIn(page);
   const prompt = page.getByRole('textbox', { name: 'Describe your project' });
   await tabTo(page, prompt);
@@ -216,6 +298,28 @@ test('creates a project and activates Preview using only keyboard controls', asy
   await tabTo(page, preview);
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
+
+  const projects = page.getByRole('link', { name: 'Projects' });
+  await tabTo(page, projects);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL('/projects');
+
+  const deployEntry = page.getByRole('link', { name: 'Deploy Accessible project' });
+  await tabTo(page, deployEntry);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(`/projects/${projectId}/releases`);
+
+  const releaseEntry = page.getByRole('link', { name: releaseId });
+  await tabTo(page, releaseEntry);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(`/projects/${projectId}/releases/${releaseId}`);
+
+  for (const name of ['Deploy', 'Continue', 'Confirm deployment']) {
+    const button = page.getByRole('button', { name });
+    await tabTo(page, button);
+    await page.keyboard.press('Enter');
+  }
+  await expect(page.getByRole('heading', { name: 'Deployment succeeded' })).toBeVisible();
 });
 
 test('reaches and activates the deploy-readiness entry using only keyboard controls', async ({
