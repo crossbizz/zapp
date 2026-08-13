@@ -9,10 +9,70 @@ import { getDyadWriteTags } from "@/ipc/utils/dyad_tag_parser";
 const SAFE_FIXTURE_NAME = /^[a-z0-9][a-z0-9/_-]*$/u;
 
 export type HybridFixtureTrigger = {
-  kind: "legacy" | "local-agent";
+  kind: "counter" | "legacy" | "local-agent" | "summary";
   name: string;
   operation: `user:${number}`;
 };
+
+export function hybridFixtureTurnIndex(
+  messages: unknown,
+  operation: `user:${number}`,
+): number {
+  if (!Array.isArray(messages)) {
+    throw new Error("Hybrid fixture messages must be an array");
+  }
+  const userIndex = Number(operation.slice("user:".length));
+  if (
+    !Number.isInteger(userIndex) ||
+    userIndex < 0 ||
+    userIndex >= messages.length
+  ) {
+    throw new Error("Hybrid fixture operation is outside the message list");
+  }
+  return messages.slice(userIndex + 1).filter((message) => {
+    if (typeof message !== "object" || message === null) return false;
+    const record = message as { role?: unknown; content?: unknown };
+    if (record.role !== "assistant" || !Array.isArray(record.content)) {
+      return false;
+    }
+    return record.content.some((part) => {
+      if (typeof part !== "object" || part === null) return false;
+      return (part as { type?: unknown }).type === "tool-call";
+    });
+  }).length;
+}
+
+export function hybridFixtureUsage(usage: Turn["usage"]): {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens: number;
+} {
+  if (usage === undefined) return { totalTokens: 1 };
+  return {
+    inputTokens: usage.prompt_tokens,
+    outputTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+  };
+}
+
+export async function waitForHybridFixtureDelay(
+  delayMs: number | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) return false;
+  if (delayMs === undefined || delayMs <= 0) return true;
+  return await new Promise<boolean>((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function userText(message: unknown): string | undefined {
   if (typeof message !== "object" || message === null) return undefined;
@@ -46,6 +106,14 @@ export function extractHybridFixtureTrigger(
     }
   }
   const selectedText = userText(messages[selectedIndex])?.trim();
+  const operation: `user:${number}` = `user:${selectedIndex}`;
+  if (selectedText === "[increment]") {
+    return { kind: "counter", name: "increment", operation };
+  }
+  const summaryMatch = selectedText?.match(/^Summarize from chat-id=(\d+)$/u);
+  if (summaryMatch?.[1] !== undefined) {
+    return { kind: "summary", name: `chat-${summaryMatch[1]}`, operation };
+  }
   const selectedMatch = selectedText?.match(/^tc=([a-z0-9][a-z0-9/_-]*)$/u);
   const selected =
     selectedMatch?.[1] === undefined
@@ -57,7 +125,6 @@ export function extractHybridFixtureTrigger(
     );
   }
   const rawName = selected.name;
-  const operation: `user:${number}` = `user:${selected.index}`;
   const localPrefix = "local-agent/";
   if (rawName.startsWith(localPrefix)) {
     const name = rawName.slice(localPrefix.length);

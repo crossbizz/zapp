@@ -15,7 +15,10 @@ type HybridBridgeDiagnosticGlobal = typeof globalThis & {
   __DYAD_HYBRID_BRIDGE__?: RendererIpcBridge;
 };
 
-configure({ asyncUtilTimeout: 5_000 });
+// Cold lazy-loaded renderer surfaces can take more than five seconds to
+// transform on CI. Keep the DOM wait below each integration test's own budget
+// while avoiding a timing-only failure on an otherwise healthy surface.
+configure({ asyncUtilTimeout: 20_000 });
 
 const h = vi.hoisted(() => {
   process.env.NODE_ENV = "development";

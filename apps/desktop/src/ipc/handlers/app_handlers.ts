@@ -2067,9 +2067,11 @@ export function registerAppHandlers() {
     return { thumbnails };
   });
 
-  void reconcileCloudSandboxes().catch((error) => {
-    logger.warn("Failed to reconcile cloud sandboxes on startup:", error);
-  });
+  if (!IS_TEST_BUILD) {
+    void reconcileCloudSandboxes().catch((error) => {
+      logger.warn("Failed to reconcile cloud sandboxes on startup:", error);
+    });
+  }
 
   // Test-only: flip needs_app_blueprint for an imported app so E2E tests can
   // exercise the blueprint flow (imports default to 0; only createApp sets it).

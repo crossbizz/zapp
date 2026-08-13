@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { app, type IpcMainInvokeEvent, type WebContents } from "electron";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import type {
   ChatStreamChunkPayload,
@@ -21,6 +21,7 @@ import type { ChatStreamParams } from "@/ipc/types";
 import { safeSend } from "@/ipc/utils/safe_sender";
 import { normalizeStoredChatMode } from "@/lib/chatMode";
 import type { ChatMode } from "@/lib/schemas";
+import { appendCancelledResponseNotice } from "@/shared/chatCancellation";
 import {
   handleLocalAgentStream,
   clearPendingLocalAgentInputsForChat,
@@ -103,18 +104,31 @@ function removeActive(chatId: number, stream: ActiveStream): void {
   if (streams.size === 0) activeStreams.delete(chatId);
 }
 
-function selectedMode(request: ChatStreamParams, storedMode: string | null): ChatMode {
-  return request.requestedChatMode ?? normalizeStoredChatMode(storedMode) ?? "local-agent";
+function selectedMode(
+  request: ChatStreamParams,
+  storedMode: string | null,
+): ChatMode {
+  return (
+    request.requestedChatMode ??
+    normalizeStoredChatMode(storedMode) ??
+    "local-agent"
+  );
 }
 
-function sendCancelled(sender: WebContents, chatId: number, stream: ActiveStream): void {
+function sendCancelled(
+  sender: WebContents,
+  chatId: number,
+  stream: ActiveStream,
+): void {
   safeSend(sender, "chat:response:end", {
     chatId,
     streamId: stream.streamId,
     updatedFiles: false,
     wasCancelled: true,
   } satisfies ChatStreamEndPayload);
-  safeSend(sender, "chat:stream:end", { chatId } satisfies ChatStreamTransportEndPayload);
+  safeSend(sender, "chat:stream:end", {
+    chatId,
+  } satisfies ChatStreamTransportEndPayload);
 }
 
 async function cancelStreams(
@@ -128,6 +142,22 @@ async function cancelStreams(
     sendCancelled(sender, chatId, stream);
   }
   await Promise.all(entries.map(async ({ stream }) => await stream.completion));
+  for (const chatId of new Set(entries.map((entry) => entry.chatId))) {
+    const [latestAssistant] = await db
+      .select({ id: messages.id, content: messages.content })
+      .from(messages)
+      .where(and(eq(messages.chatId, chatId), eq(messages.role, "assistant")))
+      .orderBy(desc(messages.id))
+      .limit(1);
+    if (latestAssistant !== undefined) {
+      await db
+        .update(messages)
+        .set({
+          content: appendCancelledResponseNotice(latestAssistant.content),
+        })
+        .where(eq(messages.id, latestAssistant.id));
+    }
+  }
   return true;
 }
 
@@ -148,7 +178,10 @@ export async function cancelActiveStreamsForChat(
   sender: WebContents,
 ): Promise<boolean> {
   return await cancelStreams(
-    [...(activeStreams.get(chatId) ?? [])].map((stream) => ({ chatId, stream })),
+    [...(activeStreams.get(chatId) ?? [])].map((stream) => ({
+      chatId,
+      stream,
+    })),
     sender,
   );
 }
@@ -175,7 +208,10 @@ async function runLocalChatStream(
     columns: { id: true, appId: true, chatMode: true },
   });
   if (chat === undefined) {
-    throw new DyadError(`Chat not found: ${request.chatId}`, DyadErrorKind.NotFound);
+    throw new DyadError(
+      `Chat not found: ${request.chatId}`,
+      DyadErrorKind.NotFound,
+    );
   }
 
   const abort = new AbortController();
@@ -193,10 +229,19 @@ async function runLocalChatStream(
   addActive(request.chatId, active);
 
   try {
-    if (!(await waitForBlock(chatBlocks, chatWaiters, request.chatId, abort.signal))) {
+    if (
+      !(await waitForBlock(
+        chatBlocks,
+        chatWaiters,
+        request.chatId,
+        abort.signal,
+      ))
+    ) {
       return request.chatId;
     }
-    if (!(await waitForBlock(appBlocks, appWaiters, chat.appId, abort.signal))) {
+    if (
+      !(await waitForBlock(appBlocks, appWaiters, chat.appId, abort.signal))
+    ) {
       return request.chatId;
     }
     safeSend(event.sender, "chat:stream:start", {
@@ -217,6 +262,7 @@ async function runLocalChatStream(
       selectedChatMode: mode,
       content: request.prompt,
       userInputRequestId: request.userInputRequestId,
+      redo: request.redo,
     });
     if (request.userInputRequestId !== undefined) {
       safeSend(event.sender, "chat:response:chunk", {
@@ -249,7 +295,8 @@ async function runLocalChatStream(
         model: "zapp-platform",
       })
       .returning({ id: messages.id });
-    if (placeholder === undefined) throw new Error("Could not create the assistant response.");
+    if (placeholder === undefined)
+      throw new Error("Could not create the assistant response.");
 
     await handleLocalAgentStream(event, request, abort, {
       placeholderMessageId: placeholder.id,

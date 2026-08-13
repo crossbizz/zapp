@@ -28,7 +28,7 @@ describe("resolveChatModeForTurn", () => {
         settings: makeFreeProSettings(),
       }),
     ).resolves.toMatchObject({ mode: "local-agent" });
-  });
+  }, 15_000);
 
   it("does not rewrite an explicit Build request", async () => {
     await expect(

@@ -100,7 +100,7 @@ describe("desktop local-agent chat composition", () => {
           provider: "anthropic",
           model: "test",
           finishReason: "tool-calls",
-          totalTokens: 10,
+          totalTokens: 11,
         },
         { type: "done" },
       ],
@@ -111,7 +111,7 @@ describe("desktop local-agent chat composition", () => {
           provider: "anthropic",
           model: "test",
           finishReason: "stop",
-          totalTokens: 10,
+          totalTokens: 12,
         },
         { type: "done" },
       ],
@@ -130,7 +130,7 @@ describe("desktop local-agent chat composition", () => {
           provider: "anthropic",
           model: "test",
           finishReason: "tool-calls",
-          totalTokens: 10,
+          totalTokens: 21,
         },
         { type: "done" },
       ],
@@ -141,7 +141,7 @@ describe("desktop local-agent chat composition", () => {
           provider: "anthropic",
           model: "test",
           finishReason: "stop",
-          totalTokens: 10,
+          totalTokens: 22,
         },
         { type: "done" },
       ],
@@ -152,7 +152,7 @@ describe("desktop local-agent chat composition", () => {
           provider: "anthropic",
           model: "test",
           finishReason: "stop",
-          totalTokens: 10,
+          totalTokens: 31,
         },
         { type: "done" },
       ],
@@ -245,18 +245,28 @@ describe("desktop local-agent chat composition", () => {
     );
     expect(
       database.$client
-        .prepare("SELECT content, commit_hash FROM messages WHERE id = ?")
+        .prepare(
+          "SELECT content, commit_hash, max_tokens_used FROM messages WHERE id = ?",
+        )
         .get(99),
     ).toEqual({
       content: "Implemented the local edit.",
       commit_hash: expect.stringMatching(/^[a-f0-9]{40}$/u),
+      max_tokens_used: 12,
     });
     const followUp = database.$client
-      .prepare("SELECT content, commit_hash FROM messages WHERE id = ?")
-      .get(100) as { content: string; commit_hash: string };
+      .prepare(
+        "SELECT content, commit_hash, max_tokens_used FROM messages WHERE id = ?",
+      )
+      .get(100) as {
+      content: string;
+      commit_hash: string;
+      max_tokens_used: number;
+    };
     expect(followUp).toEqual({
       content: "Implemented the follow-up edit.",
       commit_hash: expect.stringMatching(/^[a-f0-9]{40}$/u),
+      max_tokens_used: 22,
     });
     const first = database.$client
       .prepare("SELECT commit_hash FROM messages WHERE id = ?")
@@ -264,17 +274,23 @@ describe("desktop local-agent chat composition", () => {
     expect(followUp.commit_hash).not.toBe(first.commit_hash);
     expect(
       database.$client
-        .prepare("SELECT content, commit_hash FROM messages WHERE id = ?")
+        .prepare(
+          "SELECT content, commit_hash, max_tokens_used FROM messages WHERE id = ?",
+        )
         .get(101),
     ).toEqual({
       content: "The local project is ready.",
       commit_hash: null,
+      max_tokens_used: 31,
     });
     expect(
       new Set(completionRequests.map((request) => request.completionId)),
     ).toHaveLength(5);
     expect(JSON.stringify(completionRequests.at(2)?.messages)).toContain(
       "Add the follow-up module",
+    );
+    expect(JSON.stringify(completionRequests.at(2)?.messages)).toContain(
+      "Implemented the local edit.",
     );
     expect(JSON.stringify(completionRequests.at(4)?.messages)).toContain(
       "Summarize the local project",

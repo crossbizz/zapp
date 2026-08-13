@@ -59,6 +59,20 @@ describe("hybrid chat harness guards", () => {
       expect(result.event("chat:response:error")).toBeUndefined();
       expect(result.eventsFor("chat:response:chunk")).not.toHaveLength(0);
       expect(result.eventsFor("chat:response:end")).toHaveLength(1);
+      const request = harness.capturedCompletions().at(-1);
+      expect(request?.messages.at(-1)).toMatchObject({
+        role: "user",
+        content: "tc=local-agent/simple-response",
+      });
+      expect(request?.tools?.map((tool) => tool.name)).toEqual([
+        "read_file",
+        "list_files",
+        "write_file",
+        "apply_patch",
+        "copy_file",
+        "rename_file",
+        "delete_file",
+      ]);
     } finally {
       await harness.dispose();
     }
@@ -121,9 +135,10 @@ describe("hybrid chat harness guards", () => {
       ),
     ).toThrow("Invalid channel: missing:test-channel");
 
-    // A whitelisted channel with no registered handler (the test:* channels
-    // are always whitelisted but only registered in E2E builds) rejects and
-    // is recorded in missingChannels, failing dispose.
+    // Remove one whitelisted handler to exercise the bridge's missing-channel
+    // path in both normal Vitest and the package-level E2E_TEST_BUILD run.
+    // The node harness clears the whole handler map during dispose.
+    h.ipcHandlers.delete("test:set-node-mock");
     await expect(
       (window as TestWindow).electron.ipcRenderer.invoke("test:set-node-mock"),
     ).rejects.toThrow("test:set-node-mock");

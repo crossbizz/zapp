@@ -3,16 +3,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const { commitPnpmAllowBuildsConfigIfChangedMock } = vi.hoisted(() => ({
-  commitPnpmAllowBuildsConfigIfChangedMock: vi.fn(),
-}));
+const { commitPnpmAllowBuildsConfigIfChangedMock, settingsState } = vi.hoisted(
+  () => ({
+    commitPnpmAllowBuildsConfigIfChangedMock: vi.fn(),
+    settingsState: { apiKey: "test-key" as string | undefined },
+  }),
+);
 
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
     providerSettings: {
       auto: {
         apiKey: {
-          value: "test-key",
+          value: settingsState.apiKey,
         },
       },
     },
@@ -61,6 +64,10 @@ type ParsedMultipartUpload = {
   };
   files: Record<string, Buffer>;
 };
+
+afterEach(() => {
+  settingsState.apiKey = "test-key";
+});
 
 async function parseMultipartUpload(
   init: RequestInit | undefined,
@@ -657,6 +664,13 @@ describe("cloud_sandbox_provider response validation", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+  });
+
+  it("does not reconcile when no cloud credential is configured", async () => {
+    settingsState.apiKey = undefined;
+
+    await expect(reconcileCloudSandboxes()).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("throws when upload files response has an invalid previewUrl", async () => {

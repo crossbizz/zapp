@@ -20,10 +20,15 @@ export interface CompactionResult {
 }
 
 export async function markChatForCompaction(chatId: number): Promise<void> {
-  await db.update(chats).set({ pendingCompaction: true }).where(eq(chats.id, chatId));
+  await db
+    .update(chats)
+    .set({ pendingCompaction: true })
+    .where(eq(chats.id, chatId));
 }
 
-export async function isChatPendingCompaction(chatId: number): Promise<boolean> {
+export async function isChatPendingCompaction(
+  chatId: number,
+): Promise<boolean> {
   const chat = await db.query.chats.findFirst({
     where: eq(chats.id, chatId),
     columns: { pendingCompaction: true },
@@ -39,7 +44,8 @@ export async function checkAndMarkForCompaction(
   if (settings.enableContextCompaction === false) return false;
   const contextWindow = await getContextWindow();
   const provider = settings.selectedModel.provider;
-  if (!shouldTriggerCompaction(totalTokens, contextWindow, provider)) return false;
+  if (!shouldTriggerCompaction(totalTokens, contextWindow, provider))
+    return false;
   await markChatForCompaction(chatId);
   return true;
 }
@@ -54,7 +60,10 @@ export async function performCompaction(
   _appPath: string,
   _dyadRequestId: string,
   _onSummaryChunk?: (accumulatedText: string) => void,
-  options?: { createdAtStrategy?: "before-latest-user" | "now"; abortSignal?: AbortSignal },
+  options?: {
+    createdAtStrategy?: "before-latest-user" | "now";
+    abortSignal?: AbortSignal;
+  },
 ): Promise<CompactionResult> {
   if (options?.abortSignal?.aborted === true) {
     return { success: false, aborted: true, error: "Compaction aborted" };
@@ -65,7 +74,8 @@ export async function performCompaction(
   return {
     success: false,
     skipped: true,
-    error: "Legacy provider compaction is disabled; the local session transcript owns context.",
+    error:
+      "Legacy provider compaction is disabled; the local session transcript owns context.",
   };
 }
 

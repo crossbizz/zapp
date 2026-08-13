@@ -45,9 +45,8 @@ describe("cancelled message (integration)", () => {
       { timeout: 15_000 },
     );
 
-    // Start a stream whose fake response is delayed ([sleep=long]) so we
-    // can cancel it mid-flight, exactly like the e2e clicked "Cancel
-    // generation".
+    // Start a typed fixture whose gateway turn is abortably delayed so the
+    // real Cancel control can interrupt it mid-flight.
     const streamStarted = harness.waitForEvent(
       "chat:stream:start",
       (payload) =>
@@ -56,7 +55,7 @@ describe("cancelled message (integration)", () => {
         (payload as { chatId?: number }).chatId === harness.chatId,
       60_000,
     );
-    const { send } = await harness.typeInChat("tc=cancelled-test [sleep=long]");
+    const { send } = await harness.typeInChat("tc=local-agent/cancel-delayed");
     send();
     await streamStarted;
 
@@ -118,7 +117,7 @@ describe("cancelled message (integration)", () => {
         const messages = await harness.db.query.messages.findMany();
         expect(messages).toHaveLength(2);
         expect(messages[0].role).toBe("user");
-        expect(messages[0].content).toBe("tc=cancelled-test [sleep=long]");
+        expect(messages[0].content).toBe("tc=local-agent/cancel-delayed");
         expect(messages[1].role).toBe("assistant");
         // This notice is what the UI renders as the "Cancelled" indicator.
         expect(messages[1].content).toContain("[Response cancelled by user]");
@@ -130,11 +129,12 @@ describe("cancelled message (integration)", () => {
     // sent to the LLM. Baseline-aware wait: the cancelled turn already emitted
     // a chat:response:end, so gate on a NEW one.
     const followUpEnd = harness.waitForNextStreamEnd(harness.chatId);
-    const followUp = await harness.typeInChat("[dump] tc=follow-up");
+    const followUp = await harness.typeInChat("tc=local-agent/simple-response");
     followUp.send();
 
     await waitFor(
-      () => expect(screen.getByText("[dump] tc=follow-up")).toBeTruthy(),
+      () =>
+        expect(screen.getByText("tc=local-agent/simple-response")).toBeTruthy(),
       { timeout: 15_000 },
     );
     await followUpEnd;
@@ -150,9 +150,15 @@ describe("cancelled message (integration)", () => {
     // The Cancelled indicator is still rendered for the first turn.
     expect(screen.getAllByText("Cancelled").length).toBeGreaterThan(0);
 
-    const dump = harness.getServerDump();
-    expect(dump.text).toContain("tc=cancelled-test");
-    expect(dump.text).toContain("Response cancelled by user");
-    expect(dump.text).toContain("[dump] tc=follow-up");
+    const followUpRequest = harness.capturedCompletions().at(-1);
+    expect(JSON.stringify(followUpRequest?.messages)).toContain(
+      "tc=local-agent/cancel-delayed",
+    );
+    expect(JSON.stringify(followUpRequest?.messages)).toContain(
+      "Response cancelled by user",
+    );
+    expect(JSON.stringify(followUpRequest?.messages)).toContain(
+      "tc=local-agent/simple-response",
+    );
   }, 120_000);
 });

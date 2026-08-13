@@ -379,11 +379,13 @@ describe("app details actions (integration)", () => {
       withAppList: true,
     });
     await screen.findByTestId("app-list-container");
-    expect(
-      screen
-        .getByTestId("title-bar-app-name-button")
-        .getAttribute("data-app-name"),
-    ).toBe(first.name);
+    await waitFor(() => {
+      expect(
+        screen
+          .getByTestId("title-bar-app-name-button")
+          .getAttribute("data-app-name"),
+      ).toBe(first.name);
+    });
 
     fireEvent.click(await screen.findByTestId(`app-list-item-${second.name}`));
 

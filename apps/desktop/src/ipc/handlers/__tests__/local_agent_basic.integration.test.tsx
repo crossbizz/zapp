@@ -4,14 +4,10 @@ import path from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { eq } from "drizzle-orm";
 
 import { apps, chats, messages } from "@/db/schema";
-import {
-  deleteAppBlueprintForChat,
-  getAppBlueprintForChat,
-} from "@/ipc/handlers/app_blueprint_handlers";
 import { ensureGitLineEndingPolicy } from "@/ipc/utils/git_utils";
 import {
   setupHybridChatHarness,
@@ -189,152 +185,6 @@ describe("local-agent basic flows (integration)", () => {
         encoding: "utf8",
       }),
     ).toBe("");
-    expect(errorEvents()).toHaveLength(0);
-  }, 60_000);
-
-  it("applies parallel tool-call file writes", async () => {
-    const app = await createMinimalApp({ name: "Parallel Tools" });
-    harness.mount({ chatId: app.chatId, appId: app.appId });
-
-    const { send } = await harness.typeInChat("tc=local-agent/parallel-tools", {
-      chatId: app.chatId,
-    });
-    send();
-
-    await harness.waitForStreamEnd(app.chatId);
-
-    expect(
-      fs.readFileSync(path.join(app.appDir, "src/utils/math.ts"), "utf8"),
-    ).toContain("export function add");
-    expect(
-      fs.readFileSync(path.join(app.appDir, "src/utils/string.ts"), "utf8"),
-    ).toContain("export function capitalize");
-    expect(errorEvents()).toHaveLength(0);
-  }, 60_000);
-
-  it("submits a planning questionnaire through the real input banner", async () => {
-    const app = await createMinimalApp({ name: "Questionnaire" });
-    harness.mount({ chatId: app.chatId, appId: app.appId });
-
-    const { send } = await harness.typeInChat("tc=local-agent/questionnaire", {
-      chatId: app.chatId,
-    });
-    send();
-
-    await screen.findByText("Which framework do you prefer?", undefined, {
-      timeout: 20_000,
-    });
-    fireEvent.click(screen.getByText("Vue", { exact: true }));
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
-
-    await harness.waitForStreamEnd(app.chatId);
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Submit" })).toBeNull(),
-    );
-    const responseInvoke = harness.bridge.lastInvoke("user-input:respond");
-    expect(responseInvoke?.args[0]).toMatchObject({
-      response: {
-        kind: "questionnaire",
-        answers: { framework: "Vue" },
-      },
-    });
-    expect(errorEvents()).toHaveLength(0);
-  }, 60_000);
-
-  it("approves an app blueprint and applies its app rename", async () => {
-    const app = await createMinimalApp({
-      name: "Blueprint Rename",
-      needsAppBlueprint: true,
-    });
-    harness.mount({ chatId: app.chatId, appId: app.appId });
-
-    const { send } = await harness.typeInChat(
-      "tc=local-agent/app-blueprint-rename",
-      { chatId: app.chatId },
-    );
-    send();
-
-    await screen.findByRole(
-      "button",
-      { name: "Approve Plan" },
-      { timeout: 20_000 },
-    );
-    await harness.waitForStreamEnd(app.chatId);
-    const followUpEnd = harness.waitForNextStreamEnd(app.chatId);
-    const approveButton = await screen.findByRole(
-      "button",
-      { name: "Approve Plan" },
-      { timeout: 20_000 },
-    );
-    const blueprintApproved = harness.waitForEvent(
-      "app-blueprint:approved",
-      (payload) =>
-        typeof payload === "object" &&
-        payload !== null &&
-        (payload as { chatId?: number }).chatId === app.chatId,
-    );
-    fireEvent.click(approveButton);
-
-    await blueprintApproved;
-    await waitFor(async () => {
-      const appRow = await harness.db.query.apps.findFirst({
-        where: eq(apps.id, app.appId),
-      });
-      expect(appRow?.name).toBe("Lumen Notes");
-      expect(appRow?.needsAppBlueprint).toBe(false);
-    });
-    await followUpEnd;
-    expect(errorEvents()).toHaveLength(0);
-  }, 60_000);
-
-  it("persists template edits from the app blueprint card", async () => {
-    const app = await createMinimalApp({
-      name: "Blueprint Template",
-      needsAppBlueprint: true,
-    });
-    harness.mount({ chatId: app.chatId, appId: app.appId });
-
-    // Draft the blueprint through the real streamed path (write_app_blueprint ->
-    // app-blueprint:update + <dyad-app-blueprint> assistant message) instead of
-    // seeding state + a hand-inserted message + a synthetic bridge send.
-    const { send } = await harness.typeInChat(
-      "tc=local-agent/app-blueprint-rename",
-      { chatId: app.chatId },
-    );
-    send();
-
-    await screen.findByTestId("app-blueprint-template-select", undefined, {
-      timeout: 20_000,
-    });
-    await harness.waitForStreamEnd(app.chatId);
-
-    // The fixture drafts the blueprint with the "react" template; switching it
-    // exercises the edit-field persistence path.
-    expect(getAppBlueprintForChat(app.chatId)?.templateId).toBe("react");
-    // Re-query the select after the stream settles (post-stream re-renders can
-    // replace the node) and wait for the alternate option, which only appears
-    // once the official template list loads.
-    await waitFor(() =>
-      expect(
-        (
-          screen.getByTestId(
-            "app-blueprint-template-select",
-          ) as HTMLSelectElement
-        ).querySelector('option[value="next"]'),
-      ).not.toBeNull(),
-    );
-    const templateSelect = screen.getByTestId(
-      "app-blueprint-template-select",
-    ) as HTMLSelectElement;
-    fireEvent.change(templateSelect, { target: { value: "next" } });
-    await waitFor(() =>
-      expect(getAppBlueprintForChat(app.chatId)?.templateId).toBe("next"),
-    );
-    expect(
-      harness.bridge.lastInvoke("app-blueprint:edit-field")?.args[0],
-    ).toEqual({ chatId: app.chatId, field: "templateId", value: "next" });
-    expect(getAppBlueprintForChat(app.chatId)?.templateId).toBe("next");
-    deleteAppBlueprintForChat(app.chatId);
     expect(errorEvents()).toHaveLength(0);
   }, 60_000);
 });

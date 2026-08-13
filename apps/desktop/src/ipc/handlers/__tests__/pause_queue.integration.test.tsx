@@ -13,7 +13,7 @@ function queuedCountText(count: number) {
 }
 
 async function startMediumStream(harness: HybridChatHarness, chatId: number) {
-  const { send } = await harness.typeInChat("tc=1 [sleep=medium]", {
+  const { send } = await harness.typeInChat("tc=local-agent/queue-delayed", {
     chatId,
   });
   send();
@@ -25,8 +25,10 @@ async function queueMessages(
   chatId: number,
   messages: string[],
 ) {
-  for (const [index, message] of messages.entries()) {
-    await harness.pressEnterInChat(message, { chatId });
+  for (const [index] of messages.entries()) {
+    await harness.pressEnterInChat("tc=local-agent/simple-response", {
+      chatId,
+    });
     await waitFor(() =>
       expect(screen.getByTestId("queue-header").textContent).toMatch(
         queuedCountText(index + 1),
@@ -137,9 +139,13 @@ describe("pause queue (integration)", () => {
       expect(queueHeader.textContent).toMatch(queuedCountText(3)),
     );
 
-    await harness.pressEnterInChat("should send immediately", { chatId });
+    await harness.pressEnterInChat("tc=local-agent/simple-response", {
+      chatId,
+    });
 
-    await screen.findByText("should send immediately");
+    expect(
+      await screen.findAllByText("tc=local-agent/simple-response"),
+    ).not.toHaveLength(0);
     expect(queueHeader.textContent).toMatch(queuedCountText(3));
     expect(screen.getByText("Paused")).toBeTruthy();
   }, 60_000);

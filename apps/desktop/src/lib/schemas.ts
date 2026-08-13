@@ -553,13 +553,13 @@ export function getEffectiveDefaultChatMode(
   envVars: Record<string, string | undefined>,
   freeAgentQuotaAvailable?: boolean,
 ): ChatMode {
-  const isPro = isDyadProEnabled(settings);
-  const hasGoogleProviderSetup = isGoogleProviderSetup(settings, envVars);
-  const hasNonGoogleProviderSetup = isNonGoogleProviderSetup(settings, envVars);
-
   if (settings.defaultChatMode && settings.defaultChatMode !== "local-agent") {
     return settings.defaultChatMode;
   }
+
+  const isPro = isDyadProEnabled(settings);
+  const hasGoogleProviderSetup = isGoogleProviderSetup(settings, envVars);
+  const hasNonGoogleProviderSetup = isNonGoogleProviderSetup(settings, envVars);
 
   if (isPro) return "local-agent";
   if (freeAgentQuotaAvailable === false) return "build";

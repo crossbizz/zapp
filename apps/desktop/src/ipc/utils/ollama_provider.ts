@@ -12,8 +12,12 @@ export interface OllamaProvider {
   (modelId: string, settings?: OllamaChatSettings): LanguageModel;
 }
 
-export function createOllamaProvider(_options?: OllamaProviderOptions): OllamaProvider {
+export function createOllamaProvider(
+  _options?: OllamaProviderOptions,
+): OllamaProvider {
   return () => {
-    throw new Error("Direct local-model providers are disabled in zapp local sessions.");
+    throw new Error(
+      "Direct local-model providers are disabled in zapp local sessions.",
+    );
   };
 }

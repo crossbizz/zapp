@@ -1132,6 +1132,10 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
             ...input.budgets,
             maxTurns: existingTranscript.turns + input.budgets.maxTurns,
           };
+          const contextMessages = input.context.sections.map((section) => ({
+            role: "user" as const,
+            content: `[${section.kind}]\n${options.redact(section.content)}`,
+          }));
           existingTranscript = await transcripts.save(version, {
             ...draft,
             role: input.role,
@@ -1147,6 +1151,7 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
                   .filter((part): part is string => part !== undefined)
                   .join("\n\n"),
               },
+              ...contextMessages,
             ],
             tokensUsed: 0,
             inFlightCompletion: null,

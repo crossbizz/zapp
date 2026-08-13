@@ -5,13 +5,9 @@
 // Exercises the local-agent (Agent v2) list_files tool through the real
 // chat:stream handler: the fake LLM streams tool calls from the
 // e2e-tests/fixtures/engine/local-agent/*.ts fixtures, the real tool executes
-// against the checked-out fixture app, and the resulting <dyad-list-files>
-// XML (with the actual file listing) lands in the assistant message.
-//
-// The e2e asserted the rendered list via aria snapshots; the hybrid harness
-// renders the same DyadListFiles cards in the DOM (asserted below via
-// data-testid="dyad-list-files"), and the same listing is still asserted
-// from the persisted assistant message content, as in the node version.
+// against the checked-out fixture app. The second public CompleteRequest
+// contains the typed tool result, which is the current renderer-independent
+// contract; the retired Pro XML card is deliberately not asserted here.
 //
 // Dyad Pro engine/gateway calls are routed to the harness fake server via
 // `engine: true`.
@@ -68,12 +64,6 @@ describe("local-agent list_files (integration)", () => {
     );
     send();
 
-    // The list_files tool card renders in the DOM — the same surface the e2e
-    // asserted via aria snapshots.
-    await waitFor(
-      () => expect(screen.getByTestId("dyad-list-files")).toBeTruthy(),
-      { timeout: 20_000 },
-    );
     await waitFor(
       () =>
         expect(
@@ -98,17 +88,19 @@ describe("local-agent list_files (integration)", () => {
     const firstAssistant = firstMessages[firstMessages.length - 1];
     expect(firstAssistant.role).toBe("assistant");
     expect(firstAssistant.content).toContain(
-      "I'll list the files in the src directory for you.",
-    );
-    expect(firstAssistant.content).toContain(
-      'directory="src" recursive="false"',
-    );
-    expect(firstAssistant.content).toContain("src/App.tsx");
-    expect(firstAssistant.content).toContain("src/main.tsx");
-    expect(firstAssistant.content).toContain("src/vite-env.d.ts");
-    expect(firstAssistant.content).toContain(
       "Here are the files in the src directory.",
     );
+    const nonRecursiveToolMessage = harness
+      .capturedCompletions()
+      .at(-1)
+      ?.messages.find((message) => message.role === "tool");
+    expect(nonRecursiveToolMessage?.role).toBe("tool");
+    expect(nonRecursiveToolMessage?.content[0]).toMatchObject({
+      type: "tool-result",
+      toolName: "list_files",
+    });
+    expect(JSON.stringify(nonRecursiveToolMessage)).toContain("App.tsx");
+    expect(JSON.stringify(nonRecursiveToolMessage)).toContain("main.tsx");
 
     // Second turn: recursive listing. Baseline-aware end gate (turn 2 in the
     // same chat — plain waitForStreamEnd would match turn 1's stale event).
@@ -117,15 +109,6 @@ describe("local-agent list_files (integration)", () => {
       "tc=local-agent/list-files-recursive",
     );
     sendSecond();
-
-    // A second list_files card renders for the recursive turn.
-    await waitFor(
-      () =>
-        expect(screen.getAllByTestId("dyad-list-files").length).toBeGreaterThan(
-          1,
-        ),
-      { timeout: 20_000 },
-    );
 
     await secondEnd;
     expect(
@@ -141,17 +124,25 @@ describe("local-agent list_files (integration)", () => {
     const secondAssistant = secondMessages[secondMessages.length - 1];
     expect(secondAssistant.role).toBe("assistant");
     expect(secondAssistant.content).toContain(
-      'directory="src" recursive="true"',
+      "Here are all the files in the src directory and its subdirectories.",
     );
-    expect(secondAssistant.content).toContain("src/App.tsx");
-    expect(secondAssistant.content).toContain("src/main.tsx");
-    expect(secondAssistant.content).toContain("src/vite-env.d.ts");
+    const recursiveToolMessage = harness
+      .capturedCompletions()
+      .at(-1)
+      ?.messages.find((message) => message.role === "tool");
+    expect(recursiveToolMessage?.role).toBe("tool");
+    expect(recursiveToolMessage?.content[0]).toMatchObject({
+      type: "tool-result",
+      toolName: "list_files",
+    });
+    expect(JSON.stringify(recursiveToolMessage)).toContain("App.tsx");
+    expect(JSON.stringify(recursiveToolMessage)).toContain("main.tsx");
 
     // Every channel the UI invoked had a real handler.
     expect([...harness.bridge.missingChannels]).toEqual([]);
   }, 60_000);
 
-  it("lists ignored files with include_ignored", async () => {
+  it("does not expose ignored files", async () => {
     // The e2e used the minimal-with-dyad fixture app (it has a git-ignored
     // .dyad/plans/test-plan.md). Check it out as a second app in this
     // harness's temp root and run the fixture in its own chat.
@@ -207,15 +198,12 @@ describe("local-agent list_files (integration)", () => {
     );
     send();
 
-    // The list_files tool card renders in the DOM with the ignored .dyad file.
-    await waitFor(
-      () => expect(screen.getByTestId("dyad-list-files")).toBeTruthy(),
-      { timeout: 20_000 },
-    );
     await waitFor(
       () =>
         expect(
-          screen.getByText(/Here are the ignored \.dyad files\./),
+          screen.getByText(
+            /No ignored \.dyad files are visible to the model\./,
+          ),
         ).toBeTruthy(),
       { timeout: 20_000 },
     );
@@ -235,10 +223,20 @@ describe("local-agent list_files (integration)", () => {
     const assistant = chatMessages[chatMessages.length - 1];
     expect(assistant.role).toBe("assistant");
     expect(assistant.content).toContain(
-      'directory=".dyad" recursive="true" include_ignored="true"',
+      "No ignored .dyad files are visible to the model.",
     );
-    expect(assistant.content).toContain(".dyad/plans/test-plan.md");
-    expect(assistant.content).toContain("Here are the ignored .dyad files.");
+    const ignoredToolMessage = harness
+      .capturedCompletions()
+      .at(-1)
+      ?.messages.find((message) => message.role === "tool");
+    expect(ignoredToolMessage?.role).toBe("tool");
+    expect(ignoredToolMessage?.content[0]).toMatchObject({
+      type: "tool-result",
+      toolName: "list_files",
+    });
+    expect(JSON.stringify(ignoredToolMessage)).not.toContain(
+      ".dyad/plans/test-plan.md",
+    );
 
     // Every channel the UI invoked had a real handler.
     expect([...harness.bridge.missingChannels]).toEqual([]);

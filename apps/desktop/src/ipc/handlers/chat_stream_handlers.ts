@@ -2,7 +2,10 @@ import type { TextStreamPart, ToolSet } from "ai";
 
 import { cleanFullResponse } from "@/ipc/utils/cleanFullResponse";
 import { sanitizeMcpToolResult } from "@/ipc/utils/mcp_result_sanitizer";
-import { isModelRefusal, MODEL_REFUSAL_WARNING } from "@/ipc/utils/model_refusal";
+import {
+  isModelRefusal,
+  MODEL_REFUSAL_WARNING,
+} from "@/ipc/utils/model_refusal";
 import { escapeXmlAttr, escapeXmlContent } from "../../../shared/xmlEscape";
 import {
   blockNewStreamsForApp,
@@ -53,7 +56,9 @@ export function setPartialResponseForStream(
   partialResponses.set(controller, response);
 }
 
-export function takePartialResponseForStream(controller: AbortController): string {
+export function takePartialResponseForStream(
+  controller: AbortController,
+): string {
   const response = partialResponses.get(controller) ?? "";
   partialResponses.delete(controller);
   return response;
@@ -61,11 +66,17 @@ export function takePartialResponseForStream(controller: AbortController): strin
 
 type AsyncIterableStream<T> = AsyncIterable<T> & ReadableStream<T>;
 
-function parseMcpToolKey(toolKey: string): { serverName: string; toolName: string } {
+function parseMcpToolKey(toolKey: string): {
+  serverName: string;
+  toolName: string;
+} {
   const index = toolKey.lastIndexOf("__");
   return index < 0
     ? { serverName: "", toolName: toolKey }
-    : { serverName: toolKey.slice(0, index), toolName: toolKey.slice(index + 2) };
+    : {
+        serverName: toolKey.slice(0, index),
+        toolName: toolKey.slice(index + 2),
+      };
 }
 
 function escapeDyadTags(text: string): string {
@@ -77,7 +88,9 @@ export async function processStreamChunks(input: {
   fullResponse: string;
   abortController: AbortController;
   chatId: number;
-  processResponseChunkUpdate: (params: { fullResponse: string }) => Promise<string>;
+  processResponseChunkUpdate: (params: {
+    fullResponse: string;
+  }) => Promise<string>;
   includeReasoning?: boolean;
 }): Promise<{
   fullResponse: string;
@@ -93,7 +106,9 @@ export async function processStreamChunks(input: {
     let chunk = "";
     if (
       inThinkingBlock &&
-      !["reasoning-delta", "reasoning-end", "reasoning-start"].includes(part.type)
+      !["reasoning-delta", "reasoning-end", "reasoning-start"].includes(
+        part.type,
+      )
     ) {
       chunk = "</think>";
       inThinkingBlock = false;
@@ -105,7 +120,10 @@ export async function processStreamChunks(input: {
       modelRefused = true;
     } else if (part.type === "text-delta") {
       chunk += part.text;
-    } else if (part.type === "reasoning-delta" && input.includeReasoning !== false) {
+    } else if (
+      part.type === "reasoning-delta" &&
+      input.includeReasoning !== false
+    ) {
       if (!inThinkingBlock) {
         chunk = "<think>";
         inThinkingBlock = true;
@@ -119,7 +137,8 @@ export async function processStreamChunks(input: {
       chunk = `<dyad-mcp-tool-result server="${escapeXmlAttr(serverName)}" tool="${escapeXmlAttr(toolName)}" call-id="${escapeXmlAttr(part.toolCallId)}">\n${escapeXmlContent(part.output)}\n</dyad-mcp-tool-result>\n`;
     } else if (part.type === "tool-error") {
       const { serverName, toolName } = parseMcpToolKey(part.toolName);
-      const message = part.error instanceof Error ? part.error.message : String(part.error);
+      const message =
+        part.error instanceof Error ? part.error.message : String(part.error);
       chunk = `<dyad-mcp-tool-result server="${escapeXmlAttr(serverName)}" tool="${escapeXmlAttr(toolName)}" call-id="${escapeXmlAttr(part.toolCallId)}" is-error="true">\n${escapeXmlContent(sanitizeMcpToolResult(message).serialized)}\n</dyad-mcp-tool-result>\n`;
     }
     if (chunk === "") continue;
@@ -139,11 +158,17 @@ export function formatMessagesForSummary(
       ? values
       : [
           ...values.slice(0, 2),
-          { role: "system", content: `[... ${values.length - 8} messages omitted ...]` },
+          {
+            role: "system",
+            content: `[... ${values.length - 8} messages omitted ...]`,
+          },
           ...values.slice(-6),
         ];
   return messages
-    .map((message) => `<message role="${message.role}">${message.content}</message>`)
+    .map(
+      (message) =>
+        `<message role="${message.role}">${message.content}</message>`,
+    )
     .join("\n");
 }
 
@@ -160,5 +185,8 @@ export function removeDyadTags(text: string): string {
 export function hasUnclosedDyadWrite(text: string): boolean {
   const openings = [...text.matchAll(/<dyad-write[^>]*>/gu)];
   const lastOpening = openings.at(-1);
-  return lastOpening !== undefined && !/<\/dyad-write>/u.test(text.slice(lastOpening.index));
+  return (
+    lastOpening !== undefined &&
+    !/<\/dyad-write>/u.test(text.slice(lastOpening.index))
+  );
 }

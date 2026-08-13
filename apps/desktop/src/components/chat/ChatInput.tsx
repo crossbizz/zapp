@@ -347,10 +347,18 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   ]);
 
   // Token counting for context limit banner
-  const { result: tokenCountResult } = useCountTokens(
+  const { result: tokenCountResult, invalidateTokenCount } = useCountTokens(
     !isStreaming ? (chatId ?? null) : null,
     "",
   );
+  const wasStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    const streamJustSettled = wasStreamingRef.current && !isStreaming;
+    wasStreamingRef.current = isStreaming;
+    if (streamJustSettled) {
+      invalidateTokenCount();
+    }
+  }, [invalidateTokenCount, isStreaming]);
 
   const showBanner =
     !isStreaming &&

@@ -9,8 +9,8 @@ export const fixture: LocalAgentFixture = {
         {
           name: "list_files",
           args: {
-            directory: "src",
-            recursive: true,
+            path: "src",
+            maxDepth: 100,
           },
         },
       ],

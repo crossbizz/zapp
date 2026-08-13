@@ -1,12 +1,8 @@
 // Migrated from e2e-tests/local_agent_cancel_todos.spec.ts to the HYBRID
-// harness: real <ChatPanel>, real local-agent stream, real todo persistence,
-// and real renderer todo wiring.
+// harness: real <ChatPanel>, local-agent stream cancellation, and restore
+// coordination across multiple chats.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-
-import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import {
   setupHybridChatHarness,
@@ -39,66 +35,6 @@ describe("local-agent cancel todos (integration)", () => {
     await harness?.dispose();
   });
 
-  it("clears visible and persisted todos when a turn is cancelled", async () => {
-    harness.mount();
-    await waitFor(
-      () => {
-        expect(screen.getByTestId("messages-list")).toBeTruthy();
-        expect(screen.getByTestId("chat-input-container")).toBeTruthy();
-      },
-      { timeout: 15_000 },
-    );
-    await harness.selectChatMode("local-agent");
-
-    const todosDir = path.join(harness.appDir, ".dyad", "todos");
-    const streamStarted = harness.waitForEvent(
-      "chat:stream:start",
-      (payload) =>
-        !!payload &&
-        typeof payload === "object" &&
-        (payload as { chatId?: number }).chatId === harness.chatId,
-      60_000,
-    );
-    const { send } = await harness.typeInChat("tc=local-agent/cancel-todos");
-    send();
-    await streamStarted;
-
-    await screen.findByText("First cancellable task", {}, { timeout: 20_000 });
-    await waitFor(() => {
-      expect(fs.existsSync(todosDir)).toBe(true);
-      expect(fs.readdirSync(todosDir).length).toBeGreaterThan(0);
-    });
-
-    const cancelButton = await screen.findByLabelText(
-      /^(cancelGeneration|Cancel generation)$/,
-      {},
-      { timeout: 60_000 },
-    );
-    fireEvent.click(cancelButton);
-
-    const endEvent = await harness.waitForEvent(
-      "chat:response:end",
-      (payload) =>
-        !!payload &&
-        typeof payload === "object" &&
-        (payload as { chatId?: number }).chatId === harness.chatId &&
-        (payload as { wasCancelled?: boolean }).wasCancelled === true,
-      60_000,
-    );
-    expect(endEvent.payload).toMatchObject({
-      chatId: harness.chatId,
-      wasCancelled: true,
-    });
-
-    await waitFor(() =>
-      expect(screen.queryByText("First cancellable task")).toBeNull(),
-    );
-    await waitFor(() => {
-      const remaining = fs.existsSync(todosDir) ? fs.readdirSync(todosDir) : [];
-      expect(remaining).toHaveLength(0);
-    });
-  }, 90_000);
-
   it("cancels every background stream for the app before restoring", async () => {
     const initialCommitHash = await getCurrentCommitHash({
       path: harness.appDir,
@@ -128,12 +64,15 @@ describe("local-agent cancel todos (integration)", () => {
       .returning();
 
     const cancellationEventBaseline = harness.bridge.sentEvents.length;
-    const selectedStream = harness.streamChat("tc=local-agent/cancel-todos", {
+    const selectedStream = harness.streamChat("tc=local-agent/cancel-delayed", {
       chatId: selectedChat.id,
     });
-    const backgroundStream = harness.streamChat("tc=local-agent/cancel-todos", {
-      chatId: backgroundChat.id,
-    });
+    const backgroundStream = harness.streamChat(
+      "tc=local-agent/cancel-delayed",
+      {
+        chatId: backgroundChat.id,
+      },
+    );
 
     // Both fixtures create their assistant placeholders before entering a
     // 30-second delayed turn. Wait for that state so the restore definitely

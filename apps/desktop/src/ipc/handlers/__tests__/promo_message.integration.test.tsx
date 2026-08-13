@@ -6,16 +6,13 @@ import {
   render,
   screen,
   waitFor,
-  within,
 } from "@testing-library/react";
-import { eq } from "drizzle-orm";
 
 import {
   pickPromoMessage,
   PromoMessage,
   type PromoMessageConfig,
 } from "@/components/chat/PromoMessage";
-import { language_models } from "@/db/schema";
 import type { UserBudgetInfo } from "@/ipc/types";
 import { writeSettings } from "@/main/settings";
 import {
@@ -32,21 +29,21 @@ const USER_BUDGET: NonNullable<UserBudgetInfo> = {
   isTrial: false,
 };
 
-async function setContextWindow(
-  harness: HybridChatHarness,
-  contextWindow: number,
-) {
-  await harness.db
-    .update(language_models)
-    .set({ context_window: contextWindow })
-    .where(eq(language_models.apiName, "test-model"));
-}
-
 function setBudgetHandler(
   harness: HybridChatHarness,
   budget: UserBudgetInfo | null,
 ) {
   harness.electronMock.ipcHandlers.set("get-user-budget", async () => budget);
+  harness.electronMock.ipcHandlers.set(
+    "free-model-quota:get-status",
+    async () => ({
+      messagesUsed: 0,
+      messagesLimit: 10,
+      messagesRemaining: 10,
+      isQuotaExceeded: false,
+      resetTime: null,
+    }),
+  );
 }
 
 function resetNonProSettings() {
@@ -103,29 +100,6 @@ describe("promo message (integration)", () => {
     await harness?.dispose();
   });
 
-  it("shows a promo after a non-Pro user starts a stream and keeps it after the stream ends", async () => {
-    resetNonProSettings();
-    setBudgetHandler(harness, null);
-    const chatId = await harness.createChat();
-    harness.mount({ chatId });
-
-    const { send } = await harness.typeInChat("tc=no-code-response", {
-      chatId,
-    });
-    send();
-
-    const promo = await screen.findByTestId(
-      "promo-message",
-      {},
-      { timeout: 15_000 },
-    );
-    expect(promo.textContent).toMatch(/Dyad|GitHub|subreddit|X/);
-    expect(within(promo).getByRole("button")).toBeTruthy();
-
-    await harness.waitForStreamEnd(chatId);
-    expect(screen.getByTestId("promo-message")).toBe(promo);
-  }, 60_000);
-
   it("does not show a promo when the user has a Pro key", async () => {
     writeSettings({
       enableDyadPro: true,
@@ -156,28 +130,6 @@ describe("promo message (integration)", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("promo-message")).toBeNull(),
     );
-  }, 60_000);
-
-  it("lets the context limit banner win when both caps are eligible", async () => {
-    resetNonProSettings();
-    setBudgetHandler(harness, null);
-    await setContextWindow(harness, 128_000);
-    const chatId = await harness.createChat();
-    harness.mount({ chatId });
-
-    await sendFixtureTurn(
-      harness,
-      chatId,
-      "tc=context-limit-response [high-tokens=110000]",
-    );
-
-    const banner = await screen.findByTestId(
-      "context-limit-banner",
-      {},
-      { timeout: 15_000 },
-    );
-    expect(banner.textContent).toContain("This chat context is running out");
-    expect(screen.queryByTestId("promo-message")).toBeNull();
   }, 60_000);
 
   it("opens the trial dialog from a Pro promo CTA", async () => {

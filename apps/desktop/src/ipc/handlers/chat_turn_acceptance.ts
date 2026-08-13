@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNull } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import { chats, messages } from "@/db/schema";
@@ -17,6 +17,7 @@ export interface AcceptChatTurnInput {
   selectedChatMode: ChatMode;
   content: string;
   userInputRequestId?: string;
+  redo?: boolean;
 }
 
 export interface AcceptedChatTurn {
@@ -29,6 +30,48 @@ export function acceptChatTurn(
   input: AcceptChatTurnInput,
 ): AcceptedChatTurn {
   return database.transaction((tx) => {
+    if (input.userInputRequestId !== undefined) {
+      const existing = tx
+        .select({ id: messages.id })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.chatId, input.chatId),
+            eq(messages.userInputRequestId, input.userInputRequestId),
+          ),
+        )
+        .get();
+      if (existing !== undefined) {
+        tx.update(chats)
+          .set({ chatMode: input.selectedChatMode })
+          .where(and(eq(chats.id, input.chatId), isNull(chats.chatMode)))
+          .run();
+        return { userMessageId: null, authoritativeChatMode: null };
+      }
+    }
+
+    if (input.redo === true) {
+      const latestUser = tx
+        .select({ id: messages.id })
+        .from(messages)
+        .where(
+          and(eq(messages.chatId, input.chatId), eq(messages.role, "user")),
+        )
+        .orderBy(desc(messages.id))
+        .limit(1)
+        .get();
+      if (latestUser !== undefined) {
+        tx.delete(messages)
+          .where(
+            and(
+              eq(messages.chatId, input.chatId),
+              gte(messages.id, latestUser.id),
+            ),
+          )
+          .run();
+      }
+    }
+
     const insertedUserMessage = tx
       .insert(messages)
       .values({

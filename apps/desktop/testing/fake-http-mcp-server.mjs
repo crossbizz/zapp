@@ -5,51 +5,43 @@ import { z } from "zod/v3";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3002;
 
-const server = new McpServer({
-  name: "fake-http-mcp",
-  version: "0.1.0",
-});
+function createMcpServer() {
+  const server = new McpServer({
+    name: "fake-http-mcp",
+    version: "0.1.0",
+  });
 
-server.registerTool(
-  "calculator_add",
-  {
-    title: "Calculator Add",
-    description: "Add two numbers and return the sum",
-    inputSchema: { a: z.number(), b: z.number() },
-  },
-  async ({ a, b }) => {
-    const sum = a + b;
-    return {
-      content: [{ type: "text", text: String(sum) }],
-    };
-  },
-);
+  server.registerTool(
+    "calculator_add",
+    {
+      title: "Calculator Add",
+      description: "Add two numbers and return the sum",
+      inputSchema: { a: z.number(), b: z.number() },
+    },
+    async ({ a, b }) => ({
+      content: [{ type: "text", text: String(a + b) }],
+    }),
+  );
 
-server.registerTool(
-  "print_envs",
-  {
-    title: "Print Envs",
-    description: "Print the environment variables received by the server",
-    inputSchema: {},
-  },
-  async () => {
-    const envObject = Object.fromEntries(
-      Object.entries(process.env).map(([key, value]) => [key, value ?? ""]),
-    );
-    const pretty = JSON.stringify(envObject, null, 2);
-    return {
-      content: [{ type: "text", text: pretty }],
-    };
-  },
-);
+  server.registerTool(
+    "print_envs",
+    {
+      title: "Print Envs",
+      description: "Print the environment variables received by the server",
+      inputSchema: {},
+    },
+    async () => {
+      const envObject = Object.fromEntries(
+        Object.entries(process.env).map(([key, value]) => [key, value ?? ""]),
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(envObject, null, 2) }],
+      };
+    },
+  );
 
-// Create the StreamableHTTP transport
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,
-});
-
-// Connect the server to the transport
-await server.connect(transport);
+  return server;
+}
 
 // Create HTTP server
 const httpServer = createServer(async (req, res) => {
@@ -77,8 +69,29 @@ const httpServer = createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   try {
-    // Let the transport handle body parsing (it uses raw-body internally)
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Method not allowed." },
+          id: null,
+        }),
+      );
+      return;
+    }
+    // Stateless transports and servers are request-scoped. Reusing one after
+    // initialize makes the following initialized/tools requests fail.
+    const server = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+    await server.connect(transport);
     await transport.handleRequest(req, res);
+    res.once("close", () => {
+      void transport.close();
+      void server.close();
+    });
   } catch (error) {
     if (!res.headersSent) {
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -98,7 +111,6 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\nShutting down server...");
-  await transport.close();
   httpServer.close(() => {
     console.log("Server closed");
     process.exit(0);
@@ -107,7 +119,6 @@ process.on("SIGINT", async () => {
 
 process.on("SIGTERM", async () => {
   console.log("\nShutting down server...");
-  await transport.close();
   httpServer.close(() => {
     console.log("Server closed");
     process.exit(0);

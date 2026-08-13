@@ -1,17 +1,7 @@
-// Migrated from the deleted e2e-tests/local_agent_basic.spec.ts
-// "local-agent - dump request" snapshot: it captured the full LLM request
-// (system prompt + complete tool schema list) for the DEFAULT agent mode
-// (Pro local-agent) with enableCodeExplorer: false. The e2e masked the system
-// prompt in its snapshot, so the load-bearing coverage was the exact tool list
-// and the Pro-vs-ask/basic prompt shape. This hybrid test reproduces that golden
-// through the real UI + IPC stack: [dump] captures the request the real Send
-// button produced.
-//
-// The prompt-builder itself is snapshot-tested in
-// src/prompts/local_agent_prompt.test.ts; here we assert only that the assembled
-// Pro agent-mode prompt (not ask, not basic) is the one actually wired into the
-// request, plus the exact default tool NAME list.
-import fs from "node:fs";
+// The hybrid gateway captures the public CompleteRequest after Zod validation.
+// This proves the UI/main-process composition sends only the contained local
+// workspace tools; it intentionally does not snapshot removed provider-private
+// headers or the legacy Pro tool surface.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -46,7 +36,7 @@ describe("local-agent default request (integration)", () => {
     await harness?.dispose();
   });
 
-  it("sends the full Pro agent-mode tool list and system prompt", async () => {
+  it("sends the contained build-mode tool list through CompleteRequest", async () => {
     harness.mount();
     await waitFor(
       () => {
@@ -61,13 +51,8 @@ describe("local-agent default request (integration)", () => {
     await harness.selectChatMode("local-agent");
 
     const streamEnd = harness.waitForNextStreamEnd(harness.chatId);
-    const { send } = await harness.typeInChat("[dump]");
+    const { send } = await harness.typeInChat("tc=local-agent/simple-response");
     send();
-
-    await waitFor(
-      () => expect(screen.getByText(/dyad-dump-path/)).toBeTruthy(),
-      { timeout: 20_000 },
-    );
     await streamEnd;
     expect(
       harness.bridge.sentEvents.filter(
@@ -75,82 +60,26 @@ describe("local-agent default request (integration)", () => {
       ),
     ).toHaveLength(0);
 
-    const req = harness.getServerDump({ type: "request" });
-    expect(req.parsed.headers.authorization).toBe("Bearer testdyadkey");
-    expect(req.parsed.body.model).toBe("[[MODEL]]");
-
-    const tools = (req.parsed.body.tools ?? []) as Array<{
-      function?: { name: string; description: string };
-      name?: string;
-      description?: string;
-    }>;
-    const toolNames = tools.map((t) => t.function?.name ?? t.name).sort();
-    // The exact default (Pro, code-explorer-off) agent-mode toolset the e2e
-    // request snapshot asserted.
-    expect(toolNames).toEqual([
-      "add_dependency",
-      "add_integration",
-      "code_search",
-      "copy_file",
-      "delete_file",
-      "enable_nitro",
-      "execute_sandbox_script",
-      "explore_chat_history",
-      "generate_image",
-      "git_diff",
-      "git_log",
-      "git_restore_file",
-      "git_show_commit",
-      "git_show_file",
-      "git_status",
-      "grep",
-      "list_files",
-      "planning_questionnaire",
-      "read_chat",
+    const request = harness.capturedCompletions().at(-1);
+    expect(request).toBeDefined();
+    expect(request?.agentRole).toBe("builder");
+    expect(request?.tools?.map((tool) => tool.name)).toEqual([
       "read_file",
-      "read_guide",
-      "read_logs",
-      "rebuild_app",
-      "rename_file",
-      "restart_app",
-      "run_type_checks",
-      "search_replace",
-      "set_chat_summary",
-      "update_todos",
-      "web_crawl",
-      "web_fetch",
-      "web_search",
+      "list_files",
       "write_file",
+      "apply_patch",
+      "copy_file",
+      "rename_file",
+      "delete_file",
     ]);
-    // Tool descriptions are masked by the harness, keeping the payload
-    // snapshot-stable.
-    for (const t of tools) {
-      const name = t.function?.name ?? t.name;
-      const description = t.function?.description ?? t.description;
-      expect(description).toBe(`[[TOOL_DESC:${name}]]`);
-    }
-
-    // getServerDump masks the system message; read the raw dump to assert the
-    // unmasked prompt is the Pro agent-mode prompt (not ask, not basic).
-    const raw = JSON.parse(fs.readFileSync(req.dumpPath, "utf-8"));
-    const systemMessage = raw.body.messages.find(
-      (m: { role: string }) => m.role === "system",
+    const systemMessage = request?.messages.find(
+      (message) => message.role === "system",
     );
-    const systemText: string =
-      typeof systemMessage.content === "string"
-        ? systemMessage.content
-        : systemMessage.content.map((c: { text: string }) => c.text).join("");
-    // Shared role block (create/modify web apps) — distinguishes agent mode from
-    // the ask-mode "helps users understand" role.
+    const systemText =
+      systemMessage?.role === "system" ? systemMessage.content : "";
     expect(systemText).toContain(
-      "You are Zapp, an AI assistant that creates and modifies web applications.",
+      "You are the zapp local builder. Inspect the project, use only the provided tools",
     );
-    // Pro-only file-editing guidance (basic mode uses a shorter table).
-    expect(systemText).toContain(
-      "for moderately large edits, prefer several targeted `search_replace` calls over one `write_file`",
-    );
-    // Pro-only image generation block.
-    expect(systemText).toContain("<image_generation_guidelines>");
 
     // Every channel the UI invoked had a real handler.
     expect([...harness.bridge.missingChannels]).toEqual([]);

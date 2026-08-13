@@ -41,7 +41,19 @@ export async function resolveChatModeForTurn({
 }): Promise<ChatModeResolution & { settings: UserSettings }> {
   const modeForTurn = requestedChatMode ?? storedChatMode;
   const normalizedChatMode = normalizeStoredChatMode(modeForTurn);
-  const envVars = getChatModeEnvVars();
+  // Explicit non-Agent defaults are resolved without provider discovery. On
+  // macOS that discovery shells out for the login environment and can stall a
+  // busy cold test worker even though the result cannot affect this branch.
+  const explicitModeCannotFallback =
+    normalizedChatMode !== null && normalizedChatMode !== "local-agent";
+  const explicitDefaultCannotFallback =
+    normalizedChatMode === null &&
+    settings.defaultChatMode !== undefined &&
+    settings.defaultChatMode !== "local-agent";
+  const envVars =
+    explicitModeCannotFallback || explicitDefaultCannotFallback
+      ? {}
+      : getChatModeEnvVars();
   const freeAgentQuotaAvailable = await getFreeAgentQuotaAvailableIfNeeded(
     settings,
     normalizedChatMode,

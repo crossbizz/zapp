@@ -16,13 +16,10 @@ export function registerSettingsHandlers() {
     return readEffectiveSettings();
   });
 
-  createTypedHandler(
-    settingsContracts.validateProviderApiKey,
-    async () => {
-      throw new DyadError(
-        "Desktop model traffic uses the authenticated zapp platform; direct provider keys are disabled.",
-        DyadErrorKind.Precondition,
-      );
-    },
-  );
+  createTypedHandler(settingsContracts.validateProviderApiKey, async () => {
+    throw new DyadError(
+      "Desktop model traffic uses the authenticated zapp platform; direct provider keys are disabled.",
+      DyadErrorKind.Precondition,
+    );
+  });
 }

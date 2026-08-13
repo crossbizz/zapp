@@ -67,7 +67,14 @@ export default defineConfig({
           },
           include: hybridIntegrationTests,
           setupFiles: ["src/testing/hybrid.setup.ts"],
+          // Each file owns a cold harness/fake-service composition. On clean
+          // CI workers, lazy renderer transforms and startup can exceed the
+          // generic five-second unit-test budget before assertions begin.
+          testTimeout: 30_000,
           pool: "forks",
+          poolOptions: {
+            forks: { isolate: true },
+          },
         },
       },
     ],

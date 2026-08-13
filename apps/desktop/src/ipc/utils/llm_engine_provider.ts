@@ -26,7 +26,10 @@ export interface ExampleProviderSettings {
 export interface DyadEngineProvider {
   (modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
   chatModel(modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
-  freeChatModel(modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
+  freeChatModel(
+    modelId: ExampleChatModelId,
+    chatParams: ChatParams,
+  ): LanguageModel;
   responses(modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
   anthropic(modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
 }
@@ -38,16 +41,15 @@ function unavailable(): never {
   );
 }
 
-export function createDyadEngine(_options: ExampleProviderSettings): DyadEngineProvider {
-  return Object.assign(
-    () => unavailable(),
-    {
-      chatModel: () => unavailable(),
-      freeChatModel: () => unavailable(),
-      responses: () => unavailable(),
-      anthropic: () => unavailable(),
-    },
-  ) as DyadEngineProvider;
+export function createDyadEngine(
+  _options: ExampleProviderSettings,
+): DyadEngineProvider {
+  return Object.assign(() => unavailable(), {
+    chatModel: () => unavailable(),
+    freeChatModel: () => unavailable(),
+    responses: () => unavailable(),
+    anthropic: () => unavailable(),
+  }) as DyadEngineProvider;
 }
 
 export async function transcribeWithDyadEngine(

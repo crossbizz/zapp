@@ -2,22 +2,11 @@
 // node chat-flow harness to the HYBRID harness (real <ChatPanel> over the real
 // IPC stack).
 //
-// Ask mode for Pro users routes through the local agent in read-only mode.
-// Part 1: the ask-read-file fixture runs a read-only sandbox script
-// (execute_sandbox_script) that reads src/App.tsx; the completed <dyad-script>
-// card renders in the DOM (data-testid="dyad-script-card") and the XML lands
-// in the assistant message. Part 2: a fresh chat sends [dump] and the request
-// payload must contain ONLY the read-only toolset and preserve the engine auth
-// header through the hybrid harness's Node fetch seam.
-//
-// Dyad Pro engine/gateway calls are routed to the harness fake server via
-// `engine: true`.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+// Ask mode uses the same public CompleteRequest boundary as build mode but is
+// structurally limited to contained read tools.
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import fs from "node:fs";
-import path from "node:path";
-
-import { screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 
 import {
   setupHybridChatHarness,
@@ -48,7 +37,11 @@ describe("local-agent ask mode (integration)", () => {
     await harness?.dispose();
   });
 
-  it("runs read-only tools (sandbox read of App.tsx)", async () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("reads App.tsx through the contained read_file tool", async () => {
     harness.mount();
     await waitFor(
       () => {
@@ -65,26 +58,16 @@ describe("local-agent ask mode (integration)", () => {
     // don't read for existing chats.
     await harness.selectChatMode("ask");
 
-    const { send } = await harness.typeInChat("tc=local-agent/ask-read-file");
+    const { send } = await harness.typeInChat(
+      "tc=local-agent/ask-contained-read",
+    );
     send();
 
-    // The execute_sandbox_script tool call renders its dyad-script card in the
-    // DOM — the same surface the e2e asserted.
-    await waitFor(
-      () => expect(screen.getByTestId("dyad-script-card")).toBeTruthy(),
-      { timeout: 20_000 },
-    );
-    // The card header shows the script description, and the agent's final
-    // narration renders as message text.
-    await waitFor(
-      () => expect(screen.getByText("Check App.tsx length")).toBeTruthy(),
-      { timeout: 20_000 },
-    );
     await waitFor(
       () =>
         expect(
           screen.getByText(
-            /This is a simple React component that renders a div with the text/,
+            /This is a simple React component that renders the Minimal imported app text/,
           ),
         ).toBeTruthy(),
       { timeout: 20_000 },
@@ -105,28 +88,19 @@ describe("local-agent ask mode (integration)", () => {
     const assistant = messages[messages.length - 1];
     expect(assistant.role).toBe("assistant");
     const content = assistant.content;
-
     expect(content).toContain(
-      "Let me inspect the file in a read-only sandbox.",
+      "This is a simple React component that renders the Minimal imported app text.",
     );
-    expect(content).toContain(
-      "This is a simple React component that renders a div with the text 'Minimal imported app'. The component is exported as the default export.",
+    const toolResultRequest = harness.capturedCompletions().at(-1);
+    const toolMessage = toolResultRequest?.messages.find(
+      (message) => message.role === "tool",
     );
-
-    // Completed sandbox-script XML (duration varies, so match loosely).
-    expect(content).toMatch(
-      /<dyad-script description="Check App\.tsx length" state="finished" truncated="false" execution-ms="\d+">/,
-    );
-    // The script output is App.tsx's length — verify against the real file.
-    const appTsxLength = fs.readFileSync(
-      path.join(harness.appDir, "src/App.tsx"),
-      "utf8",
-    ).length;
-    const payloadMatch = content.match(
-      /<dyad-script [^>]*>([\s\S]*?)<\/dyad-script>/,
-    );
-    expect(payloadMatch).not.toBeNull();
-    expect(payloadMatch![1]).toContain(String(appTsxLength));
+    expect(toolMessage?.role).toBe("tool");
+    expect(toolMessage?.content[0]).toMatchObject({
+      type: "tool-result",
+      toolName: "read_file",
+    });
+    expect(JSON.stringify(toolMessage)).toContain("Minimal imported app");
 
     // Every channel the UI invoked had a real handler.
     expect([...harness.bridge.missingChannels]).toEqual([]);
@@ -153,14 +127,11 @@ describe("local-agent ask mode (integration)", () => {
     // Baseline-aware end gate: the previous it already produced
     // chat:response:end events on this bridge.
     const streamEnd = harness.waitForNextStreamEnd(chatId);
-    const { send } = await harness.typeInChat("[dump]", { chatId });
-    send();
-
-    // The dump-path marker streams back and renders as the assistant message.
-    await waitFor(
-      () => expect(screen.getByText(/dyad-dump-path/)).toBeTruthy(),
-      { timeout: 20_000 },
+    const { send } = await harness.typeInChat(
+      "tc=local-agent/simple-response",
+      { chatId },
     );
+    send();
 
     await streamEnd;
     expect(
@@ -169,45 +140,11 @@ describe("local-agent ask mode (integration)", () => {
       ),
     ).toHaveLength(0);
 
-    const req = harness.getServerDump({ type: "request" });
-    expect(req.parsed.headers.authorization).toBe("Bearer testdyadkey");
-    expect(req.parsed.body.model).toBe("[[MODEL]]");
-
-    const tools = (req.parsed.body.tools ?? []) as Array<{
-      function?: { name: string; description: string };
-      name?: string;
-    }>;
-    const toolNames = tools.map((t) => t.function?.name ?? t.name).sort();
-    // The exact read-only toolset the e2e request snapshot asserted.
-    expect(toolNames).toEqual([
-      "code_search",
-      "execute_sandbox_script",
-      "explore_chat_history",
-      "git_diff",
-      "git_log",
-      "git_show_commit",
-      "git_show_file",
-      "git_status",
-      "grep",
-      "list_files",
-      "read_chat",
+    const request = harness.capturedCompletions().at(-1);
+    expect(request?.tools?.map((tool) => tool.name)).toEqual([
       "read_file",
-      "read_guide",
-      "read_logs",
-      "run_type_checks",
-      "set_chat_summary",
-      "web_crawl",
-      "web_fetch",
-      "web_search",
+      "list_files",
     ]);
-    // Tool descriptions are masked by the harness, keeping the payload
-    // snapshot-stable.
-    for (const t of tools) {
-      const name = t.function?.name ?? t.name;
-      const description =
-        t.function?.description ?? (t as { description?: string }).description;
-      expect(description).toBe(`[[TOOL_DESC:${name}]]`);
-    }
 
     // Every channel the UI invoked had a real handler.
     expect([...harness.bridge.missingChannels]).toEqual([]);

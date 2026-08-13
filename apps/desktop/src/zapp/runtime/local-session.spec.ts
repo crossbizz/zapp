@@ -656,7 +656,7 @@ describe("desktop local agent session", () => {
     expect(changed.stdout).toContain("D\tsrc/delete.txt");
     expect(changed.stdout).toContain("R100\tsrc/copied.txt\tsrc/renamed.txt");
     database.$client.close();
-  });
+  }, 15_000);
 
   it("commits without executing repository-controlled Git filters", async () => {
     const root = await mkdtemp(join(tmpdir(), "zapp-local-git-filter-"));

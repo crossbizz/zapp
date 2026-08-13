@@ -70,7 +70,7 @@ describe("settings actions (integration)", () => {
       expect(readSettings().telemetryConsent).toBe("opted_in"),
     );
     expect(screen.queryByTestId("telemetry-accept-button")).toBeNull();
-  });
+  }, 15_000);
 
   it("rejects telemetry from the privacy banner", async () => {
     resetSettings();
@@ -190,7 +190,7 @@ describe("settings actions (integration)", () => {
     });
   });
 
-  it("validates Dyad Pro keys before saving provider settings", async () => {
+  it("does not validate direct provider keys", async () => {
     resetSettings();
 
     harness.mountSurface({
@@ -206,25 +206,21 @@ describe("settings actions (integration)", () => {
 
     const dialog = await screen.findByRole("alertdialog");
     expect(
-      within(dialog).getByRole("heading", { name: "API key rejected" }),
+      within(dialog).getByRole("heading", {
+        name: "Could not verify API key",
+      }),
     ).toBeTruthy();
-    expect(within(dialog).getByText(/Dyad rejected this API key/)).toBeTruthy();
+    expect(
+      within(dialog).getByText(
+        /Desktop model traffic uses the authenticated zapp platform/,
+      ),
+    ).toBeTruthy();
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Try another API key" }),
     );
     await waitFor(() => expect(dialog.isConnected).toBe(false));
     expect(readSettings().providerSettings.auto).toBeUndefined();
     expect(readSettings().enableDyadPro).not.toBe(true);
-
-    fireEvent.change(keyInput, { target: { value: "testdyadkey" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Key" }));
-
-    await screen.findByText("Current Key (Settings)");
-    await waitFor(() => {
-      const settings = readSettings();
-      expect(settings.providerSettings.auto?.apiKey?.value).toBe("testdyadkey");
-      expect(settings.enableDyadPro).toBe(true);
-    });
   }, 60_000);
 
   it("persists the Supabase SQL migration toggle from settings", async () => {

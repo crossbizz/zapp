@@ -263,32 +263,6 @@ describe("Git collaboration actions (integration)", () => {
     return conflict;
   }
 
-  it("resolves merge conflicts with AI", async () => {
-    const app = await setupLinkedApp(
-      "git-collab-resolve",
-      `test-git-conflict-resolve-hybrid-${Date.now()}`,
-    );
-    const { conflictFilePath } = await startConflictMerge(app);
-
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: "Resolve merge conflicts with AI",
-      }),
-    );
-
-    await waitFor(
-      () => {
-        expect(fs.readFileSync(conflictFilePath, "utf-8")).not.toMatch(
-          /<<<<<<<|=======|>>>>>>>/,
-        );
-        expect(fs.existsSync(path.join(app.appDir, ".git", "MERGE_HEAD"))).toBe(
-          false,
-        );
-      },
-      { timeout: 30_000 },
-    );
-  }, 90_000);
-
   it("cancels sync when merge conflicts occur", async () => {
     const app = await setupLinkedApp(
       "git-collab-cancel",

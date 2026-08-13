@@ -4,6 +4,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { eq } from "drizzle-orm";
 
 import { messages, language_models } from "@/db/schema";
+import { ipc } from "@/ipc/types";
 import {
   setupHybridChatHarness,
   type HybridChatHarness,
@@ -18,6 +19,19 @@ async function setContextWindow(
     .update(language_models)
     .set({ context_window: contextWindow })
     .where(eq(language_models.apiName, "test-model"));
+}
+
+async function seedAssistantUsage(
+  harness: HybridChatHarness,
+  chatId: number,
+  maxTokensUsed: number,
+) {
+  await harness.db.insert(messages).values({
+    chatId,
+    role: "assistant",
+    content: "Existing local-agent response",
+    maxTokensUsed,
+  });
 }
 
 describe("context limit banner (integration)", () => {
@@ -43,15 +57,8 @@ describe("context limit banner (integration)", () => {
   it("shows the near-limit warning and summarizes into a new chat", async () => {
     await setContextWindow(harness, 128_000);
     const originalChatId = await harness.createChat();
+    await seedAssistantUsage(harness, originalChatId, 110_000);
     harness.mount({ chatId: originalChatId });
-
-    const { send } = await harness.typeInChat(
-      "tc=context-limit-response [high-tokens=110000]",
-      { chatId: originalChatId },
-    );
-    send();
-
-    await harness.waitForStreamEnd(originalChatId);
 
     const banner = await screen.findByTestId(
       "context-limit-banner",
@@ -96,15 +103,19 @@ describe("context limit banner (integration)", () => {
   it("shows the long-context cost warning for large context models", async () => {
     await setContextWindow(harness, 1_000_000);
     const chatId = await harness.createChat();
+    await seedAssistantUsage(harness, chatId, 250_000);
     harness.mount({ chatId });
 
-    const { send } = await harness.typeInChat(
-      "tc=context-limit-response [high-tokens=250000]",
-      { chatId },
+    const assistant = (await harness.db.query.messages.findMany()).find(
+      (message) => message.chatId === chatId && message.role === "assistant",
     );
-    send();
-
-    await harness.waitForStreamEnd(chatId);
+    expect(assistant?.maxTokensUsed).toBe(250_000);
+    await expect(
+      ipc.chat.countTokens({ chatId, input: "" }),
+    ).resolves.toMatchObject({
+      actualMaxTokens: 250_000,
+      contextWindow: 1_000_000,
+    });
 
     const banner = await screen.findByTestId(
       "context-limit-banner",
@@ -117,28 +128,13 @@ describe("context limit banner (integration)", () => {
   it("does not show the banner while safely within the context window", async () => {
     await setContextWindow(harness, 128_000);
     const chatId = await harness.createChat();
+    await seedAssistantUsage(harness, chatId, 50_000);
     harness.mount({ chatId });
-
-    const { send } = await harness.typeInChat(
-      "tc=context-limit-response [high-tokens=50000]",
-      { chatId },
-    );
-    const countTokensCallsBeforeSend = harness.bridge.invokeLog.filter(
-      (entry) => entry.channel === "chat:count-tokens",
-    ).length;
-    send();
-
-    await harness.waitForStreamEnd(chatId);
-
-    // The banner renders off the chat:count-tokens query that refetches after
-    // the stream ends. Wait for that round-trip to complete (a wall-clock
-    // sleep here lets the absence check pass vacuously under load).
-    await waitFor(() => {
-      const settledAfterSend = harness.bridge.invokeLog.filter(
-        (entry) =>
-          entry.channel === "chat:count-tokens" && entry.status !== "pending",
-      ).length;
-      expect(settledAfterSend).toBeGreaterThan(countTokensCallsBeforeSend);
+    await expect(
+      ipc.chat.countTokens({ chatId, input: "" }),
+    ).resolves.toMatchObject({
+      actualMaxTokens: 50_000,
+      contextWindow: 128_000,
     });
     expect(screen.queryByTestId("context-limit-banner")).toBeNull();
   }, 60_000);

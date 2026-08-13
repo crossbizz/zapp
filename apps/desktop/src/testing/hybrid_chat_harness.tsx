@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import {
+  CompleteRequestSchema,
   GatewayStreamEventSchema,
   type CompleteRequest,
   type GatewayStreamEvent,
@@ -160,7 +161,10 @@ import {
 import { loadLocalAgentFixtureForTesting } from "../../testing/fake-llm-server/localAgentHandler";
 import {
   extractHybridFixtureTrigger,
+  hybridFixtureTurnIndex,
+  hybridFixtureUsage,
   loadLegacyFixtureTurnsForTesting,
+  waitForHybridFixtureDelay,
 } from "./legacy-fixture-adapter";
 
 const SECOND_SETUP_ERROR =
@@ -208,29 +212,65 @@ function testLocalAgentSession(chatId: number) {
  * they inject only the fixture gateway; missing fixture prompts still fail
  * closed instead of falling through to a network request.
  */
-function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
-  const turnIndexes = new Map<string, number>();
-
+function createHybridLocalAgentPlatform(
+  capture: (request: CompleteRequest) => void,
+): DesktopLocalAgentPlatform {
+  let counter = 0;
   return {
     async ensureSession({ chatId }) {
       return testLocalAgentSession(chatId);
     },
-    gateway(session) {
+    gateway(_session) {
       return {
         async *stream(
           request: CompleteRequest,
+          signal?: AbortSignal,
         ): AsyncIterable<GatewayStreamEvent> {
+          capture(
+            CompleteRequestSchema.parse(
+              JSON.parse(JSON.stringify(request)) as unknown,
+            ),
+          );
           const trigger = extractHybridFixtureTrigger(request.messages);
+          if (trigger.kind === "counter") {
+            counter += 1;
+            yield { type: "text-delta", text: `counter=${counter}` };
+            yield {
+              type: "usage",
+              provider: "hybrid-fixture",
+              model: "local-agent",
+              finishReason: "stop",
+              totalTokens: 1,
+            };
+            yield { type: "done" };
+            return;
+          }
+          if (trigger.kind === "summary") {
+            yield {
+              type: "text-delta",
+              text: "Summary complete. More EOM context is available in this new chat.",
+            };
+            yield {
+              type: "usage",
+              provider: "hybrid-fixture",
+              model: "local-agent",
+              finishReason: "stop",
+              totalTokens: 1,
+            };
+            yield { type: "done" };
+            return;
+          }
           const resolvedTurns =
             trigger.kind === "local-agent"
               ? await loadLocalAgentFixtureForTesting(trigger.name).then(
                   (fixture) => fixture.turns ?? fixture.passes?.[0]?.turns,
                 )
               : loadLegacyFixtureTurnsForTesting(trigger.name);
-          const turnKey = `${session.sessionId}:${trigger.operation}:${trigger.kind}:${trigger.name}`;
-          const turnIndex = turnIndexes.get(turnKey) ?? 0;
+          const turnIndex = hybridFixtureTurnIndex(
+            request.messages,
+            trigger.operation,
+          );
           const turn = resolvedTurns?.[turnIndex];
-          turnIndexes.set(turnKey, turnIndex + 1);
           if (turn === undefined) {
             yield {
               type: "error",
@@ -239,6 +279,7 @@ function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
             };
             return;
           }
+          if (!(await waitForHybridFixtureDelay(turn.delayMs, signal))) return;
           if (turn.text !== undefined) {
             yield { type: "text-delta", text: turn.text };
           }
@@ -255,7 +296,7 @@ function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
             provider: "hybrid-fixture",
             model: "local-agent",
             finishReason: turn.toolCalls?.length ? "tool-calls" : "stop",
-            totalTokens: 1,
+            ...hybridFixtureUsage(turn.usage),
           };
           yield { type: "done" };
         },
@@ -400,6 +441,9 @@ export interface ChatAttachmentSeed {
 export interface HybridChatHarness extends ChatFlowHarness {
   /** The renderer<->main bridge (missingChannels, sentEvents, settleInFlight). */
   bridge: RendererIpcBridge;
+
+  /** Immutable copies of the public gateway requests issued by this harness. */
+  capturedCompletions: () => readonly CompleteRequest[];
 
   /**
    * Render the real <ChatPanel> for a chat, with the router/query/jotai
@@ -729,6 +773,7 @@ export async function setupHybridChatHarness(
       registerChatStreamHandlers: false,
     });
     const nodeHarness = node;
+    const capturedCompletions: CompleteRequest[] = [];
     process.env.DYAD_DESKTOP_CONFIG_URL = `${nodeHarness.fakeLlmUrl}/api/desktop-config`;
 
     if (options.testBuild) {
@@ -748,7 +793,9 @@ export async function setupHybridChatHarness(
     configureLocalAgentStreamHandler(
       createLocalAgentStreamHandler({
         database: nodeHarness.db.$client,
-        platform: createHybridLocalAgentPlatform(),
+        platform: createHybridLocalAgentPlatform((request) => {
+          capturedCompletions.push(request);
+        }),
         redact: (value) => value,
       }),
     );
@@ -1490,7 +1537,11 @@ export async function setupHybridChatHarness(
         plan: /Plan/,
         "local-agent": /Agent/,
       };
-      const trigger = await screen.findByTestId("chat-mode-selector");
+      const triggers = await screen.findAllByTestId("chat-mode-selector");
+      const trigger = triggers.at(-1);
+      if (trigger === undefined) {
+        throw new Error("selectChatMode: no chat mode selector was rendered");
+      }
       await selectFromBaseUiSelect(trigger, matcher[mode]);
       await waitFor(() =>
         expect(trigger.getAttribute("aria-label")).toMatch(matcher[mode]),
@@ -1749,6 +1800,7 @@ export async function setupHybridChatHarness(
     return {
       ...nodeHarness,
       bridge,
+      capturedCompletions: () => capturedCompletions,
       mount,
       mountSurface,
       advanceFirstPromptClock,

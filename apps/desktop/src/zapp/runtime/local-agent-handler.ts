@@ -38,6 +38,39 @@ const StoredMessageCommitSchema = z
       .nullable(),
   })
   .strict();
+const StoredTranscriptRowSchema = z
+  .object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string(),
+  })
+  .strict();
+
+const MAX_TRANSCRIPT_CONTEXT_CHARS = 32_000;
+
+function priorTranscriptContext(
+  database: Database.Database,
+  chatId: number,
+  acceptedUserMessageId: number,
+): { content: string; tokenCount: number } | null {
+  const rows = z.array(StoredTranscriptRowSchema).parse(
+    database
+      .prepare<[number, number], unknown>(
+        `SELECT role, content
+             FROM messages
+            WHERE chat_id = ? AND id < ? AND content <> ''
+            ORDER BY id ASC`,
+      )
+      .all(chatId, acceptedUserMessageId),
+  );
+  if (rows.length === 0) return null;
+  const transcript = rows
+    .map(
+      (row) => `${row.role === "user" ? "User" : "Assistant"}: ${row.content}`,
+    )
+    .join("\n\n");
+  const content = transcript.slice(-MAX_TRANSCRIPT_CONTEXT_CHARS);
+  return { content, tokenCount: Math.ceil(content.length / 4) };
+}
 
 const READ_TOOLS = [
   "read_file",
@@ -153,6 +186,7 @@ function gatewayWithRendererUpdates(input: {
   readonly event: IpcMainInvokeEvent;
   readonly request: ChatStreamParams;
   readonly messageId: number;
+  readonly onUsage: (totalTokens: number) => void;
 }): SessionGateway {
   let content = "";
   let sentContent = "";
@@ -177,6 +211,12 @@ function gatewayWithRendererUpdates(input: {
             } satisfies ChatStreamChunkPayload);
             sentContent = content;
           }
+        }
+        if (
+          streamEvent.type === "usage" &&
+          streamEvent.totalTokens !== undefined
+        ) {
+          input.onUsage(streamEvent.totalTokens);
         }
         yield streamEvent;
       }
@@ -216,12 +256,16 @@ export function createLocalAgentStreamHandler(input: {
       ownership,
     );
     await runtime.hydrateOwnedPaths(ownership.load());
+    let maxTokensUsed: number | undefined;
     const gateway = gatewayWithRendererUpdates({
       gateway: input.platform.gateway(accounting),
       database: input.database,
       event,
       request,
       messageId: options.placeholderMessageId,
+      onUsage(totalTokens) {
+        maxTokensUsed = Math.max(maxTokensUsed ?? 0, totalTokens);
+      },
     });
     const session = createLocalAgentSession({
       database: input.database,
@@ -237,6 +281,11 @@ export function createLocalAgentStreamHandler(input: {
       },
     });
     const readOnly = options.readOnly === true || options.planModeOnly === true;
+    const transcript = priorTranscriptContext(
+      input.database,
+      request.chatId,
+      options.acceptedUserMessageId,
+    );
     const result = await session.run(
       {
         runId: accounting.runId,
@@ -258,8 +307,19 @@ export function createLocalAgentStreamHandler(input: {
           },
           taskId: accounting.taskId,
           tokenBudget: 100_000,
-          tokenCount: 0,
-          sections: [],
+          tokenCount: transcript?.tokenCount ?? 0,
+          sections:
+            transcript === null
+              ? []
+              : [
+                  {
+                    kind: "taskTranscript",
+                    content: transcript.content,
+                    tokenCount: transcript.tokenCount,
+                    sourceArtifactIds: [],
+                    sourceEventIds: [],
+                  },
+                ],
         },
         tools: [...(readOnly ? READ_TOOLS : LOCAL_TOOLS)],
         budgets: {
@@ -291,10 +351,15 @@ export function createLocalAgentStreamHandler(input: {
     input.database
       .prepare(
         `UPDATE messages
-            SET content = ?, commit_hash = ?
+            SET content = ?, commit_hash = ?, max_tokens_used = ?
           WHERE id = ?`,
       )
-      .run(result.summary, commit ?? null, options.placeholderMessageId);
+      .run(
+        result.summary,
+        commit ?? null,
+        maxTokensUsed ?? null,
+        options.placeholderMessageId,
+      );
 
     if (abortController.signal.aborted) return false;
     if (result.status !== "completed") {
