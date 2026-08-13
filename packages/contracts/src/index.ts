@@ -1,7 +1,9 @@
 export { idSchema, newId, type IdPrefix } from './ids.js';
 export {
   BudgetApprovalReasonSchema,
+  RunApprovalKindSchema,
   type BudgetApprovalReason,
+  type RunApprovalKind,
 } from './budget-approval.js';
 export {
   IntegralCreditDecimalSchema,

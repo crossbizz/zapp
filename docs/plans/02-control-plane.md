@@ -282,9 +282,17 @@ Execution expansion (2026-08-12; the portable artifact is a deterministic uncomp
 **Files:** Modify contracts, run/Mission Control routes, tenant ports, OpenAPI/SDK and tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: server-computed action eligibility/reasons; keyed retry-failed-task and skip-optional-phase routes over AR-23; strict discriminated approval decisions with stored id/kind matching and rollout-compatible budget behavior.
-- [ ] Verify generated SDK determinism, tenant/RBAC/idempotency behavior, and typed stale-state conflicts.
-- [ ] Commit: `feat(control-api): public builder controls and typed approvals`
+- [x] Binding behavior: server-computed action eligibility/reasons; keyed retry-failed-task and skip-optional-phase routes over AR-23; strict discriminated approval decisions with stored id/kind matching and rollout-compatible budget behavior.
+- [x] Verify generated SDK determinism, tenant/RBAC/idempotency behavior, and typed stale-state conflicts.
+- [x] Commit: `feat(control-api): public builder controls and typed approvals`
+
+Execution expansion (2026-08-12):
+
+- [x] **22a RED — public contract:** lock stable builder action/reason schemas, strict keyed retry/skip requests, discriminated approval kinds/decisions, and exact Temporal projections.
+- [x] **22b GREEN — Mission Control eligibility:** derive retry eligibility from terminal task/dependency state and skip eligibility from durable optional/start state; unknown, unsupported, stale, and terminal runs fail closed with stable reasons.
+- [x] **22c RED/GREEN — keyed mutations:** add tenant/RBAC/CSRF/idempotency tests and routes for failed-task retry and optional-phase skip; re-check state immediately before the AR-23 signal and return typed 409 conflicts without signalling.
+- [x] **22d RED/GREEN — typed approvals:** generalize the existing route/repository by stored approval kind while retaining the exact budget ceiling/accounting path; mismatched ids/kinds are 404 and conflicting replays are 409.
+- [x] **22e SDK/verification:** regenerate OpenAPI/SDK deterministically; run focused contracts/control/API-client tests, lint/typecheck/build, and diff/boundary checks; then record and commit once.
 
 ### Task CP-23 [M2]: Public conversation-card responses + artifacts
 
@@ -398,3 +406,4 @@ Execution expansion (2026-08-12; the portable artifact is a deterministic uncomp
 - 2026-08-10 CP-20 done — Added typed conversation events, idempotent continuation signalling, tenant-scoped R2 image attachments with run-scoped artifact events, a 10-image/8-MiB-per-image contract, and regenerated SDK support; no model-provider call required.
 - 2026-08-10 CP-21 done — Added the tenant-scoped public logs/restart/capture/screenshot bridge and generated SDK; capped review re-scoped ambiguous screenshot replay into CP-21-FIX-1, and no provider run was required.
 - 2026-08-10 CP-21-FIX-1 done — Fenced screenshot capture with a durable conditional artifact-store reservation, bounded replay reads, retry-safe completion audits, final round-2 PASS, and no provider call.
+- 2026-08-12 CP-22 done — Added server-derived builder eligibility, keyed retry/skip routes, typed stored-kind approvals, deterministic SDK output, and rollout-compatible budget decisions; the capped review aligned `dispatch_failed` and already-started optional phases with the mutation boundary and proved interleaved exact replay remains single-signal, full-suite drift updated the exact 85-route OpenAPI inventory, and no provider call was required.

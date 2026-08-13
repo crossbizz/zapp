@@ -3940,7 +3940,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -4002,7 +4002,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -8189,6 +8189,17 @@ export interface paths {
                     "application/json": {
                         /** @enum {string} */
                         decision: "approved" | "rejected";
+                        /**
+                         * @default budget_increase
+                         * @enum {string}
+                         */
+                        kind?: "budget_increase";
+                        reason?: string;
+                    } | {
+                        /** @enum {string} */
+                        decision: "approved" | "rejected";
+                        /** @enum {string} */
+                        kind: "specification" | "plan" | "plan_diff" | "migration" | "deploy";
                         reason?: string;
                     };
                 };
@@ -8240,6 +8251,16 @@ export interface paths {
                             approval: {
                                 absoluteCeiling: string;
                                 approvalId: string;
+                                /** @enum {string} */
+                                kind: "budget_increase";
+                                /** @enum {string} */
+                                status: "approved" | "rejected";
+                            };
+                        } | {
+                            approval: {
+                                approvalId: string;
+                                /** @enum {string} */
+                                kind: "specification" | "plan" | "plan_diff" | "migration" | "deploy";
                                 /** @enum {string} */
                                 status: "approved" | "rejected";
                             };
@@ -8592,6 +8613,20 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            actions: {
+                                retryFailedTasks: {
+                                    eligible: boolean;
+                                    /** @enum {string} */
+                                    reason: "eligible" | "run_not_active" | "mode_unsupported" | "task_not_found" | "task_not_failed" | "dependencies_unsatisfied";
+                                    taskId: string;
+                                }[];
+                                skipOptionalPhases: {
+                                    eligible: boolean;
+                                    phaseId: string;
+                                    /** @enum {string} */
+                                    reason: "eligible" | "run_not_active" | "mode_unsupported" | "phase_not_found" | "phase_required" | "phase_task_started" | "phase_already_skipped";
+                                }[];
+                            };
                             activeAgents: {
                                 agentId: string;
                                 role: string;
@@ -9000,6 +9035,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{runId}/phases/{phaseId}/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    phaseId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}/redirect": {
         parameters: {
             query?: never;
@@ -9179,6 +9290,82 @@ export interface paths {
                                 startedBy: string;
                                 status: string;
                             };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/tasks/{taskId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                    taskId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
                         };
                     };
                 };

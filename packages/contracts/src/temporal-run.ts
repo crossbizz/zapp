@@ -106,6 +106,13 @@ const BuilderControlIdentityShape = {
   mode: z.enum(['build', 'autonomous']),
 } as const;
 
+const ApprovalDecisionShape = {
+  ...SignalIdentityShape,
+  signal: z.literal('approval_decision'),
+  approvalId: idSchema('appr'),
+  decision: z.enum(['approved', 'rejected']),
+} as const;
+
 export const SignalRunInputSchema = z.union([
   z.object({ ...SignalIdentityShape, signal: z.literal('credit_balance_exhausted') }).strict(),
   z.object({ ...SignalIdentityShape, signal: z.enum(['pause', 'resume', 'cancel']) }).strict(),
@@ -125,6 +132,15 @@ export const SignalRunInputSchema = z.union([
     prompt: z.string().trim().min(1).max(20_000),
   }).strict(),
   z.object({ ...SignalIdentityShape, signal: z.literal('message'), message: MessageUserPayloadSchema }).strict(),
+  z.object({
+    ...ApprovalDecisionShape,
+    approvalKind: z.enum(['specification', 'plan', 'plan_diff']),
+    artifactId: idSchema('art'),
+  }).strict(),
+  z.object({
+    ...ApprovalDecisionShape,
+    approvalKind: z.enum(['migration', 'deploy']),
+  }).strict(),
   z.object({
     ...SignalIdentityShape,
     signal: z.literal('budget_approval'),
@@ -146,7 +162,7 @@ export type SignalRunInput = z.infer<typeof SignalRunInputSchema>;
 export const SignalRunResultSchema = z.object({ applied: z.boolean() }).strict();
 
 export interface TemporalRunSignalProjection {
-  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'budgetApprovalResolved' | 'retryFailedTask' | 'skipOptionalPhase';
+  readonly signalName: 'creditBalanceExhausted' | 'pause' | 'resume' | 'cancel' | 'redirect' | 'message' | 'budgetApprovalResolved' | 'retryFailedTask' | 'skipOptionalPhase' | 'autonomousSpecificationApproval' | 'autonomousPlanApproval' | 'approvalDecision';
   readonly payload: Record<string, unknown>;
 }
 
@@ -163,6 +179,40 @@ export function projectTemporalRunSignal(value: unknown): TemporalRunSignalProje
         decision: input.decision,
         reason: input.reason,
         ...(input.decision === 'approved' ? { absoluteCeiling: input.absoluteCeiling } : {}),
+      },
+    };
+  }
+  if (input.signal === 'approval_decision') {
+    if (input.approvalKind === 'specification') {
+      return {
+        signalName: 'autonomousSpecificationApproval',
+        payload: {
+          runId: input.runId,
+          artifactId: input.artifactId,
+          decision: input.decision,
+          operationKey: input.operationKey,
+        },
+      };
+    }
+    if (input.approvalKind === 'plan' || input.approvalKind === 'plan_diff') {
+      return {
+        signalName: 'autonomousPlanApproval',
+        payload: {
+          runId: input.runId,
+          artifactId: input.artifactId,
+          decision: input.decision,
+          operationKey: input.operationKey,
+        },
+      };
+    }
+    return {
+      signalName: 'approvalDecision',
+      payload: {
+        runId: input.runId,
+        approvalId: input.approvalId,
+        approvalKind: input.approvalKind,
+        decision: input.decision,
+        operationKey: input.operationKey,
       },
     };
   }

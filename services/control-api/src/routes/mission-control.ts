@@ -125,6 +125,43 @@ const RiskSchema = z
   })
   .strict();
 
+export const BuilderRetryReasonSchema = z.enum([
+  'eligible',
+  'run_not_active',
+  'mode_unsupported',
+  'task_not_found',
+  'task_not_failed',
+  'dependencies_unsatisfied',
+]);
+export const BuilderSkipReasonSchema = z.enum([
+  'eligible',
+  'run_not_active',
+  'mode_unsupported',
+  'phase_not_found',
+  'phase_required',
+  'phase_task_started',
+  'phase_already_skipped',
+]);
+const BuilderActionsSchema = z
+  .object({
+    retryFailedTasks: z.array(
+      z.object({
+        taskId: idSchema('task'),
+        eligible: z.boolean(),
+        reason: BuilderRetryReasonSchema,
+      }).strict(),
+    ),
+    skipOptionalPhases: z.array(
+      z.object({
+        phaseId: idSchema('phase'),
+        eligible: z.boolean(),
+        reason: BuilderSkipReasonSchema,
+      }).strict(),
+    ),
+  })
+  .strict();
+export type BuilderActions = z.infer<typeof BuilderActionsSchema>;
+
 export const MissionControlSchema = z
   .object({
     run: RunSchema,
@@ -145,6 +182,7 @@ export const MissionControlSchema = z
       .strict(),
     approvals: z.array(ApprovalSchema),
     risks: z.array(RiskSchema),
+    actions: BuilderActionsSchema,
   })
   .strict();
 
@@ -211,6 +249,13 @@ const ArtifactPayloadSchema = z.object({
   type: z.string().min(1),
   contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
 });
+const PlanArtifactPayloadSchema = z.object({
+  artifactId: idSchema('art'),
+  artifactType: z.literal('implementation_plan'),
+  phases: z.array(
+    z.object({ phaseId: idSchema('phase'), optional: z.boolean() }).strict(),
+  ),
+});
 const UsagePayloadSchema = z.object({
   creditsCharged: z.union([z.number(), z.string().regex(/^-?[0-9]+(?:\.[0-9]+)?$/u)]),
 });
@@ -250,6 +295,8 @@ type ApprovalProjection = z.infer<typeof ApprovalSchema>;
 
 interface Projection {
   currentPhase: z.infer<typeof PhaseSchema> | null;
+  readonly phases: Map<string, z.infer<typeof PhaseSchema>>;
+  readonly planPhases: Map<string, boolean>;
   readonly tasks: Map<string, TaskProjection>;
   readonly agents: Map<string, z.infer<typeof ActiveAgentSchema>>;
   readonly tools: Map<string, z.infer<typeof ToolCallSchema>>;
@@ -373,12 +420,15 @@ function buildMissionControl(
     },
     approvals: [...projection.approvals.values()],
     risks: [...projection.risks.values()],
+    actions: builderActionsFor(run, projection),
   });
 }
 
 function projectVisibleEvents(events: readonly MissionEvent[]): Projection {
   const projection: Projection = {
     currentPhase: null,
+    phases: new Map(),
+    planPhases: new Map(),
     tasks: new Map(),
     agents: new Map(),
     tools: new Map(),
@@ -407,6 +457,7 @@ function projectEvent(projection: Projection, event: MissionEvent): void {
         title: payload.data.title,
         status: payload.data.status,
       });
+      projection.phases.set(payload.data.phaseId, projection.currentPhase);
     }
     return;
   }
@@ -518,6 +569,13 @@ function projectEvent(projection: Projection, event: MissionEvent): void {
     return;
   }
   if (event.type === 'artifact.created') {
+    const plan = PlanArtifactPayloadSchema.safeParse(event.payloadJson);
+    if (plan.success) {
+      for (const phase of plan.data.phases) {
+        projection.planPhases.set(phase.phaseId, phase.optional);
+      }
+      return;
+    }
     const payload = ArtifactPayloadSchema.safeParse(event.payloadJson);
     if (payload.success && payload.data.type === 'screenshot') {
       projection.screenshots.push({
@@ -574,6 +632,15 @@ function applyStoredRows(
   rows: Awaited<ReturnType<ReturnType<typeof tenantOf>['db']['missionControl']['forRun']>>,
 ): void {
   if (rows.phases.length > 0) {
+    projection.phases.clear();
+    for (const stored of rows.phases) {
+      projection.phases.set(stored.id, {
+        id: stored.id,
+        sequence: stored.sequence,
+        title: stored.title,
+        status: stored.status,
+      });
+    }
     const phase =
       rows.phases.findLast((candidate) => candidate.status === 'running') ?? rows.phases.at(-1);
     projection.currentPhase =
@@ -659,6 +726,57 @@ function applyStoredRows(
     const credits = Number(rows.creditAccount.usedCredits);
     projection.creditsUsed = Number.isFinite(credits) ? credits : 0;
   }
+}
+
+export function deriveBuilderActions(
+  run: { readonly status: string; readonly mode: string },
+  events: readonly MissionEvent[],
+  rows: Awaited<ReturnType<ReturnType<typeof tenantOf>['db']['missionControl']['forRun']>>,
+): BuilderActions {
+  const projection = projectVisibleEvents(events);
+  applyStoredRows(projection, rows);
+  return builderActionsFor(run, projection);
+}
+
+function builderActionsFor(
+  run: { readonly status: string; readonly mode: string },
+  projection: Projection,
+): BuilderActions {
+  const active = ['queued', 'running', 'paused', 'waiting_for_approval'].includes(run.status);
+  const supported = run.mode === 'build' || run.mode === 'autonomous';
+  const retryFailedTasks = [...projection.tasks.values()].map(({ node, dependencies }) => {
+    let reason: z.infer<typeof BuilderRetryReasonSchema> = 'eligible';
+    if (!active) reason = 'run_not_active';
+    else if (!supported) reason = 'mode_unsupported';
+    else if (node.status !== 'failed') reason = 'task_not_failed';
+    else if (
+      dependencies.some((dependencyId) => {
+        const dependency = projection.tasks.get(dependencyId)?.node;
+        return dependency === undefined || !['completed', 'passed'].includes(dependency.status);
+      })
+    ) reason = 'dependencies_unsatisfied';
+    return { taskId: node.id, eligible: reason === 'eligible', reason };
+  });
+
+  const phaseIds = new Set([...projection.planPhases.keys(), ...projection.phases.keys()]);
+  const skipOptionalPhases = [...phaseIds].map((phaseId) => {
+    let reason: z.infer<typeof BuilderSkipReasonSchema> = 'eligible';
+    if (!active) reason = 'run_not_active';
+    else if (!supported) reason = 'mode_unsupported';
+    else if (projection.planPhases.get(phaseId) !== true) reason = 'phase_required';
+    else if (projection.phases.get(phaseId)?.status === 'skipped') reason = 'phase_already_skipped';
+    else if (
+      projection.phases.get(phaseId) !== undefined &&
+      !['queued', 'pending'].includes(projection.phases.get(phaseId)?.status ?? '')
+    ) reason = 'phase_task_started';
+    else if (
+      [...projection.tasks.values()].some(
+        ({ node }) => node.phaseId === phaseId && !['queued', 'pending'].includes(node.status),
+      )
+    ) reason = 'phase_task_started';
+    return { phaseId, eligible: reason === 'eligible', reason };
+  });
+  return BuilderActionsSchema.parse({ retryFailedTasks, skipOptionalPhases });
 }
 
 function taskGraphOf(tasks: ReadonlyMap<string, TaskProjection>): {

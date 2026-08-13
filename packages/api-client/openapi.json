@@ -2048,6 +2048,12 @@
                 "run.redirect_requested",
                 "run.redirected",
                 "run.redirect_rejected",
+                "run.task_retry_requested",
+                "run.task_retry_signalled",
+                "run.task_retry_rejected",
+                "run.phase_skip_requested",
+                "run.phase_skip_signalled",
+                "run.phase_skip_rejected",
                 "run.approval_resolved",
                 "workspace.create_requested",
                 "workspace.created",
@@ -2221,6 +2227,12 @@
                               "run.redirect_requested",
                               "run.redirected",
                               "run.redirect_rejected",
+                              "run.task_retry_requested",
+                              "run.task_retry_signalled",
+                              "run.task_retry_rejected",
+                              "run.phase_skip_requested",
+                              "run.phase_skip_signalled",
+                              "run.phase_skip_rejected",
                               "run.approval_resolved",
                               "workspace.create_requested",
                               "workspace.created",
@@ -10562,6 +10574,288 @@
         }
       }
     },
+    "/v1/runs/{runId}/tasks/{taskId}/retry": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "runId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "taskId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operationKey": {
+                      "type": "string",
+                      "pattern": "^op_[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "operationKey"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/phases/{phaseId}/skip": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "runId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^phase_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "phaseId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": [],
+            "csrfToken": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operationKey": {
+                      "type": "string",
+                      "pattern": "^op_[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "operationKey"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/runs/{runId}/messages": {
       "post": {
         "requestBody": {
@@ -10776,25 +11070,68 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "decision": {
-                    "type": "string",
-                    "enum": [
-                      "approved",
-                      "rejected"
-                    ]
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "approved",
+                          "rejected"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "budget_increase"
+                        ],
+                        "default": "budget_increase"
+                      }
+                    },
+                    "required": [
+                      "decision"
+                    ],
+                    "additionalProperties": false
                   },
-                  "reason": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 2000
+                  {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "approved",
+                          "rejected"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "specification",
+                          "plan",
+                          "plan_diff",
+                          "migration",
+                          "deploy"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "decision",
+                      "kind"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "decision"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -10834,39 +11171,91 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "approval": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "approvalId": {
-                          "type": "string",
-                          "pattern": "^appr_[0-9A-HJKMNP-TV-Z]{26}$"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "approved",
-                            "rejected"
-                          ]
-                        },
-                        "absoluteCeiling": {
-                          "type": "string",
-                          "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                        "approval": {
+                          "type": "object",
+                          "properties": {
+                            "approvalId": {
+                              "type": "string",
+                              "pattern": "^appr_[0-9A-HJKMNP-TV-Z]{26}$"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "budget_increase"
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "approved",
+                                "rejected"
+                              ]
+                            },
+                            "absoluteCeiling": {
+                              "type": "string",
+                              "pattern": "^\\d+(?:\\.\\d{1,4})?$"
+                            }
+                          },
+                          "required": [
+                            "approvalId",
+                            "kind",
+                            "status",
+                            "absoluteCeiling"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
-                        "approvalId",
-                        "status",
-                        "absoluteCeiling"
+                        "approval"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "approval": {
+                          "type": "object",
+                          "properties": {
+                            "approvalId": {
+                              "type": "string",
+                              "pattern": "^appr_[0-9A-HJKMNP-TV-Z]{26}$"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "specification",
+                                "plan",
+                                "plan_diff",
+                                "migration",
+                                "deploy"
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "approved",
+                                "rejected"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "approvalId",
+                            "kind",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "approval"
                       ],
                       "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "approval"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
@@ -12304,6 +12693,81 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "actions": {
+                      "type": "object",
+                      "properties": {
+                        "retryFailedTasks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "taskId": {
+                                "type": "string",
+                                "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "eligible": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "eligible",
+                                  "run_not_active",
+                                  "mode_unsupported",
+                                  "task_not_found",
+                                  "task_not_failed",
+                                  "dependencies_unsatisfied"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "taskId",
+                              "eligible",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "skipOptionalPhases": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "phaseId": {
+                                "type": "string",
+                                "pattern": "^phase_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "eligible": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "eligible",
+                                  "run_not_active",
+                                  "mode_unsupported",
+                                  "phase_not_found",
+                                  "phase_required",
+                                  "phase_task_started",
+                                  "phase_already_skipped"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "phaseId",
+                              "eligible",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "retryFailedTasks",
+                        "skipOptionalPhases"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -12320,7 +12784,8 @@
                     "screenshots",
                     "cost",
                     "approvals",
-                    "risks"
+                    "risks",
+                    "actions"
                   ],
                   "additionalProperties": false
                 }
