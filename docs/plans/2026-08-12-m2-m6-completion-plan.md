@@ -398,6 +398,26 @@ tracker.
 - Keep V-2 blocked and do not create a live result artifact.
 - Commit: `test(validation): harden repeat-change evidence contract`
 
+### Task 41: GATE-6 desktop suites in CI
+
+**Files:** `.github/workflows/desktop.yml`, focused workflow tests, master plan, tracker.
+
+- RED: prove pull requests cannot merge without the desktop Vitest corpus and every Playwright
+  project/spec being selected by CI.
+- GREEN: restore routine pull-request execution with bounded unit and sharded full-E2E jobs while
+  retaining the signed release packaging path and failure artifacts.
+- Commit: `ci(desktop): run full test suites on pull requests`
+
+### Task 42: GATE-7 Forgejo test-repository lifecycle
+
+**Files:** git-service integration fixtures/cleanup tests, master plan, tracker.
+
+- RED: reproduce repositories left behind after fixture failure or teardown.
+- GREEN: make cleanup fail closed and idempotent, verify a clean post-suite inventory, then remove
+  only structurally identified dev test repositories after an exact inventory.
+- Commit: `test(git-service): prevent orphaned Forgejo repositories`
+
 ## Execution log
 
+- 2026-08-12 Task 41 done — Re-enabled pull-request desktop unit and complete Playwright coverage with four bounded no-retry shards; release packaging stays signed/tag-or-manual and failure reports upload.
 - 2026-08-12 Task 40 done — Bound every repeat-change input and evidence reference to the fixed corpus, and required ten verified rollbacks; V-2 remains blocked with no live result artifact.

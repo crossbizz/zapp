@@ -294,6 +294,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 
 ## Execution log
 
+- 2026-08-12 GATE-6 done — Pull requests now run the complete desktop `test:unit` corpus and all Playwright specs in four bounded, no-retry shards with failure reports; signed tag/manual packaging remains separate.
 - 2026-08-12 M2-GATE passed: Static and local acceptance evidence is green: Turbo completed 94 tasks, web Playwright 109/109, control-api unit 817 passed with 9 explicit provider skips, workspace-agent 114/114, orchestrator unit 220/220, planning 10/10, database 52/52, git-service live 18/18, verification 9/9, and orchestrator integration 45/45. The full hook was interrupted after an unrelated worktree contaminated the shared database, so the hook itself is not reported green; uncontaminated exact-head reruns passed control integration 307 with 6 explicit provider skips, tenant isolation 55/55, and local Forgejo Gate-5 1/1.
 - 2026-08-12 M3-GATE passed: The verifier, browser, repair, autonomous, and fix paths are covered by the green local suites above; the benchmark catalog validates 10 apps and 50 changes, and the evidence matrix reports 15 verified, 6 candidates, 1 V-2-blocked, and 0 failed without treating candidate evidence as complete.
 - 2026-08-12 M4-GATE BLOCKED: The local release E2E path passed 1/1 and local Forgejo Gate-5 passed 1/1, but GitHub, Supabase, Neon, Stripe, and Fly live-provider acceptance skipped visibly because credentials were absent. M4 remains open until those provider-backed exit paths produce evidence.
