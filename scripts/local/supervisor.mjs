@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
-import { loadLocalConfig, LocalPreflightError } from './config.mjs';
+import { loadLocalConfig, loadLocalForgejoEnv, LocalPreflightError } from './config.mjs';
 import { createProcessSupervisor } from './process.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -126,6 +126,7 @@ export async function runLocal(options = {}) {
   const waitForHttp = options.waitForHttp ?? defaultWaitForHttp;
   const verifyImages = options.verifyImages ?? defaultVerifyImages;
   const openBrowser = options.openBrowser ?? defaultOpenBrowser;
+  const loadForgejoEnv = options.loadForgejoEnv ?? (() => loadLocalForgejoEnv({ cwd: config.cwd }));
   const signals = options.signals ?? process;
   const output = options.output ?? ((line) => process.stdout.write(`${line}\n`));
   const supervisor =
@@ -180,6 +181,9 @@ export async function runLocal(options = {}) {
 
     output('[local] starting infrastructure');
     await runPnpm(['exec', 'bash', 'scripts/dev-up.sh']);
+    const forgejoEnv = await loadForgejoEnv();
+    Object.assign(config.env, forgejoEnv);
+    config.redactions.push(forgejoEnv.FORGEJO_ADMIN_TOKEN);
     await runPnpm(['db:migrate']);
     await runPnpm(['turbo', 'run', 'build', '--filter=!@zapp/desktop']);
     await controlled(verifyImages(config));

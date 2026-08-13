@@ -53,6 +53,10 @@ test('wires every local process and readiness edge with seam providers and clean
     verifyImages: async () => {
       events.push('image-lock:verified-by-seam');
     },
+    loadForgejoEnv: async () => ({
+      FORGEJO_URL: 'http://127.0.0.1:3300',
+      FORGEJO_ADMIN_TOKEN: 'local-smoke-token',
+    }),
     openBrowser: async () => {
       externalProviderCalls += 1;
     },

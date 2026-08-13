@@ -13,7 +13,7 @@ import {
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
   requireFlexpriceForEnvironment,
-  loadGitHubAppEnv,
+  loadOptionalGitHubAppEnv,
   loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
@@ -180,9 +180,7 @@ const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
 const stripeBillingConfig = requireStripeBillingForEnvironment(env, loadStripeBillingEnv());
 const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
-const github = loadGitHubAppEnv();
-const githubQueueConfig = loadGitHubWebhookQueueEnv();
-const githubImportQueueConfig = loadGitHubImportQueueEnv();
+const github = loadOptionalGitHubAppEnv(env);
 const posthog = loadPostHogEnv();
 const incidentWebhookSecret = loadIncidentWebhookSecret(process.env, env.NODE_ENV);
 const admin = loadSupportAdminConfig();
@@ -280,7 +278,7 @@ const app = composeApp({
   usageOpsAlerts,
   temporal,
   artifactStorage,
-  github,
+  ...(github === undefined ? {} : { github }),
   posthog,
   ...(incidentWebhookSecret === undefined ? {} : { incidentWebhookSecret }),
   admin,
@@ -532,80 +530,86 @@ const usageOutboxLifecycle = {
     usageQueue.close?.();
   },
 };
-const githubQueue = createSqsGitHubWebhookQueue(githubQueueConfig);
-const githubPublisherLifecycle = createGitHubWebhookPublisherLifecycle({
-  publisher: createGitHubWebhookPublisher({
-    store: createDbGitHubWebhookStore(database.db),
-    queue: githubQueue,
-    onError: (error) => {
-      app.log.error({ err: error }, 'GitHub webhook outbox publish failed');
-    },
-  }),
-  batchSize: 100,
-  intervalMs: 1_000,
-  onError: (error) => {
-    app.log.error({ err: error }, 'GitHub webhook outbox poll failed');
-  },
-});
-const githubWebhookLifecycle = {
-  start: () => githubPublisherLifecycle.start(),
-  async close() {
-    await githubPublisherLifecycle.close();
-    githubQueue.close?.();
-  },
-};
-const githubImportQueue = createSqsGitHubImportQueue(githubImportQueueConfig);
-const githubImportWorker = createGitHubImportWorker({
-  store: createDbGitHubImportWorkerStore({
-    database: database.db,
-    tenantDb: createTenantDbFactory(database.db),
-  }),
-  provider: createGitHubProvider({
-    appId: github.appId,
-    clientId: github.clientId,
-    clientSecret: github.clientSecret,
-    privateKey: github.privateKey,
-    ...(github.apiBaseUrl === undefined ? {} : { baseUrl: github.apiBaseUrl }),
-  }),
-  git: resolveGitService({ baseUrl: gitServiceUrl, serviceTokens }),
-  capabilityScan: createTemporalCapabilityScanPort(temporal),
-});
-const githubImportPublisherLifecycle = createGitHubImportPublisherLifecycle({
-  publisher: createGitHubImportPublisher({
-    database: database.db,
-    queue: githubImportQueue,
-    onError: (error) => {
-      app.log.error({ errorName: error.name }, 'GitHub import outbox publish failed');
-    },
-  }),
-  batchSize: 100,
-  intervalMs: 1_000,
-  onError: (error) => {
-    app.log.error({ errorName: error.name }, 'GitHub import outbox poll failed');
-  },
-});
-const githubImportConsumerLifecycle = createGitHubImportConsumerLifecycle({
-  queue: githubImportQueue,
-  worker: githubImportWorker,
-  batchSize: 10,
-  waitTimeSeconds: 10,
-  visibilityTimeoutSeconds: 180,
-  intervalMs: 1_000,
-  onError: (error) => {
-    app.log.error({ errorName: error.name }, 'GitHub import delivery failed');
-  },
-});
-const githubImportLifecycle = {
-  async start() {
-    await githubImportPublisherLifecycle.start();
-    await githubImportConsumerLifecycle.start();
-  },
-  async close() {
-    await githubImportConsumerLifecycle.close();
-    await githubImportPublisherLifecycle.close();
-    githubImportQueue.close?.();
-  },
-};
+const githubLifecycles =
+  github === undefined
+    ? undefined
+    : (() => {
+        const githubQueue = createSqsGitHubWebhookQueue(loadGitHubWebhookQueueEnv());
+        const githubPublisherLifecycle = createGitHubWebhookPublisherLifecycle({
+          publisher: createGitHubWebhookPublisher({
+            store: createDbGitHubWebhookStore(database.db),
+            queue: githubQueue,
+            onError: (error) => {
+              app.log.error({ err: error }, 'GitHub webhook outbox publish failed');
+            },
+          }),
+          batchSize: 100,
+          intervalMs: 1_000,
+          onError: (error) => {
+            app.log.error({ err: error }, 'GitHub webhook outbox poll failed');
+          },
+        });
+        const webhook = {
+          start: () => githubPublisherLifecycle.start(),
+          async close() {
+            await githubPublisherLifecycle.close();
+            githubQueue.close?.();
+          },
+        };
+        const githubImportQueue = createSqsGitHubImportQueue(loadGitHubImportQueueEnv());
+        const githubImportWorker = createGitHubImportWorker({
+          store: createDbGitHubImportWorkerStore({
+            database: database.db,
+            tenantDb: createTenantDbFactory(database.db),
+          }),
+          provider: createGitHubProvider({
+            appId: github.appId,
+            clientId: github.clientId,
+            clientSecret: github.clientSecret,
+            privateKey: github.privateKey,
+            ...(github.apiBaseUrl === undefined ? {} : { baseUrl: github.apiBaseUrl }),
+          }),
+          git: resolveGitService({ baseUrl: gitServiceUrl, serviceTokens }),
+          capabilityScan: createTemporalCapabilityScanPort(temporal),
+        });
+        const githubImportPublisherLifecycle = createGitHubImportPublisherLifecycle({
+          publisher: createGitHubImportPublisher({
+            database: database.db,
+            queue: githubImportQueue,
+            onError: (error) => {
+              app.log.error({ errorName: error.name }, 'GitHub import outbox publish failed');
+            },
+          }),
+          batchSize: 100,
+          intervalMs: 1_000,
+          onError: (error) => {
+            app.log.error({ errorName: error.name }, 'GitHub import outbox poll failed');
+          },
+        });
+        const githubImportConsumerLifecycle = createGitHubImportConsumerLifecycle({
+          queue: githubImportQueue,
+          worker: githubImportWorker,
+          batchSize: 10,
+          waitTimeSeconds: 10,
+          visibilityTimeoutSeconds: 180,
+          intervalMs: 1_000,
+          onError: (error) => {
+            app.log.error({ errorName: error.name }, 'GitHub import delivery failed');
+          },
+        });
+        const imports = {
+          async start() {
+            await githubImportPublisherLifecycle.start();
+            await githubImportConsumerLifecycle.start();
+          },
+          async close() {
+            await githubImportConsumerLifecycle.close();
+            await githubImportPublisherLifecycle.close();
+            githubImportQueue.close?.();
+          },
+        };
+        return { webhook, imports };
+      })();
 const notificationWorkerLifecycle = createNotificationWorkerLifecycle({
   worker: notificationWorker,
   onError: (error) => {
@@ -651,8 +655,12 @@ try {
     app,
     eventPublisherLifecycle,
     usageOutboxLifecycle,
-    githubWebhookLifecycle,
-    githubImportLifecycle,
+    ...(githubLifecycles === undefined
+      ? {}
+      : {
+          githubWebhookLifecycle: githubLifecycles.webhook,
+          githubImportLifecycle: githubLifecycles.imports,
+        }),
     notificationLifecycle,
     archiveLifecycle,
     retentionLifecycle,

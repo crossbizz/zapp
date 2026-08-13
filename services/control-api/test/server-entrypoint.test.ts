@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 interface LifecycleInput {
   readonly publisher: unknown;
@@ -325,7 +325,7 @@ const production = vi.hoisted(() => {
     })),
     loadGitServiceUrl: vi.fn(() => 'http://git-service.test:4500'),
     loadReleaseServiceUrl: vi.fn(() => 'http://release-service.test:4300'),
-    loadGitHubAppEnv: vi.fn(() => github),
+    loadOptionalGitHubAppEnv: vi.fn(() => github),
     loadGitHubWebhookQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
       queueName: 'zapp-github-webhooks',
@@ -408,7 +408,7 @@ vi.mock('../src/env.js', () => ({
   requireFlexpriceForEnvironment: production.requireFlexpriceForEnvironment,
   loadStripeBillingEnv: production.loadStripeBillingEnv,
   requireStripeBillingForEnvironment: production.requireStripeBillingForEnvironment,
-  loadGitHubAppEnv: production.loadGitHubAppEnv,
+  loadOptionalGitHubAppEnv: production.loadOptionalGitHubAppEnv,
   loadGitHubImportQueueEnv: production.loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv: production.loadGitHubWebhookQueueEnv,
   loadPostHogEnv: production.loadPostHogEnv,
@@ -535,10 +535,6 @@ describe('control-api production entrypoint', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
   });
 
   it('bootstraps the composed app with the lifecycle assembled from production handles', async () => {
@@ -695,5 +691,39 @@ describe('control-api production entrypoint', () => {
     expect(production.app.listen).toHaveBeenCalledWith({ host: '127.0.0.1', port: 4_321 });
     expect(processOnce).toHaveBeenCalledTimes(2);
     expect(processExit).not.toHaveBeenCalled();
+    processOnce.mockRestore();
+    processExit.mockRestore();
   }, 15_000);
+
+  it('boots the development M1 profile without GitHub App workers', async () => {
+    const processOnce = vi.spyOn(process, 'once').mockReturnValue(process);
+    const processExit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`unexpected process.exit(${String(code)})`);
+    });
+    production.loadEnv.mockReturnValueOnce({
+      HOST: '127.0.0.1',
+      LOG_LEVEL: 'silent',
+      NODE_ENV: 'development',
+      PORT: 4_321,
+      RUN_WORKFLOW_PROFILE: 'm1',
+    });
+    production.loadOptionalGitHubAppEnv.mockReturnValueOnce(undefined as never);
+
+    await import('../src/server.js');
+
+    const composeInput = production.composeApp.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(composeInput).not.toHaveProperty('github');
+    expect(production.createSqsGitHubWebhookQueue).not.toHaveBeenCalled();
+    expect(production.createSqsGitHubImportQueue).not.toHaveBeenCalled();
+    const bootstrapInput = production.bootstrapControlApiServer.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(bootstrapInput).not.toHaveProperty('githubWebhookLifecycle');
+    expect(bootstrapInput).not.toHaveProperty('githubImportLifecycle');
+    expect(processExit).not.toHaveBeenCalled();
+    processOnce.mockRestore();
+    processExit.mockRestore();
+  });
 });

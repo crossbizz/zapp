@@ -13,6 +13,7 @@ import {
   loadStripeBillingEnv,
   requireStripeBillingForEnvironment,
   loadGitHubAppEnv,
+  loadOptionalGitHubAppEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadPreviewEnv,
@@ -306,6 +307,45 @@ describe('Stripe platform billing configuration', () => {
       'PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production',
     );
     expect(requireStripeBillingForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
+  });
+});
+
+describe('GitHub App development admission', () => {
+  const empty = {
+    GITHUB_APP_ID: '',
+    GITHUB_APP_SLUG: '',
+    GITHUB_APP_PRIVATE_KEY: '',
+    GITHUB_APP_CLIENT_ID: '',
+    GITHUB_APP_CLIENT_SECRET: '',
+    GITHUB_WEBHOOK_SECRET: '',
+    GITHUB_API_BASE_URL: '',
+  };
+
+  it('disables an entirely absent GitHub App only in development', () => {
+    expect(loadOptionalGitHubAppEnv({ NODE_ENV: 'development' }, empty)).toBeUndefined();
+    expect(() => loadOptionalGitHubAppEnv({ NODE_ENV: 'production' }, empty)).toThrow(
+      /GITHUB_APP_ID/,
+    );
+  });
+
+  it('still rejects partial development configuration', () => {
+    expect(() =>
+      loadOptionalGitHubAppEnv(
+        { NODE_ENV: 'development' },
+        { ...empty, GITHUB_APP_ID: '12345' },
+      ),
+    ).toThrow(/GITHUB_APP_SLUG/);
+  });
+
+  it('preserves a complete development configuration', () => {
+    expect(loadOptionalGitHubAppEnv({ NODE_ENV: 'development' }, GITHUB_TEST_ENV)).toEqual({
+      appId: GITHUB_TEST_ENV.GITHUB_APP_ID,
+      appSlug: GITHUB_TEST_ENV.GITHUB_APP_SLUG,
+      privateKey: GITHUB_TEST_ENV.GITHUB_APP_PRIVATE_KEY,
+      clientId: GITHUB_TEST_ENV.GITHUB_APP_CLIENT_ID,
+      clientSecret: GITHUB_TEST_ENV.GITHUB_APP_CLIENT_SECRET,
+      webhookSecret: GITHUB_TEST_ENV.GITHUB_WEBHOOK_SECRET,
+    });
   });
 });
 

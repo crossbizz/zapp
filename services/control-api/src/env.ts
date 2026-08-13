@@ -273,6 +273,28 @@ export function loadGitHubAppEnv(source: unknown = process.env): GitHubAppEnv {
   });
 }
 
+const GitHubAppRequiredNames = [
+  'GITHUB_APP_ID',
+  'GITHUB_APP_SLUG',
+  'GITHUB_APP_PRIVATE_KEY',
+  'GITHUB_APP_CLIENT_ID',
+  'GITHUB_APP_CLIENT_SECRET',
+  'GITHUB_WEBHOOK_SECRET',
+] as const;
+
+export function loadOptionalGitHubAppEnv(
+  environment: Pick<ServiceEnv, 'NODE_ENV'>,
+  source: unknown = process.env,
+): GitHubAppEnv | undefined {
+  const values = z.record(z.unknown()).parse(source);
+  const configured = GitHubAppRequiredNames.filter((name) => {
+    const value = values[name];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+  if (configured.length === 0 && environment.NODE_ENV === 'development') return undefined;
+  return loadGitHubAppEnv(source);
+}
+
 const GitHubWebhookQueueEnvSchema = z
   .object({
     AWS_REGION: z.string().trim().min(1),

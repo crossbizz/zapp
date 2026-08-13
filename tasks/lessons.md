@@ -92,6 +92,19 @@ Stop only when progress needs genuinely new authority, a vendor/architecture
 substitution, destructive action, or a plan conflict the existing instructions
 do not resolve.
 
+## 2026-08-12 — Prove the developer entry point against the real local environment
+
+**What happened:** Static and seam-level checks passed, but the first real
+`pnpm local` run inherited a remote database, ignored the generated Forgejo
+token, lacked newer service-topology variables, and required M4-only GitHub App
+configuration. The platform was therefore described as runnable before its
+actual developer entry point had reached ready.
+
+**Rule:** Before claiming a local flow is runnable, execute its documented
+entry point against the developer's current environment, wait for truthful
+readiness, probe the UI and API, and verify application-only shutdown. Unit and
+static gates support that proof; they do not replace it.
+
 ## 2026-08-13 — Worktree progress is not authoritative completion
 
 **What happened:** Parallel milestone branches contained substantial finished

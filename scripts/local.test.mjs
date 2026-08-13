@@ -16,6 +16,12 @@ const COMPLETE_ENV = {
   ANTHROPIC_API_KEY: 'anthropic-configured',
   MODAL_TOKEN_ID: 'modal-id-configured',
   MODAL_TOKEN_SECRET: 'modal-secret-configured',
+  SESSION_JWT_SECRET: 'a'.repeat(64),
+};
+
+const LOCAL_FORGEJO_ENV = {
+  FORGEJO_URL: 'http://127.0.0.1:3300',
+  FORGEJO_ADMIN_TOKEN: 'generated-local-forgejo-token',
 };
 
 const LOCK = {
@@ -51,6 +57,12 @@ async function configFixture(env = COMPLETE_ENV, argv = []) {
   );
   await writeFile(join(cwd, 'package.json'), JSON.stringify({ packageManager: 'pnpm@9.15.0' }));
   await writeFile(join(cwd, 'infra.json'), JSON.stringify(LOCK));
+  await writeFile(
+    join(cwd, '.env.local.forgejo'),
+    Object.entries(LOCAL_FORGEJO_ENV)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n'),
+  );
   return loadLocalConfig({
     cwd,
     env: {},
@@ -69,9 +81,42 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
   assert.equal(config.env.APP_BASE_URL, 'http://127.0.0.1:3000');
   assert.equal(config.env.API_BASE_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.NEXT_PUBLIC_CONTROL_API_URL, 'http://127.0.0.1:4000');
+  assert.equal(config.env.CONTROL_API_INTERNAL_URL, 'http://127.0.0.1:4000');
+  assert.equal(config.env.MODEL_GATEWAY_URL, 'http://127.0.0.1:4100');
+  assert.equal(config.env.SANDBOX_SERVICE_URL, 'http://127.0.0.1:4400');
+  assert.equal(config.env.GIT_SERVICE_URL, 'http://127.0.0.1:4500');
+  assert.equal(config.env.SANDBOX_OWNER_ID, 'sandbox-local');
+  assert.equal(config.env.SERVICE_TOKEN_ISSUER, 'zapp-control-plane');
+  assert.equal(config.env.ARTIFACT_REGION, 'us-east-1');
+  assert.equal(config.env.PREVIEW_BASE_DOMAIN, 'preview.localhost');
   assert.deepEqual(config.ports, [3000, 4000, 4100, 4400, 4500]);
   assert.equal(config.imageLock.modalEnvironment, 'zapp-dev');
   assert.equal(config.imageLock.images.length, 2);
+});
+
+test('pins the Docker Postgres endpoint instead of inheriting a remote database', async () => {
+  const config = await configFixture({
+    ...COMPLETE_ENV,
+    DATABASE_URL: 'postgres://remote.example/zapp',
+  });
+
+  assert.equal(config.env.DATABASE_URL, 'postgres://zapp:zapp@127.0.0.1:5432/zapp');
+});
+
+test('derives stable, separate local keys for an older environment file', async () => {
+  const env = {
+    ...COMPLETE_ENV,
+    SESSION_JWT_SECRET: 'a'.repeat(64),
+  };
+
+  const first = await configFixture(env);
+  const second = await configFixture(env);
+
+  assert.match(first.env.RUN_INTENT_HMAC_SECRET, /^[0-9a-f]{64}$/u);
+  assert.match(first.env.PREVIEW_SHARE_SIGNING_KEY, /^[0-9a-f]{64}$/u);
+  assert.equal(first.env.RUN_INTENT_HMAC_SECRET, second.env.RUN_INTENT_HMAC_SECRET);
+  assert.equal(first.env.PREVIEW_SHARE_SIGNING_KEY, second.env.PREVIEW_SHARE_SIGNING_KEY);
+  assert.notEqual(first.env.RUN_INTENT_HMAC_SECRET, first.env.PREVIEW_SHARE_SIGNING_KEY);
 });
 
 test('classifies missing and placeholder provider credentials without printing values', async () => {
@@ -298,6 +343,7 @@ test('aborts an in-flight HTTP readiness retry on shutdown', async () => {
 test('runs preflight and startup in dependency order, opens the UI, and exits zero on Ctrl-C', async () => {
   const config = await configFixture();
   const events = [];
+  const started = [];
   const signals = new EventEmitter();
   let resolveFailure;
   const failure = new Promise((resolve) => {
@@ -306,6 +352,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
   const supervisor = {
     failure,
     start(spec) {
+      started.push(spec);
       events.push(`start:${spec.name}`);
     },
     waitForLine(name) {
@@ -370,5 +417,9 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
     ],
   );
   assert.equal(events.includes('open:http://127.0.0.1:3000'), true);
+  assert.equal(
+    started.find((spec) => spec.name === 'git-service').env.FORGEJO_ADMIN_TOKEN,
+    LOCAL_FORGEJO_ENV.FORGEJO_ADMIN_TOKEN,
+  );
   assert.equal(events.at(-1), 'stop');
 });
