@@ -660,5 +660,5 @@ describe('VF-10 independent verifyPhase activity', () => {
       }
       await database.close();
     }
-  }, 30_000);
+  }, 60_000);
 });

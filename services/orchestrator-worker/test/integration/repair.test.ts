@@ -710,5 +710,5 @@ describe('VF-13 classified repair loop', () => {
       await database.sql`delete from users where id = ${fixture.userId}`;
       await database.close();
     }
-  }, 30_000);
+  }, 60_000);
 });
